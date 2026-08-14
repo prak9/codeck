@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Codeck · Agent sessions</title>
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">跳到工作区</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Codeck 首页"><span class="brand-mark">C/</span><span>CODECK</span></a>
+      <div class="server-state"><span class="status-dot"></span><span id="serverLabel">本机服务器</span></div>
+      <button class="icon-button mobile-only" id="menuButton" aria-label="打开会话列表" aria-controls="sidebar" aria-expanded="false">☰</button>
+    </header>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-heading">
+        <div><p class="eyebrow">WORKSPACES</p><h1>运行中的会话</h1></div>
+        <button class="icon-button" id="newButton" aria-label="新建会话">＋</button>
+      </div>
+      <div class="session-list" id="sessionList" aria-live="polite"></div>
+      <button class="new-session-button" id="newButtonBottom"><span>＋</span> 新建会话</button>
+      <footer><kbd>⌘</kbd><kbd>K</kbd><span>快速切换</span></footer>
+    </aside>
+
+    <main class="workspace" id="workspace">
+      <section class="empty-state" id="emptyState">
+        <div class="prompt-glyph" aria-hidden="true"><span>›_</span></div>
+        <p class="eyebrow">REMOTE AGENT DESK</p>
+        <h2>继续服务器上的工作，<br>不用离开浏览器。</h2>
+        <p>连接已有 tmux 会话，或启动一个新的 Codex / Claude 终端。</p>
+        <button class="primary-button" id="emptyNewButton">创建第一个会话 <span>↗</span></button>
+      </section>
+
+      <section class="terminal-view" id="terminalView" hidden>
+        <header class="terminal-header">
+          <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
+          <div class="terminal-actions"><span id="connectionState">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+        </header>
+        <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="tokenDialog">
+    <form method="dialog" id="tokenForm">
+      <p class="eyebrow">SECURE CONNECTION</p><h2>连接服务器</h2>
+      <p>输入服务启动时显示的访问令牌。令牌只保存在当前浏览器中。</p>
+      <label for="tokenInput">访问令牌</label><input id="tokenInput" name="token" type="password" autocomplete="current-password" required autofocus>
+      <p class="form-error" id="tokenError" role="alert"></p>
+      <button class="primary-button" type="submit">验证并进入</button>
+    </form>
+  </dialog>
+
+  <dialog id="newDialog">
+    <form method="dialog" id="newForm">
+      <div class="dialog-head"><div><p class="eyebrow">NEW WORKSPACE</p><h2>新建会话</h2></div><button class="icon-button" value="cancel" formnovalidate aria-label="关闭">×</button></div>
+      <label for="nameInput">会话名称</label><input id="nameInput" name="name" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}" placeholder="feature-auth" required>
+      <label for="cwdInput">工作目录 <span>可选</span></label><input id="cwdInput" name="cwd" placeholder="/data/code/project">
+      <fieldset><legend>启动方式</legend><div class="client-options">
+        <label><input type="radio" name="client" value="codex" checked><span><b>Codex</b><small>OpenAI CLI</small></span></label>
+        <label><input type="radio" name="client" value="claude"><span><b>Claude</b><small>Anthropic CLI</small></span></label>
+        <label><input type="radio" name="client" value="shell"><span><b>Shell</b><small>空白终端</small></span></label>
+      </div></fieldset>
+      <p class="form-error" id="newError" role="alert"></p>
+      <div class="dialog-actions"><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="createButton" value="default">创建会话</button></div>
+    </form>
+  </dialog>
+
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/fit/addon-fit.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
