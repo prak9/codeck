@@ -149,7 +149,7 @@ $('#killButton').addEventListener('click', async () => {
 
 $('#tokenForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  state.token = $('#tokenInput').value;
+  state.token = $('#tokenInput').value.trim();
   try {
     await refreshSessions();
     sessionStorage.setItem('codeck-token', state.token);

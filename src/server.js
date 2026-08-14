@@ -1,14 +1,15 @@
 import crypto from 'node:crypto';
-import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { createSession, killSession, listSessions, validateSessionName } from './tmux.js';
+import { loadTlsOptions } from './tls.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
-const host = process.env.HOST || '127.0.0.1';
+const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
@@ -53,7 +54,8 @@ app.use((error, _req, res, _next) => {
   res.status(status).json({ error: error.message || '服务器操作失败' });
 });
 
-const server = http.createServer(app);
+const tls = loadTlsOptions();
+const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
@@ -93,6 +95,7 @@ wss.on('connection', (ws, session) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Codeck is running at http://${host}:${port}`);
+  console.log(`Codeck is running at https://${host}:${port}`);
+  if (tls.generated) console.log('TLS: using the persistent self-signed certificate in ~/.codeck');
   console.log(`Access token: ${accessToken}`);
 });
