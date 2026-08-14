@@ -65,9 +65,17 @@ function connect(session) {
   $('#connectionState').textContent = '正在连接';
 
   const terminal = new Terminal({
-    cursorBlink: true, convertEol: true, fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-    fontSize: 14, lineHeight: 1.35, scrollback: 5000,
-    theme: { background: '#11120f', foreground: '#e8e7df', cursor: '#d7ff51', selectionBackground: '#58662888', black: '#11120f', brightBlack: '#66685e', green: '#b8d943', brightGreen: '#d7ff51' },
+    cursorBlink: true, cursorStyle: 'block', convertEol: true,
+    fontFamily: '"Courier New", "Microsoft YaHei", "微软雅黑", monospace',
+    fontSize: 14, lineHeight: 1.2, scrollback: 5000,
+    theme: {
+      background: '#2e3436', foreground: '#d3d7cf', cursor: '#eeeeec', cursorAccent: '#2e3436',
+      selectionBackground: '#e9542066', selectionForeground: '#ffffff',
+      black: '#2e3436', red: '#cc0000', green: '#4e9a06', yellow: '#c4a000',
+      blue: '#3465a4', magenta: '#75507b', cyan: '#06989a', white: '#d3d7cf',
+      brightBlack: '#555753', brightRed: '#ef2929', brightGreen: '#8ae234', brightYellow: '#fce94f',
+      brightBlue: '#729fcf', brightMagenta: '#ad7fa8', brightCyan: '#34e2e2', brightWhite: '#eeeeec',
+    },
   });
   const fit = new FitAddon();
   terminal.loadAddon(fit);
