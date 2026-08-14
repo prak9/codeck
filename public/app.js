@@ -67,7 +67,7 @@ function connect(session) {
   const terminal = new Terminal({
     cursorBlink: true, cursorStyle: 'block', convertEol: true,
     fontFamily: '"Courier New", "Microsoft YaHei", "微软雅黑", monospace',
-    fontSize: 14, lineHeight: 1.2, scrollback: 5000,
+    fontSize: 16, lineHeight: 1.2, scrollback: 5000,
     theme: {
       background: '#2e3436', foreground: '#d3d7cf', cursor: '#eeeeec', cursorAccent: '#2e3436',
       selectionBackground: '#e9542066', selectionForeground: '#ffffff',
