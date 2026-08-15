@@ -17,18 +17,28 @@ const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString(
 const app = express();
 const SESSION_STATUS_POLL_MS = 5_000;
 const sessionStatusByName = new Map();
+const sessionActivityAtByName = new Map();
 
-function resolveTrackedStatus(session) {
-  return session.hasRunningProcess ? 'working' : 'done';
+function resolveTrackedStatus(session, previousActivityAt) {
+  const hasNewActivity = Number.isFinite(session.activityAt) && Number.isFinite(previousActivityAt)
+    && session.activityAt > previousActivityAt;
+  return hasNewActivity || session.hasRunningProcess ? 'working' : 'done';
 }
 
 async function refreshSessionStatuses() {
   try {
     const sessions = await listSessions();
     const next = new Map();
-    for (const session of sessions) next.set(session.name, resolveTrackedStatus(session));
+    const nextActivity = new Map();
+    for (const session of sessions) {
+      const previousActivityAt = sessionActivityAtByName.get(session.name);
+      next.set(session.name, resolveTrackedStatus(session, previousActivityAt));
+      nextActivity.set(session.name, session.activityAt);
+    }
     sessionStatusByName.clear();
+    sessionActivityAtByName.clear();
     for (const [name, status] of next) sessionStatusByName.set(name, status);
+    for (const [name, activityAt] of nextActivity) sessionActivityAtByName.set(name, activityAt);
   } catch {
     // keep stale cache when tmux is temporarily unavailable
   }
