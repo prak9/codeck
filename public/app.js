@@ -9,8 +9,23 @@ if (sharedToken) {
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
 const SESSION_DONE_IDLE_MS = 3 * 60 * 1000;
+const SESSION_INPUT_ACTIVITY_MS = 30 * 1000;
 const COMPLETED_SESSION_NAME = /^codeck(?:-|$|_)/i;
-const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken) };
+const state = {
+  token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
+  sessions: [],
+  active: null,
+  socket: null,
+  terminal: null,
+  fit: null,
+  connectionId: 0,
+  overview: true,
+  fitting: false,
+  supportsLargestSize: true,
+  canManage: true,
+  openedShareLink: Boolean(sharedToken || storedShareToken),
+  sessionInputAt: new Map(),
+};
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -47,10 +62,18 @@ function isProblemSession(session) {
 function resolveSessionStatus(session) {
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
+  const localActivityAt = Number(state.sessionInputAt.get(session.name)) || 0;
   const isActive = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
-  const isWorking = Boolean(session.agent) && isActive;
+  const isRecentInput = Date.now() - localActivityAt <= SESSION_INPUT_ACTIVITY_MS;
+  const isWorking = Boolean(session.agent) && (isActive || isRecentInput);
   if (isWorking) return 'working';
   return 'done';
+}
+
+function markSessionInput(sessionName, now = Date.now()) {
+  if (!sessionName) return;
+  state.sessionInputAt.set(sessionName, now);
+  renderSessions();
 }
 
 function renderSessions() {
@@ -197,6 +220,7 @@ async function pasteImages(event) {
     })));
     if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
     const paths = uploads.map((upload) => `'${upload.path.replaceAll("'", "'\\''")}'`).join(' ');
+    markSessionInput(state.active);
     socket.send(JSON.stringify({ type: 'input', data: paths }));
     setConnectionMessage(images.length > 1 ? `已粘贴 ${images.length} 张图片` : '图片已粘贴');
     state.terminal.focus();
@@ -228,7 +252,12 @@ function ensureTerminal() {
     if (event.type !== 'keydown') return true;
     return !handleQuickSwitchKeydown(event);
   });
-  terminal.onData((data) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'input', data })));
+  terminal.onData((data) => {
+    if (state.socket?.readyState === WebSocket.OPEN) {
+      markSessionInput(state.active);
+      state.socket.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
   terminal.onResize(({ cols, rows }) => {
     if (!state.fitting && state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
   });
@@ -291,9 +320,14 @@ function connect(session) {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = '已连接';
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+    markSessionInput(session);
     terminal.focus();
   });
-  socket.addEventListener('message', (event) => state.connectionId === connectionId && terminal.write(event.data));
+  socket.addEventListener('message', (event) => {
+    if (state.connectionId !== connectionId) return;
+    markSessionInput(session);
+    terminal.write(event.data);
+  });
   socket.addEventListener('close', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接已断开'));
   socket.addEventListener('error', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接失败'));
   $('#sidebar').classList.remove('open');
@@ -355,6 +389,7 @@ $('.mobile-keybar').addEventListener('click', (event) => {
   const button = event.target.closest('[data-terminal-key]');
   if (!button || state.socket?.readyState !== WebSocket.OPEN) return;
   const keys = { escape: '\x1b', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
+  markSessionInput(state.active);
   state.socket.send(JSON.stringify({ type: 'input', data: keys[button.dataset.terminalKey] }));
 });
 
