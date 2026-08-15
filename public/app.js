@@ -36,8 +36,8 @@ function renderSessions() {
   }
   list.innerHTML = state.sessions.map((session) => `
     <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
-      <span class="session-icon">${session.attached ? '›_' : '$_'}</span>
-      <span class="session-copy"><b>${escapeHtml(session.name)}</b><small>${session.windows} 个窗口 · ${timeAgo(session.activityAt)}</small></span>
+      <span class="session-icon">${session.agent ? (session.agent.kind === 'codex' ? 'C›' : 'A›') : (session.attached ? '›_' : '$_')}</span>
+      <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${session.agent.kind === 'codex' ? 'Codex' : 'Claude'} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
       <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
     </button>`).join('');
 }

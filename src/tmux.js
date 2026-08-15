@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { detectPaneAgents } from './agents.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
@@ -29,11 +30,17 @@ export function parseSessions(output) {
 
 export async function listSessions() {
   try {
-    const { stdout } = await exec('tmux', [
-      'list-sessions', '-F',
-      '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}',
+    const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
+      exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}']),
+      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}']),
     ]);
-    return parseSessions(stdout).sort((a, b) => b.activityAt - a.activityAt);
+    const panes = paneOutput.trim().split('\n').filter(Boolean).map((line) => {
+      const [session, windowActive, paneActive, pid] = line.split('\t');
+      return { session, pid: Number(pid), score: Number(windowActive) + Number(paneActive) };
+    }).sort((a, b) => b.score - a.score).filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
+    const agents = await detectPaneAgents(panes);
+    return parseSessions(stdout).map((session) => ({ ...session, agent: agents.get(session.name) || null }))
+      .sort((a, b) => b.activityAt - a.activityAt);
   } catch (error) {
     if (error.code === 1) return [];
     throw error;
