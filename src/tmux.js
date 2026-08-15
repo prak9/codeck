@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { detectPaneAgents } from './agents.js';
+import { agentKindFromCommand, detectPaneAgents } from './agents.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
@@ -62,13 +62,16 @@ function parsePanes(output) {
 function parseProcesses(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
-    const [rawPid, rawPpid, rawState] = line.trim().split(/\s+/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+([A-Za-z])\s+(.*)$/);
+    if (!match) return null;
+    const [, rawPid, rawPpid, rawState, command] = match;
     return {
       pid: Number(rawPid),
       ppid: Number(rawPpid),
-      state: rawState?.[0] || '',
+      state: rawState || '',
+      command: (command || '').trim(),
     };
-  }).filter((entry) => Number.isFinite(entry.pid) && Number.isFinite(entry.ppid));
+  }).filter((entry) => Number.isFinite(entry?.pid) && Number.isFinite(entry?.ppid) && entry);
 }
 
 function buildProcessLookup(processes) {
@@ -91,7 +94,9 @@ function hasRunningProcessInSession(panePids, processLookup) {
     if (seen.has(currentPid)) continue;
     seen.add(currentPid);
     const process = byPid.get(currentPid);
-    if (process && process.state === 'R') return true;
+    if (!process) continue;
+    if (process.state === 'R') return true;
+    if (agentKindFromCommand(process.command)) return true;
     const children = childrenByPid.get(currentPid);
     if (children) queue.push(...children);
   }
@@ -103,7 +108,7 @@ export async function listSessions() {
     const [{ stdout }, { stdout: paneOutput }, { stdout: processOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
       exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_current_command}']),
-      exec('ps', ['-eo', 'pid=,ppid=,state=']),
+      exec('ps', ['-eo', 'pid=,ppid=,state=,cmd=']),
     ]);
     const allPanes = parsePanes(paneOutput);
     const panes = allPanes
