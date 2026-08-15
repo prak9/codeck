@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSessions, supportsLargestSize, validateClient, validateSessionName } from '../src/tmux.js';
+import { parseSessions, supportsLargestSize, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
-  assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\n'), [{
-    name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 48,
+  assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
+    name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 49,
   }]);
 });
 
@@ -15,6 +15,10 @@ test('uses largest-client sizing only when supported by tmux', () => {
   assert.equal(supportsLargestSize('tmux 2.8'), false);
   assert.equal(supportsLargestSize('tmux 2.9'), true);
   assert.equal(supportsLargestSize('tmux 3.4'), true);
+});
+
+test('removes nested tmux markers from web terminal environments', () => {
+  assert.deepEqual(withoutTmuxEnvironment({ PATH: '/bin', TMUX: '/tmp/tmux,1,0', TMUX_PANE: '%1' }), { PATH: '/bin' });
 });
 
 test('accepts safe session names and known clients', () => {

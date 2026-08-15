@@ -25,10 +25,15 @@ export function supportsLargestClientSize() {
   return supportsLargestSizePromise;
 }
 
+export function withoutTmuxEnvironment(environment) {
+  const { TMUX: _tmux, TMUX_PANE: _tmuxPane, ...clean } = environment;
+  return clean;
+}
+
 export function parseSessions(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
-    const [name, windows, attached, created, activity, width, height] = line.split('\t');
+    const [name, windows, attached, created, activity, width, height, status] = line.split('\t');
     return {
       name,
       windows: Number(windows),
@@ -36,7 +41,7 @@ export function parseSessions(output) {
       createdAt: Number(created) * 1000,
       activityAt: Number(activity) * 1000,
       width: Number(width),
-      height: Number(height),
+      height: Number(height) + (status === 'on' ? 1 : 0),
     };
   });
 }
@@ -44,7 +49,7 @@ export function parseSessions(output) {
 export async function listSessions() {
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
-      exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}']),
+      exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
       exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}']),
     ]);
     const panes = paneOutput.trim().split('\n').filter(Boolean).map((line) => {
@@ -88,7 +93,7 @@ export async function preferLargestClientSize() {
 
 export async function getSessionSize(name) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');
-  const { stdout } = await exec('tmux', ['display-message', '-p', '-t', `${name}:`, '#{window_width}\t#{window_height}']);
-  const [width, height] = stdout.trim().split('\t').map(Number);
-  return { width, height };
+  const { stdout } = await exec('tmux', ['display-message', '-p', '-t', `${name}:`, '#{window_width}\t#{window_height}\t#{status}']);
+  const [rawWidth, rawHeight, status] = stdout.trim().split('\t');
+  return { width: Number(rawWidth), height: Number(rawHeight) + (status === 'on' ? 1 : 0) };
 }

@@ -6,7 +6,7 @@ import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
-import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName } from './tmux.js';
+import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { saveImageUpload } from './uploads.js';
 
@@ -126,7 +126,7 @@ wss.on('connection', async (ws, session) => {
     return;
   }
   const terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
-    name: 'xterm-256color', cols: initialSize.width, rows: initialSize.height, cwd: process.cwd(), env: process.env,
+    name: 'xterm-256color', cols: initialSize.width, rows: initialSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
   });
   terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
   terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
