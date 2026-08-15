@@ -86,6 +86,8 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-header .eyebrow { margin-bottom: 4px; }
 .terminal-header h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
 .terminal-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; }
+.view-mode-button { display: none; min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); cursor: pointer; }
+.view-mode-button[aria-pressed="true"] { border-color: #ff6b3548; background: #ff6b3510; color: #ff9a78; }
 .terminal-frame { min-height: 0; flex: 1; padding: 14px 10px 10px 15px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--terminal); box-shadow: 0 18px 45px #00000038, inset 0 1px #ffffff08; }
 #terminal { height: 100%; }
 .xterm .xterm-viewport { scrollbar-width: thin; scrollbar-color: #ffffff24 transparent; }
@@ -190,8 +192,9 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .empty-state h2 { font-size: 34px; }
   .terminal-view { height: 100%; padding: 10px calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); }
   .terminal-header { min-height: 62px; }
+  .view-mode-button { display: block; min-height: 44px; }
   .danger-button { min-height: 44px; }
-  .terminal-frame { padding: 11px 7px 7px 11px; border-radius: 12px; }
+  .terminal-frame { padding: 11px 7px 7px 11px; border-radius: 12px; touch-action: pan-x pan-y pinch-zoom; }
   .client-options { grid-template-columns: 1fr 1fr; }
   input[type="text"], input[type="password"], input:not([type]) { font-size: 16px; }
   dialog { max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px); overflow-y: auto; }

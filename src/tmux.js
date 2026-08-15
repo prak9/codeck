@@ -17,13 +17,15 @@ export function validateClient(client) {
 export function parseSessions(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
-    const [name, windows, attached, created, activity] = line.split('\t');
+    const [name, windows, attached, created, activity, width, height] = line.split('\t');
     return {
       name,
       windows: Number(windows),
       attached: Number(attached),
       createdAt: Number(created) * 1000,
       activityAt: Number(activity) * 1000,
+      width: Number(width),
+      height: Number(height),
     };
   });
 }
@@ -31,7 +33,7 @@ export function parseSessions(output) {
 export async function listSessions() {
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
-      exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}']),
+      exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}']),
       exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}']),
     ]);
     const panes = paneOutput.trim().split('\n').filter(Boolean).map((line) => {
@@ -65,4 +67,8 @@ export async function killSession(name) {
 export async function renameSession(name, newName) {
   if (!validateSessionName(name) || !validateSessionName(newName)) throw new Error('无效的会话名');
   await exec('tmux', ['rename-session', '-t', name, newName]);
+}
+
+export async function preferLargestClientSize() {
+  await exec('tmux', ['set-option', '-g', 'window-size', 'largest']);
 }

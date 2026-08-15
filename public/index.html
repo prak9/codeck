@@ -42,7 +42,7 @@
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
       </section>
@@ -83,6 +83,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-  <script type="module" src="/app.js?v=13"></script>
+  <script type="module" src="/app.js?v=15"></script>
 </body>
 </html>

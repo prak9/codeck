@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
-import { createSession, killSession, listSessions, renameSession, validateSessionName } from './tmux.js';
+import { createSession, killSession, listSessions, preferLargestClientSize, renameSession, validateSessionName } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { saveImageUpload } from './uploads.js';
 
@@ -94,7 +94,13 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session));
 });
 
-wss.on('connection', (ws, session) => {
+wss.on('connection', async (ws, session) => {
+  try {
+    await preferLargestClientSize();
+  } catch (error) {
+    ws.close(1011, error.message || 'tmux size configuration failed');
+    return;
+  }
   const terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
     name: 'xterm-256color', cols: 100, rows: 30, cwd: process.cwd(), env: process.env,
   });

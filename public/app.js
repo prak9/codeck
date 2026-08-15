@@ -2,7 +2,7 @@ const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
 
 const $ = (selector) => document.querySelector(selector);
-const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0 };
+const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -67,6 +67,7 @@ async function refreshSessions() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions;
   renderSessions();
+  if (state.active && state.terminal) fitTerminalView();
 }
 
 function isQuickSwitchKey(event) {
@@ -142,11 +143,35 @@ function ensureTerminal() {
     return false;
   });
   terminal.onData((data) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'input', data })));
-  terminal.onResize(({ cols, rows }) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'resize', cols, rows })));
-  new ResizeObserver(() => fit.fit()).observe($('#terminal').parentElement);
+  terminal.onResize(({ cols, rows }) => {
+    if (!state.fitting && state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+  });
+  new ResizeObserver(fitTerminalView).observe($('#terminal').parentElement);
   state.terminal = terminal;
   state.fit = fit;
   return terminal;
+}
+
+function fitTerminalView() {
+  if (!state.terminal || state.fitting) return;
+  state.fitting = true;
+  const terminal = state.terminal;
+  const mobileOverview = matchMedia('(max-width: 720px)').matches && state.overview;
+  const session = state.sessions.find((item) => item.name === state.active);
+  terminal.options.fontSize = 16;
+  state.fit.fit();
+  if (mobileOverview && session?.width > 0 && session?.height > 0) {
+    for (let attempt = 0; attempt < 3 && (terminal.cols < session.width || terminal.rows < session.height); attempt += 1) {
+      const ratio = Math.min(terminal.cols / session.width, terminal.rows / session.height, 1);
+      terminal.options.fontSize = Math.max(1, Math.floor(terminal.options.fontSize * ratio * 9.7) / 10);
+      state.fit.fit();
+    }
+    terminal.resize(session.width, session.height);
+  }
+  state.fitting = false;
+  if (state.socket?.readyState === WebSocket.OPEN) {
+    state.socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+  }
 }
 
 function markActiveSession(session) {
@@ -171,7 +196,7 @@ function connect(session) {
   const terminal = ensureTerminal();
   terminal.reset();
   terminal.clear();
-  state.fit.fit();
+  fitTerminalView();
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}/ws?session=${encodeURIComponent(session)}`, `codeck.${websocketProtocolToken(state.token)}`);
@@ -230,6 +255,14 @@ async function renameSession(currentName) {
 $('#menuButton').addEventListener('click', () => {
   const open = $('#sidebar').classList.toggle('open');
   $('#menuButton').setAttribute('aria-expanded', String(open));
+});
+
+$('#viewModeButton').addEventListener('click', () => {
+  state.overview = !state.overview;
+  $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
+  $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
+  fitTerminalView();
+  state.terminal?.focus();
 });
 
 $('#newForm').addEventListener('submit', async (event) => {

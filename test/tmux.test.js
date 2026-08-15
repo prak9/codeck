@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { parseSessions, validateClient, validateSessionName } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
-  assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\n'), [{
-    name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000,
+  assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\n'), [{
+    name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 48,
   }]);
 });
 
