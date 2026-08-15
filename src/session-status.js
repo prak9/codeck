@@ -1,14 +1,20 @@
 const SESSION_ACTIVITY_WINDOW_MS = 30_000;
 
+function hasRecentSessionFileModification(session, now = Date.now(), activityWindowMs = SESSION_ACTIVITY_WINDOW_MS) {
+  const currentFileTime = Number(session?.sessionFileMtime);
+  if (!Number.isFinite(currentFileTime) || !Number.isFinite(now) || now < currentFileTime) return false;
+  return (now - currentFileTime) <= activityWindowMs;
+}
+
 export function isSessionActive(session, now = Date.now(), activityWindowMs = SESSION_ACTIVITY_WINDOW_MS) {
-  const hasRecentOutput = Number.isFinite(session?.activityAt) && Number.isFinite(now)
-    && (now - session.activityAt) <= activityWindowMs;
-
-  return Boolean(hasRecentOutput || session?.hasRunningProcess);
+  const hasSessionFileSignal = hasRecentSessionFileModification(session, now, activityWindowMs);
+  if (hasSessionFileSignal) return true;
+  const fallbackActivityAt = Number(session?.activityAt);
+  return Number.isFinite(fallbackActivityAt) && (now - fallbackActivityAt) <= activityWindowMs;
 }
 
-export function resolveSessionStatus(session, now = Date.now()) {
-  return isSessionActive(session, now) ? 'working' : 'done';
+export function resolveSessionStatus(session, now = Date.now(), activityWindowMs = SESSION_ACTIVITY_WINDOW_MS) {
+  return isSessionActive(session, now, activityWindowMs) ? 'working' : 'done';
 }
 
-export const SESSION_STATUS_WINDOW_MS = SESSION_ACTIVITY_WINDOW_MS;
+export { SESSION_ACTIVITY_WINDOW_MS };
