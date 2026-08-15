@@ -8,7 +8,7 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken), quickSwitch: { pending: false, targetIndex: null } };
+const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken) };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -87,10 +87,6 @@ function isQuickSwitchKey(event) {
   return keyK && (event.metaKey || event.altKey || (event.ctrlKey && event.shiftKey));
 }
 
-function clearQuickSwitchState() {
-  state.quickSwitch = { pending: false, targetIndex: null };
-}
-
 function parseDigit(event) {
   if (/^Digit[0-9]$/.test(event.code || '')) return Number(event.code.slice(-1));
   if (/^Numpad[0-9]$/.test(event.code || '')) return Number(event.code.slice(-1));
@@ -114,7 +110,6 @@ function switchByQuickSessionIndex(index) {
   const session = getSessionByIndex(index);
   if (!session) return false;
   switchToSession(session.name);
-  clearQuickSwitchState();
   return true;
 }
 
@@ -123,27 +118,10 @@ function cycleSession() {
   const currentIndex = state.sessions.findIndex((session) => session.name === state.active);
   const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % state.sessions.length;
   switchToSession(state.sessions[nextIndex].name);
-  clearQuickSwitchState();
-}
-
-function switchByQuickIndexOrCycle() {
-  if (state.quickSwitch.targetIndex != null) {
-    if (!switchByQuickSessionIndex(state.quickSwitch.targetIndex)) {
-      setConnectionMessage(`没有第 ${state.quickSwitch.targetIndex} 个会话`);
-    }
-    return;
-  }
-  cycleSession();
 }
 
 function handleQuickSwitchKeydown(event) {
   const digit = parseDigit(event);
-  if (state.quickSwitch.pending && digit !== null) {
-    event.preventDefault();
-    event.stopPropagation();
-    state.quickSwitch.targetIndex = digit === 0 ? 1 : digit;
-    return true;
-  }
   if (event.altKey && !event.metaKey && digit !== null) {
     event.preventDefault();
     event.stopPropagation();
@@ -156,22 +134,8 @@ function handleQuickSwitchKeydown(event) {
   if (!isQuickSwitchKey(event)) return false;
   event.preventDefault();
   event.stopPropagation();
-  if (event.altKey) {
-    state.quickSwitch.pending = true;
-    state.quickSwitch.targetIndex = null;
-    return true;
-  }
+  if (event.altKey) return cycleSession(), true;
   if (state.sessions.length) openQuickSwitcher();
-  return true;
-}
-
-function handleQuickSwitchKeyup(event) {
-  if (!state.quickSwitch.pending) return false;
-  if (event.code !== 'KeyK' && event.key !== 'k' && event.key !== 'K') return false;
-  event.preventDefault();
-  event.stopPropagation();
-  if (state.sessions.length) switchByQuickIndexOrCycle();
-  clearQuickSwitchState();
   return true;
 }
 
@@ -281,7 +245,6 @@ function markActiveSession(session) {
 }
 
 function connect(session) {
-  clearQuickSwitchState();
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
   state.socket?.close();
@@ -431,9 +394,6 @@ $('#tokenForm').addEventListener('submit', async (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (handleQuickSwitchKeydown(event)) return;
-}, true);
-document.addEventListener('keyup', (event) => {
-  if (handleQuickSwitchKeyup(event)) return;
 }, true);
 
 $('#quickSwitchButton').addEventListener('click', openQuickSwitcher);
