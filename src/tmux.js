@@ -5,6 +5,33 @@ import { detectPaneAgents } from './agents.js';
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
+const AGENT_BUSY_COMMAND_PATTERNS = [
+  /\bmcp\b/i,
+  /\btools?\b/i,
+  /\btooling\b/i,
+  /\bfunction_call\b/i,
+  /\bopenai/i,
+  /\banthropic/i,
+  /\bllm\b/i,
+  /\bqwen/i,
+  /\bollama\b/i,
+  /\bllama\b/i,
+  /\btransformers\b/i,
+  /\btorch\b/i,
+  /\btensorflow\b/i,
+  /\bvllm\b/i,
+  /\bpython(?:3)?\b/i,
+  /\bnode\b/i,
+  /\bnpm\b/i,
+  /\bpnpm\b/i,
+  /\buvx?\b/i,
+];
+const AGENT_CORE_COMMAND_PATTERNS = [
+  /agent-run/i,
+  /\/usr\/local\/bin\/codex/i,
+  /\bnode\s+\/usr\/local\/bin\/codex\b/i,
+  /@openai\/codex/i,
+];
 let supportsLargestSizePromise;
 
 export function validateSessionName(name) {
@@ -85,7 +112,16 @@ function buildProcessLookup(processes) {
   return { byPid, childrenByPid };
 }
 
-function hasRunningProcessInSession(panePids, processLookup) {
+function isRunningOrWaitingForIOState(state) {
+  return state?.startsWith('R') || state?.startsWith('D');
+}
+
+function isAgentBusyCommand(command = '') {
+  return AGENT_BUSY_COMMAND_PATTERNS.some((pattern) => pattern.test(command))
+    && !AGENT_CORE_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+function hasRunningProcessInSession(panePids, processLookup, hasAgent = false) {
   const { byPid, childrenByPid } = processLookup;
   const seen = new Set();
   const queue = [...panePids];
@@ -95,7 +131,8 @@ function hasRunningProcessInSession(panePids, processLookup) {
     seen.add(currentPid);
     const process = byPid.get(currentPid);
     if (!process) continue;
-    if (process.state?.startsWith('R')) return true;
+    if (isRunningOrWaitingForIOState(process.state)) return true;
+    if (hasAgent && isAgentBusyCommand(process.command || '')) return true;
     const children = childrenByPid.get(currentPid);
     if (children) queue.push(...children);
   }
@@ -125,13 +162,14 @@ export async function listSessions() {
       panePidsBySession.set(pane.session, list);
     }
 
+    const agents = await detectPaneAgents(panes);
     const processLookup = buildProcessLookup(parseProcesses(processOutput));
     const runningBySession = new Map();
     for (const [sessionName, pids] of panePidsBySession) {
-      runningBySession.set(sessionName, hasRunningProcessInSession(pids, processLookup));
+      const sessionAgent = agents.get(sessionName);
+      runningBySession.set(sessionName, hasRunningProcessInSession(pids, processLookup, Boolean(sessionAgent)));
     }
 
-    const agents = await detectPaneAgents(panes);
     return parseSessions(stdout)
       .map((session) => ({
         ...session,
