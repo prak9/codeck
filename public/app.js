@@ -313,7 +313,6 @@ function connect(session) {
     $('#connectionState').textContent = '已连接';
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
     terminal.focus();
-    void refreshSessions().catch(() => {});
   });
   socket.addEventListener('message', (event) => {
     if (state.connectionId !== connectionId) return;
