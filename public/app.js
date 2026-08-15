@@ -16,6 +16,7 @@ const state = {
   socket: null,
   terminal: null,
   fit: null,
+  sessionsRefreshSeq: 0,
   connectionId: 0,
   overview: true,
   fitting: false,
@@ -110,7 +111,9 @@ function websocketProtocolToken(value) {
 }
 
 async function refreshSessions() {
+  const requestId = ++state.sessionsRefreshSeq;
   const data = await api('/api/sessions');
+  if (requestId !== state.sessionsRefreshSeq) return;
   state.sessions = data.sessions;
   state.supportsLargestSize = data.capabilities?.largestSize !== false;
   state.canManage = data.capabilities?.canManage !== false;
