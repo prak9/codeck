@@ -75,7 +75,20 @@ function resolveSessionStatus(session) {
 function markSessionInput(sessionName, now = Date.now()) {
   if (!sessionName) return;
   state.sessionInputAt.set(sessionName, now);
-  renderSessions();
+  refreshSessionStatusIndicator(sessionName);
+}
+
+function refreshSessionStatusIndicator(sessionName) {
+  const rows = [...$('#sessionList').querySelectorAll('.session-row')];
+  const row = rows.find((item) => item.dataset.session === sessionName);
+  if (!row) return;
+  const session = state.sessions.find((item) => item.name === sessionName) || { name: sessionName };
+  const status = resolveSessionStatus(session);
+  const statusText = status === 'done' ? '完成' : status === 'problem' ? '可能存在问题' : '正在干活';
+  const presence = row.querySelector('.presence');
+  if (!presence) return;
+  presence.className = `presence ${status}`;
+  presence.title = statusText;
 }
 
 function renderSessions() {
@@ -91,15 +104,30 @@ function renderSessions() {
     const statusText = status === 'done' ? '完成' : status === 'problem' ? '可能存在问题' : '正在干活';
     return `
     <div class="session-entry">
-      <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
+      <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
         <span class="session-index">${index + 1}</span>
         <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
         <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
         <span class="presence ${status}" title="${statusText}"></span>
       </button>
-      ${state.canManage ? `<button class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
+      ${state.canManage ? `<button type="button" class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
     </div>`; 
   }).join('');
+  list.querySelectorAll('.session-row').forEach((row) => {
+    row.addEventListener('click', (event) => {
+      event.preventDefault();
+      const target = row.dataset.session;
+      if (target) connect(target);
+    });
+  });
+  list.querySelectorAll('.rename-session').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const currentName = button.dataset.renameSession;
+      if (currentName) renameSession(currentName);
+    });
+  });
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
   }
@@ -343,16 +371,6 @@ function openNewDialog() {
   $('#newDialog').showModal();
   $('#nameInput').select();
 }
-
-$('#sessionList').addEventListener('click', (event) => {
-  const renameButton = event.target.closest('[data-rename-session]');
-  if (renameButton) {
-    renameSession(renameButton.dataset.renameSession);
-    return;
-  }
-  const row = event.target.closest('[data-session]');
-  if (row) connect(row.dataset.session);
-});
 
 async function renameSession(currentName) {
   const newName = prompt(`重命名 tmux 会话“${currentName}”`, currentName)?.trim();
