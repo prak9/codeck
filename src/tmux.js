@@ -46,19 +46,35 @@ export function parseSessions(output) {
   });
 }
 
+function parsePanes(output) {
+  if (!output.trim()) return [];
+  return output.trim().split('\n').map((line) => {
+    const [session, windowActive, paneActive, pid, currentCommand] = line.split('\t');
+    return {
+      session,
+      pid: Number(pid),
+      score: Number(windowActive) + Number(paneActive),
+      currentCommand: (currentCommand || 'bash').trim().toLowerCase(),
+    };
+  }).filter((pane) => pane.session);
+}
+
 export async function listSessions() {
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
-      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}']),
+      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_current_command}']),
     ]);
-    const panes = paneOutput.trim().split('\n').filter(Boolean).map((line) => {
-      const [session, windowActive, paneActive, pid] = line.split('\t');
-      return { session, pid: Number(pid), score: Number(windowActive) + Number(paneActive) };
-    }).sort((a, b) => b.score - a.score).filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
+    const panes = parsePanes(paneOutput)
+      .sort((a, b) => b.score - a.score)
+      .filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
+
+    const paneCommandBySession = new Map();
+    for (const pane of panes) paneCommandBySession.set(pane.session, pane.currentCommand);
+
     const agents = await detectPaneAgents(panes);
     return parseSessions(stdout)
-      .map((session) => ({ ...session, agent: agents.get(session.name) || null }))
+      .map((session) => ({ ...session, agent: agents.get(session.name) || null, currentCommand: paneCommandBySession.get(session.name) || 'bash' }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt) || a.name.localeCompare(b.name));
   } catch (error) {
     if (error.code === 1) return [];

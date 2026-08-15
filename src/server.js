@@ -15,22 +15,22 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
-const SESSION_WORKING_WINDOW_MS = 5_000;
 const SESSION_STATUS_POLL_MS = 5_000;
 const sessionStatusByName = new Map();
 
-function resolveTrackedStatus(session, now = Date.now()) {
+function resolveTrackedStatus(session) {
   if (!session.agent) return 'done';
-  const activityAt = Number.isFinite(session.activityAt) ? session.activityAt : 0;
-  return now - activityAt <= SESSION_WORKING_WINDOW_MS ? 'working' : 'done';
+  const command = (session.currentCommand || '').toLowerCase();
+  if (!command) return 'waiting';
+  if (['bash', 'sh', 'zsh', 'ash', 'fish'].includes(command)) return 'waiting';
+  return 'working';
 }
 
 async function refreshSessionStatuses() {
   try {
     const sessions = await listSessions();
-    const now = Date.now();
     const next = new Map();
-    for (const session of sessions) next.set(session.name, resolveTrackedStatus(session, now));
+    for (const session of sessions) next.set(session.name, resolveTrackedStatus(session));
     sessionStatusByName.clear();
     for (const [name, status] of next) sessionStatusByName.set(name, status);
   } catch {
