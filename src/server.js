@@ -33,9 +33,10 @@ async function refreshSessionWorkingStates() {
     const next = new Map();
 
     for (const session of sessions) {
+      const hadPrevious = SESSION_WORKING_STATES.has(session.name);
       const previous = SESSION_WORKING_STATES.get(session.name) || { activityAt: 0, activeUntil: 0 };
       const activityAt = Number.isFinite(session.activityAt) ? session.activityAt : 0;
-      const justWorked = activityAt > previous.activityAt;
+      const justWorked = hadPrevious && activityAt > previous.activityAt;
       const stayingActive = previous.activeUntil > now;
       const isWorking = Boolean(session.agent) && (justWorked || stayingActive);
       next.set(session.name, {
