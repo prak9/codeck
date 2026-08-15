@@ -6,31 +6,18 @@ const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
 const AGENT_BUSY_COMMAND_PATTERNS = [
-  /\bmcp\b/i,
-  /\btools?\b/i,
-  /\btooling\b/i,
   /\bfunction_call\b/i,
-  /\bopenai/i,
-  /\banthropic/i,
+  /\btool[-_ ]?call\b/i,
+  /\btooling\b/i,
+  /\binference\b/i,
   /\bllm\b/i,
-  /\bqwen/i,
+  /\bqwen\b/i,
   /\bollama\b/i,
   /\bllama\b/i,
   /\btransformers\b/i,
   /\btorch\b/i,
   /\btensorflow\b/i,
   /\bvllm\b/i,
-  /\bpython(?:3)?\b/i,
-  /\bnode\b/i,
-  /\bnpm\b/i,
-  /\bpnpm\b/i,
-  /\buvx?\b/i,
-];
-const AGENT_CORE_COMMAND_PATTERNS = [
-  /agent-run/i,
-  /\/usr\/local\/bin\/codex/i,
-  /\bnode\s+\/usr\/local\/bin\/codex\b/i,
-  /@openai\/codex/i,
 ];
 let supportsLargestSizePromise;
 
@@ -131,7 +118,7 @@ function hasRunningProcessInSession(panePids, processLookup, hasAgent = false) {
     seen.add(currentPid);
     const process = byPid.get(currentPid);
     if (!process) continue;
-    if (isRunningOrWaitingForIOState(process.state)) return true;
+    if (!hasAgent && isRunningOrWaitingForIOState(process.state)) return true;
     if (hasAgent && isAgentBusyCommand(process.command || '')) return true;
     const children = childrenByPid.get(currentPid);
     if (children) queue.push(...children);
