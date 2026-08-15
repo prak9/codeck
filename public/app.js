@@ -9,6 +9,7 @@ if (sharedToken) {
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
 const SESSION_INPUT_ACTIVITY_MS = 30 * 1000;
+const SESSION_ACTIVITY_FALLBACK_MS = 180 * 1000;
 const COMPLETED_SESSION_NAME = /^codeck(?:-|$|_)/i;
 const state = {
   token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
@@ -62,8 +63,10 @@ function resolveSessionStatus(session) {
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const localActivityAt = Number(state.sessionInputAt.get(session.name)) || 0;
-  const isRecentInput = Date.now() - localActivityAt <= SESSION_INPUT_ACTIVITY_MS;
-  const isWorking = Boolean(session.agent) && isRecentInput;
+  const sessionActivityAt = Number(session.activityAt) || 0;
+  const hasRecentLocalInput = Date.now() - localActivityAt <= SESSION_INPUT_ACTIVITY_MS;
+  const hasRecentSessionActivity = Date.now() - sessionActivityAt <= SESSION_ACTIVITY_FALLBACK_MS;
+  const isWorking = Boolean(session.agent) && (hasRecentLocalInput || hasRecentSessionActivity);
   if (isWorking) return 'working';
   return 'done';
 }
