@@ -7,6 +7,7 @@ import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { createSession, killSession, listSessions, validateSessionName } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
+import { saveImageUpload } from './uploads.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
@@ -19,6 +20,9 @@ app.use(express.json({ limit: '16kb' }));
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
 app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
 app.use('/vendor/fit', express.static(path.join(dirname, '../node_modules/@xterm/addon-fit/lib')));
+app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@fontsource-variable/inter')));
+app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
+app.use('/fonts/jetbrains-mono', express.static(path.join(dirname, '../node_modules/@fontsource-variable/jetbrains-mono')));
 
 function authorized(req) {
   const header = req.headers.authorization || '';
@@ -49,9 +53,16 @@ app.delete('/api/sessions/:name', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.post('/api/uploads/images', express.raw({ type: 'image/*', limit: '10mb' }), (req, res, next) => {
+  try {
+    const contentType = req.headers['content-type']?.split(';')[0].trim().toLowerCase();
+    res.status(201).json({ path: saveImageUpload(req.body, contentType) });
+  } catch (error) { next(error); }
+});
+
 app.use(express.static(path.join(dirname, '../public')));
 app.use((error, _req, res, _next) => {
-  const status = /无效|只能|未知/.test(error.message) ? 400 : 500;
+  const status = error.type === 'entity.too.large' ? 413 : /无效|只能|未知|格式|为空/.test(error.message) ? 400 : 500;
   res.status(status).json({ error: error.message || '服务器操作失败' });
 });
 

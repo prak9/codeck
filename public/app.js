@@ -83,11 +83,42 @@ function openQuickSwitcher() {
   (rows.find((row) => row.dataset.switchSession === state.active) || rows[0])?.focus();
 }
 
+function setConnectionMessage(message, restore = true) {
+  $('#connectionState').textContent = message;
+  if (restore) setTimeout(() => {
+    if ($('#connectionState').textContent === message) $('#connectionState').textContent = state.socket?.readyState === WebSocket.OPEN ? '已连接' : '连接已断开';
+  }, 1800);
+}
+
+async function pasteImages(event) {
+  const images = [...(event.clipboardData?.items || [])]
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile()).filter(Boolean);
+  if (!images.length) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const socket = state.socket;
+  if (socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
+  setConnectionMessage(images.length > 1 ? `正在上传 ${images.length} 张图片…` : '正在上传图片…', false);
+  try {
+    const uploads = await Promise.all(images.map((file) => api('/api/uploads/images', {
+      method: 'POST', headers: { 'Content-Type': file.type }, body: file,
+    })));
+    if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
+    const paths = uploads.map((upload) => `'${upload.path.replaceAll("'", "'\\''")}'`).join(' ');
+    socket.send(JSON.stringify({ type: 'input', data: paths }));
+    setConnectionMessage(images.length > 1 ? `已粘贴 ${images.length} 张图片` : '图片已粘贴');
+    state.terminal.focus();
+  } catch (error) {
+    setConnectionMessage(error.message === 'UNAUTHORIZED' ? '令牌已失效' : `图片上传失败：${error.message}`);
+  }
+}
+
 function ensureTerminal() {
   if (state.terminal) return state.terminal;
   const terminal = new Terminal({
     cursorBlink: true, cursorStyle: 'block', convertEol: true,
-    fontFamily: '"Courier New", "Microsoft YaHei", "微软雅黑", monospace',
+    fontFamily: '"Courier New", "Noto Sans SC Variable", monospace',
     fontSize: 16, lineHeight: 1.2, scrollback: 5000,
     theme: {
       background: '#2e3436', foreground: '#d3d7cf', cursor: '#eeeeec', cursorAccent: '#2e3436',
@@ -101,6 +132,7 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
+  $('#terminal').addEventListener('paste', pasteImages, true);
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown' || !isQuickSwitchKey(event)) return true;
     openQuickSwitcher();
@@ -257,3 +289,8 @@ $('#sessionList').addEventListener('keydown', (event) => {
 if (state.token) refreshSessions().catch(() => $('#tokenDialog').showModal());
 else $('#tokenDialog').showModal();
 setInterval(() => state.token && refreshSessions().catch(() => {}), 10000);
+document.fonts?.ready.then(() => {
+  if (!state.terminal) return;
+  state.terminal.refresh(0, state.terminal.rows - 1);
+  state.fit.fit();
+});

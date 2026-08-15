@@ -1,6 +1,6 @@
 :root { color-scheme: dark; --ink: #eeeeec; --muted: #a6a8a4; --line: #555753; --panel: #2e3436; --base: #24292b; --raised: #383e40; --terminal: #2e3436; --accent: #e95420; --accent-hover: #f26b38; --accent-ink: #ffffff; --danger: #ef2929; }
 * { box-sizing: border-box; }
-html, body { margin: 0; min-height: 100%; background: var(--base); color: var(--ink); font-family: "Microsoft YaHei", "微软雅黑", "Segoe UI", system-ui, sans-serif; }
+html, body { margin: 0; min-height: 100%; background: var(--base); color: var(--ink); font-family: "Inter Variable", "Noto Sans SC Variable", sans-serif; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 button, input { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -9,7 +9,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .app-shell { min-height: 100vh; display: grid; grid-template: 64px minmax(0, 1fr) / 292px minmax(0, 1fr); }
 .topbar { grid-column: 1 / -1; display: grid; grid-template-columns: 292px 1fr auto; align-items: center; border-bottom: 1px solid var(--line); background: #282d2f; }
 .brand { height: 100%; padding: 0 24px; display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--line); color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 750; letter-spacing: .16em; }
-.brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-family: "Courier New", monospace; font-weight: 800; letter-spacing: -.1em; }
+.brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; font-weight: 800; letter-spacing: -.1em; }
 .server-state { justify-self: end; margin-right: 25px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; }
 .status-dot, .presence { width: 7px; height: 7px; border-radius: 50%; background: #6d706b; }
 .status-dot, .presence.online { background: #8ae234; box-shadow: 0 0 0 3px #8ae23420; }
@@ -26,7 +26,7 @@ h1 { margin-bottom: 0; font-size: 16px; line-height: 1.2; }
 .session-row { width: 100%; min-height: 65px; padding: 10px 12px; border: 0; background: transparent; display: grid; grid-template-columns: 35px minmax(0,1fr) 9px; align-items: center; gap: 10px; text-align: left; cursor: pointer; }
 .session-row:hover { background: var(--raised); }
 .session-row.active { background: #41484a; box-shadow: inset 3px 0 var(--accent); }
-.session-icon { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #555753; color: #d3d7cf; font: 12px "Courier New", monospace; }
+.session-icon { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #555753; color: #d3d7cf; font: 12px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
 .session-row.active .session-icon { border-color: var(--accent); color: #ff8a5e; }
 .session-copy { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .session-copy b { overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
@@ -38,10 +38,10 @@ h1 { margin-bottom: 0; font-size: 16px; line-height: 1.2; }
 .sidebar footer { height: 56px; padding: 0 20px; border-top: 1px solid #555753; display: flex; align-items: center; gap: 5px; color: #888a85; font-size: 10px; }
 .sidebar footer button { padding: 8px 0; border: 0; background: transparent; color: inherit; display: flex; align-items: center; gap: 5px; cursor: pointer; }
 .sidebar footer button:hover { color: var(--ink); }
-kbd { padding: 2px 5px; border: 1px solid #555753; background: #24292b; font: 10px "Courier New", monospace; }
+kbd { padding: 2px 5px; border: 1px solid #555753; background: #24292b; font: 10px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
 .workspace { min-width: 0; min-height: 0; position: relative; background: radial-gradient(circle at 50% 44%, #363c3e 0, #2c3234 48%, var(--base) 100%); }
 .empty-state { min-height: calc(100vh - 64px); padding: 40px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
-.prompt-glyph { width: 76px; height: 76px; margin-bottom: 30px; display: grid; place-items: center; border: 1px solid #6d706b; background: #2a3032; box-shadow: 8px 8px 0 #222729; color: #ff8a5e; font: 25px "Courier New", monospace; transform: translateX(-4px); }
+.prompt-glyph { width: 76px; height: 76px; margin-bottom: 30px; display: grid; place-items: center; border: 1px solid #6d706b; background: #2a3032; box-shadow: 8px 8px 0 #222729; color: #ff8a5e; font: 25px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; transform: translateX(-4px); }
 .empty-state h2 { margin-bottom: 19px; max-width: 680px; font-size: clamp(34px, 4.2vw, 62px); line-height: 1.04; letter-spacing: -.045em; font-weight: 620; }
 .empty-state > p:not(.eyebrow) { max-width: 490px; color: var(--muted); font-size: 15px; line-height: 1.7; }
 .primary-button, .secondary-button, .danger-button { min-height: 44px; padding: 0 18px; border: 1px solid transparent; cursor: pointer; font-weight: 700; font-size: 13px; }

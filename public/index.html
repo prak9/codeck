@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Codeck · Agent sessions</title>
+  <link rel="stylesheet" href="/fonts/inter/wght.css">
+  <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
+  <link rel="stylesheet" href="/fonts/jetbrains-mono/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=6">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -39,7 +42,7 @@
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><span id="connectionState">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
       </section>
@@ -80,6 +83,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-  <script type="module" src="/app.js?v=5"></script>
+  <script type="module" src="/app.js?v=12"></script>
 </body>
 </html>
