@@ -4,7 +4,7 @@ export function isSessionActive(session, now = Date.now(), activityWindowMs = SE
   const hasRecentOutput = Number.isFinite(session?.activityAt) && Number.isFinite(now)
     && (now - session.activityAt) <= activityWindowMs;
 
-  return Boolean(session?.hasRunningProcess || hasRecentOutput);
+  return Boolean(hasRecentOutput || session?.hasRunningProcess);
 }
 
 export function resolveSessionStatus(session, now = Date.now()) {

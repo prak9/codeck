@@ -9,15 +9,9 @@ const AGENT_BUSY_COMMAND_PATTERNS = [
   /\bfunction_call\b/i,
   /\btool[-_ ]?call\b/i,
   /\btooling\b/i,
+  /\btool(ing)?\s+output/i,
   /\binference\b/i,
   /\bllm\b/i,
-  /\bqwen\b/i,
-  /\bollama\b/i,
-  /\bllama\b/i,
-  /\btransformers\b/i,
-  /\btorch\b/i,
-  /\btensorflow\b/i,
-  /\bvllm\b/i,
 ];
 let supportsLargestSizePromise;
 
@@ -104,11 +98,11 @@ function isRunningOrWaitingForIOState(state) {
 }
 
 function isAgentBusyCommand(command = '') {
-  return AGENT_BUSY_COMMAND_PATTERNS.some((pattern) => pattern.test(command))
-    && !AGENT_CORE_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+  return AGENT_BUSY_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
 }
 
 function hasRunningProcessInSession(panePids, processLookup, hasAgent = false) {
+  if (!hasAgent) return false;
   const { byPid, childrenByPid } = processLookup;
   const seen = new Set();
   const queue = [...panePids];
@@ -118,8 +112,7 @@ function hasRunningProcessInSession(panePids, processLookup, hasAgent = false) {
     seen.add(currentPid);
     const process = byPid.get(currentPid);
     if (!process) continue;
-    if (!hasAgent && isRunningOrWaitingForIOState(process.state)) return true;
-    if (hasAgent && isAgentBusyCommand(process.command || '')) return true;
+    if (isRunningOrWaitingForIOState(process.state) && isAgentBusyCommand(process.command || '')) return true;
     const children = childrenByPid.get(currentPid);
     if (children) queue.push(...children);
   }
