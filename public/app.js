@@ -60,6 +60,7 @@ function isProblemSession(session) {
 }
 
 function resolveSessionStatus(session) {
+  if (session?.status === 'working' || session?.status === 'done' || session?.status === 'problem') return session.status;
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const localActivityAt = Number(state.sessionInputAt.get(session.name)) || 0;

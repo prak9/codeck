@@ -15,6 +15,46 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
+const SESSION_POLL_INTERVAL_MS = 60_000;
+const SESSION_WORKING_TTL_MS = 60_000;
+const SESSION_WORKING_STATES = new Map();
+
+function resolveTrackedStatus(session, now = Date.now()) {
+  const tracked = SESSION_WORKING_STATES.get(session.name);
+  if (tracked?.activeUntil && tracked.activeUntil > now) return 'working';
+  if (!session.agent) return 'done';
+  return 'done';
+}
+
+async function refreshSessionWorkingStates() {
+  try {
+    const sessions = await listSessions();
+    const now = Date.now();
+    const next = new Map();
+
+    for (const session of sessions) {
+      const previous = SESSION_WORKING_STATES.get(session.name) || { activityAt: 0, activeUntil: 0 };
+      const activityAt = Number.isFinite(session.activityAt) ? session.activityAt : 0;
+      const justWorked = activityAt > previous.activityAt;
+      const stayingActive = previous.activeUntil > now;
+      const isWorking = Boolean(session.agent) && (justWorked || stayingActive);
+      next.set(session.name, {
+        activityAt,
+        activeUntil: isWorking ? now + SESSION_WORKING_TTL_MS : 0,
+      });
+    }
+
+    SESSION_WORKING_STATES.clear();
+    for (const [name, state] of next) SESSION_WORKING_STATES.set(name, state);
+  } catch (_error) {
+    // Keep last known states and retry on next interval.
+  }
+}
+
+refreshSessionWorkingStates();
+setInterval(() => {
+  void refreshSessionWorkingStates();
+}, SESSION_POLL_INTERVAL_MS);
 
 app.use(express.json({ limit: '16kb' }));
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
@@ -43,7 +83,9 @@ app.get('/api/sessions', async (req, res, next) => {
   try {
     let [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
-    res.json({ sessions, capabilities: { largestSize, canManage: req.auth.owner } });
+    const now = Date.now();
+    const enriched = sessions.map((session) => ({ ...session, status: resolveTrackedStatus(session, now) }));
+    res.json({ sessions: enriched, capabilities: { largestSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
 });
 
