@@ -55,13 +55,15 @@ async function refreshSessions() {
 }
 
 function connect(session) {
+  const sessionDetails = state.sessions.find((item) => item.name === session);
   state.socket?.close();
   state.terminal?.dispose();
   state.active = session;
   renderSessions();
   $('#emptyState').hidden = true;
   $('#terminalView').hidden = false;
-  $('#terminalTitle').textContent = session;
+  $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
+  $('#terminalTitle').title = sessionDetails?.agent ? `tmux: ${session}` : '';
   $('#connectionState').textContent = '正在连接';
 
   const terminal = new Terminal({
