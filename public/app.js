@@ -42,9 +42,10 @@ function renderSessions() {
     list.innerHTML = '<div class="list-empty"><span>∅</span><p>还没有 tmux 会话</p></div>';
     return;
   }
-  list.innerHTML = state.sessions.map((session) => `
+  list.innerHTML = state.sessions.map((session, index) => `
     <div class="session-entry">
       <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
+        <span class="session-index">${index + 1}</span>
         <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
         <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
         <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
@@ -141,6 +142,15 @@ function handleQuickSwitchKeydown(event) {
     event.preventDefault();
     event.stopPropagation();
     state.quickSwitch.targetIndex = digit === 0 ? 10 : digit;
+    return true;
+  }
+  if (event.altKey && !event.metaKey && digit !== null) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = digit === 0 ? 10 : digit;
+    if (!switchByQuickSessionIndex(target)) {
+      setConnectionMessage(`没有第 ${target} 个会话`);
+    }
     return true;
   }
   if (!isQuickSwitchKey(event)) return false;
