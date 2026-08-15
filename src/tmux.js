@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { agentKindFromCommand, detectPaneAgents } from './agents.js';
+import { detectPaneAgents } from './agents.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
@@ -62,7 +62,7 @@ function parsePanes(output) {
 function parseProcesses(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+([A-Za-z])\s+(.*)$/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+([A-Za-z+]+)\s+(.*)$/);
     if (!match) return null;
     const [, rawPid, rawPpid, rawState, command] = match;
     return {
@@ -95,8 +95,7 @@ function hasRunningProcessInSession(panePids, processLookup) {
     seen.add(currentPid);
     const process = byPid.get(currentPid);
     if (!process) continue;
-    if (process.state === 'R') return true;
-    if (agentKindFromCommand(process.command)) return true;
+    if (process.state?.startsWith('R')) return true;
     const children = childrenByPid.get(currentPid);
     if (children) queue.push(...children);
   }
