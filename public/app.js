@@ -9,6 +9,7 @@ if (sharedToken) {
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
 const SESSION_DONE_IDLE_MS = 3 * 60 * 1000;
+const COMPLETED_SESSION_NAME = /^codeck(?:-|$|_)/i;
 const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken) };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
@@ -37,10 +38,12 @@ function timeAgo(timestamp) {
 }
 
 function resolveSessionStatus(session) {
-  if (session.agent) return 'intervention';
-  const active = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
-  if (active) return 'working';
-  return session.attached ? 'working' : 'done';
+  if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
+  const isActive = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
+  if (session.agent && session.attached && isActive) return 'intervention';
+  if (!isActive && !session.attached) return 'done';
+  if (session.attached || isActive) return 'working';
+  return 'done';
 }
 
 function renderSessions() {
