@@ -51,7 +51,7 @@ function timeAgo(timestamp) {
 }
 
 function resolveSessionStatus(session) {
-  return session?.status === 'running' || session?.status === 'working' ? 'working' : 'done';
+  return session?.status === 'working' ? 'working' : 'done';
 }
 
 function renderSessions() {

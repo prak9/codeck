@@ -19,7 +19,6 @@ const SESSION_STATUS_POLL_MS = 5_000;
 const sessionStatusByName = new Map();
 
 function resolveTrackedStatus(session) {
-  if (!session.agent) return 'done';
   return session.hasRunningProcess ? 'working' : 'done';
 }
 
@@ -70,7 +69,7 @@ app.get('/api/sessions', async (req, res, next) => {
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
     const enriched = sessions.map((session) => ({
       ...session,
-      status: session.agent ? sessionStatusByName.get(session.name) || 'done' : 'done',
+      status: sessionStatusByName.get(session.name) || 'done',
     }));
     res.json({ sessions: enriched, capabilities: { largestSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
