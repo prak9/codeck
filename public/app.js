@@ -80,6 +80,7 @@ function markSessionInput(sessionName, now = Date.now()) {
 
 function renderSessions() {
   const list = $('#sessionList');
+  const scrollTop = list.scrollTop;
   const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
   if (!state.sessions.length) {
     list.innerHTML = '<div class="list-empty"><span>∅</span><p>还没有 tmux 会话</p></div>';
@@ -102,6 +103,7 @@ function renderSessions() {
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
   }
+  list.scrollTop = scrollTop;
 }
 
 function escapeHtml(value) {

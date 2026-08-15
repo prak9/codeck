@@ -57,7 +57,9 @@ export async function listSessions() {
       return { session, pid: Number(pid), score: Number(windowActive) + Number(paneActive) };
     }).sort((a, b) => b.score - a.score).filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
     const agents = await detectPaneAgents(panes);
-    return parseSessions(stdout).map((session) => ({ ...session, agent: agents.get(session.name) || null }));
+    return parseSessions(stdout)
+      .map((session) => ({ ...session, agent: agents.get(session.name) || null }))
+      .sort((a, b) => Number(b.createdAt) - Number(a.createdAt) || a.name.localeCompare(b.name));
   } catch (error) {
     if (error.code === 1) return [];
     throw error;
