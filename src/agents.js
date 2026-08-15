@@ -33,6 +33,13 @@ export function parseProcessList(output, now = Date.now()) {
   });
 }
 
+export function agentKindFromCommand(command) {
+  if (/(?:^|[ /])codex(?:\s|$)/i.test(command) && !/app-server/.test(command)) return 'codex';
+  if (/(?:^|[ /])claude(?:\s|$)/i.test(command)) return 'claude';
+  if (/(?:^|[ /])qodercli(?:\s|$)/i.test(command)) return 'qodercli';
+  return null;
+}
+
 export function parseCodexRename(output) {
   const matches = [...output.matchAll(new RegExp(`Session renamed to (.+?)\\. To resume this session[\\s\\S]*?\\((${UUID})\\)`, 'g'))];
   return matches.length ? { name: matches.at(-1)[1].trim(), id: matches.at(-1)[2] } : null;
@@ -112,11 +119,11 @@ export async function detectPaneAgents(panes, env = process.env) {
 
   for (const pane of panes) {
     const tree = descendants(pane.pid, processes);
-    const process = tree.find((item) => /(?:^|[ /])codex(?:\s|$)/i.test(item.command) && !/app-server/.test(item.command))
-      || tree.find((item) => /(?:^|[ /])claude(?:\s|$)/i.test(item.command));
+    const process = tree.find((item) => agentKindFromCommand(item.command));
     if (!process) continue;
+    const kind = agentKindFromCommand(process.command);
 
-    if (/(?:^|[ /])codex(?:\s|$)/i.test(process.command)) {
+    if (kind === 'codex') {
       const resumed = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1];
       let id = resumed || nearestCodexId(process.startedAt, codex.starts);
       let name = codex.names.get(id) || null;
@@ -126,9 +133,11 @@ export async function detectPaneAgents(panes, env = process.env) {
         name = paneIdentity?.name || codex.names.get(id) || null;
       }
       agents.set(pane.session, { kind: 'codex', id, name });
-    } else {
+    } else if (kind === 'claude') {
       const id = process.command.match(new RegExp(`(?:--resume(?:=|\\s+)|-r\\s+)(${UUID})`, 'i'))?.[1] || null;
       agents.set(pane.session, { kind: 'claude', id, name: findClaudeSlug(id, claudeHome) });
+    } else {
+      agents.set(pane.session, { kind: 'qodercli', id: null, name: null });
     }
   }
   return agents;

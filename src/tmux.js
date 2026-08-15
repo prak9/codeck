@@ -4,7 +4,7 @@ import { detectPaneAgents } from './agents.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
-const CLIENTS = ['shell', 'codex', 'claude'];
+const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
 
 export function validateSessionName(name) {
   return typeof name === 'string' && SESSION_NAME.test(name);

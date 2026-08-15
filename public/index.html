@@ -22,9 +22,9 @@
         <div><p class="eyebrow">WORKSPACES</p><h1>运行中的会话</h1></div>
         <button class="icon-button" id="newButton" aria-label="新建会话">＋</button>
       </div>
-      <div class="session-list" id="sessionList" aria-live="polite"></div>
+      <div class="session-list" id="sessionList" aria-live="polite" aria-label="会话快速切换"></div>
       <button class="new-session-button" id="newButtonBottom"><span>＋</span> 新建会话</button>
-      <footer><kbd>⌘</kbd><kbd>K</kbd><span>快速切换</span></footer>
+      <footer><button id="quickSwitchButton" type="button" aria-label="打开会话快速切换"><kbd>⌘ K</kbd><span>/</span><kbd>Alt K</kbd><span>快速切换</span></button></footer>
     </aside>
 
     <main class="workspace" id="workspace">
@@ -64,6 +64,7 @@
       <fieldset><legend>启动方式</legend><div class="client-options">
         <label><input type="radio" name="client" value="codex" checked><span><b>Codex</b><small>OpenAI CLI</small></span></label>
         <label><input type="radio" name="client" value="claude"><span><b>Claude</b><small>Anthropic CLI</small></span></label>
+        <label><input type="radio" name="client" value="qodercli"><span><b>Qoder</b><small>Qoder CLI</small></span></label>
         <label><input type="radio" name="client" value="shell"><span><b>Shell</b><small>空白终端</small></span></label>
       </div></fieldset>
       <p class="form-error" id="newError" role="alert"></p>
@@ -71,8 +72,14 @@
     </form>
   </dialog>
 
+  <dialog class="switch-dialog" id="switchDialog">
+    <div class="switch-head"><div><p class="eyebrow">QUICK SWITCH</p><h2>切换会话</h2></div><form method="dialog"><button class="icon-button" aria-label="关闭">×</button></form></div>
+    <div class="switch-list" id="switchList"></div>
+    <p class="switch-help"><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 切换　<kbd>Esc</kbd> 关闭</p>
+  </dialog>
+
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/app.js?v=5"></script>
 </body>
 </html>

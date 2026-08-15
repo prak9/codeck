@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename } from '../src/agents.js';
+import { agentKindFromCommand, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -27,4 +27,11 @@ test('extracts the latest renamed Codex session from terminal history', () => {
   const output = '• Session renamed to first. To resume this session run codex resume, then select first (019fe08c-beed-79b0-aef6-b1d4b40506bb)\n'
     + '• Session renamed to test. To resume this session run codex resume, then select test (01a00327-27df-7f12-8505-176abc010ea0)\n';
   assert.deepEqual(parseCodexRename(output), { name: 'test', id: '01a00327-27df-7f12-8505-176abc010ea0' });
+});
+
+test('recognizes supported agent CLI processes', () => {
+  assert.equal(agentKindFromCommand('node /usr/bin/codex resume abc'), 'codex');
+  assert.equal(agentKindFromCommand('/usr/local/bin/claude --resume abc'), 'claude');
+  assert.equal(agentKindFromCommand('/opt/qoder/bin/qodercli --continue'), 'qodercli');
+  assert.equal(agentKindFromCommand('/bin/bash'), null);
 });

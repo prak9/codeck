@@ -2,8 +2,9 @@ const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
 
 const $ = (selector) => document.querySelector(selector);
-const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null };
+const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0 };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
+const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -30,16 +31,20 @@ function timeAgo(timestamp) {
 
 function renderSessions() {
   const list = $('#sessionList');
+  const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
   if (!state.sessions.length) {
     list.innerHTML = '<div class="list-empty"><span>∅</span><p>还没有 tmux 会话</p></div>';
     return;
   }
   list.innerHTML = state.sessions.map((session) => `
     <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
-      <span class="session-icon">${session.agent ? (session.agent.kind === 'codex' ? 'C›' : 'A›') : (session.attached ? '›_' : '$_')}</span>
-      <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${session.agent.kind === 'codex' ? 'Codex' : 'Claude'} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
+      <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
+      <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
       <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
     </button>`).join('');
+  if (focusedSession) {
+    [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
+  }
 }
 
 function escapeHtml(value) {
@@ -48,24 +53,38 @@ function escapeHtml(value) {
   return node.innerHTML;
 }
 
+function websocketProtocolToken(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
 async function refreshSessions() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions;
   renderSessions();
 }
 
-function connect(session) {
-  const sessionDetails = state.sessions.find((item) => item.name === session);
-  state.socket?.close();
-  state.terminal?.dispose();
-  state.active = session;
-  renderSessions();
-  $('#emptyState').hidden = true;
-  $('#terminalView').hidden = false;
-  $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
-  $('#terminalTitle').title = sessionDetails?.agent ? `tmux: ${session}` : '';
-  $('#connectionState').textContent = '正在连接';
+function isQuickSwitchKey(event) {
+  const keyK = event.code === 'KeyK' || event.key?.toLowerCase() === 'k';
+  return keyK && (event.metaKey || event.altKey || (event.ctrlKey && event.shiftKey));
+}
 
+function openQuickSwitcher() {
+  const list = $('#switchList');
+  list.innerHTML = state.sessions.map((session) => `
+    <button class="switch-row ${session.name === state.active ? 'active' : ''}" data-switch-session="${escapeHtml(session.name)}">
+      <span>${escapeHtml(session.agent?.name || session.name)}</span>
+      <small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · ${escapeHtml(session.name)}` : 'tmux session'}</small>
+    </button>`).join('') || '<p class="list-empty">还没有 tmux 会话</p>';
+  if (!$('#switchDialog').open) $('#switchDialog').showModal();
+  const rows = [...list.querySelectorAll('.switch-row')];
+  (rows.find((row) => row.dataset.switchSession === state.active) || rows[0])?.focus();
+}
+
+function ensureTerminal() {
+  if (state.terminal) return state.terminal;
   const terminal = new Terminal({
     cursorBlink: true, cursorStyle: 'block', convertEol: true,
     fontFamily: '"Courier New", "Microsoft YaHei", "微软雅黑", monospace',
@@ -82,25 +101,55 @@ function connect(session) {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
-  fit.fit();
+  terminal.attachCustomKeyEventHandler((event) => {
+    if (event.type !== 'keydown' || !isQuickSwitchKey(event)) return true;
+    openQuickSwitcher();
+    return false;
+  });
+  terminal.onData((data) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'input', data })));
+  terminal.onResize(({ cols, rows }) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'resize', cols, rows })));
+  new ResizeObserver(() => fit.fit()).observe($('#terminal').parentElement);
   state.terminal = terminal;
+  state.fit = fit;
+  return terminal;
+}
+
+function markActiveSession(session) {
+  for (const row of $('#sessionList').querySelectorAll('[data-session]')) {
+    row.classList.toggle('active', row.dataset.session === session);
+  }
+}
+
+function connect(session) {
+  const sessionDetails = state.sessions.find((item) => item.name === session);
+  const connectionId = ++state.connectionId;
+  state.socket?.close();
+  state.socket = null;
+  state.active = session;
+  markActiveSession(session);
+  $('#emptyState').hidden = true;
+  $('#terminalView').hidden = false;
+  $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
+  $('#terminalTitle').title = sessionDetails?.agent ? `tmux: ${session}` : '';
+  $('#connectionState').textContent = '正在连接';
+
+  const terminal = ensureTerminal();
+  terminal.reset();
+  terminal.clear();
+  state.fit.fit();
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/ws?session=${encodeURIComponent(session)}`, `codeck.${state.token}`);
+  const socket = new WebSocket(`${protocol}//${location.host}/ws?session=${encodeURIComponent(session)}`, `codeck.${websocketProtocolToken(state.token)}`);
   state.socket = socket;
   socket.addEventListener('open', () => {
+    if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = '已连接';
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
     terminal.focus();
   });
-  socket.addEventListener('message', (event) => terminal.write(event.data));
-  socket.addEventListener('close', () => $('#connectionState').textContent = '连接已断开');
-  socket.addEventListener('error', () => $('#connectionState').textContent = '连接失败');
-  terminal.onData((data) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify({ type: 'input', data })));
-  terminal.onResize(({ cols, rows }) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify({ type: 'resize', cols, rows })));
-  const observer = new ResizeObserver(() => fit.fit());
-  observer.observe($('#terminal').parentElement);
-  socket.addEventListener('close', () => observer.disconnect());
+  socket.addEventListener('message', (event) => state.connectionId === connectionId && terminal.write(event.data));
+  socket.addEventListener('close', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接已断开'));
+  socket.addEventListener('error', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接失败'));
   $('#sidebar').classList.remove('open');
   $('#menuButton').setAttribute('aria-expanded', 'false');
 }
@@ -160,10 +209,48 @@ $('#tokenForm').addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+  if (isQuickSwitchKey(event)) {
     event.preventDefault();
-    $('#sidebar').classList.add('open');
-    $('#sessionList .session-row')?.focus();
+    event.stopPropagation();
+    openQuickSwitcher();
+  }
+}, true);
+
+$('#quickSwitchButton').addEventListener('click', openQuickSwitcher);
+
+$('#switchList').addEventListener('click', (event) => {
+  const row = event.target.closest('[data-switch-session]');
+  if (!row) return;
+  $('#switchDialog').close();
+  connect(row.dataset.switchSession);
+});
+
+$('#switchList').addEventListener('keydown', (event) => {
+  const rows = [...$('#switchList').querySelectorAll('.switch-row')];
+  const index = rows.indexOf(document.activeElement);
+  const nextIndex = event.key === 'ArrowDown' ? (index + 1) % rows.length
+    : event.key === 'ArrowUp' ? (index - 1 + rows.length) % rows.length : -1;
+  if (nextIndex >= 0) {
+    event.preventDefault();
+    rows[nextIndex]?.focus();
+  }
+});
+
+$('#sessionList').addEventListener('keydown', (event) => {
+  const rows = [...$('#sessionList').querySelectorAll('.session-row')];
+  const index = rows.indexOf(document.activeElement);
+  if (event.key === 'Escape') {
+    $('#sidebar').classList.remove('open');
+    $('#menuButton').setAttribute('aria-expanded', 'false');
+    state.terminal?.focus();
+    return;
+  }
+  const nextIndex = event.key === 'ArrowDown' ? (index + 1) % rows.length
+    : event.key === 'ArrowUp' ? (index - 1 + rows.length) % rows.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : -1;
+  if (nextIndex >= 0) {
+    event.preventDefault();
+    rows[nextIndex]?.focus();
   }
 });
 

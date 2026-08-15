@@ -12,6 +12,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
+const websocketToken = Buffer.from(accessToken, 'utf8').toString('base64url');
 const app = express();
 
 app.use(express.json({ limit: '16kb' }));
@@ -61,7 +62,7 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
   const protocols = (req.headers['sec-websocket-protocol'] || '').split(',').map((value) => value.trim());
-  if (url.pathname !== '/ws' || !protocols.includes(`codeck.${accessToken}`)) {
+  if (url.pathname !== '/ws' || !protocols.includes(`codeck.${websocketToken}`)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;

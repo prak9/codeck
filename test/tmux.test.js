@@ -13,6 +13,7 @@ test('empty tmux output produces an empty list', () => assert.deepEqual(parseSes
 test('accepts safe session names and known clients', () => {
   assert.equal(validateSessionName('feature_auth-2.0'), true);
   assert.equal(validateClient('codex'), true);
+  assert.equal(validateClient('qodercli'), true);
 });
 
 test('rejects names that could become tmux or shell arguments', () => {

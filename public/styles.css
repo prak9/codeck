@@ -36,6 +36,8 @@ h1 { margin-bottom: 0; font-size: 16px; line-height: 1.2; }
 .new-session-button { margin: 12px; min-height: 46px; border: 1px dashed #6d706b; background: transparent; color: #d3d7cf; cursor: pointer; }
 .new-session-button:hover { border-color: var(--accent); color: var(--accent); }
 .sidebar footer { height: 56px; padding: 0 20px; border-top: 1px solid #555753; display: flex; align-items: center; gap: 5px; color: #888a85; font-size: 10px; }
+.sidebar footer button { padding: 8px 0; border: 0; background: transparent; color: inherit; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.sidebar footer button:hover { color: var(--ink); }
 kbd { padding: 2px 5px; border: 1px solid #555753; background: #24292b; font: 10px "Courier New", monospace; }
 .workspace { min-width: 0; min-height: 0; position: relative; background: radial-gradient(circle at 50% 44%, #363c3e 0, #2c3234 48%, var(--base) 100%); }
 .empty-state { min-height: calc(100vh - 64px); padding: 40px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
@@ -63,7 +65,7 @@ label, legend { display: block; margin: 18px 0 8px; color: #d3d7cf; font-size: 1
 label span { color: #888a85; font-weight: 400; }
 input[type="text"], input[type="password"], input:not([type]) { width: 100%; height: 46px; padding: 0 13px; border: 1px solid var(--line); border-radius: 0; background: #24292b; color: var(--ink); }
 fieldset { margin: 0; padding: 0; border: 0; }
-.client-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.client-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .client-options label { margin: 0; cursor: pointer; }
 .client-options input { position: absolute; opacity: 0; }
 .client-options span { min-height: 66px; padding: 12px; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 5px; }
@@ -75,6 +77,17 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .dialog-actions { align-items: center; justify-content: flex-end; gap: 9px; margin-top: 12px; }
 .dialog-actions .primary-button { margin-top: 0; }
 .form-error { min-height: 18px; margin: 10px 0 0; color: var(--danger); font-size: 12px; }
+.switch-dialog { width: min(520px, calc(100vw - 30px)); padding: 18px; }
+.switch-head { padding: 4px 4px 14px; display: flex; align-items: start; justify-content: space-between; }
+.switch-head h2 { margin: 0; font-size: 20px; }
+.switch-head form { padding: 0; }
+.switch-list { max-height: min(460px, 60vh); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.switch-row { width: 100%; padding: 12px 14px; border: 1px solid transparent; background: #282d2f; display: flex; align-items: center; justify-content: space-between; gap: 16px; text-align: left; cursor: pointer; }
+.switch-row:hover, .switch-row:focus-visible { border-color: #888a85; background: var(--raised); }
+.switch-row.active { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+.switch-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
+.switch-row small { flex: none; color: var(--muted); font-size: 10px; }
+.switch-help { margin: 14px 4px 0; color: var(--muted); font-size: 10px; }
 .mobile-only { display: none; }
 [hidden] { display: none !important; }
 @media (max-width: 720px) {
