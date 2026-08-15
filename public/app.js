@@ -8,6 +8,7 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
+const SESSION_DONE_IDLE_MS = 3 * 60 * 1000;
 const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken) };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
@@ -35,6 +36,13 @@ function timeAgo(timestamp) {
   return relativeTime.format(Math.round(hours / 24), 'day');
 }
 
+function resolveSessionStatus(session) {
+  if (session.agent) return 'intervention';
+  const active = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
+  if (active) return 'working';
+  return session.attached ? 'working' : 'done';
+}
+
 function renderSessions() {
   const list = $('#sessionList');
   const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
@@ -43,7 +51,7 @@ function renderSessions() {
     return;
   }
   list.innerHTML = state.sessions.map((session, index) => {
-    const status = session.attached ? (session.agent ? 'intervention' : 'working') : 'done';
+    const status = resolveSessionStatus(session);
     const statusText = status === 'done' ? '完成' : status === 'intervention' ? 'agent请求介入' : '正在干活';
     return `
     <div class="session-entry">
