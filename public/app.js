@@ -8,7 +8,6 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const SESSION_DONE_IDLE_MS = 3 * 60 * 1000;
 const SESSION_INPUT_ACTIVITY_MS = 30 * 1000;
 const COMPLETED_SESSION_NAME = /^codeck(?:-|$|_)/i;
 const state = {
@@ -63,9 +62,8 @@ function resolveSessionStatus(session) {
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const localActivityAt = Number(state.sessionInputAt.get(session.name)) || 0;
-  const isActive = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
   const isRecentInput = Date.now() - localActivityAt <= SESSION_INPUT_ACTIVITY_MS;
-  const isWorking = Boolean(session.agent) && (isActive || isRecentInput);
+  const isWorking = Boolean(session.agent) && isRecentInput;
   if (isWorking) return 'working';
   return 'done';
 }
@@ -320,7 +318,6 @@ function connect(session) {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = '已连接';
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
-    markSessionInput(session);
     terminal.focus();
   });
   socket.addEventListener('message', (event) => {
