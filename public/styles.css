@@ -34,8 +34,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid #ff8157; outline-
 .brand { height: 100%; padding: 0 18px; display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-size: 12px; font-weight: 700; letter-spacing: .14em; }
 .brand-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--accent); box-shadow: 0 5px 14px #ff6b3530; color: var(--accent-ink); font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; font-weight: 800; letter-spacing: -.1em; }
 .server-state { justify-self: end; margin-right: 18px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: #ffffff08; color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 7px; }
-.status-dot, .presence { width: 7px; height: 7px; border-radius: 50%; background: #66666b; }
-.status-dot, .presence.online { background: #65d46e; box-shadow: 0 0 0 3px #65d46e18; }
+.status-dot, .presence { width: 7px; height: 7px; border-radius: 50%; background: #ffca3a; }
+.status-dot { background: #66666b; }
+.presence.done { background: #65d46e; box-shadow: 0 0 0 3px #65d46e18; }
+.presence.intervention { background: #ff5c5c; box-shadow: 0 0 0 3px #ff5c5c18; }
 
 .sidebar { min-width: 0; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; backdrop-filter: blur(28px) saturate(130%); -webkit-backdrop-filter: blur(28px) saturate(130%); }
 .sidebar-heading { padding: 22px 14px 13px 18px; display: flex; align-items: end; justify-content: space-between; }

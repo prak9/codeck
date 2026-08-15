@@ -42,16 +42,20 @@ function renderSessions() {
     list.innerHTML = '<div class="list-empty"><span>∅</span><p>还没有 tmux 会话</p></div>';
     return;
   }
-  list.innerHTML = state.sessions.map((session, index) => `
+  list.innerHTML = state.sessions.map((session, index) => {
+    const status = session.attached ? (session.agent ? 'intervention' : 'working') : 'done';
+    const statusText = status === 'done' ? '完成' : status === 'intervention' ? 'agent请求介入' : '正在干活';
+    return `
     <div class="session-entry">
       <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
         <span class="session-index">${index + 1}</span>
         <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
         <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
-        <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
+        <span class="presence ${status}" title="${statusText}"></span>
       </button>
       ${state.canManage ? `<button class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
-    </div>`).join('');
+    </div>`; 
+  }).join('');
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
   }
