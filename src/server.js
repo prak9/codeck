@@ -15,6 +15,7 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
+const activeTerminalClients = new Map();
 
 app.use(express.json({ limit: '16kb' }));
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
@@ -42,6 +43,10 @@ app.use('/api', (req, res, next) => {
 app.get('/api/sessions', async (req, res, next) => {
   try {
     let [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
+    sessions = sessions.map((session) => ({
+      ...session,
+      activeTerminals: activeTerminalClients.get(session.name)?.size || 0,
+    }));
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
     res.json({ sessions, capabilities: { largestSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
@@ -117,11 +122,16 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', async (ws, session) => {
+  const clients = activeTerminalClients.get(session) || new Set();
+  clients.add(ws);
+  activeTerminalClients.set(session, clients);
   let largestSize;
   let initialSize;
   try {
     [largestSize, initialSize] = await Promise.all([preferLargestClientSize(), getSessionSize(session)]);
   } catch (error) {
+    clients.delete(ws);
+    if (!clients.size) activeTerminalClients.delete(session);
     ws.close(1011, error.message || 'tmux size configuration failed');
     return;
   }
@@ -142,7 +152,11 @@ wss.on('connection', async (ws, session) => {
       }
     } catch { /* Ignore malformed terminal frames. */ }
   });
-  ws.on('close', () => terminal.kill());
+  ws.on('close', () => {
+    terminal.kill();
+    clients.delete(ws);
+    if (!clients.size) activeTerminalClients.delete(session);
+  });
 });
 
 server.listen(port, host, () => {

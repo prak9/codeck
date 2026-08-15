@@ -48,8 +48,8 @@ function resolveSessionStatus(session) {
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const isActive = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
-  const isAgentWorking = Boolean(session.agent) && isActive;
-  if (isAgentWorking) return 'working';
+  const isWorking = Boolean(session.agent) && (isActive || Number(session.activeTerminals) > 0);
+  if (isWorking) return 'working';
   return 'done';
 }
 
