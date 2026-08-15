@@ -51,8 +51,10 @@ function timeAgo(timestamp) {
 }
 
 function resolveSessionStatus(session) {
-  const status = (session?.status || '').toLowerCase();
-  return status === 'working' || status === 'running' ? 'working' : 'done';
+  const status = (session?.status || '').toString().trim().toLowerCase();
+  if (status === 'working' || status === 'running') return 'working';
+  if (status === 'worked') return 'done';
+  return 'done';
 }
 
 function renderSessions() {
