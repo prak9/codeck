@@ -8,8 +8,7 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const QUICK_SWITCH_NUMERIC_WAIT_MS = 450;
-const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken), quickSwitch: { pending: false, timer: null } };
+const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken), quickSwitch: { pending: false, targetIndex: null } };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -88,10 +87,7 @@ function isQuickSwitchKey(event) {
 }
 
 function clearQuickSwitchState() {
-  if (state.quickSwitch.timer) {
-    clearTimeout(state.quickSwitch.timer);
-  }
-  state.quickSwitch = { pending: false, timer: null };
+  state.quickSwitch = { pending: false, targetIndex: null };
 }
 
 function parseDigit(event) {
@@ -129,35 +125,43 @@ function cycleSession() {
   clearQuickSwitchState();
 }
 
-function scheduleQuickCycle() {
-  clearQuickSwitchState();
-  state.quickSwitch.pending = true;
-  state.quickSwitch.timer = setTimeout(() => {
-    if (state.quickSwitch.pending) cycleSession();
-  }, QUICK_SWITCH_NUMERIC_WAIT_MS);
+function switchByQuickIndexOrCycle() {
+  if (state.quickSwitch.targetIndex != null) {
+    if (!switchByQuickSessionIndex(state.quickSwitch.targetIndex)) {
+      setConnectionMessage(`没有第 ${state.quickSwitch.targetIndex} 个会话`);
+    }
+    return;
+  }
+  cycleSession();
 }
 
-function handleQuickSwitchShortcut(event) {
+function handleQuickSwitchKeydown(event) {
   const digit = parseDigit(event);
   if (state.quickSwitch.pending && digit !== null) {
     event.preventDefault();
     event.stopPropagation();
-    const target = digit === 0 ? 10 : digit;
-    if (!switchByQuickSessionIndex(target)) {
-      setConnectionMessage(`没有第 ${target} 个会话`);
-    }
-    clearQuickSwitchState();
+    state.quickSwitch.targetIndex = digit === 0 ? 10 : digit;
     return true;
   }
   if (!isQuickSwitchKey(event)) return false;
   event.preventDefault();
   event.stopPropagation();
   if (event.altKey) {
-    if (state.sessions.length > 1) scheduleQuickCycle();
+    state.quickSwitch.pending = true;
+    state.quickSwitch.targetIndex = null;
     return true;
   }
-  clearQuickSwitchState();
   if (state.sessions.length) openQuickSwitcher();
+  return true;
+}
+
+function handleQuickSwitchKeyup(event) {
+  if (!state.quickSwitch.pending) return false;
+  if (event.code !== 'KeyK' && event.key !== 'k' && event.key !== 'K') return false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (state.sessions.length) switchByQuickIndexOrCycle();
+  clearQuickSwitchState();
   return true;
 }
 
@@ -226,7 +230,7 @@ function ensureTerminal() {
   $('#terminal').addEventListener('paste', pasteImages, true);
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
-    return !handleQuickSwitchShortcut(event);
+    return !handleQuickSwitchKeydown(event);
   });
   terminal.onData((data) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'input', data })));
   terminal.onResize(({ cols, rows }) => {
@@ -416,7 +420,10 @@ $('#tokenForm').addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (handleQuickSwitchShortcut(event)) return;
+  if (handleQuickSwitchKeydown(event)) return;
+}, true);
+document.addEventListener('keyup', (event) => {
+  if (handleQuickSwitchKeyup(event)) return;
 }, true);
 
 $('#quickSwitchButton').addEventListener('click', openQuickSwitcher);
