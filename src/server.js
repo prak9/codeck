@@ -16,12 +16,32 @@ const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
 const SESSION_WORKING_WINDOW_MS = 5_000;
+const SESSION_STATUS_POLL_MS = 5_000;
+const sessionStatusByName = new Map();
 
 function resolveTrackedStatus(session, now = Date.now()) {
   if (!session.agent) return 'done';
   const activityAt = Number.isFinite(session.activityAt) ? session.activityAt : 0;
   return now - activityAt <= SESSION_WORKING_WINDOW_MS ? 'working' : 'done';
 }
+
+async function refreshSessionStatuses() {
+  try {
+    const sessions = await listSessions();
+    const now = Date.now();
+    const next = new Map();
+    for (const session of sessions) next.set(session.name, resolveTrackedStatus(session, now));
+    sessionStatusByName.clear();
+    for (const [name, status] of next) sessionStatusByName.set(name, status);
+  } catch {
+    // keep stale cache when tmux is temporarily unavailable
+  }
+}
+
+setInterval(() => {
+  void refreshSessionStatuses();
+}, SESSION_STATUS_POLL_MS);
+void refreshSessionStatuses();
 
 
 app.use(express.json({ limit: '16kb' }));
@@ -51,8 +71,10 @@ app.get('/api/sessions', async (req, res, next) => {
   try {
     let [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
-    const now = Date.now();
-    const enriched = sessions.map((session) => ({ ...session, status: resolveTrackedStatus(session, now) }));
+    const enriched = sessions.map((session) => ({
+      ...session,
+      status: session.agent ? sessionStatusByName.get(session.name) || 'done' : 'done',
+    }));
     res.json({ sessions: enriched, capabilities: { largestSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
 });

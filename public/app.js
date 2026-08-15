@@ -8,8 +8,7 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const SESSION_LIST_POLL_MS = 3000;
-const COMPLETED_SESSION_NAME = /^codeck(?:-|$|_)/i;
+const SESSION_LIST_POLL_MS = 5000;
 const state = {
   token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
   sessions: [],
@@ -50,19 +49,8 @@ function timeAgo(timestamp) {
   return relativeTime.format(Math.round(hours / 24), 'day');
 }
 
-function isProblemSession(session) {
-  if (!session) return true;
-  if (!Number.isFinite(session.activityAt) || !Number.isFinite(session.attached) || !Number.isFinite(session.windows)) return true;
-  if (session.activityAt > Date.now() + 60_000) return true;
-  return false;
-}
-
 function resolveSessionStatus(session) {
-  if (session?.status === 'problem') return 'problem';
-  if (isProblemSession(session)) return 'problem';
-  if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
-  if (session?.status === 'working' && session.agent) return 'working';
-  return 'done';
+  return session?.status === 'working' ? 'working' : 'done';
 }
 
 function renderSessions() {
@@ -75,7 +63,7 @@ function renderSessions() {
   }
   list.innerHTML = state.sessions.map((session, index) => {
     const status = resolveSessionStatus(session);
-    const statusText = status === 'done' ? '完成' : status === 'problem' ? '可能存在问题' : '正在干活';
+    const statusText = status === 'working' ? '正在干活' : '完成';
     return `
     <div class="session-entry">
       <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
