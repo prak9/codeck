@@ -8,7 +8,8 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken) };
+const QUICK_SWITCH_NUMERIC_WAIT_MS = 450;
+const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken), quickSwitch: { pending: false, timer: null } };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -86,11 +87,86 @@ function isQuickSwitchKey(event) {
   return keyK && (event.metaKey || event.altKey || (event.ctrlKey && event.shiftKey));
 }
 
+function clearQuickSwitchState() {
+  if (state.quickSwitch.timer) {
+    clearTimeout(state.quickSwitch.timer);
+  }
+  state.quickSwitch = { pending: false, timer: null };
+}
+
+function parseDigit(event) {
+  if (/^Digit[0-9]$/.test(event.code || '')) return Number(event.code.slice(-1));
+  if (/^Numpad[0-9]$/.test(event.code || '')) return Number(event.code.slice(-1));
+  if (event.key >= '0' && event.key <= '9') return Number(event.key);
+  return null;
+}
+
+function getSessionByIndex(index) {
+  if (!Number.isInteger(index) || index < 1) return null;
+  return state.sessions[index - 1] || null;
+}
+
+function switchToSession(sessionName) {
+  if (!sessionName) return false;
+  if (state.active === sessionName) return true;
+  connect(sessionName);
+  return true;
+}
+
+function switchByQuickSessionIndex(index) {
+  const session = getSessionByIndex(index);
+  if (!session) return false;
+  switchToSession(session.name);
+  clearQuickSwitchState();
+  return true;
+}
+
+function cycleSession() {
+  if (state.sessions.length < 2) return;
+  const currentIndex = state.sessions.findIndex((session) => session.name === state.active);
+  const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % state.sessions.length;
+  switchToSession(state.sessions[nextIndex].name);
+  clearQuickSwitchState();
+}
+
+function scheduleQuickCycle() {
+  clearQuickSwitchState();
+  state.quickSwitch.pending = true;
+  state.quickSwitch.timer = setTimeout(() => {
+    if (state.quickSwitch.pending) cycleSession();
+  }, QUICK_SWITCH_NUMERIC_WAIT_MS);
+}
+
+function handleQuickSwitchShortcut(event) {
+  const digit = parseDigit(event);
+  if (state.quickSwitch.pending && digit !== null) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = digit === 0 ? 10 : digit;
+    if (!switchByQuickSessionIndex(target)) {
+      setConnectionMessage(`没有第 ${target} 个会话`);
+    }
+    clearQuickSwitchState();
+    return true;
+  }
+  if (!isQuickSwitchKey(event)) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.altKey) {
+    if (state.sessions.length > 1) scheduleQuickCycle();
+    return true;
+  }
+  clearQuickSwitchState();
+  if (state.sessions.length) openQuickSwitcher();
+  return true;
+}
+
 function openQuickSwitcher() {
   const list = $('#switchList');
-  list.innerHTML = state.sessions.map((session) => `
+  list.innerHTML = state.sessions.map((session, index) => `
     <button class="switch-row ${session.name === state.active ? 'active' : ''}" data-switch-session="${escapeHtml(session.name)}">
-      <span>${escapeHtml(session.agent?.name || session.name)}</span>
+      <span class="switch-index">${index + 1}</span>
+      <span class="switch-name">${escapeHtml(session.agent?.name || session.name)}</span>
       <small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · ${escapeHtml(session.name)}` : 'tmux session'}</small>
     </button>`).join('') || '<p class="list-empty">还没有 tmux 会话</p>';
   if (!$('#switchDialog').open) $('#switchDialog').showModal();
@@ -149,9 +225,8 @@ function ensureTerminal() {
   terminal.open($('#terminal'));
   $('#terminal').addEventListener('paste', pasteImages, true);
   terminal.attachCustomKeyEventHandler((event) => {
-    if (event.type !== 'keydown' || !isQuickSwitchKey(event)) return true;
-    openQuickSwitcher();
-    return false;
+    if (event.type !== 'keydown') return true;
+    return !handleQuickSwitchShortcut(event);
   });
   terminal.onData((data) => state.socket?.readyState === WebSocket.OPEN && state.socket.send(JSON.stringify({ type: 'input', data })));
   terminal.onResize(({ cols, rows }) => {
@@ -192,6 +267,7 @@ function markActiveSession(session) {
 }
 
 function connect(session) {
+  clearQuickSwitchState();
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
   state.socket?.close();
@@ -340,11 +416,7 @@ $('#tokenForm').addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (isQuickSwitchKey(event)) {
-    event.preventDefault();
-    event.stopPropagation();
-    openQuickSwitcher();
-  }
+  if (handleQuickSwitchShortcut(event)) return;
 }, true);
 
 $('#quickSwitchButton').addEventListener('click', openQuickSwitcher);

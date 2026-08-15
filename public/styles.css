@@ -128,11 +128,12 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .switch-head h2 { margin: 0; font-size: 19px; }
 .switch-head form { padding: 0; }
 .switch-list { max-height: min(440px, 60vh); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
-.switch-row { width: 100%; padding: 11px 13px; border: 1px solid transparent; border-radius: 9px; background: #ffffff06; display: flex; align-items: center; justify-content: space-between; gap: 16px; text-align: left; cursor: pointer; }
+.switch-row { width: 100%; padding: 11px 13px; border: 1px solid transparent; border-radius: 9px; background: #ffffff06; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 12px; text-align: left; cursor: pointer; }
 .switch-row:hover, .switch-row:focus-visible { border-color: var(--line-strong); background: #ffffff0d; }
 .switch-row.active { border-color: #ff6b3555; background: #ff6b3510; }
-.switch-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 650; }
+.switch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 650; }
 .switch-row small { flex: none; color: var(--muted); font-size: 9px; }
+.switch-index { color: var(--muted); font-size: 9px; font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; text-align: right; }
 .switch-help { margin: 13px 3px 0; color: var(--muted); font-size: 9px; }
 .mobile-only { display: none; }
 [hidden] { display: none !important; }
