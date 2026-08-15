@@ -2,7 +2,13 @@ const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
 
 const $ = (selector) => document.querySelector(selector);
-const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true };
+const sharedToken = new URLSearchParams(location.hash.slice(1)).get('share') || new URLSearchParams(location.search).get('share');
+if (sharedToken) {
+  sessionStorage.setItem('codeck-share-token', sharedToken);
+  history.replaceState(null, '', location.pathname);
+}
+const storedShareToken = sessionStorage.getItem('codeck-share-token');
+const state = { token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true, canManage: true, openedShareLink: Boolean(sharedToken || storedShareToken) };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -43,7 +49,7 @@ function renderSessions() {
         <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
         <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
       </button>
-      <button class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>
+      ${state.canManage ? `<button class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
     </div>`).join('');
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
@@ -67,7 +73,9 @@ async function refreshSessions() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions;
   state.supportsLargestSize = data.capabilities?.largestSize !== false;
+  state.canManage = data.capabilities?.canManage !== false;
   $('#viewModeButton').hidden = !state.supportsLargestSize;
+  for (const id of ['#newButton', '#newButtonBottom', '#emptyNewButton', '#killButton', '#shareButton']) $(id).hidden = !state.canManage;
   if (!state.supportsLargestSize) state.overview = true;
   renderSessions();
   if (state.active && state.terminal) fitTerminalView();
@@ -159,7 +167,7 @@ function fitTerminalView() {
   if (!state.terminal || state.fitting) return;
   state.fitting = true;
   const terminal = state.terminal;
-  const mobileOverview = matchMedia('(max-width: 720px)').matches && state.overview;
+  const mobileOverview = matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches && state.overview;
   const session = state.sessions.find((item) => item.name === state.active);
   terminal.options.fontSize = 16;
   state.fit.fit();
@@ -268,6 +276,30 @@ $('#viewModeButton').addEventListener('click', () => {
   state.terminal?.focus();
 });
 
+$('.mobile-keybar').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-terminal-key]');
+  if (!button || state.socket?.readyState !== WebSocket.OPEN) return;
+  const keys = { escape: '\x1b', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
+  state.socket.send(JSON.stringify({ type: 'input', data: keys[button.dataset.terminalKey] }));
+});
+
+$('#shareButton').addEventListener('click', async () => {
+  if (!state.active) return;
+  $('#shareButton').disabled = true;
+  let url = '';
+  try {
+    const data = await api(`/api/sessions/${encodeURIComponent(state.active)}/share`, { method: 'POST' });
+    url = `${location.origin}${data.url}`;
+    await navigator.clipboard.writeText(url);
+    setConnectionMessage('分享链接已复制，有效期24小时');
+  } catch (error) {
+    if (url) prompt('复制这个分享链接（24小时内有效）', url);
+    else setConnectionMessage(`生成分享链接失败：${error.message}`);
+  } finally {
+    $('#shareButton').disabled = false;
+  }
+});
+
 $('#newForm').addEventListener('submit', async (event) => {
   if (event.submitter?.value === 'cancel') return;
   event.preventDefault();
@@ -300,7 +332,9 @@ $('#tokenForm').addEventListener('submit', async (event) => {
   state.token = $('#tokenInput').value.trim();
   try {
     await refreshSessions();
+    sessionStorage.removeItem('codeck-share-token');
     sessionStorage.setItem('codeck-token', state.token);
+    state.openedShareLink = false;
     $('#tokenDialog').close();
   } catch (error) { $('#tokenError').textContent = error.message === 'UNAUTHORIZED' ? '令牌不正确，请检查服务启动日志。' : error.message; }
 });
@@ -351,7 +385,9 @@ $('#sessionList').addEventListener('keydown', (event) => {
   }
 });
 
-if (state.token) refreshSessions().catch(() => $('#tokenDialog').showModal());
+if (state.token) refreshSessions().then(() => {
+  if (state.openedShareLink && state.sessions.length === 1) connect(state.sessions[0].name);
+}).catch(() => $('#tokenDialog').showModal());
 else $('#tokenDialog').showModal();
 setInterval(() => state.token && refreshSessions().catch(() => {}), 10000);
 document.fonts?.ready.then(() => {

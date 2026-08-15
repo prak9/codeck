@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
+import { authenticateToken, createShareToken } from './auth.js';
 import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { saveImageUpload } from './uploads.js';
@@ -13,7 +14,6 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
-const websocketToken = Buffer.from(accessToken, 'utf8').toString('base64url');
 const app = express();
 
 app.use(express.json({ limit: '16kb' }));
@@ -24,42 +24,58 @@ app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@font
 app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
 app.use('/fonts/jetbrains-mono', express.static(path.join(dirname, '../node_modules/@fontsource-variable/jetbrains-mono')));
 
-function authorized(req) {
+function requestAuth(req) {
   const header = req.headers.authorization || '';
-  if (!header.startsWith('Bearer ')) return false;
-  const candidate = Buffer.from(header.slice(7));
-  const expected = Buffer.from(accessToken);
-  return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+  return header.startsWith('Bearer ') ? authenticateToken(accessToken, header.slice(7)) : null;
+}
+
+function ownerOnly(req, res, next) {
+  return req.auth.owner ? next() : res.status(403).json({ error: '分享链接无权管理会话' });
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
-app.use('/api', (req, res, next) => authorized(req) ? next() : res.status(401).json({ error: '访问令牌无效' }));
+app.use('/api', (req, res, next) => {
+  req.auth = requestAuth(req);
+  return req.auth ? next() : res.status(401).json({ error: '访问令牌无效或分享链接已过期' });
+});
 
-app.get('/api/sessions', async (_req, res, next) => {
+app.get('/api/sessions', async (req, res, next) => {
   try {
-    const [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
-    res.json({ sessions, capabilities: { largestSize } });
+    let [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
+    if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
+    res.json({ sessions, capabilities: { largestSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
 });
 
-app.post('/api/sessions', async (req, res, next) => {
+app.post('/api/sessions', ownerOnly, async (req, res, next) => {
   try {
     await createSession(req.body || {});
     res.status(201).json({ ok: true });
   } catch (error) { next(error); }
 });
 
-app.patch('/api/sessions/:name', async (req, res, next) => {
+app.patch('/api/sessions/:name', ownerOnly, async (req, res, next) => {
   try {
     await renameSession(req.params.name, req.body?.name);
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
 
-app.delete('/api/sessions/:name', async (req, res, next) => {
+app.delete('/api/sessions/:name', ownerOnly, async (req, res, next) => {
   try {
     await killSession(req.params.name);
     res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+app.post('/api/sessions/:name/share', ownerOnly, async (req, res, next) => {
+  try {
+    const session = (await listSessions()).find((item) => item.name === req.params.name);
+    if (!session) return res.status(404).json({ error: '会话不存在' });
+    const token = createShareToken(accessToken, session.name);
+    const url = new URL('/', 'https://codeck.local');
+    url.hash = new URLSearchParams({ share: token });
+    res.status(201).json({ url: `${url.pathname}${url.hash}`, expiresAt: Date.now() + 86400 * 1000 });
   } catch (error) { next(error); }
 });
 
@@ -83,12 +99,15 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
   const protocols = (req.headers['sec-websocket-protocol'] || '').split(',').map((value) => value.trim());
-  if (url.pathname !== '/ws' || !protocols.includes(`codeck.${websocketToken}`)) {
+  const encodedToken = protocols.find((value) => value.startsWith('codeck.'))?.slice(7);
+  const credential = encodedToken ? Buffer.from(encodedToken, 'base64url').toString('utf8') : '';
+  const auth = authenticateToken(accessToken, credential);
+  const session = url.searchParams.get('session');
+  if (url.pathname !== '/ws' || !auth || (!auth.owner && auth.session !== session)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }
-  const session = url.searchParams.get('session');
   if (!validateSessionName(session)) {
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
     socket.destroy();
