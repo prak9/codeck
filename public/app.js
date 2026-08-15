@@ -60,7 +60,7 @@ function isProblemSession(session) {
 }
 
 function resolveSessionStatus(session) {
-  if (session?.status === 'working' || session?.status === 'done' || session?.status === 'problem') return session.status;
+  if (session?.status === 'problem') return 'problem';
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const localActivityAt = Number(state.sessionInputAt.get(session.name)) || 0;
@@ -68,6 +68,7 @@ function resolveSessionStatus(session) {
   const hasRecentLocalInput = Date.now() - localActivityAt <= SESSION_INPUT_ACTIVITY_MS;
   const hasRecentSessionActivity = Date.now() - sessionActivityAt <= SESSION_ACTIVITY_FALLBACK_MS;
   const isWorking = Boolean(session.agent) && (hasRecentLocalInput || hasRecentSessionActivity);
+  if (session?.status === 'working' && !isWorking && session.agent) return 'working';
   if (isWorking) return 'working';
   return 'done';
 }
