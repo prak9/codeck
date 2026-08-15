@@ -8,8 +8,8 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const SESSION_INPUT_ACTIVITY_MS = 30 * 1000;
 const SESSION_ACTIVITY_FALLBACK_MS = 180 * 1000;
+const SESSION_LIST_POLL_MS = 3000;
 const COMPLETED_SESSION_NAME = /^codeck(?:-|$|_)/i;
 const state = {
   token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
@@ -24,7 +24,6 @@ const state = {
   supportsLargestSize: true,
   canManage: true,
   openedShareLink: Boolean(sharedToken || storedShareToken),
-  sessionInputAt: new Map(),
 };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
@@ -64,33 +63,12 @@ function resolveSessionStatus(session) {
   if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const serverWorking = session?.status === 'working' && session.agent;
-  const localActivityAt = Number(state.sessionInputAt.get(session.name)) || 0;
-  const hasRecentLocalInput = Date.now() - localActivityAt <= SESSION_INPUT_ACTIVITY_MS;
   const sessionActivityAt = Number(session.activityAt) || 0;
   const hasRecentSessionActivity = Date.now() - sessionActivityAt <= SESSION_ACTIVITY_FALLBACK_MS;
-  const isWorking = Boolean(session.agent) && (hasRecentLocalInput || hasRecentSessionActivity);
+  const isWorking = Boolean(session.agent) && hasRecentSessionActivity;
   if (serverWorking) return 'working';
   if (isWorking) return 'working';
   return 'done';
-}
-
-function markSessionInput(sessionName, now = Date.now()) {
-  if (!sessionName) return;
-  state.sessionInputAt.set(sessionName, now);
-  refreshSessionStatusIndicator(sessionName);
-}
-
-function refreshSessionStatusIndicator(sessionName) {
-  const rows = [...$('#sessionList').querySelectorAll('.session-row')];
-  const row = rows.find((item) => item.dataset.session === sessionName);
-  if (!row) return;
-  const session = state.sessions.find((item) => item.name === sessionName) || { name: sessionName };
-  const status = resolveSessionStatus(session);
-  const statusText = status === 'done' ? '完成' : status === 'problem' ? '可能存在问题' : '正在干活';
-  const presence = row.querySelector('.presence');
-  if (!presence) return;
-  presence.className = `presence ${status}`;
-  presence.title = statusText;
 }
 
 function renderSessions() {
@@ -253,8 +231,7 @@ async function pasteImages(event) {
       method: 'POST', headers: { 'Content-Type': file.type }, body: file,
     })));
     if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
-    const paths = uploads.map((upload) => `'${upload.path.replaceAll("'", "'\\''")}'`).join(' ');
-    markSessionInput(state.active);
+    const paths = uploads.map((upload) => `'${upload.path.replaceAll("'", "'\\\\''")}'`).join(' ');
     socket.send(JSON.stringify({ type: 'input', data: paths }));
     setConnectionMessage(images.length > 1 ? `已粘贴 ${images.length} 张图片` : '图片已粘贴');
     state.terminal.focus();
@@ -288,7 +265,6 @@ function ensureTerminal() {
   });
   terminal.onData((data) => {
     if (state.socket?.readyState === WebSocket.OPEN) {
-      markSessionInput(state.active);
       state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -412,7 +388,6 @@ $('.mobile-keybar').addEventListener('click', (event) => {
   const button = event.target.closest('[data-terminal-key]');
   if (!button || state.socket?.readyState !== WebSocket.OPEN) return;
   const keys = { escape: '\x1b', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
-  markSessionInput(state.active);
   state.socket.send(JSON.stringify({ type: 'input', data: keys[button.dataset.terminalKey] }));
 });
 
@@ -518,7 +493,7 @@ if (state.token) refreshSessions().then(() => {
   if (state.openedShareLink && state.sessions.length === 1) connect(state.sessions[0].name);
 }).catch(() => $('#tokenDialog').showModal());
 else $('#tokenDialog').showModal();
-setInterval(() => state.token && refreshSessions().catch(() => {}), 10000);
+setInterval(() => state.token && refreshSessions().catch(() => {}), SESSION_LIST_POLL_MS);
 document.fonts?.ready.then(() => {
   if (!state.terminal) return;
   state.terminal.refresh(0, state.terminal.rows - 1);
