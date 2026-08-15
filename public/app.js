@@ -37,12 +37,18 @@ function timeAgo(timestamp) {
   return relativeTime.format(Math.round(hours / 24), 'day');
 }
 
+function isProblemSession(session) {
+  if (!session) return true;
+  if (!Number.isFinite(session.activityAt) || !Number.isFinite(session.attached) || !Number.isFinite(session.windows)) return true;
+  if (session.activityAt > Date.now() + 60_000) return true;
+  return false;
+}
+
 function resolveSessionStatus(session) {
+  if (isProblemSession(session)) return 'problem';
   if (COMPLETED_SESSION_NAME.test(session.name)) return 'done';
   const isActive = Date.now() - session.activityAt <= SESSION_DONE_IDLE_MS;
-  if (session.agent && session.attached && isActive) return 'intervention';
-  if (!isActive && !session.attached) return 'done';
-  if (session.attached || isActive) return 'working';
+  if (session.agent || session.attached || isActive) return 'working';
   return 'done';
 }
 
@@ -55,7 +61,7 @@ function renderSessions() {
   }
   list.innerHTML = state.sessions.map((session, index) => {
     const status = resolveSessionStatus(session);
-    const statusText = status === 'done' ? '完成' : status === 'intervention' ? 'agent请求介入' : '正在干活';
+    const statusText = status === 'done' ? '完成' : status === 'problem' ? '可能存在问题' : '正在干活';
     return `
     <div class="session-entry">
       <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
