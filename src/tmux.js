@@ -61,3 +61,8 @@ export async function killSession(name) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');
   await exec('tmux', ['kill-session', '-t', name]);
 }
+
+export async function renameSession(name, newName) {
+  if (!validateSessionName(name) || !validateSessionName(newName)) throw new Error('无效的会话名');
+  await exec('tmux', ['rename-session', '-t', name, newName]);
+}

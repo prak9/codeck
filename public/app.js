@@ -37,11 +37,14 @@ function renderSessions() {
     return;
   }
   list.innerHTML = state.sessions.map((session) => `
-    <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
-      <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
-      <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
-      <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
-    </button>`).join('');
+    <div class="session-entry">
+      <button class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
+        <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
+        <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
+        <span class="presence ${session.attached ? 'online' : ''}" title="${session.attached ? '已连接' : '空闲'}"></span>
+      </button>
+      <button class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>
+    </div>`).join('');
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
   }
@@ -194,9 +197,35 @@ function openNewDialog() {
 }
 
 $('#sessionList').addEventListener('click', (event) => {
+  const renameButton = event.target.closest('[data-rename-session]');
+  if (renameButton) {
+    renameSession(renameButton.dataset.renameSession);
+    return;
+  }
   const row = event.target.closest('[data-session]');
   if (row) connect(row.dataset.session);
 });
+
+async function renameSession(currentName) {
+  const newName = prompt(`重命名 tmux 会话“${currentName}”`, currentName)?.trim();
+  if (!newName || newName === currentName) return;
+  try {
+    await api(`/api/sessions/${encodeURIComponent(currentName)}`, {
+      method: 'PATCH', body: JSON.stringify({ name: newName }),
+    });
+    if (state.active === currentName) {
+      state.active = newName;
+    }
+    await refreshSessions();
+    if (state.active === newName) {
+      const session = state.sessions.find((item) => item.name === newName);
+      $('#terminalTitle').textContent = session?.agent?.name || newName;
+      $('#terminalTitle').title = session?.agent ? `tmux: ${newName}` : '';
+    }
+  } catch (error) {
+    alert(error.message === 'UNAUTHORIZED' ? '令牌已失效' : `重命名失败：${error.message}`);
+  }
+}
 ['#newButton', '#newButtonBottom', '#emptyNewButton'].forEach((id) => $(id).addEventListener('click', openNewDialog));
 $('#menuButton').addEventListener('click', () => {
   const open = $('#sidebar').classList.toggle('open');

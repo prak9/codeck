@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
-import { createSession, killSession, listSessions, validateSessionName } from './tmux.js';
+import { createSession, killSession, listSessions, renameSession, validateSessionName } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { saveImageUpload } from './uploads.js';
 
@@ -43,6 +43,13 @@ app.post('/api/sessions', async (req, res, next) => {
   try {
     await createSession(req.body || {});
     res.status(201).json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+app.patch('/api/sessions/:name', async (req, res, next) => {
+  try {
+    await renameSession(req.params.name, req.body?.name);
+    res.json({ ok: true });
   } catch (error) { next(error); }
 });
 
