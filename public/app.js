@@ -141,13 +141,13 @@ function handleQuickSwitchKeydown(event) {
   if (state.quickSwitch.pending && digit !== null) {
     event.preventDefault();
     event.stopPropagation();
-    state.quickSwitch.targetIndex = digit === 0 ? 10 : digit;
+    state.quickSwitch.targetIndex = digit === 0 ? 1 : digit;
     return true;
   }
   if (event.altKey && !event.metaKey && digit !== null) {
     event.preventDefault();
     event.stopPropagation();
-    const target = digit === 0 ? 10 : digit;
+    const target = digit === 0 ? 1 : digit;
     if (!switchByQuickSessionIndex(target)) {
       setConnectionMessage(`没有第 ${target} 个会话`);
     }
