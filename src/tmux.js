@@ -59,22 +59,82 @@ function parsePanes(output) {
   }).filter((pane) => pane.session);
 }
 
+function parseProcesses(output) {
+  if (!output.trim()) return [];
+  return output.trim().split('\n').map((line) => {
+    const [rawPid, rawPpid, rawState] = line.trim().split(/\s+/);
+    return {
+      pid: Number(rawPid),
+      ppid: Number(rawPpid),
+      state: rawState?.[0] || '',
+    };
+  }).filter((entry) => Number.isFinite(entry.pid) && Number.isFinite(entry.ppid));
+}
+
+function buildProcessLookup(processes) {
+  const byPid = new Map();
+  const childrenByPid = new Map();
+  for (const process of processes) {
+    byPid.set(process.pid, process);
+    if (!childrenByPid.has(process.ppid)) childrenByPid.set(process.ppid, []);
+    childrenByPid.get(process.ppid).push(process.pid);
+  }
+  return { byPid, childrenByPid };
+}
+
+function hasRunningProcessInSession(panePids, processLookup) {
+  const { byPid, childrenByPid } = processLookup;
+  const seen = new Set();
+  const queue = [...panePids];
+  while (queue.length) {
+    const currentPid = queue.shift();
+    if (seen.has(currentPid)) continue;
+    seen.add(currentPid);
+    const process = byPid.get(currentPid);
+    if (process && process.state === 'R') return true;
+    const children = childrenByPid.get(currentPid);
+    if (children) queue.push(...children);
+  }
+  return false;
+}
+
 export async function listSessions() {
   try {
-    const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
+    const [{ stdout }, { stdout: paneOutput }, { stdout: processOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
       exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_current_command}']),
+      exec('ps', ['-eo', 'pid=,ppid=,state=']),
     ]);
-    const panes = parsePanes(paneOutput)
+    const allPanes = parsePanes(paneOutput);
+    const panes = allPanes
       .sort((a, b) => b.score - a.score)
       .filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
 
     const paneCommandBySession = new Map();
     for (const pane of panes) paneCommandBySession.set(pane.session, pane.currentCommand);
 
+    const panePidsBySession = new Map();
+    for (const pane of allPanes) {
+      if (!Number.isFinite(pane.pid)) continue;
+      const list = panePidsBySession.get(pane.session) || [];
+      if (!list.includes(pane.pid)) list.push(pane.pid);
+      panePidsBySession.set(pane.session, list);
+    }
+
+    const processLookup = buildProcessLookup(parseProcesses(processOutput));
+    const runningBySession = new Map();
+    for (const [sessionName, pids] of panePidsBySession) {
+      runningBySession.set(sessionName, hasRunningProcessInSession(pids, processLookup));
+    }
+
     const agents = await detectPaneAgents(panes);
     return parseSessions(stdout)
-      .map((session) => ({ ...session, agent: agents.get(session.name) || null, currentCommand: paneCommandBySession.get(session.name) || 'bash' }))
+      .map((session) => ({
+        ...session,
+        agent: agents.get(session.name) || null,
+        currentCommand: paneCommandBySession.get(session.name) || 'bash',
+        hasRunningProcess: runningBySession.get(session.name) || false,
+      }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt) || a.name.localeCompare(b.name));
   } catch (error) {
     if (error.code === 1) return [];

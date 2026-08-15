@@ -17,14 +17,10 @@ const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString(
 const app = express();
 const SESSION_STATUS_POLL_MS = 5_000;
 const sessionStatusByName = new Map();
-const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'ash', 'fish', 'dash', 'ksh']);
 
 function resolveTrackedStatus(session) {
   if (!session.agent) return 'done';
-  const command = (session.currentCommand || '').toLowerCase();
-  if (!command) return 'waiting';
-  if (SHELL_COMMANDS.has(command)) return 'waiting';
-  return 'working';
+  return session.hasRunningProcess ? 'working' : 'done';
 }
 
 async function refreshSessionStatuses() {
