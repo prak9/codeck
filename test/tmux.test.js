@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSessions, validateClient, validateSessionName } from '../src/tmux.js';
+import { parseSessions, supportsLargestSize, validateClient, validateSessionName } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\n'), [{
@@ -9,6 +9,13 @@ test('parses tmux list output into typed session records', () => {
 });
 
 test('empty tmux output produces an empty list', () => assert.deepEqual(parseSessions(''), []));
+
+test('uses largest-client sizing only when supported by tmux', () => {
+  assert.equal(supportsLargestSize('tmux 2.7'), false);
+  assert.equal(supportsLargestSize('tmux 2.8'), false);
+  assert.equal(supportsLargestSize('tmux 2.9'), true);
+  assert.equal(supportsLargestSize('tmux 3.4'), true);
+});
 
 test('accepts safe session names and known clients', () => {
   assert.equal(validateSessionName('feature_auth-2.0'), true);

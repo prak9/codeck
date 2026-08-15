@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
-import { createSession, killSession, listSessions, preferLargestClientSize, renameSession, validateSessionName } from './tmux.js';
+import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { saveImageUpload } from './uploads.js';
 
@@ -36,7 +36,10 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.use('/api', (req, res, next) => authorized(req) ? next() : res.status(401).json({ error: '访问令牌无效' }));
 
 app.get('/api/sessions', async (_req, res, next) => {
-  try { res.json({ sessions: await listSessions() }); } catch (error) { next(error); }
+  try {
+    const [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
+    res.json({ sessions, capabilities: { largestSize } });
+  } catch (error) { next(error); }
 });
 
 app.post('/api/sessions', async (req, res, next) => {
@@ -95,14 +98,16 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', async (ws, session) => {
+  let largestSize;
+  let initialSize;
   try {
-    await preferLargestClientSize();
+    [largestSize, initialSize] = await Promise.all([preferLargestClientSize(), getSessionSize(session)]);
   } catch (error) {
     ws.close(1011, error.message || 'tmux size configuration failed');
     return;
   }
   const terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
-    name: 'xterm-256color', cols: 100, rows: 30, cwd: process.cwd(), env: process.env,
+    name: 'xterm-256color', cols: initialSize.width, rows: initialSize.height, cwd: process.cwd(), env: process.env,
   });
   terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
   terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
@@ -112,7 +117,9 @@ wss.on('connection', async (ws, session) => {
       const message = JSON.parse(raw.toString());
       if (message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
-        terminal.resize(Math.max(20, message.cols), Math.max(5, message.rows));
+        const minCols = largestSize ? 20 : initialSize.width;
+        const minRows = largestSize ? 5 : initialSize.height;
+        terminal.resize(Math.max(minCols, message.cols), Math.max(minRows, message.rows));
       }
     } catch { /* Ignore malformed terminal frames. */ }
   });

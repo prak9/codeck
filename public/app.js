@@ -2,7 +2,7 @@ const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
 
 const $ = (selector) => document.querySelector(selector);
-const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false };
+const state = { token: sessionStorage.getItem('codeck-token') || '', sessions: [], active: null, socket: null, terminal: null, fit: null, connectionId: 0, overview: true, fitting: false, supportsLargestSize: true };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 
@@ -66,6 +66,9 @@ function websocketProtocolToken(value) {
 async function refreshSessions() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions;
+  state.supportsLargestSize = data.capabilities?.largestSize !== false;
+  $('#viewModeButton').hidden = !state.supportsLargestSize;
+  if (!state.supportsLargestSize) state.overview = true;
   renderSessions();
   if (state.active && state.terminal) fitTerminalView();
 }

@@ -5,6 +5,7 @@ import { detectPaneAgents } from './agents.js';
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
+let supportsLargestSizePromise;
 
 export function validateSessionName(name) {
   return typeof name === 'string' && SESSION_NAME.test(name);
@@ -12,6 +13,16 @@ export function validateSessionName(name) {
 
 export function validateClient(client) {
   return CLIENTS.includes(client);
+}
+
+export function supportsLargestSize(version) {
+  const match = /tmux\s+(\d+)\.(\d+)/.exec(version);
+  return Boolean(match && (Number(match[1]) > 2 || Number(match[1]) === 2 && Number(match[2]) >= 9));
+}
+
+export function supportsLargestClientSize() {
+  supportsLargestSizePromise ||= exec('tmux', ['-V']).then(({ stdout }) => supportsLargestSize(stdout));
+  return supportsLargestSizePromise;
 }
 
 export function parseSessions(output) {
@@ -70,5 +81,14 @@ export async function renameSession(name, newName) {
 }
 
 export async function preferLargestClientSize() {
+  if (!await supportsLargestClientSize()) return false;
   await exec('tmux', ['set-option', '-g', 'window-size', 'largest']);
+  return true;
+}
+
+export async function getSessionSize(name) {
+  if (!validateSessionName(name)) throw new Error('无效的会话名');
+  const { stdout } = await exec('tmux', ['display-message', '-p', '-t', `${name}:`, '#{window_width}\t#{window_height}']);
+  const [width, height] = stdout.trim().split('\t').map(Number);
+  return { width, height };
 }
