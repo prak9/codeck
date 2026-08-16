@@ -7,6 +7,7 @@ function hasRecentSessionFileModification(session, now = Date.now(), activityWin
 }
 
 export function isSessionActive(session, now = Date.now(), activityWindowMs = SESSION_ACTIVITY_WINDOW_MS) {
+  if (session?.hasRunningProcess) return true;
   const hasSessionFileSignal = hasRecentSessionFileModification(session, now, activityWindowMs);
   if (hasSessionFileSignal) return true;
   const fallbackActivityAt = Number(session?.activityAt);

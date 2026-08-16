@@ -36,3 +36,14 @@ test('session is done when no session file mtime', () => {
   assert.equal(isSessionActive(session, now), false);
   assert.equal(resolveSessionStatus(session, now), 'done');
 });
+
+test('session is working when process is running regardless of output window', () => {
+  const now = 200_000;
+  const session = {
+    sessionFileMtime: now - 60_000,
+    hasRunningProcess: true,
+    activityAt: now - 60_000,
+  };
+  assert.equal(isSessionActive(session, now), true);
+  assert.equal(resolveSessionStatus(session, now), 'working');
+});
