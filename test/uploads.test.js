@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  resolveDownloadPath,
   resolveUploadPath,
   sanitizePathSegment,
   saveFileUpload,
@@ -44,6 +45,15 @@ test('sanitizes file path segments and blocks traversal', () => {
 test('path helpers sanitize and normalize segments', () => {
   assert.equal(sanitizePathSegment('a/b\\c:*?'), 'a_b_c___');
   assert.equal(resolveUploadPath('../outside/../', 'a.txt', '/tmp/root').includes('root'), true);
+});
+
+test('download path resolver keeps access inside upload root', () => {
+  const root = `${os.homedir()}/.codeck/uploads`;
+  assert.equal(resolveDownloadPath(`${root}/a.txt`, root), `${root}/a.txt`);
+  assert.throws(() => resolveDownloadPath('/tmp/other/a.txt', root), /非法下载路径/);
+  assert.equal(resolveDownloadPath('a.txt', root), `${root}/a.txt`);
+  assert.equal(resolveDownloadPath('~/.codeck/uploads/b.txt', root), `${os.homedir()}/.codeck/uploads/b.txt`);
+  assert.throws(() => resolveDownloadPath('../outside.txt', root), /非法下载路径/);
 });
 
 test('rejects empty and unsupported image payloads', () => {

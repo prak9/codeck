@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +10,12 @@ import { authenticateToken, createShareToken } from './auth.js';
 import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
-import { saveFileUpload, saveImageUpload } from './uploads.js';
+import {
+  resolveDownloadPath,
+  saveFileUpload,
+  saveImageUpload,
+  uploadRoot,
+} from './uploads.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
@@ -118,6 +124,21 @@ app.post('/api/uploads/files', express.raw({ type: '*/*', limit: '100mb' }), (re
     const fileName = req.query.name || req.get('x-file-name') || 'upload';
     const relativePath = req.query.relativePath || req.get('x-relative-path') || '';
     res.status(201).json({ path: saveFileUpload(req.body, fileName, relativePath) });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/download', (req, res, next) => {
+  try {
+    const queryToken = req.query.token;
+    const tokenHeader = req.headers.authorization || '';
+    const token = tokenHeader.startsWith('Bearer ') ? tokenHeader.slice(7) : queryToken;
+    const auth = authenticateToken(accessToken, token);
+    if (!auth) return res.status(401).json({ error: '访问令牌无效或下载凭据已过期' });
+    const filePath = resolveDownloadPath(req.query.path, uploadRoot);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: '文件不存在' });
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.status(400).json({ error: '只能下载文件' });
+    res.download(filePath, path.basename(filePath));
   } catch (error) { next(error); }
 });
 

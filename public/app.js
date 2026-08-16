@@ -126,6 +126,59 @@ async function uploadFileBlob(file, relativePath) {
   return response.json();
 }
 
+function cleanDraggedPath(value) {
+  return String(value || '')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .trim()
+    .replace(/^[\(\[\{<"'`]+/, '')
+    .replace(/[)\]\}>"',。;:!?…。，]*$/, '');
+}
+
+function extractDownloadPath(selection) {
+  const text = String(selection || '').replace(/\r/g, '').trim();
+  if (!text) return null;
+  const quotedCandidates = [...text.matchAll(/(["'])(.*?)\1/g)];
+  for (const match of quotedCandidates) {
+    const raw = cleanDraggedPath(match[2]);
+    if (!raw) continue;
+    if (raw.startsWith('/home/') || raw.startsWith('~/.codeck/uploads/')) return raw;
+  }
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const tokens = lines.flatMap((line) => line.split(/\s+/));
+  for (const token of tokens) {
+    const raw = cleanDraggedPath(token);
+    if (!raw) continue;
+    if (raw.startsWith('/home/') || raw.startsWith('~/.codeck/uploads/')) return raw;
+  }
+  return null;
+}
+
+function buildDownloadUrl(filePath) {
+  const params = new URLSearchParams({ path: filePath });
+  if (state.token) params.set('token', state.token);
+  return `${location.origin}/api/download?${params}`;
+}
+
+function extractFileName(filePath) {
+  const segments = filePath.split('/').filter(Boolean);
+  return segments[segments.length - 1] || 'file';
+}
+
+function handleTerminalDragStart(event) {
+  if (!state.terminal?.getSelection) return;
+  const selected = state.terminal.getSelection();
+  const filePath = extractDownloadPath(selected);
+  if (!filePath) return;
+  const downloadUrl = buildDownloadUrl(filePath);
+  const fileName = extractFileName(filePath);
+  event.preventDefault();
+  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer?.setData('DownloadURL', `application/octet-stream:${fileName}:${downloadUrl}`);
+  event.dataTransfer?.setData('text/uri-list', downloadUrl);
+  event.dataTransfer?.setData('text/plain', filePath);
+  event.dataTransfer.dropEffect = 'copy';
+}
+
 function handleTerminalDragEnter(event) {
   if (!hasFileDrag(event)) return;
   event.preventDefault();
@@ -388,6 +441,7 @@ function ensureTerminal() {
   $('#terminal').addEventListener('dragover', handleTerminalDragOver, true);
   $('#terminal').addEventListener('dragleave', handleTerminalDragLeave, true);
   $('#terminal').addEventListener('drop', handleTerminalDrop, true);
+  $('#terminal').addEventListener('dragstart', handleTerminalDragStart, true);
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
     return !handleQuickSwitchKeydown(event);

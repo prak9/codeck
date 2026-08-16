@@ -39,6 +39,8 @@ CODECK_TOKEN='replace-with-a-long-secret' PORT=4310 HOST=0.0.0.0 npm start
 
 也支持将本地文件/文件夹直接拖拽到终端区域。拖拽目录会保留目录结构，上传后的文件路径会按同样路径写入 `~/.codeck/uploads` 并在终端中自动写入对应路径。
 
+支持从终端中选中 `~/.codeck/uploads/...` 下的文件路径直接拖拽到本地下载。拖拽时会携带当前 token，后端按 token 校验后返回文件二进制。
+
 ## 验证
 
 ```bash

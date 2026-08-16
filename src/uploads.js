@@ -40,6 +40,19 @@ export function resolveUploadPath(relativePath, fileName, root = uploadRoot) {
   return target;
 }
 
+export function resolveDownloadPath(rawPath, root = uploadRoot) {
+  const rootDir = path.resolve(root);
+  const normalized = String(rawPath || '').trim().replace(/^~\//, `${os.homedir()}/`);
+  if (!normalized) throw new Error('下载路径不能为空');
+  const target = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(rootDir, normalized);
+  const relation = path.relative(rootDir, target);
+  if (relation.startsWith('..') || relation === '..' || relation === '' && target !== rootDir) {
+    throw new Error('非法下载路径');
+  }
+  if (path.isAbsolute(relation)) throw new Error('非法下载路径');
+  return target;
+}
+
 export function saveFileUpload(content, fileName, relativePath, root = uploadRoot) {
   if (!Buffer.isBuffer(content)) throw new Error('上传内容必须是二进制数据');
   const target = resolveUploadPath(relativePath, fileName, root);

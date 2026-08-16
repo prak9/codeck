@@ -1,4 +1,4 @@
-const SESSION_ACTIVITY_WINDOW_MS = 30_000;
+const SESSION_ACTIVITY_WINDOW_MS = 5_000;
 
 function hasRecentSessionFileModification(session, now = Date.now(), activityWindowMs = SESSION_ACTIVITY_WINDOW_MS) {
   const currentFileTime = Number(session?.sessionFileMtime);
