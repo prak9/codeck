@@ -151,7 +151,7 @@ export async function listSessions() {
     const activityBySession = new Map(
       await Promise.all([...agents.entries()].map(async ([sessionName, agent]) => [
         sessionName,
-        resolveAgentSessionActivity(agent),
+        resolveAgentSessionActivity(agent, process.env, sessionName),
       ])),
     );
 

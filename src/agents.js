@@ -116,6 +116,30 @@ function fileContainsAny(filePath, needles, chunkSize = 128 * 1024) {
   }
 }
 
+function isCandidateTokenMatch(filePath, token) {
+  if (!token) return false;
+  const fileName = path.basename(filePath);
+  const tokenString = String(token);
+  if (fileName.includes(tokenString)) return true;
+  const slash = path.sep;
+  const escaped = tokenString
+    .replaceAll('\\', '/')
+    .replaceAll('.', '\\.')
+    .replaceAll('+', '\\+')
+    .replaceAll('?', '\\?')
+    .replaceAll('*', '\\*')
+    .replaceAll('(', '\\(')
+    .replaceAll(')', '\\)')
+    .replaceAll('[', '\\[')
+    .replaceAll(']', '\\]')
+    .replaceAll('{', '\\{')
+    .replaceAll('}', '\\}')
+    .replaceAll('$', '\\$')
+    .replaceAll('^', '\\^');
+  const tokenPath = `${slash}${escaped}${slash}`;
+  return filePath.includes(tokenPath) || filePath.includes(tokenString);
+}
+
 function latestActivityMtimeForThreadId(homeRoot, threadId, now = Date.now()) {
   const id = String(threadId || '').trim();
   if (!id) return null;
@@ -126,15 +150,14 @@ function latestActivityMtimeForThreadId(homeRoot, threadId, now = Date.now()) {
   const files = getLoggedFileList(homeRoot, now);
   let latest = null;
   for (const item of files) {
-    const name = path.basename(item.path);
-    if (name.includes(id)) {
+    if (isCandidateTokenMatch(item.path, id)) {
       latest = Math.max(latest ?? -Infinity, item.mtime);
       break;
     }
   }
 
   if (latest == null) {
-    for (const item of files.slice(0, 20)) {
+    for (const item of files) {
       if (fileContainsAny(item.path, [`\"thread_id\":\"${id}\"`, `\"parent_thread_id\":\"${id}\"`, `\"session_id\":\"${id}\"`, id])) {
         latest = Math.max(latest ?? -Infinity, item.mtime);
         break;
@@ -202,26 +225,53 @@ async function readCodexPaneIdentity(session) {
   } catch { return null; }
 }
 
-export function resolveAgentSessionActivity(agent, env = process.env) {
+export function resolveAgentSessionActivity(agent, env = process.env, fallbackSessionName = null) {
   const now = Date.now();
   if (!agent?.kind) return null;
 
+  const candidates = [
+    agent.id,
+    agent.name,
+    fallbackSessionName,
+  ].map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+
+  const uniqueCandidates = [...new Set(candidates)];
+
   if (agent.kind === 'codex') {
     const codexHome = env.CODEX_HOME || path.join(os.homedir(), '.codex');
-    return latestActivityMtimeForThreadId(codexHome, agent.id, now);
+    let latest = null;
+    for (const candidate of uniqueCandidates) {
+      const activityMtime = latestActivityMtimeForThreadId(codexHome, candidate, now);
+      if (Number.isFinite(activityMtime)) {
+        latest = Math.max(latest ?? -Infinity, activityMtime);
+      }
+    }
+    return latest;
   }
 
   if (agent.kind === 'claude') {
     const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-    if (agent.id) return latestActivityMtimeForThreadId(claudeHome, agent.id, now);
-    if (agent.name) return latestActivityMtimeForThreadId(claudeHome, agent.name, now);
-    return null;
+    let latest = null;
+    for (const candidate of uniqueCandidates) {
+      const activityMtime = latestActivityMtimeForThreadId(claudeHome, candidate, now);
+      if (Number.isFinite(activityMtime)) {
+        latest = Math.max(latest ?? -Infinity, activityMtime);
+      }
+    }
+    return latest;
   }
 
   if (agent.kind === 'qodercli') {
     const qoderHome = env.QODER_HOME || path.join(os.homedir(), '.qoder');
-    if (agent.id) return latestActivityMtimeForThreadId(qoderHome, agent.id, now);
-    return null;
+    let latest = null;
+    for (const candidate of uniqueCandidates) {
+      const activityMtime = latestActivityMtimeForThreadId(qoderHome, candidate, now);
+      if (Number.isFinite(activityMtime)) {
+        latest = Math.max(latest ?? -Infinity, activityMtime);
+      }
+    }
+    return latest;
   }
 
   return null;
@@ -254,9 +304,10 @@ export async function detectPaneAgents(panes, env = process.env) {
       agents.set(pane.session, { kind: 'codex', id, name });
     } else if (kind === 'claude') {
       const id = process.command.match(new RegExp(`(?:--resume(?:=|\\s+)|-r\\s+)(${UUID})`, 'i'))?.[1] || null;
-      agents.set(pane.session, { kind: 'claude', id, name: findClaudeSlug(id, claudeHome) });
+      const name = findClaudeSlug(id, claudeHome) || pane.session;
+      agents.set(pane.session, { kind: 'claude', id, name });
     } else {
-      agents.set(pane.session, { kind: 'qodercli', id: null, name: null });
+      agents.set(pane.session, { kind: 'qodercli', id: null, name: pane.session });
     }
   }
   return agents;

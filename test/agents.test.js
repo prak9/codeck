@@ -59,6 +59,29 @@ test('uses CLAUDE_CONFIG_DIR as activity lookup root for claude sessions', () =>
   }
 });
 
+test('can resolve claude activity using fallback session name', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-test-claude-name-'));
+  const logRoot = path.join(root, '.claude');
+  const researchDir = path.join(logRoot, 'work', 'research');
+  const logFile = path.join(researchDir, 'activity.jsonl');
+  const before = Date.now() - 1_000;
+
+  try {
+    fs.mkdirSync(researchDir, { recursive: true });
+    fs.writeFileSync(logFile, JSON.stringify({ project: 'research', status: 'running' }));
+    fs.utimesSync(logFile, before / 1000, before / 1000);
+    const activity = resolveAgentSessionActivity(
+      { kind: 'claude', id: null, name: null },
+      { CLAUDE_CONFIG_DIR: logRoot },
+      'research',
+    );
+    assert.ok(Number.isFinite(activity));
+    assert.equal(activity <= Date.now(), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('uses QODER_HOME as activity lookup root for qodercli sessions', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-test-qoder-'));
   const logRoot = path.join(root, '.qoder');
@@ -71,6 +94,29 @@ test('uses QODER_HOME as activity lookup root for qodercli sessions', () => {
     fs.writeFileSync(logFile, JSON.stringify({ thread_id: id }));
     fs.utimesSync(logFile, before / 1000, before / 1000);
     const activity = resolveAgentSessionActivity({ kind: 'qodercli', id, name: null }, { QODER_HOME: logRoot });
+    assert.ok(Number.isFinite(activity));
+    assert.equal(activity <= Date.now(), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('can resolve qodercli activity using fallback session name', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-test-qoder-name-'));
+  const logRoot = path.join(root, '.qoder');
+  const researchDir = path.join(logRoot, 'work', 'research');
+  const logFile = path.join(researchDir, 'session.jsonl');
+  const before = Date.now() - 1_000;
+
+  try {
+    fs.mkdirSync(researchDir, { recursive: true });
+    fs.writeFileSync(logFile, JSON.stringify({ event: 'tool_call', session: 'research' }));
+    fs.utimesSync(logFile, before / 1000, before / 1000);
+    const activity = resolveAgentSessionActivity(
+      { kind: 'qodercli', id: null, name: null },
+      { QODER_HOME: logRoot },
+      'research',
+    );
     assert.ok(Number.isFinite(activity));
     assert.equal(activity <= Date.now(), true);
   } finally {
