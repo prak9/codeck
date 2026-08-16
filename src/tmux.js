@@ -35,7 +35,6 @@ const WORKER_COMMANDS = new Set([
   'cmake',
   'gradle',
   'mvn',
-  'node',
   'bun',
   'deno',
   'ruby',
