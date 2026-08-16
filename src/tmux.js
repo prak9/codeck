@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { detectPaneAgents } from './agents.js';
+import { detectPaneAgents, resolveAgentSessionActivity } from './agents.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
@@ -148,6 +148,12 @@ export async function listSessions() {
       const sessionAgent = agents.get(sessionName);
       runningBySession.set(sessionName, hasRunningProcessInSession(pids, processLookup, Boolean(sessionAgent)));
     }
+    const activityBySession = new Map(
+      await Promise.all([...agents.entries()].map(async ([sessionName, agent]) => [
+        sessionName,
+        resolveAgentSessionActivity(agent),
+      ])),
+    );
 
     return parseSessions(stdout)
       .map((session) => ({
@@ -155,7 +161,9 @@ export async function listSessions() {
         agent: agents.get(session.name) || null,
         currentCommand: paneCommandBySession.get(session.name) || 'bash',
         hasRunningProcess: runningBySession.get(session.name) || false,
-        sessionFileMtime: session.activityAt,
+        sessionFileMtime: Number.isFinite(activityBySession.get(session.name))
+          ? activityBySession.get(session.name)
+          : session.activityAt,
       }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt) || a.name.localeCompare(b.name));
   } catch (error) {

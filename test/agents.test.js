@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename } from '../src/agents.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { agentKindFromCommand, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename, resolveAgentSessionActivity } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -34,4 +37,43 @@ test('recognizes supported agent CLI processes', () => {
   assert.equal(agentKindFromCommand('/usr/local/bin/claude --resume abc'), 'claude');
   assert.equal(agentKindFromCommand('/opt/qoder/bin/qodercli --continue'), 'qodercli');
   assert.equal(agentKindFromCommand('/bin/bash'), null);
+});
+
+test('uses CLAUDE_CONFIG_DIR as activity lookup root for claude sessions', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-test-claude-'));
+  const logRoot = path.join(root, '.claude');
+  const logDir = path.join(logRoot, 'projects');
+  const id = '019fe08c-beed-79b0-aef6-b1d4b40506bb';
+  const logFile = path.join(logDir, `${id}.jsonl`);
+  const before = Date.now() - 2_000;
+
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(logFile, JSON.stringify({ thread_id: id }));
+    fs.utimesSync(logFile, before / 1000, before / 1000);
+    const activity = resolveAgentSessionActivity({ kind: 'claude', id, name: null }, { CLAUDE_CONFIG_DIR: logRoot });
+    assert.ok(Number.isFinite(activity));
+    assert.equal(activity <= Date.now(), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('uses QODER_HOME as activity lookup root for qodercli sessions', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-test-qoder-'));
+  const logRoot = path.join(root, '.qoder');
+  const id = '01a00327-27df-7f12-8505-176abc010ea0';
+  const logFile = path.join(logRoot, `${id}.jsonl`);
+  const before = Date.now() - 2_000;
+
+  try {
+    fs.mkdirSync(logRoot, { recursive: true });
+    fs.writeFileSync(logFile, JSON.stringify({ thread_id: id }));
+    fs.utimesSync(logFile, before / 1000, before / 1000);
+    const activity = resolveAgentSessionActivity({ kind: 'qodercli', id, name: null }, { QODER_HOME: logRoot });
+    assert.ok(Number.isFinite(activity));
+    assert.equal(activity <= Date.now(), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
