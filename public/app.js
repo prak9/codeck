@@ -8,7 +8,7 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
-const SESSION_LIST_POLL_MS = 5000;
+const SESSION_LIST_POLL_MS = 10_000;
 const state = {
   token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
   sessions: [],

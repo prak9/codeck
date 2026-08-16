@@ -22,7 +22,7 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
-const SESSION_STATUS_POLL_MS = 5_000;
+const SESSION_STATUS_POLL_MS = 10_000;
 const sessionStatusByName = new Map();
 
 async function refreshSessionStatuses() {
