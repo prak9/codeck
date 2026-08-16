@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
@@ -45,6 +46,9 @@ export const AGENT_SCREEN_MARKERS = {
     background: { lines: 1, patterns: [] },
   },
 };
+// A working pane repaints at least once a second; allow a missed poll before going idle.
+const SCREEN_ACTIVITY_WINDOW_MS = 6_000;
+const screenActivity = new Map();
 let supportsWindowSizePromise;
 
 export function validateSessionName(name) {
@@ -127,15 +131,34 @@ export function resolveScreenSignals(output, markers) {
   return { busy: matches(markers.busy), background: matches(markers.background) };
 }
 
-function readScreenSignals(paneId, markers) {
-  if (!paneId || !markers) return Promise.resolve({ busy: false, background: false });
+// Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
+// a custom statusline adds a row, and a modal such as /usage hides the footer outright.
+// Whether the pane is repainting at all survives every one of those, and it needs no
+// knowledge of the agent's interface, so it also covers agents we have never inspected.
+// A working agent always animates something, at minimum the elapsed seconds in its
+// spinner, while an idle pane is byte for byte identical between polls.
+export function resolveScreenActivity(previous, output, now) {
+  const hash = createHash('sha1').update(String(output || '')).digest('hex');
+  if (!previous) return { hash, changedAt: 0 };
+  return { hash, changedAt: previous.hash === hash ? previous.changedAt : now };
+}
+
+function readScreenSignals(session, paneId, markers, now) {
+  if (!paneId || !markers) return Promise.resolve({ busy: false, background: false, animating: false });
   return exec('tmux', ['capture-pane', '-p', '-t', paneId])
-    .then(({ stdout }) => resolveScreenSignals(stdout, markers))
-    .catch(() => ({ busy: false, background: false }));
+    .then(({ stdout }) => {
+      const activity = resolveScreenActivity(screenActivity.get(session), stdout, now);
+      screenActivity.set(session, activity);
+      return {
+        ...resolveScreenSignals(stdout, markers),
+        animating: now - activity.changedAt < SCREEN_ACTIVITY_WINDOW_MS,
+      };
+    })
+    .catch(() => ({ busy: false, background: false, animating: false }));
 }
 
 export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) {
-  if (agentKind) return Boolean(screenSignals?.busy || screenSignals?.background);
+  if (agentKind) return Boolean(screenSignals?.busy || screenSignals?.background || screenSignals?.animating);
   return (paneCommands || []).some((command) => !isShellCommand(command));
 }
 
@@ -160,15 +183,19 @@ export async function listSessions() {
       paneCommandsBySession.set(pane.session, list);
     }
 
+    const now = Date.now();
     const agents = await detectPaneAgents(panes);
     const screenSignalsBySession = new Map(
       await Promise.all(panes
         .filter((pane) => agents.has(pane.session))
         .map(async (pane) => [
           pane.session,
-          await readScreenSignals(pane.paneId, AGENT_SCREEN_MARKERS[agents.get(pane.session).kind]),
+          await readScreenSignals(pane.session, pane.paneId, AGENT_SCREEN_MARKERS[agents.get(pane.session).kind], now),
         ])),
     );
+    for (const session of screenActivity.keys()) {
+      if (!screenSignalsBySession.has(session)) screenActivity.delete(session);
+    }
 
     return parseSessions(stdout)
       .map((session) => ({

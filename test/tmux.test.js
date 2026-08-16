@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, parseSessions, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, parseSessions, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -175,4 +175,41 @@ test('past-tense turn summaries are not spinners', () => {
 test('a widened busy window still ignores shell commands named in the transcript', () => {
   assert.equal(signals(CLAUDE_BUSY_WITH_QUEUED_MESSAGES, 'claude').background, false);
   assert.equal(signals(CLAUDE_IDLE_AFTER_SHELL_TOOLS, 'claude').background, false);
+});
+
+test('screen activity only counts a pane as animating once it actually changes', () => {
+  const first = resolveScreenActivity(undefined, 'frame one', 1_000);
+  assert.equal(first.changedAt, 0, 'a pane seen once has nothing to compare against');
+
+  const unchanged = resolveScreenActivity(first, 'frame one', 2_000);
+  assert.equal(unchanged.changedAt, 0);
+  assert.equal(unchanged.hash, first.hash);
+
+  const changed = resolveScreenActivity(unchanged, 'frame two', 3_000);
+  assert.equal(changed.changedAt, 3_000);
+
+  const stillChanged = resolveScreenActivity(changed, 'frame two', 4_000);
+  assert.equal(stillChanged.changedAt, 3_000, 'the timestamp holds until the next change');
+});
+
+test('a repainting pane is working even when no marker is visible', () => {
+  const working = (screenSignals) => resolveWorkingState({ agentKind: 'qodercli', screenSignals, paneCommands: ['bash'] });
+  assert.equal(working({ busy: false, background: false, animating: true }), true);
+  assert.equal(working({ busy: false, background: false, animating: false }), false);
+});
+
+test('a modal hiding the footer does not lose a busy session', () => {
+  // /usage covers the footer, so both markers miss and only the repaint remains.
+  const usageModal = `
+   Subagents               % of usage
+   Explore                         3%
+   d to day · w to week
+   Esc to cancel
+`;
+  assert.deepEqual(signals(usageModal, 'claude'), { busy: false, background: false });
+  assert.equal(resolveWorkingState({
+    agentKind: 'claude',
+    screenSignals: { ...signals(usageModal, 'claude'), animating: true },
+    paneCommands: ['bash'],
+  }), true);
 });
