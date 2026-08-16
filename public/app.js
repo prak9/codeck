@@ -421,7 +421,10 @@ async function handleTerminalDrop(event) {
 function ensureTerminal() {
   if (state.terminal) return state.terminal;
   const terminal = new Terminal({
-    cursorBlink: true, cursorStyle: 'block', convertEol: true,
+    // convertEol would reset the cursor column on every bare LF. tmux emits those to move
+    // down while keeping the column, then erases and redraws from there, so forcing the
+    // column to 0 makes the erase miss and leaves the previous frame's text behind.
+    cursorBlink: true, cursorStyle: 'block',
     fontFamily: '"Courier New", "Noto Sans SC Variable", monospace',
     fontSize: 16, lineHeight: 1.2, scrollback: 5000,
     theme: {
