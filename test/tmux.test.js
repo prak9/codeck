@@ -43,6 +43,32 @@ const CLAUDE_BUSY = `
   ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ⇥ for agents
 `;
 
+// The footer drops "esc to interrupt" once messages are queued, and a custom statusline
+// pushes the spinner further from the bottom, so only the spinner marks this one busy.
+const CLAUDE_BUSY_WITH_QUEUED_MESSAGES = `
+  Ran 1 shell command
+● Running 1 shell command…
+  ⎿  $ tmux capture-pane -p -t codeck
+* Gesticulating… (1m 58s · ↓ 6.1k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+  ❯ /statusline
+  ❯ /statusline
+────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────
+  x@lq-U2404Cal16:/data/code/codeck
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+`;
+
+const CLAUDE_IDLE_WITH_STATUSLINE = `
+✻ Cooked for 49s
+────────────────────────────────
+❯
+────────────────────────────────
+  x@lq-U2404Cal16:/home/x/py
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+`;
+
 const CLAUDE_IDLE = `
 ✻ Worked for 45s
 ────────────────────────────────
@@ -130,4 +156,23 @@ test('an idle python REPL in an agent pane no longer forces the working state', 
     screenSignals: { busy: false, background: false },
     paneCommands: ['python3'],
   }), false);
+});
+
+test('the spinner marks a turn busy when the footer hint is gone', () => {
+  assert.deepEqual(signals(CLAUDE_BUSY_WITH_QUEUED_MESSAGES, 'claude'), { busy: true, background: false });
+});
+
+test('a finished turn reads as idle even behind a custom statusline', () => {
+  assert.deepEqual(signals(CLAUDE_IDLE_WITH_STATUSLINE, 'claude'), { busy: false, background: false });
+});
+
+test('past-tense turn summaries are not spinners', () => {
+  for (const line of ['✻ Worked for 45s', '✻ Cooked for 49s', '✻ Churned for 27s · 1 shell, 1 monitor still running']) {
+    assert.equal(signals(line, 'claude').busy, false, line);
+  }
+});
+
+test('a widened busy window still ignores shell commands named in the transcript', () => {
+  assert.equal(signals(CLAUDE_BUSY_WITH_QUEUED_MESSAGES, 'claude').background, false);
+  assert.equal(signals(CLAUDE_IDLE_AFTER_SHELL_TOOLS, 'claude').background, false);
 });

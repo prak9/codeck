@@ -19,25 +19,30 @@ const SHELL_COMMANDS = new Set([
 ]);
 // An agent waiting on the model sleeps on a socket at 0% CPU, so the process tree cannot
 // tell working from idle. Each agent does render its own busy affordance, so read that
-// instead. `lines` is how many trailing non-empty lines of the visible pane make up the
-// status area: Claude Code keeps both markers in the footer, while codex prints them a
-// few lines above it. Matching a wider window would let stale transcript text ("Ran 1
-// shell command") pin the indicator on.
+// instead. `lines` is how many trailing non-empty lines of the visible pane a marker may
+// appear on, counted separately per marker because the two sit at different heights.
+//
+// Claude Code's spinner is the dependable busy signal, and it is structural rather than
+// lexical: a gerund, an ellipsis, then an elapsed timer in parentheses ("Gesticulating…
+// (1m 58s · ↓ 6.1k tokens)"). The finished turn keeps the same glyph but drops both the
+// ellipsis and the parentheses ("Worked for 45s"), so the shape separates them while the
+// randomised verb cannot. "esc to interrupt" is a weaker second source: the footer swaps
+// it out whenever messages are queued.
+//
+// Background tasks are matched on the footer alone. Widening that window would let a
+// transcript line like "Ran 1 shell command" pin the indicator on for good.
 export const AGENT_SCREEN_MARKERS = {
   claude: {
-    lines: 1,
-    busy: [/esc to interrupt/i],
-    background: [/\b\d+\s+(?:shell|monitor|task)s?\b/i],
+    busy: { lines: 12, patterns: [/^[^\p{L}\n]{0,4}\p{L}+…\s*\(\d/u, /esc to interrupt/i] },
+    background: { lines: 1, patterns: [/\b\d+\s+(?:shell|monitor|task)s?\b/i] },
   },
   codex: {
-    lines: 6,
-    busy: [/esc to interrupt/i, /^[\s•·]*(?:working|thinking)\b/i],
-    background: [/\b\d+\s+background\s+terminals?\s+running\b/i],
+    busy: { lines: 6, patterns: [/esc to interrupt/i, /^[\s•·]*(?:working|thinking)\b/i] },
+    background: { lines: 6, patterns: [/\b\d+\s+background\s+terminals?\s+running\b/i] },
   },
   qodercli: {
-    lines: 6,
-    busy: [/esc to interrupt/i],
-    background: [],
+    busy: { lines: 6, patterns: [/esc to interrupt/i] },
+    background: { lines: 1, patterns: [] },
   },
 };
 let supportsWindowSizePromise;
@@ -115,9 +120,10 @@ export function resolveScreenSignals(output, markers) {
   const lines = String(output || '')
     .split('\n')
     .map((line) => stripAnsi(line).trim())
-    .filter((line) => line.length > 0)
-    .slice(-markers.lines);
-  const matches = (patterns) => lines.some((line) => patterns.some((pattern) => pattern.test(line)));
+    .filter((line) => line.length > 0);
+  const matches = ({ lines: window, patterns }) => lines
+    .slice(-window)
+    .some((line) => patterns.some((pattern) => pattern.test(line)));
   return { busy: matches(markers.busy), background: matches(markers.background) };
 }
 
