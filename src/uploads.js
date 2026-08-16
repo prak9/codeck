@@ -18,6 +18,36 @@ const SIGNATURES = {
 
 export const uploadRoot = path.join(os.homedir(), '.codeck', 'uploads');
 
+export function sanitizePathSegment(raw) {
+  const normalized = (raw || '').normalize('NFKC').replace(/\r?\n/g, '_');
+  const cleaned = normalized
+    .replace(/[<>:"|?*\\\/]/g, '_')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'item';
+  return cleaned;
+}
+
+export function resolveUploadPath(relativePath, fileName, root = uploadRoot) {
+  const rootDir = path.resolve(root);
+  const directoryParts = String(relativePath || '').split(/[\\/]+/).filter(Boolean).map(sanitizePathSegment);
+  const safeFileName = sanitizePathSegment(fileName || 'upload');
+  const target = path.resolve(rootDir, ...directoryParts, safeFileName);
+  const relation = path.relative(rootDir, target);
+  if (relation.startsWith('..') || path.isAbsolute(relation)) {
+    throw new Error('非法的上传路径');
+  }
+  return target;
+}
+
+export function saveFileUpload(content, fileName, relativePath, root = uploadRoot) {
+  if (!Buffer.isBuffer(content)) throw new Error('上传内容必须是二进制数据');
+  const target = resolveUploadPath(relativePath, fileName, root);
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, content, { mode: 0o600 });
+  return target;
+}
+
 export function saveImageUpload(content, contentType, root = uploadRoot) {
   const extension = EXTENSIONS.get(contentType);
   if (!extension) throw new Error('仅支持 PNG、JPEG、WebP 或 GIF 图片格式');

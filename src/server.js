@@ -9,7 +9,7 @@ import { authenticateToken, createShareToken } from './auth.js';
 import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
-import { saveImageUpload } from './uploads.js';
+import { saveFileUpload, saveImageUpload } from './uploads.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
@@ -113,9 +113,21 @@ app.post('/api/uploads/images', express.raw({ type: 'image/*', limit: '10mb' }),
   } catch (error) { next(error); }
 });
 
+app.post('/api/uploads/files', express.raw({ type: '*/*', limit: '100mb' }), (req, res, next) => {
+  try {
+    const fileName = req.query.name || req.get('x-file-name') || 'upload';
+    const relativePath = req.query.relativePath || req.get('x-relative-path') || '';
+    res.status(201).json({ path: saveFileUpload(req.body, fileName, relativePath) });
+  } catch (error) { next(error); }
+});
+
 app.use(express.static(path.join(dirname, '../public')));
 app.use((error, _req, res, _next) => {
-  const status = error.type === 'entity.too.large' ? 413 : /无效|只能|未知|格式|为空/.test(error.message) ? 400 : 500;
+  const status = error.type === 'entity.too.large'
+    ? 413
+    : /无效|只能|未知|格式|为空|非法|上传/.test(error.message)
+      ? 400
+      : 500;
   res.status(status).json({ error: error.message || '服务器操作失败' });
 });
 

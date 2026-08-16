@@ -18,6 +18,7 @@ const state = {
   fit: null,
   sessionsRefreshSeq: 0,
   connectionId: 0,
+  terminalDropDepth: 0,
   overview: true,
   fitting: false,
   supportsLargestSize: true,
@@ -38,6 +39,119 @@ async function api(path, options = {}) {
     throw new Error(body.error || `请求失败 (${response.status})`);
   }
   return response.status === 204 ? null : response.json();
+}
+
+function shellQuotePath(value) {
+  return `'${String(value).replaceAll("'", "'\\\\''")}'`;
+}
+
+function hasFileDrag(event) {
+  return [...(event.dataTransfer?.types || [])].includes('Files');
+}
+
+function getEntryFromItem(item) {
+  return typeof item?.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+}
+
+function readDirectoryEntries(reader) {
+  return new Promise((resolve, reject) => {
+    reader.readEntries((entries) => resolve(entries || []), (error) => reject(error || new Error('读取目录条目失败')));
+  });
+}
+
+async function collectFilesFromEntry(entry, prefix = '') {
+  if (!entry) return [];
+  if (entry.isFile && typeof entry.file === 'function') {
+    const file = await new Promise((resolve, reject) => {
+      entry.file(resolve, reject);
+    });
+    return file ? [{ file, relativePath: prefix }] : [];
+  }
+  if (entry.isDirectory && typeof entry.createReader === 'function') {
+    const reader = entry.createReader();
+    const childPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const files = [];
+    while (true) {
+      const children = await readDirectoryEntries(reader);
+      if (!children.length) break;
+      for (const child of children) {
+        files.push(...await collectFilesFromEntry(child, childPrefix));
+      }
+    }
+    return files;
+  }
+  return [];
+}
+
+function getFallbackRelativeDirectory(file) {
+  const relativePath = String(file?.webkitRelativePath || '');
+  const normalized = relativePath.replaceAll('\\', '/');
+  const lastSlash = normalized.lastIndexOf('/');
+  return lastSlash < 0 ? '' : normalized.slice(0, lastSlash);
+}
+
+async function collectDroppedFilesFromDataTransfer(dataTransfer) {
+  const items = [...(dataTransfer?.items || [])];
+  const files = [];
+  for (const item of items) {
+    const entry = getEntryFromItem(item);
+    if (entry) {
+      files.push(...await collectFilesFromEntry(entry, ''));
+      continue;
+    }
+    const file = item?.getAsFile?.();
+    if (file) files.push({ file, relativePath: getFallbackRelativeDirectory(file) });
+  }
+  if (!files.length) {
+    for (const file of [...(dataTransfer?.files || [])]) {
+      if (file) files.push({ file, relativePath: getFallbackRelativeDirectory(file) });
+    }
+  }
+  return files;
+}
+
+async function uploadFileBlob(file, relativePath) {
+  const params = new URLSearchParams({ name: file.name });
+  if (relativePath) params.set('relativePath', relativePath);
+  const response = await fetch(`/api/uploads/files?${params}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${state.token}` },
+    body: file,
+  });
+  if (response.status === 401) throw new Error('UNAUTHORIZED');
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `请求失败 (${response.status})`);
+  }
+  return response.json();
+}
+
+function handleTerminalDragEnter(event) {
+  if (!hasFileDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.terminalDropDepth = (state.terminalDropDepth || 0) + 1;
+  $('#terminal').closest('.terminal-frame')?.classList.add('drag-over');
+  event.dataTransfer.dropEffect = 'copy';
+}
+
+function handleTerminalDragOver(event) {
+  if (!hasFileDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.terminalDropDepth = state.terminalDropDepth || 0;
+  event.dataTransfer.dropEffect = 'copy';
+}
+
+function handleTerminalDragLeave(event) {
+  if (!hasFileDrag(event)) return;
+  if (!state.terminalDropDepth) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.terminalDropDepth = Math.max(0, state.terminalDropDepth - 1);
+  if (!state.terminalDropDepth) {
+    $('#terminal').closest('.terminal-frame')?.classList.remove('drag-over');
+  }
 }
 
 function timeAgo(timestamp) {
@@ -219,12 +333,35 @@ async function pasteImages(event) {
       method: 'POST', headers: { 'Content-Type': file.type }, body: file,
     })));
     if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
-    const paths = uploads.map((upload) => `'${upload.path.replaceAll("'", "'\\\\''")}'`).join(' ');
+    const paths = uploads.map((upload) => shellQuotePath(upload.path)).join(' ');
     socket.send(JSON.stringify({ type: 'input', data: paths }));
     setConnectionMessage(images.length > 1 ? `已粘贴 ${images.length} 张图片` : '图片已粘贴');
     state.terminal.focus();
   } catch (error) {
     setConnectionMessage(error.message === 'UNAUTHORIZED' ? '令牌已失效' : `图片上传失败：${error.message}`);
+  }
+}
+
+async function handleTerminalDrop(event) {
+  if (!hasFileDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.terminalDropDepth = 0;
+  $('#terminal').closest('.terminal-frame')?.classList.remove('drag-over');
+  const socket = state.socket;
+  const files = await collectDroppedFilesFromDataTransfer(event.dataTransfer);
+  if (!files.length) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
+  setConnectionMessage(files.length > 1 ? `正在上传 ${files.length} 个文件…` : '正在上传文件…', false);
+  try {
+    const uploads = await Promise.all(files.map((entry) => uploadFileBlob(entry.file, entry.relativePath)));
+    if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
+    const paths = uploads.map((upload) => shellQuotePath(upload.path)).join(' ');
+    if (paths) socket.send(JSON.stringify({ type: 'input', data: paths }));
+    setConnectionMessage(files.length > 1 ? `已上传 ${files.length} 个文件` : '文件已上传');
+    state.terminal?.focus();
+  } catch (error) {
+    setConnectionMessage(error.message === 'UNAUTHORIZED' ? '令牌已失效' : `文件上传失败：${error.message}`);
   }
 }
 
@@ -247,6 +384,10 @@ function ensureTerminal() {
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
   $('#terminal').addEventListener('paste', pasteImages, true);
+  $('#terminal').addEventListener('dragenter', handleTerminalDragEnter, true);
+  $('#terminal').addEventListener('dragover', handleTerminalDragOver, true);
+  $('#terminal').addEventListener('dragleave', handleTerminalDragLeave, true);
+  $('#terminal').addEventListener('drop', handleTerminalDrop, true);
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
     return !handleQuickSwitchKeydown(event);
