@@ -22,28 +22,6 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
-const SESSION_STATUS_POLL_MS = 3_000;
-const sessionStatusByName = new Map();
-
-async function refreshSessionStatuses() {
-  try {
-    const sessions = await listSessions();
-    const next = new Map();
-    for (const session of sessions) {
-      next.set(session.name, resolveSessionStatus(session));
-    }
-    sessionStatusByName.clear();
-    for (const [name, status] of next) sessionStatusByName.set(name, status);
-  } catch {
-    // keep stale cache when tmux is temporarily unavailable
-  }
-}
-
-setInterval(() => {
-  void refreshSessionStatuses();
-}, SESSION_STATUS_POLL_MS);
-void refreshSessionStatuses();
-
 
 app.use(express.json({ limit: '16kb' }));
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
@@ -74,7 +52,7 @@ app.get('/api/sessions', async (req, res, next) => {
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
     const enriched = sessions.map((session) => ({
       ...session,
-      status: sessionStatusByName.get(session.name) || 'done',
+      status: resolveSessionStatus(session),
     }));
     res.json({ sessions: enriched, capabilities: { largestSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }

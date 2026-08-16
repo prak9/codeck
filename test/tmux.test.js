@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSessions, supportsLargestSize, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, parseSessions, resolveScreenSignals, resolveWorkingState, supportsLargestSize, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -30,4 +30,104 @@ test('accepts safe session names and known clients', () => {
 test('rejects names that could become tmux or shell arguments', () => {
   for (const name of ['', '-bad', 'two words', 'x;whoami', 'a'.repeat(65)]) assert.equal(validateSessionName(name), false);
   assert.equal(validateClient('bash -c whoami'), false);
+});
+
+// Screens below are verbatim captures from live panes, trimmed to the status area.
+const CLAUDE_BUSY = `
+✳ Perambulating… (3m 15s · ↓ 15.1k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────
+❯
+────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ⇥ for agents
+`;
+
+const CLAUDE_IDLE = `
+✻ Worked for 45s
+────────────────────────────────
+❯
+────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+`;
+
+const CLAUDE_BACKGROUND = `
+✻ Churned for 27s · 1 shell, 1 monitor still running
+────────────────────────────────
+❯
+────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · ← for agents · ↓ to manage
+`;
+
+const CLAUDE_IDLE_AFTER_SHELL_TOOLS = `
+  Ran 1 shell command
+  Pushed to main, ran 1 shell command
+✻ Worked for 45s
+────────────────────────────────
+❯
+────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+`;
+
+const CODEX_IDLE = `
+› Use /skills to list available skills
+
+  gpt-5.3-codex-spark xhigh · ~/py
+`;
+
+const CODEX_BACKGROUND = `
+  1 background terminal running · /ps to view · /stop to close
+
+› Use /skills to list available skills
+
+  gpt-5.3-codex-spark xhigh · ~/py
+`;
+
+const signals = (output, kind) => resolveScreenSignals(output, AGENT_SCREEN_MARKERS[kind]);
+
+test('reads the claude turn-in-flight marker from the footer', () => {
+  assert.deepEqual(signals(CLAUDE_BUSY, 'claude'), { busy: true, background: false });
+  assert.deepEqual(signals(CLAUDE_IDLE, 'claude'), { busy: false, background: false });
+});
+
+test('reads claude background tasks that outlive the turn', () => {
+  assert.deepEqual(signals(CLAUDE_BACKGROUND, 'claude'), { busy: false, background: true });
+});
+
+test('transcript text mentioning shell commands does not count as background work', () => {
+  assert.deepEqual(signals(CLAUDE_IDLE_AFTER_SHELL_TOOLS, 'claude'), { busy: false, background: false });
+});
+
+test('reads the codex run state and background terminals', () => {
+  assert.deepEqual(signals(CODEX_IDLE, 'codex'), { busy: false, background: false });
+  assert.deepEqual(signals(CODEX_BACKGROUND, 'codex'), { busy: false, background: true });
+  assert.equal(signals('• Working (12s · Esc to interrupt)', 'codex').busy, true);
+});
+
+test('a completed claude turn is not mistaken for the codex working state', () => {
+  assert.equal(signals(CLAUDE_IDLE, 'codex').busy, false);
+});
+
+test('agent sessions are working while the agent runs or owns background tasks', () => {
+  const working = (screenSignals) => resolveWorkingState({ agentKind: 'claude', screenSignals, paneCommands: ['bash'] });
+  assert.equal(working({ busy: true, background: false }), true);
+  assert.equal(working({ busy: false, background: true }), true);
+  assert.equal(working({ busy: false, background: false }), false);
+  assert.equal(working(undefined), false);
+});
+
+test('plain shell sessions are working while a pane runs something other than a shell', () => {
+  const working = (paneCommands) => resolveWorkingState({ agentKind: null, paneCommands });
+  assert.equal(working(['bash']), false);
+  assert.equal(working(['bash', 'make']), true);
+  assert.equal(working(['/usr/bin/zsh']), false);
+  assert.equal(working([]), false);
+});
+
+test('an idle python REPL in an agent pane no longer forces the working state', () => {
+  assert.equal(resolveWorkingState({
+    agentKind: 'claude',
+    screenSignals: { busy: false, background: false },
+    paneCommands: ['python3'],
+  }), false);
 });

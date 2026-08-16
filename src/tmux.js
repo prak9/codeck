@@ -1,45 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { detectPaneAgents, resolveAgentSessionActivity } from './agents.js';
+import { detectPaneAgents } from './agents.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
-const AGENT_BUSY_COMMAND_PATTERNS = [
-  /\bfunction_call\b/i,
-  /\btool[-_ ]?call\b/i,
-  /\btooling\b/i,
-  /\binference\b/i,
-  /\bllm\b/i,
-];
-const WORKER_COMMANDS = new Set([
-  'gcc',
-  'g++',
-  'clang',
-  'cargo',
-  'tsc',
-  'npm',
-  'yarn',
-  'pnpm',
-  'pip',
-  'pip3',
-  'python',
-  'python3',
-  'rg',
-  'git',
-  'git-receive-pack',
-  'ruff',
-  'pytest',
-  'go',
-  'make',
-  'cmake',
-  'gradle',
-  'mvn',
-  'bun',
-  'deno',
-  'ruby',
-  'java',
-]);
 const SHELL_COMMANDS = new Set([
   'bash',
   'sh',
@@ -52,21 +17,30 @@ const SHELL_COMMANDS = new Set([
   'tcsh',
   'tmux',
 ]);
-const WORKER_SCREEN_PATTERNS = [
-  /[⠋⠙⠹⠸⠴⠦⠧⠇⠏]/,
-  /\b(think(?:ing)?|analyzing|running tool|working|building|waiting for input|tool\s*call|tool_call|inference|processing|loading)\b/i,
-  /\b(spinner|progress)\b/i,
-];
-const IDLE_SCREEN_PATTERNS = [
-  /^\s*[>➜$#]\s*$/,
-  /^(?:codex|claude|qoder|qodercli)\s*>\s*$/i,
-  /^\S+@\S+:\S*\s*[$#>]\s*$/,
-];
-const SCREEN_CAPTURE_LINES = 8;
-const CPU_ACTIVITY_THRESHOLD = 1;
-const CPU_ACTIVITY_STREAK = 2;
+// An agent waiting on the model sleeps on a socket at 0% CPU, so the process tree cannot
+// tell working from idle. Each agent does render its own busy affordance, so read that
+// instead. `lines` is how many trailing non-empty lines of the visible pane make up the
+// status area: Claude Code keeps both markers in the footer, while codex prints them a
+// few lines above it. Matching a wider window would let stale transcript text ("Ran 1
+// shell command") pin the indicator on.
+export const AGENT_SCREEN_MARKERS = {
+  claude: {
+    lines: 1,
+    busy: [/esc to interrupt/i],
+    background: [/\b\d+\s+(?:shell|monitor|task)s?\b/i],
+  },
+  codex: {
+    lines: 6,
+    busy: [/esc to interrupt/i, /^[\s•·]*(?:working|thinking)\b/i],
+    background: [/\b\d+\s+background\s+terminals?\s+running\b/i],
+  },
+  qodercli: {
+    lines: 6,
+    busy: [/esc to interrupt/i],
+    background: [],
+  },
+};
 let supportsLargestSizePromise;
-const processCpuHistory = new Map();
 
 export function validateSessionName(name) {
   return typeof name === 'string' && SESSION_NAME.test(name);
@@ -121,36 +95,6 @@ function parsePanes(output) {
     }).filter((pane) => pane.session);
 }
 
-function parseProcesses(output) {
-  if (!output.trim()) return [];
-  return output.trim().split('\n').map((line) => {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 6) return null;
-    const [rawPid, rawPpid, state, rawCpu, rawTime, ...rawCommand] = parts;
-    const command = rawCommand.join(' ');
-    if (!rawPid || !rawPpid || !command) return null;
-    return {
-      pid: Number(rawPid),
-      ppid: Number(rawPpid),
-      state: (state || '').trim(),
-      cpuPercent: Number.isFinite(Number(rawCpu)) ? Number(rawCpu) : 0,
-      cpuTime: rawTime || '0',
-      command: (command || '').trim(),
-    };
-  }).filter((entry) => Number.isFinite(entry?.pid) && Number.isFinite(entry?.ppid) && entry);
-}
-
-function buildProcessLookup(processes) {
-  const byPid = new Map();
-  const childrenByPid = new Map();
-  for (const process of processes) {
-    byPid.set(process.pid, process);
-    if (!childrenByPid.has(process.ppid)) childrenByPid.set(process.ppid, []);
-    childrenByPid.get(process.ppid).push(process.pid);
-  }
-  return { byPid, childrenByPid };
-}
-
 function stripAnsi(input) {
   return String(input).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 }
@@ -166,194 +110,58 @@ function isShellCommand(command) {
   return SHELL_COMMANDS.has(normalizeCommand(command));
 }
 
-function isBusyCommand(command = '') {
-  const normalized = normalizeCommand(command);
-  if (!normalized) return false;
-  if (WORKER_COMMANDS.has(normalized)) return true;
-  return AGENT_BUSY_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+export function resolveScreenSignals(output, markers) {
+  if (!markers) return { busy: false, background: false };
+  const lines = String(output || '')
+    .split('\n')
+    .map((line) => stripAnsi(line).trim())
+    .filter((line) => line.length > 0)
+    .slice(-markers.lines);
+  const matches = (patterns) => lines.some((line) => patterns.some((pattern) => pattern.test(line)));
+  return { busy: matches(markers.busy), background: matches(markers.background) };
 }
 
-function parsePsTimeToMs(rawTime) {
-  const match = String(rawTime || '').trim();
-  if (!match) return null;
-  let day = 0;
-  let clock = match;
-  const daySplit = match.split('-');
-  if (daySplit.length === 2 && Number.isFinite(Number(daySplit[0]))) {
-    day = Number(daySplit[0]);
-    clock = daySplit[1];
-  }
-  const [timePart, fractionPart] = clock.split('.');
-  const parts = timePart.split(':').map(Number);
-  if (parts.some((value) => !Number.isFinite(value))) return null;
-
-  let hours = 0;
-  let minutes = 0;
-  let seconds = 0;
-  if (parts.length === 3) {
-    [hours, minutes, seconds] = parts;
-  } else if (parts.length === 2) {
-    [minutes, seconds] = parts;
-  } else if (parts.length === 1) {
-    [seconds] = parts;
-  }
-
-  const fraction = fractionPart && Number.isFinite(Number(fractionPart))
-    ? Number(`0.${fractionPart}`)
-    : 0;
-  return (((day * 24 + hours) * 60 + minutes) * 60 + seconds + fraction) * 1000;
+function readScreenSignals(paneId, markers) {
+  if (!paneId || !markers) return Promise.resolve({ busy: false, background: false });
+  return exec('tmux', ['capture-pane', '-p', '-t', paneId])
+    .then(({ stdout }) => resolveScreenSignals(stdout, markers))
+    .catch(() => ({ busy: false, background: false }));
 }
 
-function trackProcessCpuSignal(process, now = Date.now()) {
-  const pid = Number(process?.pid);
-  if (!Number.isFinite(pid)) return { cpuBusy: false, consecutive: 0 };
-
-  const currentCpuMs = parsePsTimeToMs(process.cpuTime);
-  const previous = processCpuHistory.get(pid);
-  const sample = { at: now, cpuMs: currentCpuMs, consecutive: 0, cpuBusy: false, cpuRate: 0 };
-
-  if (previous && Number.isFinite(previous.cpuMs) && Number.isFinite(currentCpuMs)) {
-    const intervalMs = now - previous.at;
-    if (intervalMs > 0) {
-      const delta = Math.max(0, currentCpuMs - previous.cpuMs);
-      sample.cpuRate = (delta / intervalMs) * 100;
-      sample.consecutive = sample.cpuRate > CPU_ACTIVITY_THRESHOLD
-        ? (Number.isFinite(previous.consecutive) ? previous.consecutive + 1 : 1)
-        : 0;
-      sample.cpuBusy = sample.consecutive >= CPU_ACTIVITY_STREAK;
-    }
-  }
-
-  processCpuHistory.set(pid, {
-    ...sample,
-    consecutive: Number.isFinite(sample.consecutive) ? sample.consecutive : 0,
-  });
-  return processCpuHistory.get(pid);
-}
-
-function isIOOrRunningState(state) {
-  return /^R/.test(state || '') || /^D/.test(state || '');
-}
-
-function evaluateProcessTreeBusyState(panePids, processLookup, now = Date.now()) {
-  const { byPid, childrenByPid } = processLookup;
-  const seen = new Set();
-  const queue = [...new Set(panePids)].filter(Number.isFinite);
-  let hasBusySubProcess = false;
-  let hasIOOrRunning = false;
-  let hasCpuBusy = false;
-
-  while (queue.length) {
-    const currentPid = queue.shift();
-    if (seen.has(currentPid)) continue;
-    seen.add(currentPid);
-    const process = byPid.get(currentPid);
-    if (!process) continue;
-
-    if (isBusyCommand(process.command)) {
-      hasBusySubProcess = true;
-    }
-    if (!isShellCommand(process.command) && isIOOrRunningState(process.state)) {
-      hasIOOrRunning = true;
-    }
-    if (trackProcessCpuSignal(process, now).cpuBusy) {
-      hasCpuBusy = true;
-    }
-
-    const children = childrenByPid.get(currentPid) || [];
-    queue.push(...children);
-  }
-
-  return { hasBusySubProcess, hasIOOrRunning, hasCpuBusy };
-}
-
-function isPromptLine(line) {
-  const trimmed = stripAnsi(line).trim();
-  return IDLE_SCREEN_PATTERNS.some((pattern) => pattern.test(trimmed));
-}
-
-function evaluateScreenState(paneId) {
-  if (!paneId) return Promise.resolve({ hasWorkingText: false, hasIdlePrompt: false });
-  return exec('tmux', ['capture-pane', '-p', '-t', paneId, '-S', `-${SCREEN_CAPTURE_LINES}`])
-    .then(({ stdout }) => {
-      const lines = String(stdout || '')
-        .split('\n')
-        .slice(-SCREEN_CAPTURE_LINES)
-        .map((line) => stripAnsi(line).trim());
-      const hasWorkingText = lines.some((line) =>
-        WORKER_SCREEN_PATTERNS.some((pattern) => pattern.test(line)),
-      );
-      const lastNonEmpty = [...lines].reverse().find((line) => line.length > 0);
-      const hasIdlePrompt = lastNonEmpty ? isPromptLine(lastNonEmpty) : false;
-      return { hasWorkingText, hasIdlePrompt };
-    })
-    .catch(() => ({ hasWorkingText: false, hasIdlePrompt: false }));
-}
-
-function resolveWorkingState(processSignals, screenSignals) {
-  if (screenSignals.hasIdlePrompt && !processSignals.hasBusySubProcess && !processSignals.hasIOOrRunning && !processSignals.hasCpuBusy) {
-    return false;
-  }
-  if (processSignals.hasBusySubProcess || processSignals.hasIOOrRunning || processSignals.hasCpuBusy) return true;
-  if (screenSignals.hasWorkingText) return true;
-  return false;
-}
-
-function pruneCpuHistory(validPids) {
-  for (const pid of processCpuHistory.keys()) {
-    if (!validPids.has(pid)) processCpuHistory.delete(pid);
-  }
+export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) {
+  if (agentKind) return Boolean(screenSignals?.busy || screenSignals?.background);
+  return (paneCommands || []).some((command) => !isShellCommand(command));
 }
 
 export async function listSessions() {
   try {
-    const now = Date.now();
-    const [{ stdout }, { stdout: paneOutput }, { stdout: processOutput }] = await Promise.all([
+    const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
       exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}']),
-      exec('ps', ['-eo', 'pid=,ppid=,state=,pcpu=,time=,command=']),
     ]);
     const allPanes = parsePanes(paneOutput);
-    const panes = allPanes
+    const panes = [...allPanes]
       .sort((a, b) => b.score - a.score)
       .filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
 
     const paneCommandBySession = new Map();
     for (const pane of panes) paneCommandBySession.set(pane.session, pane.currentCommand);
 
-    const panePidsBySession = new Map();
-    const topPaneBySession = new Map();
+    const paneCommandsBySession = new Map();
     for (const pane of allPanes) {
-      if (!Number.isFinite(pane.pid)) continue;
-      const list = panePidsBySession.get(pane.session) || [];
-      if (!list.includes(pane.pid)) list.push(pane.pid);
-      panePidsBySession.set(pane.session, list);
-      if (!topPaneBySession.has(pane.session) && pane.paneId) topPaneBySession.set(pane.session, pane);
+      const list = paneCommandsBySession.get(pane.session) || [];
+      list.push(pane.currentCommand);
+      paneCommandsBySession.set(pane.session, list);
     }
 
     const agents = await detectPaneAgents(panes);
-    const processLookup = buildProcessLookup(parseProcesses(processOutput));
-    pruneCpuHistory(new Set(processLookup.byPid.keys()));
-
     const screenSignalsBySession = new Map(
-      await Promise.all([...topPaneBySession.entries()].map(async ([sessionName, pane]) => {
-        const signals = await evaluateScreenState(pane.paneId);
-        return [sessionName, signals];
-      })),
-    );
-
-    const runningBySession = new Map();
-    for (const [sessionName, pids] of panePidsBySession) {
-      const processSignals = evaluateProcessTreeBusyState(pids, processLookup, now);
-      const screenSignals = screenSignalsBySession.get(sessionName) || { hasWorkingText: false, hasIdlePrompt: false };
-      runningBySession.set(sessionName, resolveWorkingState(processSignals, screenSignals));
-    }
-
-    const activityBySession = new Map(
-      await Promise.all([...agents.entries()].map(async ([sessionName, agent]) => [
-        sessionName,
-        resolveAgentSessionActivity(agent, process.env, sessionName),
-      ])),
+      await Promise.all(panes
+        .filter((pane) => agents.has(pane.session))
+        .map(async (pane) => [
+          pane.session,
+          await readScreenSignals(pane.paneId, AGENT_SCREEN_MARKERS[agents.get(pane.session).kind]),
+        ])),
     );
 
     return parseSessions(stdout)
@@ -361,10 +169,11 @@ export async function listSessions() {
         ...session,
         agent: agents.get(session.name) || null,
         currentCommand: paneCommandBySession.get(session.name) || 'bash',
-        hasRunningProcess: runningBySession.get(session.name) || false,
-        sessionFileMtime: Number.isFinite(activityBySession.get(session.name))
-          ? activityBySession.get(session.name)
-          : session.activityAt,
+        hasRunningProcess: resolveWorkingState({
+          agentKind: agents.get(session.name)?.kind || null,
+          screenSignals: screenSignalsBySession.get(session.name),
+          paneCommands: paneCommandsBySession.get(session.name) || [],
+        }),
       }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt) || a.name.localeCompare(b.name));
   } catch (error) {
