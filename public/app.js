@@ -21,7 +21,7 @@ const state = {
   terminalDropDepth: 0,
   overview: true,
   fitting: false,
-  supportsLargestSize: true,
+  flexibleSize: true,
   canManage: true,
   openedShareLink: Boolean(sharedToken || storedShareToken),
 };
@@ -285,11 +285,11 @@ async function refreshSessions() {
   const data = await api('/api/sessions');
   if (requestId !== state.sessionsRefreshSeq) return;
   state.sessions = data.sessions;
-  state.supportsLargestSize = data.capabilities?.largestSize !== false;
+  state.flexibleSize = data.capabilities?.flexibleSize !== false;
   state.canManage = data.capabilities?.canManage !== false;
-  $('#viewModeButton').hidden = !state.supportsLargestSize;
+  $('#viewModeButton').hidden = !state.flexibleSize;
   for (const id of ['#newButton', '#newButtonBottom', '#emptyNewButton', '#killButton', '#shareButton']) $(id).hidden = !state.canManage;
-  if (!state.supportsLargestSize) state.overview = true;
+  if (!state.flexibleSize) state.overview = true;
   renderSessions();
   if (state.active && state.terminal) fitTerminalView();
 }

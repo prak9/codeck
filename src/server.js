@@ -7,7 +7,7 @@ import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
-import { createSession, getSessionSize, killSession, listSessions, preferLargestClientSize, renameSession, supportsLargestClientSize, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
+import { createSession, getSessionSize, killSession, listSessions, preferLatestClientSize, renameSession, detectWindowSizeSupport, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
 import {
@@ -48,13 +48,13 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/sessions', async (req, res, next) => {
   try {
-    let [sessions, largestSize] = await Promise.all([listSessions(), supportsLargestClientSize()]);
+    let [sessions, flexibleSize] = await Promise.all([listSessions(), detectWindowSizeSupport()]);
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
     const enriched = sessions.map((session) => ({
       ...session,
       status: resolveSessionStatus(session),
     }));
-    res.json({ sessions: enriched, capabilities: { largestSize, canManage: req.auth.owner } });
+    res.json({ sessions: enriched, capabilities: { flexibleSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
 });
 
@@ -155,10 +155,10 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', async (ws, session) => {
-  let largestSize;
+  let flexibleSize;
   let initialSize;
   try {
-    [largestSize, initialSize] = await Promise.all([preferLargestClientSize(), getSessionSize(session)]);
+    [flexibleSize, initialSize] = await Promise.all([preferLatestClientSize(), getSessionSize(session)]);
   } catch (error) {
     ws.close(1011, error.message || 'tmux size configuration failed');
     return;
@@ -174,8 +174,8 @@ wss.on('connection', async (ws, session) => {
       const message = JSON.parse(raw.toString());
       if (message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
-        const minCols = largestSize ? 20 : initialSize.width;
-        const minRows = largestSize ? 5 : initialSize.height;
+        const minCols = flexibleSize ? 20 : initialSize.width;
+        const minRows = flexibleSize ? 5 : initialSize.height;
         terminal.resize(Math.max(minCols, message.cols), Math.max(minRows, message.rows));
       }
     } catch { /* Ignore malformed terminal frames. */ }

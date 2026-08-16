@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, parseSessions, resolveScreenSignals, resolveWorkingState, supportsLargestSize, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, parseSessions, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -10,11 +10,11 @@ test('parses tmux list output into typed session records', () => {
 
 test('empty tmux output produces an empty list', () => assert.deepEqual(parseSessions(''), []));
 
-test('uses largest-client sizing only when supported by tmux', () => {
-  assert.equal(supportsLargestSize('tmux 2.7'), false);
-  assert.equal(supportsLargestSize('tmux 2.8'), false);
-  assert.equal(supportsLargestSize('tmux 2.9'), true);
-  assert.equal(supportsLargestSize('tmux 3.4'), true);
+test('detects the tmux window-size option only on versions that have it', () => {
+  assert.equal(supportsWindowSizeOption('tmux 2.7'), false);
+  assert.equal(supportsWindowSizeOption('tmux 2.8'), false);
+  assert.equal(supportsWindowSizeOption('tmux 2.9'), true);
+  assert.equal(supportsWindowSizeOption('tmux 3.4'), true);
 });
 
 test('removes nested tmux markers from web terminal environments', () => {

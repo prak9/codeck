@@ -40,7 +40,7 @@ export const AGENT_SCREEN_MARKERS = {
     background: [],
   },
 };
-let supportsLargestSizePromise;
+let supportsWindowSizePromise;
 
 export function validateSessionName(name) {
   return typeof name === 'string' && SESSION_NAME.test(name);
@@ -50,14 +50,14 @@ export function validateClient(client) {
   return CLIENTS.includes(client);
 }
 
-export function supportsLargestSize(version) {
+export function supportsWindowSizeOption(version) {
   const match = /tmux\s+(\d+)\.(\d+)/.exec(version);
   return Boolean(match && (Number(match[1]) > 2 || Number(match[1]) === 2 && Number(match[2]) >= 9));
 }
 
-export function supportsLargestClientSize() {
-  supportsLargestSizePromise ||= exec('tmux', ['-V']).then(({ stdout }) => supportsLargestSize(stdout));
-  return supportsLargestSizePromise;
+export function detectWindowSizeSupport() {
+  supportsWindowSizePromise ||= exec('tmux', ['-V']).then(({ stdout }) => supportsWindowSizeOption(stdout));
+  return supportsWindowSizePromise;
 }
 
 export function withoutTmuxEnvironment(environment) {
@@ -202,9 +202,14 @@ export async function renameSession(name, newName) {
   await exec('tmux', ['rename-session', '-t', name, newName]);
 }
 
-export async function preferLargestClientSize() {
-  if (!await supportsLargestClientSize()) return false;
-  await exec('tmux', ['set-option', '-g', 'window-size', 'largest']);
+// "largest" sizes the window to the biggest attached client and clips every smaller one,
+// so a browser tab viewing a session that is also open in a wider or taller terminal loses
+// the rows off the bottom. That only shows when content reaches the last row, which is why
+// popups like Claude Code's model picker appear cut off while ordinary output looks fine.
+// "latest" follows whichever client is active, so the terminal being typed into always fits.
+export async function preferLatestClientSize() {
+  if (!await detectWindowSizeSupport()) return false;
+  await exec('tmux', ['set-option', '-g', 'window-size', 'latest']);
   return true;
 }
 
