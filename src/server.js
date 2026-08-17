@@ -155,26 +155,12 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', async (ws, session, viewport) => {
-  let initialSize;
-  try {
-    [, initialSize] = await Promise.all([preferLatestClientSize(), getSessionSize(session)]);
-  } catch (error) {
-    ws.close(1011, error.message || 'tmux size configuration failed');
-    return;
-  }
-  // Attach at the viewport the client reported on the URL. Attaching at tmux's own size
-  // and waiting for the first resize message loses that resize whenever it lands before
-  // the attach completes, leaving a grid wider and taller than the visible area — which
-  // is what produces leftover rows, an input line drawn off screen, and mouse selections
-  // that miss the text. Fall back to tmux's size only for clients too old to report one.
-  const attachSize = viewport || { width: initialSize.width, height: initialSize.height };
-  const terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
-    name: 'xterm-256color', cols: attachSize.width, rows: attachSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
-  });
-  terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
-  terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
-  ws.on('message', (raw, binary) => {
-    if (binary) return;
+  // Buffer from the first tick. Configuring tmux and reading its size are awaited, and a
+  // listener attached after that await never sees what arrived during it — keystrokes
+  // typed the moment the terminal opens are dropped with no error.
+  let terminal = null;
+  const pending = [];
+  const handleMessage = (raw) => {
     try {
       const message = JSON.parse(raw.toString());
       if (message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
@@ -188,7 +174,32 @@ wss.on('connection', async (ws, session, viewport) => {
         terminal.resize(...clampViewport(message.cols, message.rows));
       }
     } catch { /* Ignore malformed terminal frames. */ }
+  };
+  ws.on('message', (raw, binary) => {
+    if (binary) return;
+    if (terminal) handleMessage(raw); else pending.push(raw);
   });
+
+  let initialSize;
+  try {
+    [, initialSize] = await Promise.all([preferLatestClientSize(), getSessionSize(session)]);
+  } catch (error) {
+    ws.close(1011, error.message || 'tmux size configuration failed');
+    return;
+  }
+  // Attach at the viewport the client reported on the URL. Attaching at tmux's own size
+  // and waiting for the first resize message loses that resize whenever it lands before
+  // the attach completes, leaving a grid wider and taller than the visible area — which
+  // is what produces leftover rows, an input line drawn off screen, and mouse selections
+  // that miss the text. Fall back to tmux's size only for clients too old to report one.
+  const attachSize = viewport || { width: initialSize.width, height: initialSize.height };
+  terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
+    name: 'xterm-256color', cols: attachSize.width, rows: attachSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
+  });
+  terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
+  terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
+  while (pending.length) handleMessage(pending.shift());
+  if (ws.readyState !== ws.OPEN) terminal.kill();
   ws.on('close', () => {
     terminal.kill();
   });

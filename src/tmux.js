@@ -42,12 +42,30 @@ export const AGENT_SCREEN_MARKERS = {
     background: { lines: 6, patterns: [/\b\d+\s+background\s+terminals?\s+running\b/i] },
   },
   // qodercli's footer reads "⠋ Generating... (esc to cancel, 25s)" while a turn runs.
-  // Both the braille spinner frame and the cancel affordance are absent when idle.
+  // Anchor on the elapsed timer inside the parentheses: a modal offering "esc to cancel"
+  // carries no timer, and the bare spinner glyph shows up in other widgets too.
   qodercli: {
-    busy: { lines: 6, patterns: [/esc to cancel/i, /[⠋⠙⠹⠸⠴⠦⠧⠇⠏]/] },
+    busy: { lines: 6, patterns: [/\(esc to cancel,\s*\d/i] },
     background: { lines: 1, patterns: [] },
   },
 };
+
+// Identity, not activity. The process tree is authoritative, but it does not cross an ssh
+// hop: an agent running on the far side of a jump host leaves no local descendant, so
+// detectPaneAgents sees nothing and the session falls back to its foreground command.
+// These markers name the agent from what it draws instead. Sourced from a live qodercli
+// pane on another host; unverified here, so keep them narrow.
+export const AGENT_SCREEN_IDENTITY = {
+  qodercli: [/·\s*ctx\s*[\u2580-\u259f]+\s*\d+%\s*·/],
+};
+
+export function identifyAgentFromScreen(output) {
+  const lines = screenLines(output).slice(-6);
+  for (const [kind, patterns] of Object.entries(AGENT_SCREEN_IDENTITY)) {
+    if (lines.some((line) => patterns.some((pattern) => pattern.test(line)))) return kind;
+  }
+  return null;
+}
 // A working pane repaints at least once a second; allow a missed poll before going idle.
 const SCREEN_ACTIVITY_WINDOW_MS = 6_000;
 const screenActivity = new Map();
@@ -121,16 +139,21 @@ function isShellCommand(command) {
   return SHELL_COMMANDS.has(normalizeCommand(command));
 }
 
-export function resolveScreenSignals(output, markers) {
-  if (!markers) return { busy: false, background: false };
-  const lines = String(output || '')
+function screenLines(output) {
+  return String(output || '')
     .split('\n')
     .map((line) => stripAnsi(line).trim())
     .filter((line) => line.length > 0);
-  const matches = ({ lines: window, patterns }) => lines
-    .slice(-window)
-    .some((line) => patterns.some((pattern) => pattern.test(line)));
-  return { busy: matches(markers.busy), background: matches(markers.background) };
+}
+
+function matchesMarker(lines, { lines: window, patterns }) {
+  return lines.slice(-window).some((line) => patterns.some((pattern) => pattern.test(line)));
+}
+
+export function resolveScreenSignals(output, markers) {
+  if (!markers) return { busy: false, background: false };
+  const lines = screenLines(output);
+  return { busy: matchesMarker(lines, markers.busy), background: matchesMarker(lines, markers.background) };
 }
 
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
@@ -145,18 +168,17 @@ export function resolveScreenActivity(previous, output, now) {
   return { hash, changedAt: previous.hash === hash ? previous.changedAt : now };
 }
 
-function readScreenSignals(session, paneId, markers, now) {
-  if (!paneId || !markers) return Promise.resolve({ busy: false, background: false, animating: false });
-  return exec('tmux', ['capture-pane', '-p', '-t', paneId])
-    .then(({ stdout }) => {
-      const activity = resolveScreenActivity(screenActivity.get(session), stdout, now);
-      screenActivity.set(session, activity);
-      return {
-        ...resolveScreenSignals(stdout, markers),
-        animating: now - activity.changedAt < SCREEN_ACTIVITY_WINDOW_MS,
-      };
-    })
-    .catch(() => ({ busy: false, background: false, animating: false }));
+function capturePane(paneId) {
+  if (!paneId) return Promise.resolve('');
+  return exec('tmux', ['capture-pane', '-p', '-t', paneId]).then(({ stdout }) => stdout).catch(() => '');
+}
+
+function readScreenSignals(session, screen, markers, now) {
+  const activity = resolveScreenActivity(screenActivity.get(session), screen, now);
+  screenActivity.set(session, activity);
+  const animating = now - activity.changedAt < SCREEN_ACTIVITY_WINDOW_MS;
+  if (!markers) return { busy: false, background: false, animating };
+  return { ...resolveScreenSignals(screen, markers), animating };
 }
 
 export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) {
@@ -186,17 +208,27 @@ export async function listSessions() {
     }
 
     const now = Date.now();
-    const agents = await detectPaneAgents(panes);
+    const [agents, screens] = await Promise.all([
+      detectPaneAgents(panes),
+      Promise.all(panes.map(async (pane) => [pane.session, await capturePane(pane.paneId)])),
+    ]);
+    const screenBySession = new Map(screens);
+
+    // The process tree wins; the screen only names agents it could not see.
+    const agentKindBySession = new Map();
+    for (const [sessionName, screen] of screenBySession) {
+      const kind = agents.get(sessionName)?.kind || identifyAgentFromScreen(screen);
+      if (kind) agentKindBySession.set(sessionName, kind);
+    }
+
     const screenSignalsBySession = new Map(
-      await Promise.all(panes
-        .filter((pane) => agents.has(pane.session))
-        .map(async (pane) => [
-          pane.session,
-          await readScreenSignals(pane.session, pane.paneId, AGENT_SCREEN_MARKERS[agents.get(pane.session).kind], now),
-        ])),
+      [...screenBySession].map(([sessionName, screen]) => [
+        sessionName,
+        readScreenSignals(sessionName, screen, AGENT_SCREEN_MARKERS[agentKindBySession.get(sessionName)], now),
+      ]),
     );
     for (const session of screenActivity.keys()) {
-      if (!screenSignalsBySession.has(session)) screenActivity.delete(session);
+      if (!screenBySession.has(session)) screenActivity.delete(session);
     }
 
     return parseSessions(stdout)
@@ -205,7 +237,7 @@ export async function listSessions() {
         agent: agents.get(session.name) || null,
         currentCommand: paneCommandBySession.get(session.name) || 'bash',
         hasRunningProcess: resolveWorkingState({
-          agentKind: agents.get(session.name)?.kind || null,
+          agentKind: agentKindBySession.get(session.name) || null,
           screenSignals: screenSignalsBySession.get(session.name),
           paneCommands: paneCommandsBySession.get(session.name) || [],
         }),

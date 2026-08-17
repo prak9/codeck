@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename } from '../src/agents.js';
+import { agentKindFromCommand, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename, PS_ARGUMENTS } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -47,4 +47,13 @@ test('process rows still parse when the command itself contains spaces', () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0].command, 'node /usr/bin/qodercli --continue');
   assert.equal(agentKindFromCommand(rows[0].command), 'qodercli');
+});
+
+test('ps is asked for one field per -o, never a comma-joined header', () => {
+  // `-o pid=,ppid=,etimes=,args=` is a single pid column headed ",ppid=,etimes=,args="
+  // on older procps, because POSIX allows commas inside the header.
+  for (const argument of PS_ARGUMENTS) {
+    assert.equal(argument.includes(','), false, `"${argument}" would collapse into one column`);
+  }
+  assert.equal(PS_ARGUMENTS.filter((a) => a.endsWith('=')).length, 4, 'pid, ppid, etimes, args');
 });

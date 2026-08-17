@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, parseSessions, parseViewport, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, identifyAgentFromScreen, parseSessions, parseViewport, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -243,4 +243,20 @@ test('viewport is taken from the connect URL and floored, or absent', () => {
   assert.equal(at('cols=abc&rows=30'), null);
   assert.equal(at('cols=0&rows=0'), null);
   assert.equal(at('cols=100.5&rows=30'), null);
+});
+
+test('an agent behind an ssh hop is named from its status bar', () => {
+  const qoderOverSsh = `
+  src/main.rs
+  · ctx ▓▓░ 27% ·
+`;
+  assert.equal(identifyAgentFromScreen(qoderOverSsh), 'qodercli');
+  assert.equal(identifyAgentFromScreen(CLAUDE_IDLE), null, 'claude is found in the process tree');
+  assert.equal(identifyAgentFromScreen(CODEX_IDLE), null);
+  assert.equal(identifyAgentFromScreen(''), null);
+});
+
+test('a cancel prompt without a timer is not a qodercli turn', () => {
+  assert.equal(signals('⠋ Generating... (esc to cancel, 25s)', 'qodercli').busy, true);
+  assert.equal(signals('Delete this file? (enter to confirm, esc to cancel)', 'qodercli').busy, false);
 });

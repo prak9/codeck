@@ -33,6 +33,10 @@ export function parseProcessList(output, now = Date.now()) {
   });
 }
 
+// Exported so a regression test can assert the shape: one -o per field, never a single
+// comma-joined header.
+export const PS_ARGUMENTS = ['-eo', 'pid=', '-o', 'ppid=', '-o', 'etimes=', '-o', 'args='];
+
 let warnedProcessListUnparsed = false;
 
 function warnProcessListUnparsed() {
@@ -122,7 +126,7 @@ export async function detectPaneAgents(panes, env = process.env) {
   // `-o pid=,ppid=,etimes=,args=` is a single pid column headed ",ppid=,etimes=,args="
   // on older procps. Every row then holds one number, no row parses, and agent
   // detection silently returns nothing.
-  const { stdout } = await exec('ps', ['-eo', 'pid=', '-o', 'ppid=', '-o', 'etimes=', '-o', 'args=']);
+  const { stdout } = await exec('ps', PS_ARGUMENTS);
   const processes = parseProcessList(stdout);
   // A populated ps with no parsable rows is a format mismatch, not an empty system.
   // Left silent it degrades every agent session to the command-based fallback.
