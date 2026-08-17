@@ -41,8 +41,10 @@ export const AGENT_SCREEN_MARKERS = {
     busy: { lines: 6, patterns: [/esc to interrupt/i, /^[\s•·]*(?:working|thinking)\b/i] },
     background: { lines: 6, patterns: [/\b\d+\s+background\s+terminals?\s+running\b/i] },
   },
+  // qodercli's footer reads "⠋ Generating... (esc to cancel, 25s)" while a turn runs.
+  // Both the braille spinner frame and the cancel affordance are absent when idle.
   qodercli: {
-    busy: { lines: 6, patterns: [/esc to interrupt/i] },
+    busy: { lines: 6, patterns: [/esc to cancel/i, /[⠋⠙⠹⠸⠴⠦⠧⠇⠏]/] },
     background: { lines: 1, patterns: [] },
   },
 };
@@ -244,6 +246,23 @@ export async function preferLatestClientSize() {
   if (!await detectWindowSizeSupport()) return false;
   await exec('tmux', ['set-option', '-g', 'window-size', 'latest']);
   return true;
+}
+
+// Floors that keep tmux usable no matter how small the browser window gets.
+const MIN_COLS = 20;
+const MIN_ROWS = 5;
+
+export function clampViewport(cols, rows) {
+  return [Math.max(MIN_COLS, cols), Math.max(MIN_ROWS, rows)];
+}
+
+export function parseViewport(searchParams) {
+  const width = Number(searchParams.get('cols'));
+  const height = Number(searchParams.get('rows'));
+  if (!Number.isInteger(width) || !Number.isInteger(height)) return null;
+  if (width <= 0 || height <= 0) return null;
+  const [clampedWidth, clampedHeight] = clampViewport(width, height);
+  return { width: clampedWidth, height: clampedHeight };
 }
 
 export async function getSessionSize(name) {

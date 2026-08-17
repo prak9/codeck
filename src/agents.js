@@ -33,6 +33,14 @@ export function parseProcessList(output, now = Date.now()) {
   });
 }
 
+let warnedProcessListUnparsed = false;
+
+function warnProcessListUnparsed() {
+  if (warnedProcessListUnparsed) return;
+  warnedProcessListUnparsed = true;
+  console.warn('codeck: ps returned rows this build cannot parse; agent detection is disabled and sessions fall back to their foreground command');
+}
+
 export function agentKindFromCommand(command) {
   if (/(?:^|[ /])codex(?:\s|$)/i.test(command) && !/app-server/.test(command)) return 'codex';
   if (/(?:^|[ /])claude(?:\s|$)/i.test(command)) return 'claude';
@@ -110,8 +118,15 @@ async function readCodexPaneIdentity(session) {
 
 export async function detectPaneAgents(panes, env = process.env) {
   if (!panes.length) return new Map();
-  const { stdout } = await exec('ps', ['-eo', 'pid=,ppid=,etimes=,args=']);
+  // One -o per field. POSIX lets the header in `-o name=header` contain commas, so
+  // `-o pid=,ppid=,etimes=,args=` is a single pid column headed ",ppid=,etimes=,args="
+  // on older procps. Every row then holds one number, no row parses, and agent
+  // detection silently returns nothing.
+  const { stdout } = await exec('ps', ['-eo', 'pid=', '-o', 'ppid=', '-o', 'etimes=', '-o', 'args=']);
   const processes = parseProcessList(stdout);
+  // A populated ps with no parsable rows is a format mismatch, not an empty system.
+  // Left silent it degrades every agent session to the command-based fallback.
+  if (!processes.length && stdout.trim()) warnProcessListUnparsed();
   const codexHome = env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const codex = loadCodexSessions(codexHome);

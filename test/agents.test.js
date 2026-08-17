@@ -35,3 +35,16 @@ test('recognizes supported agent CLI processes', () => {
   assert.equal(agentKindFromCommand('/opt/qoder/bin/qodercli --continue'), 'qodercli');
   assert.equal(agentKindFromCommand('/bin/bash'), null);
 });
+
+test('a ps format this build cannot parse yields no agents rather than bad ones', () => {
+  // Older procps reads `-o pid=,ppid=,etimes=,args=` as one pid column headed
+  // ",ppid=,etimes=,args=", so every row is a bare number.
+  assert.deepEqual(parseProcessList('  12\n  34\n  56', 10_000), []);
+});
+
+test('process rows still parse when the command itself contains spaces', () => {
+  const rows = parseProcessList('  12  5  7 node /usr/bin/qodercli --continue\n  13  12  3 bash', 10_000);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].command, 'node /usr/bin/qodercli --continue');
+  assert.equal(agentKindFromCommand(rows[0].command), 'qodercli');
+});

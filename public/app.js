@@ -510,7 +510,11 @@ function connect(session) {
   fitTerminalView();
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/ws?session=${encodeURIComponent(session)}`, `codeck.${websocketProtocolToken(state.token)}`);
+  // Report the viewport on the URL so the pty attaches at this size. Sending it only as
+  // the first resize message races the attach, and a lost resize leaves the grid larger
+  // than the visible area.
+  const query = new URLSearchParams({ session, cols: String(terminal.cols), rows: String(terminal.rows) });
+  const socket = new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
   state.socket = socket;
   socket.addEventListener('open', () => {
     if (state.connectionId !== connectionId) return;

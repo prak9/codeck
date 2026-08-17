@@ -7,7 +7,7 @@ import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
-import { createSession, getSessionSize, killSession, listSessions, preferLatestClientSize, renameSession, detectWindowSizeSupport, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
+import { createSession, getSessionSize, killSession, listSessions, clampViewport, parseViewport, preferLatestClientSize, renameSession, detectWindowSizeSupport, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
 import {
@@ -22,7 +22,6 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
-
 app.use(express.json({ limit: '16kb' }));
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
 app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
@@ -151,20 +150,26 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session));
+  const viewport = parseViewport(url.searchParams);
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport));
 });
 
-wss.on('connection', async (ws, session) => {
-  let flexibleSize;
+wss.on('connection', async (ws, session, viewport) => {
   let initialSize;
   try {
-    [flexibleSize, initialSize] = await Promise.all([preferLatestClientSize(), getSessionSize(session)]);
+    [, initialSize] = await Promise.all([preferLatestClientSize(), getSessionSize(session)]);
   } catch (error) {
     ws.close(1011, error.message || 'tmux size configuration failed');
     return;
   }
+  // Attach at the viewport the client reported on the URL. Attaching at tmux's own size
+  // and waiting for the first resize message loses that resize whenever it lands before
+  // the attach completes, leaving a grid wider and taller than the visible area — which
+  // is what produces leftover rows, an input line drawn off screen, and mouse selections
+  // that miss the text. Fall back to tmux's size only for clients too old to report one.
+  const attachSize = viewport || { width: initialSize.width, height: initialSize.height };
   const terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
-    name: 'xterm-256color', cols: initialSize.width, rows: initialSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
+    name: 'xterm-256color', cols: attachSize.width, rows: attachSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
   });
   terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
   terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
@@ -174,9 +179,13 @@ wss.on('connection', async (ws, session) => {
       const message = JSON.parse(raw.toString());
       if (message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
-        const minCols = flexibleSize ? 20 : initialSize.width;
-        const minRows = flexibleSize ? 5 : initialSize.height;
-        terminal.resize(Math.max(minCols, message.cols), Math.max(minRows, message.rows));
+        // The viewport always wins, down to a floor that keeps tmux usable. Clamping to
+        // the session's own size instead (the old behaviour when tmux predates the
+        // window-size option) pins the grid larger than the browser can show. On tmux
+        // 2.9+ this matches "window-size latest"; below it, tmux sizes the window to the
+        // smallest attached client, so a second smaller client leaves this one padded
+        // rather than clipped.
+        terminal.resize(...clampViewport(message.cols, message.rows));
       }
     } catch { /* Ignore malformed terminal frames. */ }
   });

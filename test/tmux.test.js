@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, parseSessions, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, parseSessions, parseViewport, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -212,4 +212,35 @@ test('a modal hiding the footer does not lose a busy session', () => {
     screenSignals: { ...signals(usageModal, 'claude'), animating: true },
     paneCommands: ['bash'],
   }), true);
+});
+
+// Verbatim qodercli footer, generating and idle.
+const QODER_BUSY = `
+  Files changed: 3
+⠋ Generating... (esc to cancel, 25s)
+`;
+
+const QODER_IDLE = `
+  Files changed: 3
+  Ready
+`;
+
+test('reads the qodercli generating footer', () => {
+  assert.equal(signals(QODER_BUSY, 'qodercli').busy, true);
+  assert.equal(signals(QODER_IDLE, 'qodercli').busy, false);
+});
+
+test('the qodercli spinner is not mistaken for claude or codex output', () => {
+  assert.equal(signals(QODER_BUSY, 'claude').busy, false);
+  assert.equal(signals(QODER_BUSY, 'codex').busy, false);
+});
+
+test('viewport is taken from the connect URL and floored, or absent', () => {
+  const at = (query) => parseViewport(new URLSearchParams(query));
+  assert.deepEqual(at('cols=100&rows=30'), { width: 100, height: 30 });
+  assert.deepEqual(at('cols=4&rows=2'), { width: 20, height: 5 }, 'floors keep tmux usable');
+  assert.equal(at('session=x'), null, 'a client that reports no size falls back to tmux');
+  assert.equal(at('cols=abc&rows=30'), null);
+  assert.equal(at('cols=0&rows=0'), null);
+  assert.equal(at('cols=100.5&rows=30'), null);
 });
