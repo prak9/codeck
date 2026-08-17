@@ -33,7 +33,13 @@ const state = {
   // legible size and actually resizes the tmux window to the viewport instead of cramming
   // the desktop pane's full grid onto a phone screen. Bookmarking a link with this plus
   // `?fontSize=` to the home screen gives a phone a consistent, tuned launch every time.
-  overview: displayParams.get('view') !== 'readable',
+  // `?fontSize=` alone implies the same: overview mode still forces the pty to the desktop
+  // pane's column count regardless of the chosen font, which is what was wide enough to
+  // run text past the visible edge with no wrap — a fixed font size only makes sense
+  // together with letting the pty width match what that font can actually show.
+  overview: displayParams.get('view') === 'overview'
+    ? true
+    : displayParams.get('view') !== 'readable' && !displayParams.has('fontSize'),
   baseFontSize: parseFontSizeParam(displayParams.get('fontSize')) ?? 16,
   fitting: false,
   flexibleSize: true,
@@ -470,6 +476,15 @@ function ensureTerminal() {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'input', data }));
     }
+  });
+  // `.xterm` sets user-select:none (its selection is a custom overlay, not a real DOM
+  // Range, since rows are virtualized) — so there is no native OS selection to hand a
+  // long-press "Copy" bubble on mobile, and no right-click menu either. Copy on select
+  // instead of requiring a shortcut or a button: works the same on every input method,
+  // and never fights Ctrl+C, which stays SIGINT even with an active selection.
+  terminal.onSelectionChange(() => {
+    const text = terminal.getSelection();
+    if (text) navigator.clipboard?.writeText(text).catch(() => {});
   });
   terminal.onResize(({ cols, rows }) => {
     if (!state.fitting && state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
