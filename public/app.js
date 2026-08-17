@@ -441,6 +441,35 @@ async function handleTerminalDrop(event) {
   }
 }
 
+// A pty program can enable xterm mouse-tracking (needed on both claude and qodercli
+// sessions — confirmed by their desktop selection requiring Shift to bypass it) to get
+// click events forwarded as escape sequences instead of driving local scroll/selection.
+// Desktop has Shift as the bypass; touch has no equivalent key, so a swipe gets consumed
+// the same way a plain click would, and scrolling stops dead. Take touch scrolling over
+// entirely on mobile, mirroring xterm's own Viewport.handleTouchMove math (scrollTop +=
+// the finger's Y delta) so it behaves the same as when nothing was in the way — this
+// only restores scroll; selecting text on a touch device with tracking enabled still has
+// no bypass and is a separate gap.
+function bindMobileScroll(container) {
+  const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
+  let lastY = null;
+  container.addEventListener('touchstart', (event) => {
+    if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
+    lastY = event.touches[0].clientY;
+  }, { capture: true, passive: true });
+  container.addEventListener('touchmove', (event) => {
+    if (lastY === null || event.touches.length !== 1) return;
+    const viewport = container.querySelector('.xterm-viewport');
+    if (!viewport) return;
+    const currentY = event.touches[0].clientY;
+    viewport.scrollTop += lastY - currentY;
+    lastY = currentY;
+    event.preventDefault();
+    event.stopPropagation();
+  }, { capture: true, passive: false });
+  container.addEventListener('touchend', () => { lastY = null; }, { capture: true, passive: true });
+}
+
 function ensureTerminal() {
   if (state.terminal) return state.terminal;
   const terminal = new Terminal({
@@ -462,6 +491,7 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
+  bindMobileScroll($('#terminal'));
   $('#terminal').addEventListener('paste', pasteImages, true);
   $('#terminal').addEventListener('dragenter', handleTerminalDragEnter, true);
   $('#terminal').addEventListener('dragover', handleTerminalDragOver, true);
