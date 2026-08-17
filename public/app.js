@@ -9,6 +9,16 @@ if (sharedToken) {
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
 const SESSION_LIST_POLL_MS = 3_000;
+const FONT_SIZE_MIN = 8;
+const FONT_SIZE_MAX = 32;
+const displayParams = new URLSearchParams(location.search);
+
+function parseFontSizeParam(raw) {
+  if (!raw) return null; // Number(null) is 0, so an absent param must not fall through to Number().
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(value))) : null;
+}
+
 const state = {
   token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
   sessions: [],
@@ -19,7 +29,12 @@ const state = {
   sessionsRefreshSeq: 0,
   connectionId: 0,
   terminalDropDepth: 0,
-  overview: true,
+  // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
+  // legible size and actually resizes the tmux window to the viewport instead of cramming
+  // the desktop pane's full grid onto a phone screen. Bookmarking a link with this plus
+  // `?fontSize=` to the home screen gives a phone a consistent, tuned launch every time.
+  overview: displayParams.get('view') !== 'readable',
+  baseFontSize: parseFontSizeParam(displayParams.get('fontSize')) ?? 16,
   fitting: false,
   flexibleSize: true,
   canManage: true,
@@ -290,6 +305,8 @@ async function refreshSessions() {
   $('#viewModeButton').hidden = !state.flexibleSize;
   for (const id of ['#newButton', '#newButtonBottom', '#emptyNewButton', '#killButton', '#shareButton']) $(id).hidden = !state.canManage;
   if (!state.flexibleSize) state.overview = true;
+  $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
+  $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
   if (state.active && state.terminal) fitTerminalView();
 }
@@ -469,7 +486,7 @@ function fitTerminalView() {
   const terminal = state.terminal;
   const mobileOverview = matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches && state.overview;
   const session = state.sessions.find((item) => item.name === state.active);
-  terminal.options.fontSize = 16;
+  terminal.options.fontSize = state.baseFontSize;
   state.fit.fit();
   if (mobileOverview && session?.width > 0 && session?.height > 0) {
     for (let attempt = 0; attempt < 3 && (terminal.cols < session.width || terminal.rows < session.height); attempt += 1) {
