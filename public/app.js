@@ -2,7 +2,11 @@ const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
 
 const $ = (selector) => document.querySelector(selector);
-const sharedToken = new URLSearchParams(location.hash.slice(1)).get('share') || new URLSearchParams(location.search).get('share');
+// Read the display params before the share-link branch below, which rewrites the URL to
+// drop the token and would take ?view= and ?fontSize= with it — leaving a bookmarked
+// share link silently back on overview mode, and therefore unwrapped.
+const displayParams = new URLSearchParams(location.search);
+const sharedToken = new URLSearchParams(location.hash.slice(1)).get('share') || displayParams.get('share');
 if (sharedToken) {
   sessionStorage.setItem('codeck-share-token', sharedToken);
   history.replaceState(null, '', location.pathname);
@@ -11,7 +15,6 @@ const storedShareToken = sessionStorage.getItem('codeck-share-token');
 const SESSION_LIST_POLL_MS = 3_000;
 const FONT_SIZE_MIN = 8;
 const FONT_SIZE_MAX = 32;
-const displayParams = new URLSearchParams(location.search);
 
 function parseFontSizeParam(raw) {
   if (!raw) return null; // Number(null) is 0, so an absent param must not fall through to Number().
