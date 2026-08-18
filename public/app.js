@@ -483,6 +483,10 @@ function bindMobileScroll(container, terminal, requestScroll) {
   }, { capture: true, passive: true });
   container.addEventListener('touchmove', (event) => {
     if (lastY === null || event.touches.length !== 1) return;
+    // While pinch-zoomed, a one-finger drag is how the reader pans around the magnified
+    // page — the only way to reach content that is off screen horizontally, since a tmux
+    // pane has no columns beyond its own width to scroll to. Leave the gesture alone.
+    if ((visualViewport?.scale ?? 1) > 1.01) return;
     const currentY = event.touches[0].clientY;
     const step = currentY - lastY;
     lastY = currentY;
