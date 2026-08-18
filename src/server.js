@@ -7,7 +7,7 @@ import express from 'express';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
-import { createSession, getSessionSize, killSession, listSessions, clampViewport, parseViewport, preferLatestClientSize, renameSession, detectWindowSizeSupport, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
+import { createSession, getSessionSize, killSession, listSessions, clampViewport, parseViewport, preferLatestClientSize, scrollSession, renameSession, detectWindowSizeSupport, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
 import {
@@ -172,6 +172,9 @@ wss.on('connection', async (ws, session, viewport) => {
         // smallest attached client, so a second smaller client leaves this one padded
         // rather than clipped.
         terminal.resize(...clampViewport(message.cols, message.rows));
+      }
+      if (message.type === 'scroll' && Number.isInteger(message.lines)) {
+        scrollSession(session, message.lines).catch(() => {});
       }
     } catch { /* Ignore malformed terminal frames. */ }
   };

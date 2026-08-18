@@ -283,6 +283,8 @@ export async function preferLatestClientSize() {
 // Floors that keep tmux usable no matter how small the browser window gets.
 const MIN_COLS = 20;
 const MIN_ROWS = 5;
+// A single gesture should never be able to ask tmux for an unbounded scroll.
+const MAX_SCROLL_LINES = 500;
 
 export function clampViewport(cols, rows) {
   return [Math.max(MIN_COLS, cols), Math.max(MIN_ROWS, rows)];
@@ -295,6 +297,27 @@ export function parseViewport(searchParams) {
   if (width <= 0 || height <= 0) return null;
   const [clampedWidth, clampedHeight] = clampViewport(width, height);
   return { width: clampedWidth, height: clampedHeight };
+}
+
+// tmux drives the outer terminal's alternate screen (verified: it emits ESC[?1049h on
+// attach), and the alternate screen has no scrollback by definition — xterm's viewport
+// has nothing to scroll, so scrollTop is inert no matter who handles the gesture. The
+// history lives in tmux's copy mode, so scrolling has to be asked of tmux itself.
+// Positive `lines` moves back into history.
+export async function scrollSession(name, lines) {
+  if (!validateSessionName(name)) throw new Error('无效的会话名');
+  const count = Math.min(Math.trunc(Math.abs(lines)), MAX_SCROLL_LINES);
+  if (!count) return;
+  if (lines > 0) {
+    // copy-mode is idempotent here: re-entering while already in it keeps the current
+    // scroll position rather than resetting it. `-e` makes tmux leave copy mode on its
+    // own once the view is back at the bottom.
+    await exec('tmux', ['copy-mode', '-e', '-t', name, ';', 'send-keys', '-X', '-t', name, '-N', String(count), 'scroll-up']);
+    return;
+  }
+  // Scrolling forward is only meaningful inside copy mode; tmux answers "not in a mode"
+  // otherwise, which is the no-op we want rather than an error worth surfacing.
+  await exec('tmux', ['send-keys', '-X', '-t', name, '-N', String(count), 'scroll-down']).catch(() => {});
 }
 
 export async function getSessionSize(name) {

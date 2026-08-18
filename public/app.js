@@ -441,29 +441,36 @@ async function handleTerminalDrop(event) {
   }
 }
 
-// A pty program can enable xterm mouse-tracking (needed on both claude and qodercli
-// sessions — confirmed by their desktop selection requiring Shift to bypass it) to get
-// click events forwarded as escape sequences instead of driving local scroll/selection.
-// Desktop has Shift as the bypass; touch has no equivalent key, so a swipe gets consumed
-// the same way a plain click would, and scrolling stops dead. Take touch scrolling over
-// entirely on mobile, mirroring xterm's own Viewport.handleTouchMove math (scrollTop +=
-// the finger's Y delta) so it behaves the same as when nothing was in the way — this
-// only restores scroll; selecting text on a touch device with tracking enabled still has
-// no bypass and is a separate gap.
-function bindMobileScroll(container) {
+// tmux runs in the outer terminal's alternate screen, which has no scrollback — xterm's
+// own viewport has nothing to scroll, so no amount of local scrollTop or wheel handling
+// moves anything. The history is tmux's, reachable only through its copy mode, so a touch
+// drag is forwarded to the server and replayed as a tmux scroll instead.
+function bindMobileScroll(container, terminal, requestScroll) {
   const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
   let lastY = null;
+  let carriedPixels = 0;
+  const rowHeight = () => {
+    const screen = container.querySelector('.xterm-screen');
+    const height = screen?.clientHeight / (terminal.rows || 1);
+    return height > 0 ? height : terminal.options.fontSize * 1.2;
+  };
   container.addEventListener('touchstart', (event) => {
     if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
     lastY = event.touches[0].clientY;
+    carriedPixels = 0;
   }, { capture: true, passive: true });
   container.addEventListener('touchmove', (event) => {
     if (lastY === null || event.touches.length !== 1) return;
-    const viewport = container.querySelector('.xterm-viewport');
-    if (!viewport) return;
     const currentY = event.touches[0].clientY;
-    viewport.scrollTop += lastY - currentY;
+    // Dragging downward reveals older output, matching how touch scrolling reads anywhere
+    // else. Whole rows are sent and the remainder carried, so slow drags still accumulate.
+    carriedPixels += currentY - lastY;
     lastY = currentY;
+    const rows = Math.trunc(carriedPixels / rowHeight());
+    if (rows !== 0) {
+      carriedPixels -= rows * rowHeight();
+      requestScroll(rows);
+    }
     event.preventDefault();
     event.stopPropagation();
   }, { capture: true, passive: false });
@@ -491,7 +498,11 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
-  bindMobileScroll($('#terminal'));
+  bindMobileScroll($('#terminal'), terminal, (lines) => {
+    if (state.socket?.readyState === WebSocket.OPEN) {
+      state.socket.send(JSON.stringify({ type: 'scroll', lines }));
+    }
+  });
   $('#terminal').addEventListener('paste', pasteImages, true);
   $('#terminal').addEventListener('dragenter', handleTerminalDragEnter, true);
   $('#terminal').addEventListener('dragover', handleTerminalDragOver, true);
