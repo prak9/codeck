@@ -285,6 +285,8 @@ const MIN_COLS = 20;
 const MIN_ROWS = 5;
 // A single gesture should never be able to ask tmux for an unbounded scroll.
 const MAX_SCROLL_LINES = 500;
+// One in-flight scroll per session, so requests apply in the order they were made.
+const scrollQueue = new Map();
 
 export function clampViewport(cols, rows) {
   return [Math.max(MIN_COLS, cols), Math.max(MIN_ROWS, rows)];
@@ -304,7 +306,17 @@ export function parseViewport(searchParams) {
 // has nothing to scroll, so scrollTop is inert no matter who handles the gesture. The
 // history lives in tmux's copy mode, so scrolling has to be asked of tmux itself.
 // Positive `lines` moves back into history.
-export async function scrollSession(name, lines) {
+export function scrollSession(name, lines) {
+  // Scrolls must not overtake each other: tmux applies them in arrival order, and two in
+  // flight at once can land reversed, so a drag stalls or jumps. Chain per session.
+  const queued = (scrollQueue.get(name) || Promise.resolve())
+    .then(() => runSessionScroll(name, lines))
+    .catch(() => {});
+  scrollQueue.set(name, queued);
+  return queued;
+}
+
+async function runSessionScroll(name, lines) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');
   const count = Math.min(Math.trunc(Math.abs(lines)), MAX_SCROLL_LINES);
   if (!count) return;

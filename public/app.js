@@ -450,8 +450,26 @@ async function handleTerminalDrop(event) {
 // drag is forwarded to the server and replayed as a tmux scroll instead.
 function bindMobileScroll(container, terminal, requestScroll) {
   const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
+  // A tap carries a few pixels of finger travel. Without a deadzone that was enough to
+  // emit a scroll, which puts tmux into copy mode — and copy mode shows scrollback, whose
+  // lines keep the width they were written at, so history captured on a wide desktop
+  // client renders unwrapped on a phone. Tapping appeared to break wrapping.
+  const TOUCH_DEADZONE_PX = 12;
   let lastY = null;
   let carriedPixels = 0;
+  let travelled = 0;
+  // touchmove fires far faster than a tmux round trip. Emitting one request per event
+  // floods the server with concurrent, unordered scrolls that fight each other, so rows
+  // are summed and flushed at most once per frame — opposite directions cancel out
+  // instead of racing.
+  let pendingRows = 0;
+  let flushHandle = 0;
+  const flush = () => {
+    flushHandle = 0;
+    const rows = pendingRows;
+    pendingRows = 0;
+    if (rows) requestScroll(rows);
+  };
   const rowHeight = () => {
     const screen = container.querySelector('.xterm-screen');
     const height = screen?.clientHeight / (terminal.rows || 1);
@@ -461,18 +479,23 @@ function bindMobileScroll(container, terminal, requestScroll) {
     if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
     lastY = event.touches[0].clientY;
     carriedPixels = 0;
+    travelled = 0;
   }, { capture: true, passive: true });
   container.addEventListener('touchmove', (event) => {
     if (lastY === null || event.touches.length !== 1) return;
     const currentY = event.touches[0].clientY;
+    const step = currentY - lastY;
+    lastY = currentY;
+    travelled += Math.abs(step);
+    if (travelled < TOUCH_DEADZONE_PX) return;
     // Dragging downward reveals older output, matching how touch scrolling reads anywhere
     // else. Whole rows are sent and the remainder carried, so slow drags still accumulate.
-    carriedPixels += currentY - lastY;
-    lastY = currentY;
+    carriedPixels += step;
     const rows = Math.trunc(carriedPixels / rowHeight());
     if (rows !== 0) {
       carriedPixels -= rows * rowHeight();
-      requestScroll(rows);
+      pendingRows += rows;
+      if (!flushHandle) flushHandle = requestAnimationFrame(flush);
     }
     event.preventDefault();
     event.stopPropagation();
