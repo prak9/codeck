@@ -495,7 +495,8 @@ function moveCursorToTap(container, terminal, clientX, clientY, sendInput) {
   const column = Math.floor((clientX - rect.left) / cellWidth);
   const row = Math.floor((clientY - rect.top) / cellHeight);
   const buffer = terminal.buffer.active;
-  if (row !== buffer.cursorY) return touchLog(`tap row ${row} != cursor row ${buffer.cursorY}, ignored`);
+  touchLog(`tap cell ${column},${row} | cursor ${buffer.cursorX},${buffer.cursorY} | cell ${cellWidth.toFixed(1)}x${cellHeight.toFixed(1)}`);
+  if (row !== buffer.cursorY) return touchLog(`  ignored: not the cursor's row`);
   const steps = Math.max(0, Math.min(terminal.cols - 1, column)) - buffer.cursorX;
   if (!steps) return;
   touchLog(`tap col ${column} cursor ${buffer.cursorX} -> ${steps > 0 ? 'right' : 'left'} x${Math.abs(steps)}`);
@@ -617,7 +618,9 @@ function bindMobileScroll(container, terminal, requestScroll, sendInput) {
     touchLog(`touchend selecting=${selecting} travelled=${Math.round(travelled)}`);
     const wasTap = !selecting && travelled < TOUCH_DEADZONE_PX;
     endSelection(lastX, lastY);
-    if (wasTap) moveCursorToTap(container, terminal, lastX, lastY, sendInput);
+    // Aim at where the finger landed, not where it lifted: a tap drifts a few pixels, and
+    // the landing point is what the reader was pointing at.
+    if (wasTap) moveCursorToTap(container, terminal, startX, startY, sendInput);
     lastY = null;
   }, { capture: true, passive: true });
 }
