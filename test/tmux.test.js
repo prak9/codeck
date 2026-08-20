@@ -1,11 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, identifyAgentFromScreen, parseSessions, parseViewport, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, parseSessions, parseViewport, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
     name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 49,
   }]);
+});
+
+test('tmux 2.7 numeric status values still reserve the status row', () => {
+  assert.equal(parseSessions('legacy\t1\t1\t100\t200\t80\t23\t1\n')[0].height, 24);
+  assert.equal(parseSessions('legacy\t1\t1\t100\t200\t80\t23\t0\n')[0].height, 23);
+});
+
+test('modern multi-line status values reserve every status row', () => {
+  assert.equal(parseSessions('multi\t1\t1\t100\t200\t80\t22\t2\n')[0].height, 24);
+  assert.equal(parseSessions('multi\t1\t1\t100\t200\t80\t1\t5\n')[0].height, 6);
 });
 
 test('empty tmux output produces an empty list', () => assert.deepEqual(parseSessions(''), []));
@@ -15,6 +25,18 @@ test('detects the tmux window-size option only on versions that have it', () => 
   assert.equal(supportsWindowSizeOption('tmux 2.8'), false);
   assert.equal(supportsWindowSizeOption('tmux 2.9'), true);
   assert.equal(supportsWindowSizeOption('tmux 3.4'), true);
+});
+
+test('finds every other session linked to the active window', () => {
+  const windows = [
+    'phone\t@1\t1',
+    'peer-a\t@1\t1',
+    'peer-a\t@2\t0',
+    'peer-b\t@1\t0',
+    'other\t@3\t1',
+  ].join('\n');
+  assert.deepEqual(findLinkedWindowSessions(windows, 'phone'), ['peer-a', 'peer-b']);
+  assert.deepEqual(findLinkedWindowSessions(windows, 'other'), []);
 });
 
 test('removes nested tmux markers from web terminal environments', () => {
@@ -238,7 +260,7 @@ test('the qodercli spinner is not mistaken for claude or codex output', () => {
 test('viewport is taken from the connect URL and floored, or absent', () => {
   const at = (query) => parseViewport(new URLSearchParams(query));
   assert.deepEqual(at('cols=100&rows=30'), { width: 100, height: 30 });
-  assert.deepEqual(at('cols=4&rows=2'), { width: 20, height: 5 }, 'floors keep tmux usable');
+  assert.deepEqual(at('cols=4&rows=2'), { width: 20, height: 6 }, 'six rows leave one pane row above tmux\'s five-line status maximum');
   assert.equal(at('session=x'), null, 'a client that reports no size falls back to tmux');
   assert.equal(at('cols=abc&rows=30'), null);
   assert.equal(at('cols=0&rows=0'), null);

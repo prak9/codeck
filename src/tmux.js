@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
+import { clampTerminalGrid } from '../public/terminal-utils.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
@@ -94,6 +95,13 @@ export function withoutTmuxEnvironment(environment) {
   return clean;
 }
 
+function tmuxStatusRows(status) {
+  if (status === 'on') return 1;
+  if (status === 'off') return 0;
+  const rows = Number(status);
+  return Number.isInteger(rows) && rows > 0 ? rows : 0;
+}
+
 export function parseSessions(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
@@ -105,9 +113,28 @@ export function parseSessions(output) {
       createdAt: Number(created) * 1000,
       activityAt: Number(activity) * 1000,
       width: Number(width),
-      height: Number(height) + (status === 'on' ? 1 : 0),
+      height: Number(height) + tmuxStatusRows(status),
     };
   });
+}
+
+export function findLinkedWindowSessions(output, session) {
+  if (!output.trim()) return [];
+  const windows = output.trim().split('\n').map((line) => {
+    const [name, windowId, active] = line.split('\t');
+    return { name, windowId, active: active === '1' };
+  });
+  const target = windows.find((window) => window.name === session && window.active);
+  if (!target) return [];
+  return [...new Set(windows
+    .filter((window) => window.windowId === target.windowId && window.name !== session)
+    .map((window) => window.name))];
+}
+
+export async function getLinkedWindowSessions(name) {
+  if (!validateSessionName(name)) throw new Error('无效的会话名');
+  const { stdout } = await exec('tmux', ['list-windows', '-a', '-F', '#{session_name}\t#{window_id}\t#{window_active}']);
+  return findLinkedWindowSessions(stdout, name);
 }
 
 function parsePanes(output) {
@@ -280,16 +307,14 @@ export async function preferLatestClientSize() {
   return true;
 }
 
-// Floors that keep tmux usable no matter how small the browser window gets.
-const MIN_COLS = 20;
-const MIN_ROWS = 5;
 // A single gesture should never be able to ask tmux for an unbounded scroll.
 const MAX_SCROLL_LINES = 500;
 // One in-flight scroll per session, so requests apply in the order they were made.
 const scrollQueue = new Map();
 
 export function clampViewport(cols, rows) {
-  return [Math.max(MIN_COLS, cols), Math.max(MIN_ROWS, rows)];
+  const viewport = clampTerminalGrid(cols, rows);
+  return [viewport.cols, viewport.rows];
 }
 
 export function parseViewport(searchParams) {
@@ -336,5 +361,5 @@ export async function getSessionSize(name) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');
   const { stdout } = await exec('tmux', ['display-message', '-p', '-t', `${name}:`, '#{window_width}\t#{window_height}\t#{status}']);
   const [rawWidth, rawHeight, status] = stdout.trim().split('\t');
-  return { width: Number(rawWidth), height: Number(rawHeight) + (status === 'on' ? 1 : 0) };
+  return { width: Number(rawWidth), height: Number(rawHeight) + tmuxStatusRows(status) };
 }

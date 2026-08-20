@@ -4,10 +4,10 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
-import { createSession, getSessionSize, killSession, listSessions, clampViewport, parseViewport, preferLatestClientSize, scrollSession, renameSession, detectWindowSizeSupport, validateSessionName, withoutTmuxEnvironment } from './tmux.js';
+import { createSession, killSession, listSessions, parseViewport, renameSession, detectWindowSizeSupport, validateSessionName } from './tmux.js';
+import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
 import {
@@ -154,70 +154,7 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport));
 });
 
-wss.on('connection', async (ws, session, viewport) => {
-  // Buffer from the first tick. Configuring tmux and reading its size are awaited, and a
-  // listener attached after that await never sees what arrived during it — keystrokes
-  // typed the moment the terminal opens are dropped with no error.
-  let terminal = null;
-  const pending = [];
-  const handleMessage = (raw) => {
-    try {
-      const message = JSON.parse(raw.toString());
-      if (message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
-      if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
-        // The viewport always wins, down to a floor that keeps tmux usable. Clamping to
-        // the session's own size instead (the old behaviour when tmux predates the
-        // window-size option) pins the grid larger than the browser can show. On tmux
-        // 2.9+ this matches "window-size latest"; below it, tmux sizes the window to the
-        // smallest attached client, so a second smaller client leaves this one padded
-        // rather than clipped.
-        terminal.resize(...clampViewport(message.cols, message.rows));
-      }
-      if (message.type === 'scroll' && Number.isInteger(message.lines)) {
-        scrollSession(session, message.lines).catch(() => {});
-      }
-    } catch { /* Ignore malformed terminal frames. */ }
-  };
-  ws.on('message', (raw, binary) => {
-    if (binary) return;
-    if (terminal) handleMessage(raw); else pending.push(raw);
-  });
-
-  let initialSize;
-  try {
-    [, initialSize] = await Promise.all([preferLatestClientSize(), getSessionSize(session)]);
-  } catch (error) {
-    ws.close(1011, error.message || 'tmux size configuration failed');
-    return;
-  }
-  // Attach at the viewport the client reported on the URL. Attaching at tmux's own size
-  // and waiting for the first resize message loses that resize whenever it lands before
-  // the attach completes, leaving a grid wider and taller than the visible area — which
-  // is what produces leftover rows, an input line drawn off screen, and mouse selections
-  // that miss the text. Fall back to tmux's size only for clients too old to report one.
-  const attachSize = viewport || { width: initialSize.width, height: initialSize.height };
-  // -d detaches whatever else was attached. A tmux window has one size, so two clients of
-  // different sizes cannot both be right: under window-size latest every keystroke hands
-  // the window to whichever client typed it, leaving the other rendering a grid that no
-  // longer matches its viewport — a phone showing a desktop-width window is the garbled
-  // screen. One client per session removes the conflict; the displaced browser's pty exits
-  // and it reports a clean disconnect instead of drawing rubbish.
-  terminal = pty.spawn('tmux', ['attach-session', '-d', '-t', session], {
-    name: 'xterm-256color', cols: attachSize.width, rows: attachSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
-  });
-  // tmux 2.7 and earlier do not have window-size=latest. `-d` above leaves this as the
-  // only attached client, but an explicit post-attach resize is still needed on those
-  // versions: the session may retain its previous window size until it receives SIGWINCH.
-  // Newer tmux versions get the same harmless confirmation after using latest sizing.
-  terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
-  terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
-  terminal.resize(attachSize.width, attachSize.height);
-  while (pending.length) handleMessage(pending.shift());
-  if (ws.readyState !== ws.OPEN) terminal.kill();
-  ws.on('close', () => {
-    terminal.kill();
-  });
-});
+wss.on('connection', handleTerminalConnection);
 
 server.listen(port, host, () => {
   console.log(`Codeck is running at https://${host}:${port}`);

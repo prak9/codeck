@@ -1,3 +1,6 @@
+import { bindMobileScroll } from './mobile-scroll.js';
+import { fitTerminalGrid, resetTerminalInput } from './terminal-utils.js';
+
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
 
@@ -53,7 +56,6 @@ const state = {
     : displayParams.get('view') !== 'readable' && !displayParams.has('fontSize'),
   baseFontSize: parseFontSizeParam(displayParams.get('fontSize')) ?? 16,
   fitting: false,
-  flexibleSize: true,
   canManage: true,
   openedShareLink: Boolean(sharedToken || storedShareToken),
 };
@@ -317,11 +319,11 @@ async function refreshSessions() {
   const data = await api('/api/sessions');
   if (requestId !== state.sessionsRefreshSeq) return;
   state.sessions = data.sessions;
-  state.flexibleSize = data.capabilities?.flexibleSize !== false;
   state.canManage = data.capabilities?.canManage !== false;
-  $('#viewModeButton').hidden = !state.flexibleSize;
+  // A sole tmux 2.7 client can still resize through the pty. The missing window-size
+  // option only affects arbitration between clients, so it must not disable readable mode.
+  $('#viewModeButton').hidden = false;
   for (const id of ['#newButton', '#newButtonBottom', '#emptyNewButton', '#killButton', '#shareButton']) $(id).hidden = !state.canManage;
-  if (!state.flexibleSize) state.overview = true;
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
@@ -475,136 +477,6 @@ function touchLog(message) {
   panel.textContent = touchLogLines.join('\n');
 }
 
-function bindMobileScroll(container, terminal, requestScroll) {
-  const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
-  // A tap carries a few pixels of finger travel. Without a deadzone that was enough to
-  // emit a scroll, which puts tmux into copy mode — and copy mode shows scrollback, whose
-  // lines keep the width they were written at, so history captured on a wide desktop
-  // client renders unwrapped on a phone. Tapping appeared to break wrapping.
-  const TOUCH_DEADZONE_PX = 12;
-  // xterm's selection runs entirely off mousedown/mousemove/mouseup — a touch drag fires
-  // none of them, which is why selecting was impossible here. Holding still for a moment
-  // synthesises that sequence, so the drag that follows drives xterm's own selection
-  // instead of scrolling. mousedown goes to the .xterm element it listens on; the move and
-  // up listeners it then installs live on the document, so those go there.
-  const LONG_PRESS_MS = 450;
-  let pressTimer = 0;
-  let selecting = false;
-  const sendMouse = (type, target, x, y) => target?.dispatchEvent(new MouseEvent(type, {
-    bubbles: true, cancelable: true, view: window, button: 0, buttons: type === 'mouseup' ? 0 : 1, detail: 1, clientX: x, clientY: y,
-  }));
-  const beginSelection = (x, y) => {
-    selecting = true;
-    state.terminal?.clearSelection?.();
-    const target = container.querySelector('.xterm');
-    touchLog(`long-press fired, target=${target ? '.xterm' : 'MISSING'} mobile=${isMobile()}`);
-    sendMouse('mousedown', target, x, y);
-    touchLog(`after mousedown hasSelection=${terminal.hasSelection()}`);
-  };
-  const endSelection = (x, y) => {
-    if (!selecting) return;
-    selecting = false;
-    sendMouse('mouseup', document, x, y);
-    touchLog(`mouseup -> selection=${JSON.stringify((terminal.getSelection() || '').slice(0, 24))}`);
-  };
-  let lastX = 0;
-  let lastY = null;
-  let startX = 0;
-  let startY = 0;
-  let carriedPixels = 0;
-  let travelled = 0;
-  // touchmove fires far faster than a tmux round trip. Emitting one request per event
-  // floods the server with concurrent, unordered scrolls that fight each other, so rows
-  // are summed and flushed at most once per frame — opposite directions cancel out
-  // instead of racing.
-  let pendingRows = 0;
-  let flushHandle = 0;
-  const flush = () => {
-    flushHandle = 0;
-    const rows = pendingRows;
-    pendingRows = 0;
-    if (rows) requestScroll(rows);
-  };
-  const rowHeight = () => {
-    const screen = container.querySelector('.xterm-screen');
-    const height = screen?.clientHeight / (terminal.rows || 1);
-    return height > 0 ? height : terminal.options.fontSize * 1.2;
-  };
-  // Only real taps are held back — a tap's synthesised mousedown would otherwise land as
-  // a click that clears whatever was just selected. The events dispatched below are
-  // untrusted, so they pass through to xterm's SelectionService as intended.
-  container.addEventListener('mousedown', (event) => {
-    if (isMobile() && event.isTrusted) event.stopPropagation();
-  }, { capture: true });
-  container.addEventListener('touchstart', (event) => {
-    clearTimeout(pressTimer);
-    endSelection(lastX, lastY);
-    if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
-    lastX = startX = event.touches[0].clientX;
-    lastY = startY = event.touches[0].clientY;
-    carriedPixels = 0;
-    travelled = 0;
-    pressTimer = setTimeout(() => beginSelection(startX, startY), LONG_PRESS_MS);
-    touchLog(`touchstart @${Math.round(startX)},${Math.round(startY)}`);
-  }, { capture: true, passive: true });
-  container.addEventListener('touchmove', (event) => {
-    if (lastY === null || event.touches.length !== 1) return;
-    const currentX = event.touches[0].clientX;
-    const currentY = event.touches[0].clientY;
-    if (selecting) {
-      lastX = currentX;
-      lastY = currentY;
-      sendMouse('mousemove', document, currentX, currentY);
-      touchLog(`selecting move -> len=${(terminal.getSelection() || '').length}`);
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    // While pinch-zoomed, a one-finger drag is how the reader pans around the magnified
-    // page — the only way to reach content that is off screen horizontally, since a tmux
-    // pane has no columns beyond its own width to scroll to. Leave the gesture alone.
-    if ((visualViewport?.scale ?? 1) > 1.01) return;
-    const step = currentY - lastY;
-    lastX = currentX;
-    lastY = currentY;
-    travelled += Math.abs(step);
-    // Cancel the pending long press on distance from where the finger landed, not on
-    // accumulated travel: a still finger jitters, and summing those absolute steps crosses
-    // any threshold within the hold, killing the timer before it can ever fire.
-    if (Math.hypot(currentX - startX, currentY - startY) >= TOUCH_DEADZONE_PX) clearTimeout(pressTimer);
-    if (travelled < TOUCH_DEADZONE_PX) return;
-    // Dragging downward reveals older output, matching how touch scrolling reads anywhere
-    // else. Whole rows are sent and the remainder carried, so slow drags still accumulate.
-    carriedPixels += step;
-    const rows = Math.trunc(carriedPixels / rowHeight());
-    if (rows !== 0) {
-      carriedPixels -= rows * rowHeight();
-      pendingRows += rows;
-      if (!flushHandle) flushHandle = requestAnimationFrame(flush);
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  }, { capture: true, passive: false });
-  container.addEventListener('touchend', () => {
-    clearTimeout(pressTimer);
-    touchLog(`touchend selecting=${selecting} travelled=${Math.round(travelled)}`);
-    endSelection(lastX, lastY);
-    lastY = null;
-  }, { capture: true, passive: true });
-
-  // A queued animation frame belongs to the session that received the touch. If the user
-  // switches sessions before that frame runs, the requestScroll callback would otherwise
-  // read the new state.socket and scroll the newly opened session instead.
-  return () => {
-    clearTimeout(pressTimer);
-    if (flushHandle) cancelAnimationFrame(flushHandle);
-    flushHandle = 0;
-    pendingRows = 0;
-    endSelection(lastX, lastY);
-    lastY = null;
-  };
-}
-
 function ensureTerminal() {
   if (state.terminal) return state.terminal;
   const terminal = new Terminal({
@@ -630,7 +502,7 @@ function ensureTerminal() {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));
     }
-  });
+  }, { log: touchLog });
   $('#terminal').addEventListener('paste', pasteImages, true);
   $('#terminal').addEventListener('dragenter', handleTerminalDragEnter, true);
   $('#terminal').addEventListener('dragover', handleTerminalDragOver, true);
@@ -670,15 +542,16 @@ function fitTerminalView() {
   const terminal = state.terminal;
   const mobileOverview = matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches && state.overview;
   const session = state.sessions.find((item) => item.name === state.active);
-  terminal.options.fontSize = state.baseFontSize;
-  state.fit.fit();
-  if (mobileOverview && session?.width > 0 && session?.height > 0) {
-    for (let attempt = 0; attempt < 3 && (terminal.cols < session.width || terminal.rows < session.height); attempt += 1) {
-      const ratio = Math.min(terminal.cols / session.width, terminal.rows / session.height, 1);
-      terminal.options.fontSize = Math.max(1, Math.floor(terminal.options.fontSize * ratio * 9.7) / 10);
-      state.fit.fit();
-    }
-    terminal.resize(session.width, session.height);
+  const result = fitTerminalGrid(terminal, state.fit, {
+    baseFontSize: state.baseFontSize,
+    overviewSize: mobileOverview && session?.width > 0 && session?.height > 0
+      ? { cols: session.width, rows: session.height }
+      : null,
+  });
+  if (mobileOverview && !result.overview) {
+    state.overview = false;
+    $('#viewModeButton').textContent = '可读';
+    $('#viewModeButton').setAttribute('aria-pressed', 'false');
   }
   state.fitting = false;
   if (state.socket?.readyState === WebSocket.OPEN) {
@@ -692,10 +565,11 @@ function markActiveSession(session) {
   }
 }
 
-function connect(session) {
+async function connect(session) {
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
   state.cancelMobileScroll?.();
+  stopKeyRepeat();
   state.socket?.close();
   state.socket = null;
   state.active = session;
@@ -707,9 +581,13 @@ function connect(session) {
   $('#connectionState').textContent = '正在连接';
 
   const terminal = ensureTerminal();
-  terminal.reset();
+  const terminalElement = $('#terminal');
+  terminalElement.style.visibility = 'hidden';
+  await resetTerminalInput(terminal);
+  if (state.connectionId !== connectionId || state.active !== session) return;
   terminal.clear();
   fitTerminalView();
+  terminalElement.style.visibility = '';
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   // Report the viewport on the URL so the pty attaches at this size. Sending it only as
@@ -728,7 +606,7 @@ function connect(session) {
     if (state.connectionId !== connectionId) return;
     terminal.write(event.data);
   });
-  socket.addEventListener('close', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接已断开'));
+  socket.addEventListener('close', (event) => state.connectionId === connectionId && ($('#connectionState').textContent = event.reason || '连接已断开'));
   socket.addEventListener('error', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接失败'));
   $('#sidebar').classList.remove('open');
   $('#menuButton').setAttribute('aria-expanded', 'false');
@@ -965,5 +843,5 @@ setInterval(() => state.token && refreshSessions().catch(() => {}), SESSION_LIST
 document.fonts?.ready.then(() => {
   if (!state.terminal) return;
   state.terminal.refresh(0, state.terminal.rows - 1);
-  state.fit.fit();
+  fitTerminalView();
 });
