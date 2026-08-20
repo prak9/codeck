@@ -482,6 +482,13 @@ function bindMobileScroll(container, terminal, requestScroll) {
     const height = screen?.clientHeight / (terminal.rows || 1);
     return height > 0 ? height : terminal.options.fontSize * 1.2;
   };
+  // xterm's SelectionService calls preventDefault on mousedown, and iOS synthesises one
+  // from a touch — which would cancel the native selection the CSS above enables. It has
+  // nothing to do on touch anyway, since its selection needs a mouse drag, so keep the
+  // event from reaching it. Capture beats xterm's own listener regardless of order.
+  container.addEventListener('mousedown', (event) => {
+    if (isMobile()) event.stopPropagation();
+  }, { capture: true });
   container.addEventListener('touchstart', (event) => {
     if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
     lastY = event.touches[0].clientY;
@@ -494,6 +501,9 @@ function bindMobileScroll(container, terminal, requestScroll) {
     // page — the only way to reach content that is off screen horizontally, since a tmux
     // pane has no columns beyond its own width to scroll to. Leave the gesture alone.
     if ((visualViewport?.scale ?? 1) > 1.01) return;
+    // Once the browser is showing selection handles, dragging is how they get moved.
+    // Scrolling the pane out from under them would make selecting anything impossible.
+    if (getSelection()?.toString()) return;
     const currentY = event.touches[0].clientY;
     const step = currentY - lastY;
     lastY = currentY;
@@ -708,9 +718,9 @@ $('.mobile-keybar').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-terminal-action]');
   if (!button || !state.terminal) return;
   if (button.dataset.terminalAction === 'copy') {
-    // A selection is preferred when one exists, but a touch drag scrolls rather than
-    // selects, so the visible screen is the practical unit to hand over.
-    const text = state.terminal.hasSelection() ? state.terminal.getSelection() : visibleScreenText(state.terminal);
+    // Prefer whatever is actually selected — the browser's own selection on touch, or
+    // xterm's on a pointer device — and fall back to the visible screen.
+    const text = getSelection()?.toString() || (state.terminal.hasSelection() ? state.terminal.getSelection() : visibleScreenText(state.terminal));
     if (!text) return setConnectionMessage('屏幕上没有可复制的内容');
     try {
       await navigator.clipboard.writeText(text);

@@ -213,6 +213,13 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .view-mode-button { display: block; }
   .danger-button { min-height: 44px; }
   .terminal-frame { padding: 11px 7px 7px 11px; border-radius: 12px; touch-action: pan-x pan-y pinch-zoom; }
+  /* xterm sets user-select:none because it draws its own selection from mousedown, which
+     a touch drag never fires — so on a phone there is no way to select at all. Hand the
+     rendered rows back to the browser instead, so a long press raises iOS's own selection
+     handles and copy bubble. The DOM renderer emits real text nodes, so it spans rows. */
+  .terminal-frame .xterm,
+  .terminal-frame .xterm .xterm-screen,
+  .terminal-frame .xterm .xterm-rows { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
   .mobile-keybar { display: flex; }
   .client-options { grid-template-columns: 1fr 1fr; }
   input[type="text"], input[type="password"], input:not([type]) { font-size: 16px; }
