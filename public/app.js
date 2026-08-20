@@ -455,6 +455,25 @@ async function handleTerminalDrop(event) {
 // own viewport has nothing to scroll, so no amount of local scrollTop or wheel handling
 // moves anything. The history is tmux's, reachable only through its copy mode, so a touch
 // drag is forwarded to the server and replayed as a tmux scroll instead.
+// `?debug=touch` prints the gesture chain on screen. Touch behaviour cannot be reproduced
+// off-device, so when a gesture misbehaves this shows which link broke rather than
+// guessing: whether the hold registered, whether the synthetic mousedown went out, and
+// what xterm made of it.
+const touchDebug = displayParams.get('debug') === 'touch';
+let touchLogLines = [];
+function touchLog(message) {
+  if (!touchDebug) return;
+  let panel = $('#touchDebug');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'touchDebug';
+    panel.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99;max-height:38vh;overflow:auto;padding:6px 8px;background:#000c;color:#8ae234;font:10px/1.35 monospace;white-space:pre-wrap;pointer-events:none';
+    document.body.appendChild(panel);
+  }
+  touchLogLines = [...touchLogLines.slice(-14), `${new Date().toISOString().slice(17, 23)} ${message}`];
+  panel.textContent = touchLogLines.join('\n');
+}
+
 function bindMobileScroll(container, terminal, requestScroll) {
   const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
   // A tap carries a few pixels of finger travel. Without a deadzone that was enough to
@@ -476,15 +495,21 @@ function bindMobileScroll(container, terminal, requestScroll) {
   const beginSelection = (x, y) => {
     selecting = true;
     state.terminal?.clearSelection?.();
-    sendMouse('mousedown', container.querySelector('.xterm'), x, y);
+    const target = container.querySelector('.xterm');
+    touchLog(`long-press fired, target=${target ? '.xterm' : 'MISSING'} mobile=${isMobile()}`);
+    sendMouse('mousedown', target, x, y);
+    touchLog(`after mousedown hasSelection=${terminal.hasSelection()}`);
   };
   const endSelection = (x, y) => {
     if (!selecting) return;
     selecting = false;
     sendMouse('mouseup', document, x, y);
+    touchLog(`mouseup -> selection=${JSON.stringify((terminal.getSelection() || '').slice(0, 24))}`);
   };
   let lastX = 0;
   let lastY = null;
+  let startX = 0;
+  let startY = 0;
   let carriedPixels = 0;
   let travelled = 0;
   // touchmove fires far faster than a tmux round trip. Emitting one request per event
@@ -514,11 +539,12 @@ function bindMobileScroll(container, terminal, requestScroll) {
     clearTimeout(pressTimer);
     endSelection(lastX, lastY);
     if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
-    lastX = event.touches[0].clientX;
-    lastY = event.touches[0].clientY;
+    lastX = startX = event.touches[0].clientX;
+    lastY = startY = event.touches[0].clientY;
     carriedPixels = 0;
     travelled = 0;
-    pressTimer = setTimeout(() => beginSelection(lastX, lastY), LONG_PRESS_MS);
+    pressTimer = setTimeout(() => beginSelection(startX, startY), LONG_PRESS_MS);
+    touchLog(`touchstart @${Math.round(startX)},${Math.round(startY)}`);
   }, { capture: true, passive: true });
   container.addEventListener('touchmove', (event) => {
     if (lastY === null || event.touches.length !== 1) return;
@@ -528,6 +554,7 @@ function bindMobileScroll(container, terminal, requestScroll) {
       lastX = currentX;
       lastY = currentY;
       sendMouse('mousemove', document, currentX, currentY);
+      touchLog(`selecting move -> len=${(terminal.getSelection() || '').length}`);
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -540,8 +567,10 @@ function bindMobileScroll(container, terminal, requestScroll) {
     lastX = currentX;
     lastY = currentY;
     travelled += Math.abs(step);
-    // Moving means this was a drag, not a hold, so the pending long press is off.
-    if (travelled >= TOUCH_DEADZONE_PX) clearTimeout(pressTimer);
+    // Cancel the pending long press on distance from where the finger landed, not on
+    // accumulated travel: a still finger jitters, and summing those absolute steps crosses
+    // any threshold within the hold, killing the timer before it can ever fire.
+    if (Math.hypot(currentX - startX, currentY - startY) >= TOUCH_DEADZONE_PX) clearTimeout(pressTimer);
     if (travelled < TOUCH_DEADZONE_PX) return;
     // Dragging downward reveals older output, matching how touch scrolling reads anywhere
     // else. Whole rows are sent and the remainder carried, so slow drags still accumulate.
@@ -557,6 +586,7 @@ function bindMobileScroll(container, terminal, requestScroll) {
   }, { capture: true, passive: false });
   container.addEventListener('touchend', () => {
     clearTimeout(pressTimer);
+    touchLog(`touchend selecting=${selecting} travelled=${Math.round(travelled)}`);
     endSelection(lastX, lastY);
     lastY = null;
   }, { capture: true, passive: true });
