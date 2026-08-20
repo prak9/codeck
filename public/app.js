@@ -474,7 +474,35 @@ function touchLog(message) {
   panel.textContent = touchLogLines.join('\n');
 }
 
-function bindMobileScroll(container, terminal, requestScroll) {
+// A terminal has no notion of clicking to place the cursor — the program owning the pty
+// decides where it sits. What a shell does understand is arrow keys, so a tap is turned
+// into the number of left/right presses that walks the cursor to the tapped column.
+//
+// Only along the cursor's own row. Vertical arrows are not movement in a shell: they
+// recall history, and in a full-screen program they drive menus, so guessing there could
+// throw away a typed line or trigger something unintended. Tapping anywhere else is left
+// alone rather than doing something surprising.
+function moveCursorToTap(container, terminal, clientX, clientY, sendInput) {
+  const screen = container.querySelector('.xterm-screen');
+  if (!screen || !terminal.cols || !terminal.rows) return;
+  const rect = screen.getBoundingClientRect();
+  const cellWidth = rect.width / terminal.cols;
+  const cellHeight = rect.height / terminal.rows;
+  if (!(cellWidth > 0) || !(cellHeight > 0)) return;
+  // floor, not round: the column is whichever cell the finger landed in. Rounding pushes
+  // the second half of every cell into the next column, so a tap on the cursor itself
+  // reads as one column to its right and nudges it instead of leaving it alone.
+  const column = Math.floor((clientX - rect.left) / cellWidth);
+  const row = Math.floor((clientY - rect.top) / cellHeight);
+  const buffer = terminal.buffer.active;
+  if (row !== buffer.cursorY) return touchLog(`tap row ${row} != cursor row ${buffer.cursorY}, ignored`);
+  const steps = Math.max(0, Math.min(terminal.cols - 1, column)) - buffer.cursorX;
+  if (!steps) return;
+  touchLog(`tap col ${column} cursor ${buffer.cursorX} -> ${steps > 0 ? 'right' : 'left'} x${Math.abs(steps)}`);
+  sendInput((steps > 0 ? '\x1b[C' : '\x1b[D').repeat(Math.abs(steps)));
+}
+
+function bindMobileScroll(container, terminal, requestScroll, sendInput) {
   const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
   // A tap carries a few pixels of finger travel. Without a deadzone that was enough to
   // emit a scroll, which puts tmux into copy mode — and copy mode shows scrollback, whose
@@ -587,7 +615,9 @@ function bindMobileScroll(container, terminal, requestScroll) {
   container.addEventListener('touchend', () => {
     clearTimeout(pressTimer);
     touchLog(`touchend selecting=${selecting} travelled=${Math.round(travelled)}`);
+    const wasTap = !selecting && travelled < TOUCH_DEADZONE_PX;
     endSelection(lastX, lastY);
+    if (wasTap) moveCursorToTap(container, terminal, lastX, lastY, sendInput);
     lastY = null;
   }, { capture: true, passive: true });
 }
@@ -616,6 +646,10 @@ function ensureTerminal() {
   bindMobileScroll($('#terminal'), terminal, (lines) => {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));
+    }
+  }, (data) => {
+    if (state.socket?.readyState === WebSocket.OPEN) {
+      state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
   $('#terminal').addEventListener('paste', pasteImages, true);
