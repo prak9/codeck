@@ -462,6 +462,28 @@ function bindMobileScroll(container, terminal, requestScroll) {
   // lines keep the width they were written at, so history captured on a wide desktop
   // client renders unwrapped on a phone. Tapping appeared to break wrapping.
   const TOUCH_DEADZONE_PX = 12;
+  // xterm's selection runs entirely off mousedown/mousemove/mouseup — a touch drag fires
+  // none of them, which is why selecting was impossible here. Holding still for a moment
+  // synthesises that sequence, so the drag that follows drives xterm's own selection
+  // instead of scrolling. mousedown goes to the .xterm element it listens on; the move and
+  // up listeners it then installs live on the document, so those go there.
+  const LONG_PRESS_MS = 450;
+  let pressTimer = 0;
+  let selecting = false;
+  const sendMouse = (type, target, x, y) => target?.dispatchEvent(new MouseEvent(type, {
+    bubbles: true, cancelable: true, view: window, button: 0, buttons: type === 'mouseup' ? 0 : 1, detail: 1, clientX: x, clientY: y,
+  }));
+  const beginSelection = (x, y) => {
+    selecting = true;
+    state.terminal?.clearSelection?.();
+    sendMouse('mousedown', container.querySelector('.xterm'), x, y);
+  };
+  const endSelection = (x, y) => {
+    if (!selecting) return;
+    selecting = false;
+    sendMouse('mouseup', document, x, y);
+  };
+  let lastX = 0;
   let lastY = null;
   let carriedPixels = 0;
   let travelled = 0;
@@ -482,32 +504,44 @@ function bindMobileScroll(container, terminal, requestScroll) {
     const height = screen?.clientHeight / (terminal.rows || 1);
     return height > 0 ? height : terminal.options.fontSize * 1.2;
   };
-  // xterm's SelectionService calls preventDefault on mousedown, and iOS synthesises one
-  // from a touch — which would cancel the native selection the CSS above enables. It has
-  // nothing to do on touch anyway, since its selection needs a mouse drag, so keep the
-  // event from reaching it. Capture beats xterm's own listener regardless of order.
+  // Only real taps are held back — a tap's synthesised mousedown would otherwise land as
+  // a click that clears whatever was just selected. The events dispatched below are
+  // untrusted, so they pass through to xterm's SelectionService as intended.
   container.addEventListener('mousedown', (event) => {
-    if (isMobile()) event.stopPropagation();
+    if (isMobile() && event.isTrusted) event.stopPropagation();
   }, { capture: true });
   container.addEventListener('touchstart', (event) => {
+    clearTimeout(pressTimer);
+    endSelection(lastX, lastY);
     if (!isMobile() || event.touches.length !== 1) { lastY = null; return; }
+    lastX = event.touches[0].clientX;
     lastY = event.touches[0].clientY;
     carriedPixels = 0;
     travelled = 0;
+    pressTimer = setTimeout(() => beginSelection(lastX, lastY), LONG_PRESS_MS);
   }, { capture: true, passive: true });
   container.addEventListener('touchmove', (event) => {
     if (lastY === null || event.touches.length !== 1) return;
+    const currentX = event.touches[0].clientX;
+    const currentY = event.touches[0].clientY;
+    if (selecting) {
+      lastX = currentX;
+      lastY = currentY;
+      sendMouse('mousemove', document, currentX, currentY);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     // While pinch-zoomed, a one-finger drag is how the reader pans around the magnified
     // page — the only way to reach content that is off screen horizontally, since a tmux
     // pane has no columns beyond its own width to scroll to. Leave the gesture alone.
     if ((visualViewport?.scale ?? 1) > 1.01) return;
-    // Once the browser is showing selection handles, dragging is how they get moved.
-    // Scrolling the pane out from under them would make selecting anything impossible.
-    if (getSelection()?.toString()) return;
-    const currentY = event.touches[0].clientY;
     const step = currentY - lastY;
+    lastX = currentX;
     lastY = currentY;
     travelled += Math.abs(step);
+    // Moving means this was a drag, not a hold, so the pending long press is off.
+    if (travelled >= TOUCH_DEADZONE_PX) clearTimeout(pressTimer);
     if (travelled < TOUCH_DEADZONE_PX) return;
     // Dragging downward reveals older output, matching how touch scrolling reads anywhere
     // else. Whole rows are sent and the remainder carried, so slow drags still accumulate.
@@ -521,7 +555,11 @@ function bindMobileScroll(container, terminal, requestScroll) {
     event.preventDefault();
     event.stopPropagation();
   }, { capture: true, passive: false });
-  container.addEventListener('touchend', () => { lastY = null; }, { capture: true, passive: true });
+  container.addEventListener('touchend', () => {
+    clearTimeout(pressTimer);
+    endSelection(lastX, lastY);
+    lastY = null;
+  }, { capture: true, passive: true });
 }
 
 function ensureTerminal() {
