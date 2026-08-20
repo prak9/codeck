@@ -12,6 +12,13 @@ if (sharedToken) {
   history.replaceState(null, '', location.pathname);
 }
 const storedShareToken = sessionStorage.getItem('codeck-share-token');
+// The owner token lives in localStorage so it survives closing the tab, the phone
+// reclaiming the page, and launching again from the home screen — sessionStorage is
+// scoped to one tab session, which is why the token had to be retyped so often. Migrate
+// anyone still holding the old sessionStorage copy rather than making them type it again.
+const legacyOwnerToken = sessionStorage.getItem('codeck-token');
+if (legacyOwnerToken && !localStorage.getItem('codeck-token')) localStorage.setItem('codeck-token', legacyOwnerToken);
+const storedOwnerToken = localStorage.getItem('codeck-token');
 const SESSION_LIST_POLL_MS = 3_000;
 const FONT_SIZE_MIN = 8;
 const FONT_SIZE_MAX = 32;
@@ -23,7 +30,7 @@ function parseFontSizeParam(raw) {
 }
 
 const state = {
-  token: sharedToken || storedShareToken || sessionStorage.getItem('codeck-token') || '',
+  token: sharedToken || storedShareToken || storedOwnerToken || '',
   sessions: [],
   active: null,
   socket: null,
@@ -683,6 +690,45 @@ $('.mobile-keybar').addEventListener('click', (event) => {
   state.socket.send(JSON.stringify({ type: 'input', data: keys[button.dataset.terminalKey] }));
 });
 
+// Neither clipboard direction has a touch gesture to hang off. `.xterm` sets
+// user-select:none over virtualized rows, so there is no native selection for a long-press
+// "Copy" bubble; xterm's own selection is driven by mousedown, which a touch drag never
+// produces; and its paste target is a textarea parked at left:-9999em that the iOS paste
+// bubble cannot reach. Both need an explicit button.
+function visibleScreenText(terminal) {
+  const buffer = terminal.buffer.active;
+  const lines = [];
+  for (let row = 0; row < terminal.rows; row += 1) {
+    lines.push(buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? '');
+  }
+  return lines.join('\n').replace(/\n+$/, '');
+}
+
+$('.mobile-keybar').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-terminal-action]');
+  if (!button || !state.terminal) return;
+  if (button.dataset.terminalAction === 'copy') {
+    // A selection is preferred when one exists, but a touch drag scrolls rather than
+    // selects, so the visible screen is the practical unit to hand over.
+    const text = state.terminal.hasSelection() ? state.terminal.getSelection() : visibleScreenText(state.terminal);
+    if (!text) return setConnectionMessage('屏幕上没有可复制的内容');
+    try {
+      await navigator.clipboard.writeText(text);
+      setConnectionMessage('已复制当前屏幕');
+    } catch { setConnectionMessage('复制失败：浏览器拒绝了剪贴板访问'); }
+    return;
+  }
+  if (button.dataset.terminalAction === 'paste') {
+    if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
+    try {
+      // Reading the clipboard needs the user gesture this click provides; iOS additionally
+      // shows its own confirmation before handing the text over.
+      const text = await navigator.clipboard.readText();
+      if (text) state.socket.send(JSON.stringify({ type: 'input', data: text }));
+    } catch { setConnectionMessage('粘贴失败：浏览器拒绝了剪贴板访问'); }
+  }
+});
+
 $('#shareButton').addEventListener('click', async () => {
   if (!state.active) return;
   $('#shareButton').disabled = true;
@@ -733,7 +779,7 @@ $('#tokenForm').addEventListener('submit', async (event) => {
   try {
     await refreshSessions();
     sessionStorage.removeItem('codeck-share-token');
-    sessionStorage.setItem('codeck-token', state.token);
+    localStorage.setItem('codeck-token', state.token);
     state.openedShareLink = false;
     $('#tokenDialog').close();
   } catch (error) { $('#tokenError').textContent = error.message === 'UNAUTHORIZED' ? '令牌不正确，请检查服务启动日志。' : error.message; }
@@ -783,7 +829,13 @@ $('#sessionList').addEventListener('keydown', (event) => {
 
 if (state.token) refreshSessions().then(() => {
   if (state.openedShareLink && state.sessions.length === 1) connect(state.sessions[0].name);
-}).catch(() => $('#tokenDialog').showModal());
+}).catch((error) => {
+  // A persisted token that the server no longer accepts has to go, or every reload
+  // retries it and lands back on this dialog. Other failures — the server being down,
+  // say — leave it alone so a working token isn't discarded over a blip.
+  if (error.message === 'UNAUTHORIZED') localStorage.removeItem('codeck-token');
+  $('#tokenDialog').showModal();
+});
 else $('#tokenDialog').showModal();
 setInterval(() => state.token && refreshSessions().catch(() => {}), SESSION_LIST_POLL_MS);
 document.fonts?.ready.then(() => {

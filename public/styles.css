@@ -103,6 +103,8 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .mobile-keybar::-webkit-scrollbar { display: none; }
 .mobile-keybar button { flex: 0 0 42px; min-height: 38px; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); font: 11px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
 .mobile-keybar button:active { border-color: #ff6b3555; background: #ff6b3514; color: var(--ink); }
+/* The 42px basis suits the single-glyph keys; word labels need to size to their text. */
+.mobile-keybar button[data-terminal-action] { flex: 0 0 auto; padding: 0 10px; }
 #terminal { height: 100%; }
 .xterm .xterm-viewport { scrollbar-width: thin; scrollbar-color: #ffffff24 transparent; }
 .xterm .xterm-viewport::-webkit-scrollbar { width: 8px; }
