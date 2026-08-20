@@ -196,7 +196,13 @@ wss.on('connection', async (ws, session, viewport) => {
   // is what produces leftover rows, an input line drawn off screen, and mouse selections
   // that miss the text. Fall back to tmux's size only for clients too old to report one.
   const attachSize = viewport || { width: initialSize.width, height: initialSize.height };
-  terminal = pty.spawn('tmux', ['attach-session', '-t', session], {
+  // -d detaches whatever else was attached. A tmux window has one size, so two clients of
+  // different sizes cannot both be right: under window-size latest every keystroke hands
+  // the window to whichever client typed it, leaving the other rendering a grid that no
+  // longer matches its viewport — a phone showing a desktop-width window is the garbled
+  // screen. One client per session removes the conflict; the displaced browser's pty exits
+  // and it reports a clean disconnect instead of drawing rubbish.
+  terminal = pty.spawn('tmux', ['attach-session', '-d', '-t', session], {
     name: 'xterm-256color', cols: attachSize.width, rows: attachSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
   });
   terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
