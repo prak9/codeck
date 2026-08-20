@@ -39,6 +39,7 @@ const state = {
   sessionsRefreshSeq: 0,
   connectionId: 0,
   terminalDropDepth: 0,
+  cancelMobileScroll: null,
   // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
   // legible size and actually resizes the tmux window to the viewport instead of cramming
   // the desktop pane's full grid onto a phone screen. Bookmarking a link with this plus
@@ -474,36 +475,7 @@ function touchLog(message) {
   panel.textContent = touchLogLines.join('\n');
 }
 
-// A terminal has no notion of clicking to place the cursor — the program owning the pty
-// decides where it sits. What a shell does understand is arrow keys, so a tap is turned
-// into the number of left/right presses that walks the cursor to the tapped column.
-//
-// Only along the cursor's own row. Vertical arrows are not movement in a shell: they
-// recall history, and in a full-screen program they drive menus, so guessing there could
-// throw away a typed line or trigger something unintended. Tapping anywhere else is left
-// alone rather than doing something surprising.
-function moveCursorToTap(container, terminal, clientX, clientY, sendInput) {
-  const screen = container.querySelector('.xterm-screen');
-  if (!screen || !terminal.cols || !terminal.rows) return;
-  const rect = screen.getBoundingClientRect();
-  const cellWidth = rect.width / terminal.cols;
-  const cellHeight = rect.height / terminal.rows;
-  if (!(cellWidth > 0) || !(cellHeight > 0)) return;
-  // floor, not round: the column is whichever cell the finger landed in. Rounding pushes
-  // the second half of every cell into the next column, so a tap on the cursor itself
-  // reads as one column to its right and nudges it instead of leaving it alone.
-  const column = Math.floor((clientX - rect.left) / cellWidth);
-  const row = Math.floor((clientY - rect.top) / cellHeight);
-  const buffer = terminal.buffer.active;
-  touchLog(`tap cell ${column},${row} | cursor ${buffer.cursorX},${buffer.cursorY} | cell ${cellWidth.toFixed(1)}x${cellHeight.toFixed(1)}`);
-  if (row !== buffer.cursorY) return touchLog(`  ignored: not the cursor's row`);
-  const steps = Math.max(0, Math.min(terminal.cols - 1, column)) - buffer.cursorX;
-  if (!steps) return;
-  touchLog(`tap col ${column} cursor ${buffer.cursorX} -> ${steps > 0 ? 'right' : 'left'} x${Math.abs(steps)}`);
-  sendInput((steps > 0 ? '\x1b[C' : '\x1b[D').repeat(Math.abs(steps)));
-}
-
-function bindMobileScroll(container, terminal, requestScroll, sendInput) {
+function bindMobileScroll(container, terminal, requestScroll) {
   const isMobile = () => matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
   // A tap carries a few pixels of finger travel. Without a deadzone that was enough to
   // emit a scroll, which puts tmux into copy mode — and copy mode shows scrollback, whose
@@ -616,13 +588,21 @@ function bindMobileScroll(container, terminal, requestScroll, sendInput) {
   container.addEventListener('touchend', () => {
     clearTimeout(pressTimer);
     touchLog(`touchend selecting=${selecting} travelled=${Math.round(travelled)}`);
-    const wasTap = !selecting && travelled < TOUCH_DEADZONE_PX;
     endSelection(lastX, lastY);
-    // Aim at where the finger landed, not where it lifted: a tap drifts a few pixels, and
-    // the landing point is what the reader was pointing at.
-    if (wasTap) moveCursorToTap(container, terminal, startX, startY, sendInput);
     lastY = null;
   }, { capture: true, passive: true });
+
+  // A queued animation frame belongs to the session that received the touch. If the user
+  // switches sessions before that frame runs, the requestScroll callback would otherwise
+  // read the new state.socket and scroll the newly opened session instead.
+  return () => {
+    clearTimeout(pressTimer);
+    if (flushHandle) cancelAnimationFrame(flushHandle);
+    flushHandle = 0;
+    pendingRows = 0;
+    endSelection(lastX, lastY);
+    lastY = null;
+  };
 }
 
 function ensureTerminal() {
@@ -646,13 +626,9 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
-  bindMobileScroll($('#terminal'), terminal, (lines) => {
+  state.cancelMobileScroll = bindMobileScroll($('#terminal'), terminal, (lines) => {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));
-    }
-  }, (data) => {
-    if (state.socket?.readyState === WebSocket.OPEN) {
-      state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
   $('#terminal').addEventListener('paste', pasteImages, true);
@@ -719,6 +695,7 @@ function markActiveSession(session) {
 function connect(session) {
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
+  state.cancelMobileScroll?.();
   state.socket?.close();
   state.socket = null;
   state.active = session;
@@ -798,12 +775,44 @@ $('#viewModeButton').addEventListener('click', () => {
   state.terminal?.focus();
 });
 
-$('.mobile-keybar').addEventListener('click', (event) => {
+// Held keys repeat, the way a physical keyboard does. Without it the arrows move one
+// column per tap, so putting the cursor anywhere useful on a phone means tapping a dozen
+// times — which is what made tapping the screen directly seem worth attempting.
+const TERMINAL_KEYS = { escape: '\x1b', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
+const KEY_REPEAT_DELAY_MS = 400;
+const KEY_REPEAT_INTERVAL_MS = 55;
+// Only movement repeats. Holding Esc or ⌃C should send one, however long the finger rests.
+const REPEATABLE_KEYS = new Set(['left', 'up', 'down', 'right']);
+let keyRepeatDelay = 0;
+let keyRepeatTimer = 0;
+
+function stopKeyRepeat() {
+  clearTimeout(keyRepeatDelay);
+  clearInterval(keyRepeatTimer);
+  keyRepeatDelay = keyRepeatTimer = 0;
+}
+
+function sendTerminalKey(name) {
+  if (state.socket?.readyState !== WebSocket.OPEN) return false;
+  state.socket.send(JSON.stringify({ type: 'input', data: TERMINAL_KEYS[name] }));
+  return true;
+}
+
+$('.mobile-keybar').addEventListener('pointerdown', (event) => {
   const button = event.target.closest('[data-terminal-key]');
-  if (!button || state.socket?.readyState !== WebSocket.OPEN) return;
-  const keys = { escape: '\x1b', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
-  state.socket.send(JSON.stringify({ type: 'input', data: keys[button.dataset.terminalKey] }));
+  if (!button) return;
+  const name = button.dataset.terminalKey;
+  stopKeyRepeat();
+  if (!sendTerminalKey(name) || !REPEATABLE_KEYS.has(name)) return;
+  // Take the pointer so the repeat still stops if the finger slides off the button.
+  button.setPointerCapture?.(event.pointerId);
+  keyRepeatDelay = setTimeout(() => {
+    keyRepeatTimer = setInterval(() => sendTerminalKey(name) || stopKeyRepeat(), KEY_REPEAT_INTERVAL_MS);
+  }, KEY_REPEAT_DELAY_MS);
 });
+for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
+  $('.mobile-keybar').addEventListener(type, stopKeyRepeat);
+}
 
 // Neither clipboard direction has a touch gesture to hang off. `.xterm` sets
 // user-select:none over virtualized rows, so there is no native selection for a long-press

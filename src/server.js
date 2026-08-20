@@ -205,8 +205,13 @@ wss.on('connection', async (ws, session, viewport) => {
   terminal = pty.spawn('tmux', ['attach-session', '-d', '-t', session], {
     name: 'xterm-256color', cols: attachSize.width, rows: attachSize.height, cwd: process.cwd(), env: withoutTmuxEnvironment(process.env),
   });
+  // tmux 2.7 and earlier do not have window-size=latest. `-d` above leaves this as the
+  // only attached client, but an explicit post-attach resize is still needed on those
+  // versions: the session may retain its previous window size until it receives SIGWINCH.
+  // Newer tmux versions get the same harmless confirmation after using latest sizing.
   terminal.onData((data) => ws.readyState === ws.OPEN && ws.send(data));
   terminal.onExit(({ exitCode }) => ws.close(1000, `terminal exited (${exitCode})`));
+  terminal.resize(attachSize.width, attachSize.height);
   while (pending.length) handleMessage(pending.shift());
   if (ws.readyState !== ws.OPEN) terminal.kill();
   ws.on('close', () => {
