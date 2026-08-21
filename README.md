@@ -41,6 +41,10 @@ CODECK_TOKEN='replace-with-a-long-secret' PORT=4310 HOST=0.0.0.0 npm start
 
 支持从终端中选中 `~/.codeck/uploads/...` 下的文件路径直接拖拽到本地下载。拖拽时会携带当前 token，后端按 token 校验后返回文件二进制。
 
+## 运维指南
+
+- [通过 cc-switch 让 Claude Code 使用 ChatGPT/Codex OAuth](docs/cc-switch-claude-chatgpt.md)
+
 ## 验证
 
 ```bash
