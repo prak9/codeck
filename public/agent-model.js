@@ -23,21 +23,22 @@ function copyTurn(turn) {
 
 export function tmuxSessionsToThreads(sessions) {
   return asArray(sessions).flatMap((session) => {
-    const provider = session?.agent?.kind;
-    if (!provider || !session?.name) return [];
-    const available = Boolean(session.agent.id);
+    if (!session?.name) return [];
+    const provider = session.agent?.kind || 'shell';
+    const available = provider === 'shell' || Boolean(session.agent.id);
+    const liveOutput = provider === 'shell' ? session.liveOutput : session.agent?.liveOutput;
     return [{
-      id: session.agent.id || `tmux:${provider}:${session.name}`,
+      id: session.agent?.id || `tmux:${provider}:${session.name}`,
       provider,
       readOnly: provider === 'codex',
       tmux: {
         name: session.name,
-        title: session.agent.name || session.name,
+        title: session.agent?.name || session.name,
         activityAt: session.activityAt,
         status: session.status === 'working' ? 'working' : 'done',
         available,
-        ...(session.agent.activity ? { activity: session.agent.activity } : {}),
-        ...(session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
+        ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
+        ...(liveOutput ? { liveOutput } : {}),
       },
     }];
   });

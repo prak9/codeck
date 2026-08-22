@@ -142,12 +142,12 @@ export class AgentRegistry extends EventEmitter {
   }
   openThread(provider, threadId, options) { return this.backend(provider).openThread(threadId, options); }
   sendSessionMessage(provider, params) {
-    this.backend(provider);
+    if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
     return this.sendTmuxMessage({ provider, ...params });
   }
   interruptSession(provider, params) {
-    this.backend(provider);
+    if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.interruptTmuxSession) throw new Error('当前服务不支持中断 tmux 会话');
     return this.interruptTmuxSession({ provider, ...params });
   }

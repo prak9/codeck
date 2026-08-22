@@ -52,17 +52,21 @@ app.get('/api/sessions', async (req, res, next) => {
   try {
     let [sessions, flexibleSize] = await Promise.all([listSessions(), detectWindowSizeSupport()]);
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
-    const enriched = sessions.map((session) => ({
-      ...session,
-      agent: session.agent ? {
-        kind: session.agent.kind,
-        id: session.agent.id,
-        name: session.agent.name,
-        activity: session.agent.activity,
-        ...(req.auth.owner && session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
-      } : null,
-      status: resolveSessionStatus(session),
-    }));
+    const enriched = sessions.map((session) => {
+      const { paneId: _paneId, liveOutput, ...publicSession } = session;
+      return {
+        ...publicSession,
+        ...(req.auth.owner && liveOutput ? { liveOutput } : {}),
+        agent: session.agent ? {
+          kind: session.agent.kind,
+          id: session.agent.id,
+          name: session.agent.name,
+          activity: session.agent.activity,
+          ...(req.auth.owner && session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
+        } : null,
+        status: resolveSessionStatus(session),
+      };
+    });
     res.json({ sessions: enriched, capabilities: { flexibleSize, canManage: req.auth.owner } });
   } catch (error) { next(error); }
 });

@@ -218,6 +218,38 @@ test('routes a direct tmux interruption without requiring a backend turn id', as
   assert.equal(socket.sent.find((message) => message.id === 8).ok, true);
 });
 
+test('routes shell participation without advertising or requiring an Agent backend', async () => {
+  const messages = [];
+  const interruptions = [];
+  const { backends, hub } = setup({
+    sendTmuxMessage: async (params) => { messages.push(params); return {}; },
+    interruptTmuxSession: async (params) => { interruptions.push(params); return {}; },
+  });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+
+  send(socket, {
+    type: 'sendSessionMessage', id: 9, provider: 'shell', threadId: 'tmux:shell:work',
+    tmuxSession: 'work', text: 'pwd',
+  });
+  send(socket, {
+    type: 'interruptSession', id: 10, provider: 'shell', threadId: 'tmux:shell:work',
+    tmuxSession: 'work',
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 9)
+    && socket.sent.some((message) => message.id === 10));
+
+  assert.deepEqual(messages, [{
+    provider: 'shell', threadId: 'tmux:shell:work', sessionName: 'work', text: 'pwd',
+  }]);
+  assert.deepEqual(interruptions, [{
+    provider: 'shell', threadId: 'tmux:shell:work', sessionName: 'work',
+  }]);
+  assert.equal(Object.values(backends).every((backend) => backend.calls.length === 0), true);
+  assert.equal(socket.sent.find((message) => message.id === 9).ok, true);
+  assert.equal(socket.sent.find((message) => message.id === 10).ok, true);
+});
+
 test('broadcasts only to matching subscriptions and resolves an approval once', async () => {
   const { backends, hub } = setup();
   const first = new FakeSocket();

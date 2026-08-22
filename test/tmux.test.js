@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -104,6 +104,56 @@ test('interrupts the exact verified Agent pane with Escape', async () => {
     execTmux: async (args) => calls.push(args),
   });
   assert.deepEqual(calls, [['send-keys', '-t', '%42', 'Escape']]);
+});
+
+test('sends shell input and Ctrl-C only to the exact verified shell pane', async () => {
+  const calls = [];
+  const options = {
+    listTmuxSessions: async () => [{ name: 'shell-work', paneId: '%9', agent: null }],
+    bufferName: 'codeck-shell-test',
+    loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+  };
+
+  await sendSessionMessage({
+    provider: 'shell', sessionName: 'shell-work', threadId: 'tmux:shell:shell-work', text: 'pwd',
+  }, options);
+  await interruptSession({
+    provider: 'shell', sessionName: 'shell-work', threadId: 'tmux:shell:shell-work',
+  }, options);
+
+  assert.deepEqual(calls, [
+    { type: 'load', bufferName: 'codeck-shell-test', text: 'pwd' },
+    {
+      type: 'exec',
+      args: [
+        'paste-buffer', '-p', '-d', '-b', 'codeck-shell-test', '-t', '%9',
+        ';', 'send-keys', '-t', '%9', 'Enter',
+      ],
+    },
+    { type: 'exec', args: ['send-keys', '-t', '%9', 'C-c'] },
+  ]);
+});
+
+test('refuses a stale shell mapping after the pane becomes an Agent session', async () => {
+  const calls = [];
+  const options = {
+    listTmuxSessions: async () => [{
+      name: 'shell-work', paneId: '%9',
+      agent: { kind: 'codex', id: 'thread-1', paneId: '%9' },
+    }],
+    loadBuffer: async () => calls.push('load'),
+    execTmux: async () => calls.push('exec'),
+  };
+
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'shell', sessionName: 'shell-work', threadId: 'tmux:shell:shell-work', text: 'pwd',
+  }, options), /匹配|刷新/);
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'shell', sessionName: 'shell-work', threadId: 'tmux:shell:other', text: 'pwd',
+  }, { ...options, listTmuxSessions: async () => [{ name: 'shell-work', paneId: '%9', agent: null }] }), /匹配|刷新/);
+
+  assert.deepEqual(calls, []);
 });
 
 test('serializes concurrent input for the same tmux session', async () => {
@@ -350,6 +400,17 @@ test('extracts the exact current activity block shown in the tmux pane', () => {
   ].join('\n'));
 
   assert.equal(resolveAgentLiveOutput('codex', '• Ran npm test\n› Follow up'), '');
+});
+
+test('extracts a bounded clean tail from a visible shell pane', () => {
+  const pane = Array.from({ length: 14 }, (_, index) => (
+    index === 13 ? '\x1b[31mline-14\x1b[0m\u0007' : `line-${index + 1}`
+  )).join('\n');
+  assert.equal(resolveShellLiveOutput(pane), Array.from({ length: 12 }, (_, index) => `line-${index + 3}`).join('\n'));
+
+  const clipped = resolveShellLiveOutput('x'.repeat(400));
+  assert.equal(clipped.length, 320);
+  assert.equal(clipped.endsWith('…'), true);
 });
 
 test('shows the visible tail when a repainting Agent modal hides its busy marker', () => {

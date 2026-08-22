@@ -7,7 +7,7 @@ import {
   normalizeInteractionQuestions,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=9';
+} from './agent-model.js?v=10';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
@@ -16,6 +16,7 @@ const PROVIDERS = {
   claude: { name: 'Claude Code', sessionLabel: 'Claude', glyph: 'A›', short: 'Claude', description: 'Anthropic Agent SDK' },
   qodercli: { name: 'QoderCLI', sessionLabel: 'Qoder CLI', glyph: 'Q›', short: 'Qoder', description: 'Qoder Agent SDK' },
 };
+const SHELL_PROVIDER = { name: 'Shell', sessionLabel: 'Shell', glyph: '$_', short: 'Shell', description: 'tmux shell session' };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const SESSION_LIST_POLL_MS = 1_500;
 const THREAD_REFRESH_POLL_MS = 1_000;
@@ -67,7 +68,15 @@ function websocketProtocolToken(value) {
 }
 
 function providerDetails(provider = state.provider) {
+  if (provider === 'shell') return SHELL_PROVIDER;
   return PROVIDERS[provider] || { name: provider, sessionLabel: provider, glyph: '›_', short: provider, description: 'Agent CLI' };
+}
+
+function preferredAgentProvider() {
+  const saved = localStorage.getItem('codeck-remote-provider');
+  if (state.providers.includes(state.provider)) return state.provider;
+  if (state.providers.includes(saved)) return saved;
+  return state.providers[0] || Object.keys(PROVIDERS)[0];
 }
 
 function setConnectionStatus(status, message) {
@@ -138,9 +147,10 @@ function scheduleReconnect() {
 }
 
 async function handleReady(message) {
+  const shellActive = state.provider === 'shell' && Boolean(state.thread?.tmux?.name);
   state.providers = (message.providers || []).map((provider) => provider.id).filter((provider) => PROVIDERS[provider]);
   if (!state.providers.length) state.providers = Object.keys(PROVIDERS);
-  if (!state.providers.includes(state.provider)) state.provider = state.providers[0];
+  if (!shellActive && !state.providers.includes(state.provider)) state.provider = state.providers[0];
   state.defaultCwd = message.defaultCwd || state.defaultCwd || '/';
   if (!state.cwd) state.cwd = state.defaultCwd;
   state.hostname = message.hostname || location.hostname;
@@ -155,6 +165,11 @@ async function handleReady(message) {
     const listedThread = state.threads.find((thread) => (
       thread.id === state.activeThreadId && thread.provider === state.provider
     ));
+    if (state.provider === 'shell') {
+      if (listedThread) openShellThread(listedThread, { quiet: true });
+      else startNewThread({ focus: false });
+      return;
+    }
     if (listedThread?.tmux?.available === false) {
       openPendingThread(listedThread);
       return;
@@ -287,6 +302,25 @@ function openPendingThread(thread) {
   loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message));
 }
 
+function openShellThread(thread, { quiet = false } = {}) {
+  if (thread?.provider !== 'shell' || !thread.tmux?.name) return;
+  state.threadHandoff = null;
+  state.provider = 'shell';
+  state.activeThreadId = thread.id;
+  state.thread = normalizeAgentThread('shell', {
+    id: thread.id,
+    preview: thread.tmux.title || thread.tmux.name,
+    readOnly: false,
+    turns: [],
+  });
+  state.thread.tmux = { ...thread.tmux };
+  state.threadRefreshUntil = 0;
+  if (!quiet) setLiveMessage('已连接 Shell 会话，可直接输入命令。');
+  renderThreadList();
+  scheduleThreadRender(false);
+  closeDrawer();
+}
+
 function handoffPendingThread(thread) {
   if (state.threadHandoff) return state.threadHandoff.promise;
   const pendingThreadId = state.thread?.id;
@@ -331,7 +365,7 @@ async function loadThreads({ quiet = false } = {}) {
     const snapshot = state.sessionSnapshot || await validateOwnerToken(state.token);
     state.sessionSnapshot = null;
     state.threads = tmuxSessionsToThreads(snapshot.sessions)
-      .filter((thread) => state.providers.includes(thread.provider));
+      .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
     const activeThread = state.threads.find((thread) => (
       thread.id === state.thread?.id && thread.provider === state.provider
     ));
@@ -381,6 +415,7 @@ async function openThread(threadId, { provider = state.provider, quiet = false, 
 async function refreshActiveThread({ force = false } = {}) {
   if (state.threadRefresh || !state.connected || document.visibilityState !== 'visible') return;
   const current = state.thread;
+  if (current?.provider === 'shell') return;
   const sessionName = current?.tmux?.name;
   const working = current?.tmux?.status === 'working';
   if (!current?.id || !sessionName || current.tmux.available === false
@@ -404,6 +439,11 @@ async function refreshActiveThread({ force = false } = {}) {
 
 function startNewThread({ focus = true } = {}) {
   state.threadHandoff = null;
+  if (!state.providers.includes(state.provider)) {
+    state.provider = preferredAgentProvider();
+    localStorage.setItem('codeck-remote-provider', state.provider);
+    renderProviderControls();
+  }
   state.activeThreadId = null;
   state.thread = null;
   state.threadRefreshUntil = 0;
@@ -429,9 +469,10 @@ async function switchProvider(provider) {
 }
 
 function renderProviderControls() {
+  const selectedProvider = preferredAgentProvider();
   const welcome = state.providers.map((provider) => {
     const details = providerDetails(provider);
-    const button = element('button', `welcome-provider${provider === state.provider ? ' selected' : ''}`);
+    const button = element('button', `welcome-provider${provider === selectedProvider ? ' selected' : ''}`);
     button.type = 'button';
     button.append(element('b', '', details.glyph), element('span', '', details.short));
     button.addEventListener('click', () => switchProvider(provider).then(() => $('#composerInput').focus()).catch((error) => setLiveMessage(error.message)));
@@ -441,7 +482,7 @@ function renderProviderControls() {
 
   const options = state.providers.map((provider) => {
     const details = providerDetails(provider);
-    const button = element('button', `provider-option${provider === state.provider ? ' selected' : ''}`);
+    const button = element('button', `provider-option${provider === selectedProvider ? ' selected' : ''}`);
     button.type = 'button';
     const copy = element('span');
     copy.append(element('strong', '', details.name), element('small', '', details.description));
@@ -457,14 +498,14 @@ function renderProviderControls() {
     option.value = provider;
     return option;
   }));
-  select.value = state.provider;
+  select.value = selectedProvider;
   renderHeader();
 }
 
 function renderThreadList() {
   if (!state.threads.length) {
     const empty = element('div', 'thread-empty');
-    empty.append(element('span', '', '∅'), document.createTextNode('当前没有 Agent tmux 会话。'));
+    empty.append(element('span', '', '∅'), document.createTextNode('当前没有运行中的 tmux 会话。'));
     empty.style.whiteSpace = 'pre-line';
     $('#threadList').replaceChildren(empty);
     return;
@@ -495,6 +536,10 @@ function renderThreadList() {
     );
     if (tmux.available === false) button.title = '尚未建立对话，可直接发送首条消息';
     button.addEventListener('click', () => {
+      if (thread.provider === 'shell') {
+        openShellThread(thread);
+        return;
+      }
       if (tmux.available === false) {
         openPendingThread(thread);
         return;
@@ -619,12 +664,15 @@ function renderTurn(turn) {
 function terminalActivityNode() {
   const section = element('section', 'turn terminal-activity');
   const foot = element('div', 'turn-foot');
+  const shell = state.thread?.provider === 'shell';
+  const working = state.thread?.tmux?.status === 'working';
+  section.dataset.activityStatus = working ? 'working' : 'done';
   foot.setAttribute('role', 'status');
   foot.setAttribute('aria-live', 'polite');
-  foot.append(
-    element('span', 'spinner'),
-    element('span', 'working', agentActivityText(state.thread) || '终端 Agent 正在工作'),
-  );
+  if (!shell || working) foot.append(element('span', 'spinner'));
+  foot.append(element('span', 'working', shell
+    ? working ? 'Shell 命令正在运行' : 'Shell 当前输出'
+    : agentActivityText(state.thread) || '终端 Agent 正在工作'));
   const output = element('pre', 'terminal-live-output', state.thread?.tmux?.liveOutput || '');
   output.hidden = !state.thread?.tmux?.liveOutput;
   output.tabIndex = 0;
@@ -637,9 +685,12 @@ function terminalActivityNode() {
 }
 
 function updateTerminalActivity() {
+  const section = $('.terminal-activity');
   const current = $('.terminal-activity .working');
   const output = $('.terminal-activity .terminal-live-output');
-  const visible = state.thread?.tmux?.status === 'working' && !latestRunningTurn(state.thread);
+  const shell = state.thread?.provider === 'shell';
+  const status = state.thread?.tmux?.status === 'working' ? 'working' : 'done';
+  const visible = shell || (status === 'working' && !latestRunningTurn(state.thread));
   if (!visible) {
     if (current) scheduleThreadRender(false);
     return;
@@ -648,10 +699,16 @@ function updateTerminalActivity() {
     scheduleThreadRender(false);
     return;
   }
+  if (shell && section?.dataset.activityStatus !== status) {
+    scheduleThreadRender(false);
+    return;
+  }
   const transcript = $('#transcript');
   const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
   const outputNearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
-  const activity = agentActivityText(state.thread) || '终端 Agent 正在工作';
+  const activity = shell
+    ? status === 'working' ? 'Shell 命令正在运行' : 'Shell 当前输出'
+    : agentActivityText(state.thread) || '终端 Agent 正在工作';
   const liveOutput = state.thread?.tmux?.liveOutput || '';
   const changed = current.textContent !== activity || output.textContent !== liveOutput || output.hidden !== !liveOutput;
   if (current.textContent !== activity) current.textContent = activity;
@@ -820,7 +877,8 @@ function renderThread() {
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const nodes = (state.thread?.turns || []).map(renderTurn);
-  if (state.thread?.tmux?.status === 'working' && !latestRunningTurn(state.thread)) {
+  if (state.thread?.provider === 'shell'
+    || (state.thread?.tmux?.status === 'working' && !latestRunningTurn(state.thread))) {
     nodes.push(terminalActivityNode());
   }
   $('#turns').replaceChildren(...nodes);
@@ -866,12 +924,15 @@ function renderComposerState() {
   const message = !state.connected
     ? '连接已断开'
     : sessionName
-      ? active ? `${activity || '终端 Agent 正在工作'} · 可直接输入` : '已连接当前终端会话 · 可直接输入'
+      ? state.thread?.provider === 'shell'
+        ? active ? 'Shell 命令正在运行 · 可直接输入' : '已连接 Shell 会话 · 可直接输入'
+        : active ? `${activity || '终端 Agent 正在工作'} · 可直接输入` : '已连接当前终端会话 · 可直接输入'
       : readOnly ? '当前会话只读' : active ? `${activity || '正在处理'} · 可继续输入` : '已连接';
   status.append(dot, document.createTextNode(message));
   input.placeholder = readOnly
     ? '当前会话只读'
-    : active ? '跟进当前任务' : sessionName ? `参与 ${providerDetails().name} 会话` : `给 ${providerDetails().name} 发消息`;
+    : state.thread?.provider === 'shell' ? '输入 Shell 命令'
+      : active ? '跟进当前任务' : sessionName ? `参与 ${providerDetails().name} 会话` : `给 ${providerDetails().name} 发消息`;
 }
 
 function resizeComposer() {
@@ -948,7 +1009,7 @@ async function submitComposer() {
       state.threadRefreshUntil = sentPendingSession ? 0 : Date.now() + 10_000;
       renderThreadList();
       renderComposerState();
-      if (sentPendingSession) loadThreads({ quiet: true }).catch(() => {});
+      if (sentPendingSession || state.provider === 'shell') loadThreads({ quiet: true }).catch(() => {});
       else refreshActiveThread({ force: true }).catch(() => {});
     } else {
       await agentRequest('sendMessage', {
@@ -986,7 +1047,7 @@ function openProviderDialog() {
 }
 
 function openSettings() {
-  $('#settingsProvider').value = state.provider;
+  $('#settingsProvider').value = preferredAgentProvider();
   $('#cwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
   $('#settingsDialog').showModal();
 }

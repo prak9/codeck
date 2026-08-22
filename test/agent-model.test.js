@@ -44,7 +44,7 @@ test('keeps terminal Agent activity visible while structured history is catching
   assert.equal(agentActivityText(thread), '');
 });
 
-test('builds one ordered sidebar from all tmux Agent sessions', () => {
+test('builds one ordered sidebar from all tmux sessions', () => {
   const threads = tmuxSessionsToThreads([
     {
       name: 'codex-work', activityAt: 30_000, status: 'working',
@@ -53,7 +53,7 @@ test('builds one ordered sidebar from all tmux Agent sessions', () => {
         activity: '正在查看文件 · 12秒', liveOutput: '• Explored\n  └ Read remote.js',
       },
     },
-    { name: 'shell', activityAt: 20_000, status: 'done', agent: null },
+    { name: 'shell', activityAt: 20_000, status: 'done', liveOutput: '$ ', agent: null },
     {
       name: 'claude-work', activityAt: 10_000, status: 'done',
       agent: { kind: 'claude', id: 'claude-id', name: null },
@@ -71,6 +71,13 @@ test('builds one ordered sidebar from all tmux Agent sessions', () => {
         name: 'codex-work', title: 'Mobile review', activityAt: 30_000,
         status: 'working', available: true, activity: '正在查看文件 · 12秒',
         liveOutput: '• Explored\n  └ Read remote.js',
+      },
+    },
+    {
+      id: 'tmux:shell:shell', provider: 'shell', readOnly: false,
+      tmux: {
+        name: 'shell', title: 'shell', activityAt: 20_000,
+        status: 'done', available: true, liveOutput: '$ ',
       },
     },
     {

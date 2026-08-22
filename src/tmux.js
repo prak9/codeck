@@ -293,6 +293,19 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
   return compactLiveOutput(rows.slice(start, end + 1)).join('\n');
 }
 
+// Shell sessions have no structured turn boundary, so expose only the bounded tail of
+// the currently visible pane. This is the same screen a tmux client sees, not scrollback.
+export function resolveShellLiveOutput(output) {
+  const rows = cleanScreenRows(output);
+  while (rows.length && !rows[0]) rows.shift();
+  while (rows.length && !rows.at(-1)) rows.pop();
+  return rows.slice(-LIVE_OUTPUT_MAX_LINES).map((line) => (
+    line.length > LIVE_OUTPUT_MAX_LINE_LENGTH
+      ? `${line.slice(0, LIVE_OUTPUT_MAX_LINE_LENGTH - 1)}…`
+      : line
+  )).join('\n');
+}
+
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
 // a custom statusline adds a row, and a modal such as /usage hides the footer outright.
 // Whether the pane is repainting at all survives every one of those, and it needs no
@@ -337,6 +350,7 @@ export async function listSessions() {
 
     const paneCommandBySession = new Map();
     for (const pane of panes) paneCommandBySession.set(pane.session, pane.currentCommand);
+    const paneBySession = new Map(panes.map((pane) => [pane.session, pane]));
 
     const paneCommandsBySession = new Map();
     for (const pane of allPanes) {
@@ -393,9 +407,12 @@ export async function listSessions() {
           ...(activity ? { activity } : {}),
           ...(liveOutput ? { liveOutput } : {}),
         } : null;
+        const shellLiveOutput = !agent ? resolveShellLiveOutput(screenBySession.get(session.name)) : '';
         return {
           ...session,
           agent,
+          paneId: paneBySession.get(session.name)?.paneId,
+          ...(shellLiveOutput ? { liveOutput: shellLiveOutput } : {}),
           currentCommand: paneCommandBySession.get(session.name) || 'bash',
           hasRunningProcess,
         };
@@ -418,13 +435,25 @@ function loadTmuxBuffer(bufferName, text) {
   });
 }
 
-async function verifiedAgentPane({ provider, sessionName, threadId }, listTmuxSessions) {
-  if (!AGENT_CLIENTS.has(provider) || !validateSessionName(sessionName) || !THREAD_ID.test(threadId || '')) {
+async function verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions) {
+  if (!validateClient(provider) || !validateSessionName(sessionName) || !THREAD_ID.test(threadId || '')) {
     throw new Error('会话信息无效，请刷新后重试');
   }
   const sessions = await listTmuxSessions();
   const session = sessions.find((candidate) => candidate.name === sessionName);
   if (!session) throw new Error('tmux 会话已不存在，请刷新后重试');
+
+  if (provider === 'shell') {
+    if (session.agent || threadId !== `tmux:shell:${sessionName}`) {
+      throw new Error('tmux 会话与 Shell 对话不匹配，请刷新后重试');
+    }
+    if (!PANE_ID.test(session.paneId || '')) {
+      throw new Error('无法安全确认 Shell pane，请刷新后重试');
+    }
+    return session.paneId;
+  }
+
+  if (!AGENT_CLIENTS.has(provider)) throw new Error('会话信息无效，请刷新后重试');
   const expectedThreadId = session.agent?.id || `tmux:${provider}:${sessionName}`;
   if (session.agent?.kind !== provider || expectedThreadId !== threadId) {
     throw new Error('tmux 会话与 Agent 对话不匹配，请刷新后重试');
@@ -459,7 +488,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
-    const paneId = await verifiedAgentPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
     const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
@@ -480,9 +509,9 @@ export async function interruptSession({ provider, sessionName, threadId }, over
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
-    const paneId = await verifiedAgentPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
-    await execTmux(['send-keys', '-t', paneId, 'Escape']);
+    await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
   });
 }
 
