@@ -524,16 +524,57 @@ test('keeps terminal output available while an Agent thread id is unresolved', (
   assert.equal(resolveAgentSessionLiveOutput(null, false, idleSignals, idlePane), '');
 });
 
-test('uses structured Qoder history after completion but keeps an unresolved pane fallback', () => {
-  const idlePane = '  Files changed: 3\n  Ready';
+test('keeps Qoder final output after completion even when structured history is available', () => {
+  const idlePane = `
+> Summarize the fix
+
+The final answer is ready.
+- Updated the parser
+- Added regression coverage
+
+────────────────────────────────
+Shift+Tab to Accept Edits                                      14 skills
+────────────────────────────────
+>  Type your message or @path/to/file
+────────────────────────────────
+Qwen3.8-Max Model · ctx ░░░░░░░░░░ 4% · /data/code/codeck
+`;
   const idleSignals = { busy: false, background: false, animating: false };
+  const expected = [
+    'The final answer is ready.',
+    '- Updated the parser',
+    '- Added regression coverage',
+  ].join('\n');
 
   assert.equal(resolveAgentSessionLiveOutput(
     { kind: 'qodercli', id: 'thread-1' }, false, idleSignals, idlePane,
-  ), '');
+  ), expected);
   assert.equal(resolveAgentSessionLiveOutput(
     { kind: 'qodercli', id: null }, false, idleSignals, idlePane,
-  ), idlePane);
+  ), expected);
+});
+
+test('does not expose the Qoder welcome screen as a final answer', () => {
+  const welcomePane = `
+Qoder CLI v1.1.28                 Tips for getting started
+Signed in Browser Login
+? for shortcuts
+────────────────────────────────
+Shift+Tab to Accept Edits
+────────────────────────────────
+>  Type your message or @path/to/file
+────────────────────────────────
+Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /data/code/codeck
+`;
+
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'qodercli', id: null }, false,
+    { busy: false, background: false, animating: false }, welcomePane,
+  ), '');
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'qodercli', id: 'thread-1' }, false,
+    { busy: false, background: false, animating: false }, welcomePane,
+  ), '');
 });
 
 test('a completed claude turn is not mistaken for the codex working state', () => {

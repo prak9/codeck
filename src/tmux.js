@@ -290,6 +290,32 @@ function qoderLiveOutput(rows, end) {
   return compactLiveOutput(rows.slice(start, end + 1), 18).join('\n');
 }
 
+function qoderIdleOutput(rows) {
+  const composerRow = rows.findLastIndex((line) => /Type your message or @path\/to\/file/i.test(line));
+  let end = composerRow >= 0 ? composerRow - 1 : rows.findLastIndex((line) => line.trim());
+  if (composerRow >= 0) {
+    const boundary = rows.slice(0, composerRow)
+      .findLastIndex((line) => SCREEN_SEPARATOR.test(line.trim()));
+    if (boundary >= 0) {
+      end = boundary - 1;
+      const priorBoundary = rows.slice(0, boundary)
+        .findLastIndex((line) => SCREEN_SEPARATOR.test(line.trim()));
+      const footerHints = rows.slice(priorBoundary + 1, boundary).filter((line) => line.trim());
+      if (priorBoundary >= 0 && footerHints.length && footerHints.every((line) => (
+        /Shift\+Tab|accept edits|plan mode|bypass permissions|\bskills?\b/i.test(line)
+      ))) end = priorBoundary - 1;
+    }
+  }
+  while (end >= 0 && !rows[end].trim()) end -= 1;
+  if (end < 0) return '';
+  const visible = rows.slice(0, end + 1);
+  const hasUserMessage = visible.some((line) => /^>\s+\S/.test(line.trimStart()));
+  const isWelcomeScreen = visible.some((line) => /\bQoder CLI\b/i.test(line))
+    && visible.some((line) => /Tips for getting started|Signed in/i.test(line));
+  if (!hasUserMessage && isWelcomeScreen) return '';
+  return qoderLiveOutput(rows, end);
+}
+
 // Return the current action block exactly as it appears in the visible tmux pane. The
 // block is bounded to keep polling cheap and rendered with textContent in the browser.
 // `allowTail` covers a repainting modal that temporarily hides the normal busy marker.
@@ -311,7 +337,10 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
   // loading row sits above the composer and status bar. Treat that row as the lower
   // boundary and keep the current visible history above it instead of looking for the
   // •/● bullets used by the other Agent TUIs.
-  if (kind === 'qodercli' && busyRow >= 0) return qoderLiveOutput(rows, end);
+  if (kind === 'qodercli') {
+    if (busyRow >= 0) return qoderLiveOutput(rows, end);
+    if (allowTail) return qoderIdleOutput(rows);
+  }
 
   const searchStart = Math.max(0, end - 18);
   let start = -1;
@@ -330,9 +359,12 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
 
 export function resolveAgentSessionLiveOutput(agent, hasRunningProcess, screenSignals, output) {
   if (!agent) return '';
-  if (!hasRunningProcess && agent.id) return '';
+  // Qoder history can lag or be unavailable when the CLI runs behind ssh, so keep its
+  // bounded pane result after the spinner disappears instead of trusting the SDK alone.
+  const keepVisible = agent.kind === 'qodercli';
+  if (!keepVisible && !hasRunningProcess && agent.id) return '';
   return resolveAgentLiveOutput(agent.kind, output, {
-    allowTail: !agent.id || Boolean(
+    allowTail: keepVisible || !agent.id || Boolean(
       screenSignals?.animating && !screenSignals.busy && !screenSignals.background,
     ),
   });
