@@ -76,17 +76,19 @@ function setup(provider = 'claude', backendOptions = {}) {
   return { backend, queries };
 }
 
-test('lists and reconstructs persisted SDK sessions', async () => {
-  const { backend } = setup();
-  const listed = await backend.listThreads();
-  assert.equal(listed.data[0].id, '11111111-1111-4111-8111-111111111111');
-  assert.equal(listed.data[0].preview, 'Fix the mobile layout');
+test('lists and reconstructs persisted Claude and Qoder SDK sessions', async () => {
+  for (const provider of ['claude', 'qodercli']) {
+    const { backend } = setup(provider);
+    const listed = await backend.listThreads();
+    assert.equal(listed.data[0].id, '11111111-1111-4111-8111-111111111111');
+    assert.equal(listed.data[0].preview, 'Fix the mobile layout');
 
-  const opened = await backend.openThread(listed.data[0].id);
-  assert.equal(opened.thread.turns.length, 1);
-  assert.equal(opened.thread.turns[0].items[0].type, 'userMessage');
-  assert.equal(opened.thread.turns[0].items[1].type, 'agentMessage');
-  assert.equal(opened.thread.turns[0].items[1].text, 'It is fixed.');
+    const opened = await backend.openThread(listed.data[0].id);
+    assert.equal(opened.thread.turns.length, 1);
+    assert.equal(opened.thread.turns[0].items[0].type, 'userMessage');
+    assert.equal(opened.thread.turns[0].items[1].type, 'agentMessage');
+    assert.equal(opened.thread.turns[0].items[1].text, 'It is fixed.');
+  }
 });
 
 test('starts a persistent interactive session and streams Codex-shaped events', async () => {

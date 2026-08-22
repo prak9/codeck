@@ -402,6 +402,67 @@ test('extracts the exact current activity block shown in the tmux pane', () => {
   assert.equal(resolveAgentLiveOutput('codex', '• Ran npm test\n› Follow up'), '');
 });
 
+test('extracts qoder thinking and tool use above its composer and status rows', () => {
+  // Qoder renders pending history first, then its loading row, composer, and status
+  // details. The latter can put the loading row more than six non-empty rows from
+  // the bottom even though the thinking and tool rows are still visible in tmux.
+  const qoderPane = `
+> Review the remote Qoder output
+Thinking
+│ I need to inspect the tmux pane parser.
+│ The current boundary only recognizes Codex and Claude bullets.
+▸ 2 tool calls (Read, Shell) — 1 running
+▪ Read
+  └ src/tmux.js
+▫ Shell
+  └ node --test test/tmux.test.js
+⠋ Thinking... (esc to cancel, 25s)
+────────────────
+  Type your message or @path/to/file
+────────────────
+accept edits
+1 open file
+qoder-model · /data/code/codeck
++0 -0
+· ctx ▓▓░ 27% ·
+`;
+
+  assert.deepEqual(signals(qoderPane, 'qodercli'), { busy: true, background: false });
+  assert.equal(resolveAgentLiveOutput('qodercli', qoderPane, { allowTail: true }), [
+    'Thinking',
+    '│ I need to inspect the tmux pane parser.',
+    '│ The current boundary only recognizes Codex and Claude bullets.',
+    '▸ 2 tool calls (Read, Shell) — 1 running',
+    '▪ Read',
+    '  └ src/tmux.js',
+    '▫ Shell',
+    '  └ node --test test/tmux.test.js',
+    '⠋ Thinking... (esc to cancel, 25s)',
+  ].join('\n'));
+});
+
+test('does not carry prior qoder thinking into a tool-only current turn', () => {
+  const qoderPane = `
+> Explain the parser
+Thinking
+│ I should inspect the existing implementation.
+▪ The parser uses terminal markers.
+> Run the focused test
+▫ Shell
+  └ node --test test/tmux.test.js
+⠋ Generating... (esc to cancel, 8s)
+  Type your message or @path/to/file
+qoder-model · /data/code/codeck
+· ctx ▓▓░ 27% ·
+`;
+
+  assert.equal(resolveAgentLiveOutput('qodercli', qoderPane), [
+    '▫ Shell',
+    '  └ node --test test/tmux.test.js',
+    '⠋ Generating... (esc to cancel, 8s)',
+  ].join('\n'));
+});
+
 test('extracts a bounded clean tail from a visible shell pane', () => {
   const pane = Array.from({ length: 14 }, (_, index) => (
     index === 13 ? '\x1b[31mline-14\x1b[0m\u0007' : `line-${index + 1}`
@@ -443,12 +504,15 @@ test('keeps terminal output available while an Agent thread id is unresolved', (
   assert.equal(resolveAgentSessionLiveOutput(null, false, idleSignals, idlePane), '');
 });
 
-test('keeps the Qoder pane visible when a legacy terminal hides its activity footer', () => {
+test('uses structured Qoder history after completion but keeps an unresolved pane fallback', () => {
   const idlePane = '  Files changed: 3\n  Ready';
   const idleSignals = { busy: false, background: false, animating: false };
 
   assert.equal(resolveAgentSessionLiveOutput(
     { kind: 'qodercli', id: 'thread-1' }, false, idleSignals, idlePane,
+  ), '');
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'qodercli', id: null }, false, idleSignals, idlePane,
   ), idlePane);
 });
 

@@ -7,6 +7,7 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
@@ -56,6 +57,21 @@ test('shows captured Qoder output even when legacy tmux cannot expose a busy foo
   assert.equal(shouldShowTerminalActivity(thread), true);
   delete thread.tmux.liveOutput;
   assert.equal(shouldShowTerminalActivity(thread), false);
+});
+
+test('refreshes a completed tmux Agent transcript even if its last live output is still attached', () => {
+  const thread = normalizeAgentThread('qodercli', { id: 'thread-1', turns: [] });
+  thread.tmux = {
+    name: 'qoder-work', status: 'done', available: true, liveOutput: '最终回答',
+  };
+
+  assert.equal(shouldRefreshTmuxThread(thread, {
+    now: 10_000, refreshUntil: 12_000,
+  }), true);
+  thread.tmux.status = 'working';
+  assert.equal(shouldRefreshTmuxThread(thread, {
+    now: 10_000, refreshUntil: 12_000,
+  }), false);
 });
 
 test('builds one ordered sidebar from all tmux sessions', () => {

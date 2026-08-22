@@ -160,6 +160,17 @@ export function latestRunningTurn(thread) {
   return [...asArray(thread?.turns)].reverse().find((turn) => turn.status === 'inProgress') || null;
 }
 
+export function shouldRefreshTmuxThread(thread, {
+  force = false, now = Date.now(), refreshUntil = 0,
+} = {}) {
+  const tmux = thread?.tmux;
+  if (!thread?.id || !tmux?.name || tmux.available === false) return false;
+  if (force) return true;
+  const working = tmux.status === 'working';
+  if (working && tmux.liveOutput) return false;
+  return working || now < refreshUntil;
+}
+
 export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;

@@ -46,10 +46,12 @@ export const AGENT_SCREEN_MARKERS = {
     background: { lines: 6, patterns: [/\b\d+\s+background\s+terminals?\s+running\b/i] },
   },
   // qodercli's footer reads "⠋ Generating... (esc to cancel, 25s)" while a turn runs.
-  // Anchor on the elapsed timer inside the parentheses: a modal offering "esc to cancel"
-  // carries no timer, and the bare spinner glyph shows up in other widgets too.
+  // Its composer and status details are rendered below that row, so the marker can sit
+  // farther from the bottom than it does in Codex or Claude. Anchor on the elapsed timer
+  // inside the parentheses: a modal offering "esc to cancel" carries no timer, and the
+  // bare spinner glyph shows up in other widgets too.
   qodercli: {
-    busy: { lines: 6, patterns: [/\(esc to cancel,\s*\d/i] },
+    busy: { lines: 16, patterns: [/\(esc to cancel,\s*\d/i] },
     background: { lines: 1, patterns: [] },
   },
 };
@@ -256,7 +258,7 @@ function markerRow(rows, marker) {
   ))?.index ?? candidates.at(-1)?.index ?? -1;
 }
 
-function compactLiveOutput(rows) {
+function compactLiveOutput(rows, maxLines = LIVE_OUTPUT_MAX_LINES) {
   const compact = [];
   for (const line of rows) {
     if (SCREEN_SEPARATOR.test(line.trim())) continue;
@@ -268,8 +270,24 @@ function compactLiveOutput(rows) {
   }
   while (compact.length && !compact[0]) compact.shift();
   while (compact.length && !compact.at(-1)) compact.pop();
-  if (compact.length <= LIVE_OUTPUT_MAX_LINES) return compact;
-  return [compact[0], '  …', ...compact.slice(-(LIVE_OUTPUT_MAX_LINES - 2))];
+  if (compact.length <= maxLines) return compact;
+  return [compact[0], '  …', ...compact.slice(-(maxLines - 2))];
+}
+
+function qoderLiveOutput(rows, end) {
+  const searchStart = Math.max(0, end - 32);
+  const history = rows.slice(searchStart, end);
+  const userRow = history.findLastIndex((line) => /^>\s/.test(line.trimStart()));
+  const thinkingRow = history.findLastIndex((line) => line.trim() === 'Thinking');
+  const activityRow = history.findIndex((line) => /^(?:[│▫▪▸◎◉]\s|Thinking$)/u.test(line.trimStart()));
+  const start = thinkingRow > userRow
+    ? searchStart + thinkingRow
+    : userRow >= 0
+      ? searchStart + userRow + 1
+      : activityRow >= 0
+        ? searchStart + activityRow
+        : Math.max(searchStart, end - 12);
+  return compactLiveOutput(rows.slice(start, end + 1), 18).join('\n');
 }
 
 // Return the current action block exactly as it appears in the visible tmux pane. The
@@ -288,6 +306,13 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
   }
   if (end < 0) return '';
 
+  // Qoder's pending history uses a different visual grammar from Codex and Claude:
+  // "Thinking" and │ rails for reasoning, then ▫/▪/▸ rows for tool calls. Its
+  // loading row sits above the composer and status bar. Treat that row as the lower
+  // boundary and keep the current visible history above it instead of looking for the
+  // •/● bullets used by the other Agent TUIs.
+  if (kind === 'qodercli' && busyRow >= 0) return qoderLiveOutput(rows, end);
+
   const searchStart = Math.max(0, end - 18);
   let start = -1;
   for (let index = end - 1; index >= searchStart; index -= 1) {
@@ -305,10 +330,9 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
 
 export function resolveAgentSessionLiveOutput(agent, hasRunningProcess, screenSignals, output) {
   if (!agent) return '';
-  const keepVisible = agent.kind === 'qodercli';
-  if (!keepVisible && !hasRunningProcess && agent.id) return '';
+  if (!hasRunningProcess && agent.id) return '';
   return resolveAgentLiveOutput(agent.kind, output, {
-    allowTail: keepVisible || !agent.id || Boolean(
+    allowTail: !agent.id || Boolean(
       screenSignals?.animating && !screenSignals.busy && !screenSignals.background,
     ),
   });

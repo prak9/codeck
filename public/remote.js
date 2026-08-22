@@ -5,10 +5,11 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=12';
+} from './agent-model.js?v=13';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
@@ -438,10 +439,9 @@ async function refreshActiveThread({ force = false } = {}) {
   const current = state.thread;
   if (current?.provider === 'shell') return;
   const sessionName = current?.tmux?.name;
-  const working = current?.tmux?.status === 'working';
-  if (!current?.id || !sessionName || current.tmux.available === false
-    || (!force && current.tmux.liveOutput)
-    || (!force && !working && Date.now() >= state.threadRefreshUntil)) return;
+  if (!shouldRefreshTmuxThread(current, {
+    force, refreshUntil: state.threadRefreshUntil,
+  })) return;
   const provider = state.provider;
   const threadId = current.id;
   const load = agentRequest('openThread', { provider, threadId, readOnly: true });
