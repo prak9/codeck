@@ -8,7 +8,7 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=11';
+} from './agent-model.js?v=12';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
@@ -282,7 +282,7 @@ function timeAgo(rawTimestamp) {
   return relativeTime.format(Math.round(hours / 24), 'day');
 }
 
-function openPendingThread(thread) {
+function openPendingThread(thread, { quiet = false, refresh = true } = {}) {
   if (!thread?.tmux?.name || thread.tmux.available !== false) return;
   state.threadHandoff = null;
   state.threadOpening = null;
@@ -300,11 +300,11 @@ function openPendingThread(thread) {
   });
   state.thread.tmux = { ...thread.tmux };
   state.threadRefreshUntil = 0;
-  setLiveMessage('已连接当前终端会话，可直接参与。');
+  if (!quiet) setLiveMessage('已连接当前终端会话，可直接参与。');
   renderThreadList();
   scheduleThreadRender(false);
   closeDrawer();
-  loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message));
+  if (refresh) loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message));
 }
 
 function openShellThread(thread, { quiet = false } = {}) {
@@ -384,7 +384,11 @@ async function loadThreads({ quiet = false } = {}) {
       }
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
-    if (replacement) await handoffPendingThread(replacement);
+    if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
+    else if (replacement?.tmux?.available === false) {
+      openPendingThread(replacement, { quiet: true, refresh: false });
+    }
+    else if (replacement) await handoffPendingThread(replacement);
     renderThreadList();
     updateTerminalActivity();
     renderComposerState();

@@ -139,6 +139,22 @@ test('replaces a pending tmux thread only with the same provider and session', (
   assert.equal(findTmuxThreadReplacement(threads.slice(0, 2), pending), null);
 });
 
+test('follows the same tmux session when an ssh shell starts or exits an Agent', () => {
+  const shell = tmuxSessionsToThreads([{
+    name: 'cli', activityAt: 10_000, status: 'working', agent: null,
+  }])[0];
+  const remoteCodex = tmuxSessionsToThreads([{
+    name: 'cli', activityAt: 12_000, status: 'working',
+    agent: { kind: 'codex', id: null, name: 'cli' },
+  }])[0];
+
+  assert.equal(findTmuxThreadReplacement([remoteCodex], shell), remoteCodex);
+  assert.equal(findTmuxThreadReplacement([shell], remoteCodex), shell);
+  assert.equal(findTmuxThreadReplacement([
+    { ...remoteCodex, tmux: { ...remoteCodex.tmux, name: 'other' } },
+  ], shell), null);
+});
+
 test('normalizes missing turn arrays without changing provider identity', () => {
   const thread = normalizeAgentThread('qodercli', { id: 'q-1', preview: 'Mobile review', readOnly: true });
   assert.equal(thread.provider, 'qodercli');

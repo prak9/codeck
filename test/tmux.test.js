@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -574,8 +574,20 @@ test('an agent behind an ssh hop is named from its status bar', () => {
 `;
   assert.equal(identifyAgentFromScreen(qoderOverSsh), 'qodercli');
   assert.equal(identifyAgentFromScreen(CLAUDE_IDLE), null, 'claude is found in the process tree');
-  assert.equal(identifyAgentFromScreen(CODEX_IDLE), null);
+  assert.equal(identifyAgentFromScreen(CODEX_IDLE), 'codex');
+  assert.equal(identifyAgentFromScreen(`${CODEX_IDLE}\n[x@remote ~]$`), null, 'an exited Codex is a shell again');
   assert.equal(identifyAgentFromScreen(''), null);
+});
+
+test('an ssh-only screen identity becomes a manageable pending Agent', () => {
+  const pane = { session: 'cli', paneId: '%71' };
+  assert.deepEqual(resolvePaneAgent(null, CODEX_IDLE, pane), {
+    kind: 'codex', id: null, name: 'cli', paneId: '%71',
+  });
+
+  const processAgent = { kind: 'codex', id: 'thread-1', name: 'Local task', paneId: '%71' };
+  assert.equal(resolvePaneAgent(processAgent, CODEX_IDLE, pane), processAgent);
+  assert.equal(resolvePaneAgent(null, '[x@remote ~]$', pane), null);
 });
 
 test('a cancel prompt without a timer is not a qodercli turn', () => {

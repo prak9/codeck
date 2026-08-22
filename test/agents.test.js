@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
+import { agentKindFromCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -100,6 +100,16 @@ test('process rows still parse when the command itself contains spaces', () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0].command, 'node /usr/bin/qodercli --continue');
   assert.equal(agentKindFromCommand(rows[0].command), 'qodercli');
+});
+
+test('the pane root process is included when an Agent replaces the shell', () => {
+  const processes = parseProcessList([
+    '  12  5  7 /opt/qoder/qodercli',
+    '  13  12  3 /bin/bash -lc npm test',
+    '  14  9  2 unrelated',
+  ].join('\n'), 10_000);
+
+  assert.deepEqual(paneProcessTree(12, processes).map((process) => process.pid), [12, 13]);
 });
 
 test('ps is asked for one field per -o, never a comma-joined header', () => {

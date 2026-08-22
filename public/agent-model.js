@@ -46,10 +46,16 @@ export function tmuxSessionsToThreads(sessions) {
 
 export function findTmuxThreadReplacement(threads, currentThread) {
   const currentTmux = currentThread?.tmux;
-  if (!currentTmux?.name || currentTmux.available !== false) return null;
-  return asArray(threads).find((thread) => (
+  if (!currentTmux?.name) return null;
+  const sameSession = asArray(threads).filter((thread) => thread.tmux?.name === currentTmux.name);
+  if (currentThread.provider === 'shell') {
+    return sameSession.find((thread) => thread.provider !== 'shell') || null;
+  }
+  const shell = sameSession.find((thread) => thread.provider === 'shell');
+  if (shell) return shell;
+  if (currentTmux.available !== false) return null;
+  return sameSession.find((thread) => (
     thread.provider === currentThread.provider
-    && thread.tmux?.name === currentTmux.name
     && thread.tmux.available === true
   )) || null;
 }

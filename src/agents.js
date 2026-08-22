@@ -137,8 +137,8 @@ function codexPreview(id, codex) {
   return preview;
 }
 
-function descendants(rootPid, processes) {
-  const result = [];
+export function paneProcessTree(rootPid, processes) {
+  const result = processes.filter((process) => process.pid === rootPid);
   const queue = [rootPid];
   while (queue.length) {
     const parent = queue.shift();
@@ -219,7 +219,7 @@ export async function detectPaneAgents(panes, env = process.env) {
   const agents = new Map();
 
   for (const pane of panes) {
-    const tree = descendants(pane.pid, processes);
+    const tree = paneProcessTree(pane.pid, processes);
     const process = tree.find((item) => agentKindFromCommand(item.command));
     if (!process) continue;
     const kind = agentKindFromCommand(process.command);

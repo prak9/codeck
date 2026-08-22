@@ -57,18 +57,28 @@ export const AGENT_SCREEN_MARKERS = {
 // Identity, not activity. The process tree is authoritative, but it does not cross an ssh
 // hop: an agent running on the far side of a jump host leaves no local descendant, so
 // detectPaneAgents sees nothing and the session falls back to its foreground command.
-// These markers name the agent from what it draws instead. Sourced from a live qodercli
-// pane on another host; unverified here, so keep them narrow.
+// These markers name the agent from what it draws instead. Keep them narrow: Codex must
+// own the final pane row, so a completed transcript followed by a shell prompt does not
+// keep the pane classified as an Agent.
 export const AGENT_SCREEN_IDENTITY = {
+  codex: [/^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*\s·\s(?:~(?:\/|$)|\/)/i],
   qodercli: [/·\s*ctx\s*[\u2580-\u259f]+\s*\d+%\s*·/],
 };
 
 export function identifyAgentFromScreen(output) {
   const lines = screenLines(output).slice(-6);
   for (const [kind, patterns] of Object.entries(AGENT_SCREEN_IDENTITY)) {
-    if (lines.some((line) => patterns.some((pattern) => pattern.test(line)))) return kind;
+    const candidates = kind === 'codex' ? lines.slice(-1) : lines;
+    if (candidates.some((line) => patterns.some((pattern) => pattern.test(line)))) return kind;
   }
   return null;
+}
+
+export function resolvePaneAgent(detectedAgent, output, pane) {
+  if (detectedAgent) return detectedAgent;
+  const kind = identifyAgentFromScreen(output);
+  if (!kind || !pane?.session || !PANE_ID.test(pane.paneId || '')) return null;
+  return { kind, id: null, name: pane.session, paneId: pane.paneId };
 }
 // A working pane repaints at least once a second; allow a missed poll before going idle.
 const SCREEN_ACTIVITY_WINDOW_MS = 6_000;
@@ -377,12 +387,15 @@ export async function listSessions() {
     ]);
     const screenBySession = new Map(screens);
 
-    // The process tree wins; the screen only names agents it could not see.
-    const agentKindBySession = new Map();
-    for (const [sessionName, screen] of screenBySession) {
-      const kind = agents.get(sessionName)?.kind || identifyAgentFromScreen(screen);
-      if (kind) agentKindBySession.set(sessionName, kind);
+    // The process tree wins; the screen supplies a pending Agent when ssh hides it.
+    const resolvedAgents = new Map();
+    for (const pane of panes) {
+      const agent = resolvePaneAgent(agents.get(pane.session), screenBySession.get(pane.session), pane);
+      if (agent) resolvedAgents.set(pane.session, agent);
     }
+    const agentKindBySession = new Map(
+      [...resolvedAgents].map(([sessionName, agent]) => [sessionName, agent.kind]),
+    );
 
     const screenSignalsBySession = new Map(
       [...screenBySession].map(([sessionName, screen]) => [
@@ -396,7 +409,7 @@ export async function listSessions() {
 
     return parsedSessions
       .map((session) => {
-        const detectedAgent = agents.get(session.name) || null;
+        const detectedAgent = resolvedAgents.get(session.name) || null;
         const agentKind = agentKindBySession.get(session.name) || null;
         const screenSignals = screenSignalsBySession.get(session.name);
         const hasRunningProcess = resolveWorkingState({
