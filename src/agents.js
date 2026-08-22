@@ -162,9 +162,17 @@ function nearestCodexId(startedAt, starts) {
 
 export function resolveCodexSessionId(process, codex) {
   const resumed = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1];
-  return resumed
-    || nearestCodexId(process.startedAt, codex.writers || [])
-    || nearestCodexId(process.startedAt, codex.starts || []);
+  if (resumed) return resumed;
+  const starts = codex.starts || [];
+  const writer = nearestCodexId(process.startedAt, codex.writers || []);
+  if (/\bresume(?:\s|$)/i.test(process.command)) {
+    return writer || nearestCodexId(process.startedAt, starts);
+  }
+  // A new Codex process creates its writer lock before the first prompt creates a
+  // rollout. Until that rollout exists, app-server cannot read the thread, so keep
+  // the tmux session on the directly manageable pending path.
+  if (writer && !starts.some((item) => item.id === writer)) return null;
+  return writer || nearestCodexId(process.startedAt, starts);
 }
 
 function findClaudeSlug(sessionId, claudeHome) {

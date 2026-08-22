@@ -53,6 +53,21 @@ test('recovers an interactive Codex resume selection from its writer lock time',
   }, { writers: [{ id: selectedId, startedAt: startedAt - 300_000 }], starts: codex.starts }), newRolloutId);
 });
 
+test('does not expose a fresh Codex writer before its first rollout exists', () => {
+  const freshId = '01a028e8-3750-7050-98d2-27078915be46';
+  const otherId = '01a028e6-3604-7350-943b-e1455dc6dfd1';
+  const startedAt = 1_700_000_000_000;
+  const process = { command: 'codex --yolo', startedAt };
+  const codex = {
+    writers: [{ id: freshId, startedAt: startedAt + 2_000 }],
+    starts: [{ id: otherId, startedAt: startedAt - 30_000 }],
+  };
+
+  assert.equal(resolveCodexSessionId(process, codex), null);
+  codex.starts.push({ id: freshId, startedAt: startedAt + 3_000 });
+  assert.equal(resolveCodexSessionId(process, codex), freshId);
+});
+
 test('parses process ancestry fields without splitting the command', () => {
   assert.deepEqual(parseProcessList('  12  5  7 node /usr/bin/codex --yolo resume abc', 10_000), [{
     pid: 12, ppid: 5, startedAt: 3_000, command: 'node /usr/bin/codex --yolo resume abc',
