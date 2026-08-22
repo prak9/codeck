@@ -7,6 +7,7 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
 } from '../public/agent-model.js';
@@ -42,6 +43,19 @@ test('keeps terminal Agent activity visible while structured history is catching
   assert.equal(agentActivityText(thread), '正在运行命令 · 25秒');
   thread.tmux.status = 'done';
   assert.equal(agentActivityText(thread), '');
+});
+
+test('shows captured Qoder output even when legacy tmux cannot expose a busy footer', () => {
+  const thread = normalizeAgentThread('qodercli', { id: 'thread-1', turns: [] });
+  thread.tmux = {
+    name: 'qoder-work', status: 'done', available: true, liveOutput: 'Files changed: 3\nReady',
+  };
+
+  assert.equal(shouldShowTerminalActivity(thread), true);
+  thread.turns.push({ id: 'turn-1', status: 'inProgress', items: [] });
+  assert.equal(shouldShowTerminalActivity(thread), true);
+  delete thread.tmux.liveOutput;
+  assert.equal(shouldShowTerminalActivity(thread), false);
 });
 
 test('builds one ordered sidebar from all tmux sessions', () => {

@@ -443,6 +443,15 @@ test('keeps terminal output available while an Agent thread id is unresolved', (
   assert.equal(resolveAgentSessionLiveOutput(null, false, idleSignals, idlePane), '');
 });
 
+test('keeps the Qoder pane visible when a legacy terminal hides its activity footer', () => {
+  const idlePane = '  Files changed: 3\n  Ready';
+  const idleSignals = { busy: false, background: false, animating: false };
+
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'qodercli', id: 'thread-1' }, false, idleSignals, idlePane,
+  ), idlePane);
+});
+
 test('a completed claude turn is not mistaken for the codex working state', () => {
   assert.equal(signals(CLAUDE_IDLE, 'codex').busy, false);
 });

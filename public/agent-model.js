@@ -154,6 +154,15 @@ export function latestRunningTurn(thread) {
   return [...asArray(thread?.turns)].reverse().find((turn) => turn.status === 'inProgress') || null;
 }
 
+export function shouldShowTerminalActivity(thread) {
+  const tmux = thread?.tmux;
+  if (!tmux) return false;
+  if (thread.provider === 'shell' || tmux.available === false) return true;
+  if (thread.provider === 'qodercli' && tmux.liveOutput) return true;
+  if (latestRunningTurn(thread)) return false;
+  return tmux.status === 'working' || Boolean(tmux.liveOutput);
+}
+
 export function agentActivityText(thread) {
   const turn = latestRunningTurn(thread);
   if (!turn) return thread?.tmux?.status === 'working'

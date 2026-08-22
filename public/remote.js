@@ -5,9 +5,10 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=10';
+} from './agent-model.js?v=11';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
@@ -683,7 +684,6 @@ function terminalActivityNode() {
   const section = element('section', 'turn terminal-activity');
   const foot = element('div', 'turn-foot');
   const shell = state.thread?.provider === 'shell';
-  const unresolved = state.thread?.tmux?.available === false;
   const working = state.thread?.tmux?.status === 'working';
   section.dataset.activityStatus = working ? 'working' : 'done';
   foot.setAttribute('role', 'status');
@@ -691,7 +691,7 @@ function terminalActivityNode() {
   if (working) foot.append(element('span', 'spinner'));
   foot.append(element('span', 'working', shell
     ? working ? 'Shell 命令正在运行' : 'Shell 当前输出'
-    : unresolved && !working ? '终端当前输出'
+    : !working ? '终端当前输出'
       : agentActivityText(state.thread) || '终端 Agent 正在工作'));
   const output = element('pre', 'terminal-live-output', state.thread?.tmux?.liveOutput || '');
   output.hidden = !state.thread?.tmux?.liveOutput;
@@ -709,10 +709,8 @@ function updateTerminalActivity() {
   const current = $('.terminal-activity .working');
   const output = $('.terminal-activity .terminal-live-output');
   const shell = state.thread?.provider === 'shell';
-  const unresolved = state.thread?.tmux?.available === false;
-  const terminalOnly = shell || unresolved;
   const status = state.thread?.tmux?.status === 'working' ? 'working' : 'done';
-  const visible = terminalOnly || (status === 'working' && !latestRunningTurn(state.thread));
+  const visible = shouldShowTerminalActivity(state.thread);
   if (!visible) {
     if (current) scheduleThreadRender(false);
     return;
@@ -721,7 +719,7 @@ function updateTerminalActivity() {
     scheduleThreadRender(false);
     return;
   }
-  if (terminalOnly && section?.dataset.activityStatus !== status) {
+  if (section?.dataset.activityStatus !== status) {
     scheduleThreadRender(false);
     return;
   }
@@ -730,7 +728,7 @@ function updateTerminalActivity() {
   const outputNearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
   const activity = shell
     ? status === 'working' ? 'Shell 命令正在运行' : 'Shell 当前输出'
-    : unresolved && status !== 'working' ? '终端当前输出'
+    : status !== 'working' ? '终端当前输出'
       : agentActivityText(state.thread) || '终端 Agent 正在工作';
   const liveOutput = state.thread?.tmux?.liveOutput || '';
   const changed = current.textContent !== activity || output.textContent !== liveOutput || output.hidden !== !liveOutput;
@@ -900,8 +898,7 @@ function renderThread() {
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const nodes = (state.thread?.turns || []).map(renderTurn);
-  if (state.thread?.provider === 'shell' || state.thread?.tmux?.available === false
-    || (state.thread?.tmux?.status === 'working' && !latestRunningTurn(state.thread))) {
+  if (shouldShowTerminalActivity(state.thread)) {
     nodes.push(terminalActivityNode());
   }
   $('#turns').replaceChildren(...nodes);

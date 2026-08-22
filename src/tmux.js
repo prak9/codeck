@@ -294,9 +294,11 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
 }
 
 export function resolveAgentSessionLiveOutput(agent, hasRunningProcess, screenSignals, output) {
-  if (!agent || (!hasRunningProcess && agent.id)) return '';
+  if (!agent) return '';
+  const keepVisible = agent.kind === 'qodercli';
+  if (!keepVisible && !hasRunningProcess && agent.id) return '';
   return resolveAgentLiveOutput(agent.kind, output, {
-    allowTail: !agent.id || Boolean(
+    allowTail: keepVisible || !agent.id || Boolean(
       screenSignals?.animating && !screenSignals.busy && !screenSignals.background,
     ),
   });
