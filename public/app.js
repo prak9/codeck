@@ -278,7 +278,7 @@ function renderSessions() {
       <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
         <span class="session-index">${index + 1}</span>
         <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : (session.attached ? '›_' : '$_')}</span>
-        <span class="session-copy"><b title="${escapeHtml(session.agent?.name || session.name)}">${escapeHtml(session.agent?.name || session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
+        <span class="session-copy"><b title="${escapeHtml(session.name)}">${escapeHtml(session.name)}</b><small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · tmux ${escapeHtml(session.name)}` : `${session.windows} 个窗口`} · ${timeAgo(session.activityAt)}</small></span>
         <span class="presence ${status}" title="${statusText}"></span>
       </button>
       ${state.canManage ? `<button type="button" class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
