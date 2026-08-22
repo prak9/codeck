@@ -473,6 +473,7 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
 
 let inputBufferSequence = 0;
 const sessionInputQueues = new Map();
+const PASTE_SUBMIT_DELAY_MS = 80;
 
 function queueSessionInput(sessionName, operation) {
   const previous = sessionInputQueues.get(sessionName) || Promise.resolve();
@@ -499,12 +500,17 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    const waitForPaste = overrides.waitForPaste
+      || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
     await loadBuffer(bufferName, text);
     try {
-      await execTmux([
-        'paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId,
-        ';', 'send-keys', '-t', paneId, 'Enter',
-      ]);
+      // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same
+      // tmux command, it can be consumed before the composer finishes applying the paste,
+      // leaving the text visible but unsent. Separate the portable tmux 2.7 commands and
+      // give the TUI one short processing window before submitting.
+      await execTmux(['paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId]);
+      await waitForPaste();
+      await execTmux(['send-keys', '-t', paneId, 'Enter']);
     } catch (error) {
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
       throw error;

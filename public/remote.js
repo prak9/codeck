@@ -8,6 +8,7 @@ import {
   tmuxSessionsToThreads,
   userMessageText,
 } from './agent-model.js?v=10';
+import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
@@ -49,7 +50,9 @@ const state = {
   threadRefresh: null,
   threadRefreshUntil: 0,
   threadHandoff: null,
+  threadOpening: null,
 };
+const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 
 if (!PROVIDERS[state.provider]) state.provider = 'codex';
 
@@ -281,6 +284,7 @@ function timeAgo(rawTimestamp) {
 function openPendingThread(thread) {
   if (!thread?.tmux?.name || thread.tmux.available !== false) return;
   state.threadHandoff = null;
+  state.threadOpening = null;
   if (thread.provider !== state.provider) {
     state.provider = thread.provider;
     localStorage.setItem('codeck-remote-provider', thread.provider);
@@ -305,6 +309,7 @@ function openPendingThread(thread) {
 function openShellThread(thread, { quiet = false } = {}) {
   if (thread?.provider !== 'shell' || !thread.tmux?.name) return;
   state.threadHandoff = null;
+  state.threadOpening = null;
   state.provider = 'shell';
   state.activeThreadId = thread.id;
   state.thread = normalizeAgentThread('shell', {
@@ -393,6 +398,8 @@ async function loadThreads({ quiet = false } = {}) {
 
 async function openThread(threadId, { provider = state.provider, quiet = false, readOnly = false } = {}) {
   state.threadHandoff = null;
+  const opening = {};
+  state.threadOpening = opening;
   if (provider !== state.provider) {
     state.provider = provider;
     localStorage.setItem('codeck-remote-provider', provider);
@@ -400,16 +407,25 @@ async function openThread(threadId, { provider = state.provider, quiet = false, 
   }
   const listedThread = state.threads.find((thread) => thread.id === threadId && thread.provider === provider);
   if (!quiet) setLiveMessage('正在读取会话…');
+  renderComposerState();
   const directSession = Boolean(listedThread?.tmux?.name);
-  const result = await agentRequest('openThread', { provider, threadId, readOnly: directSession || readOnly });
-  state.activeThreadId = threadId;
-  state.thread = normalizeAgentThread(provider, result.thread);
-  if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
-  state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
-  setLiveMessage(directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : '');
-  renderThreadList();
-  scheduleThreadRender(true);
-  closeDrawer();
+  try {
+    const result = await agentRequest('openThread', { provider, threadId, readOnly: directSession || readOnly });
+    if (state.threadOpening !== opening) return;
+    state.activeThreadId = threadId;
+    state.thread = normalizeAgentThread(provider, result.thread);
+    if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
+    state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
+    setLiveMessage(directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : '');
+    renderThreadList();
+    scheduleThreadRender(true);
+    closeDrawer();
+  } finally {
+    if (state.threadOpening === opening) {
+      state.threadOpening = null;
+      renderComposerState();
+    }
+  }
 }
 
 async function refreshActiveThread({ force = false } = {}) {
@@ -439,6 +455,7 @@ async function refreshActiveThread({ force = false } = {}) {
 
 function startNewThread({ focus = true } = {}) {
   state.threadHandoff = null;
+  state.threadOpening = null;
   if (!state.providers.includes(state.provider)) {
     state.provider = preferredAgentProvider();
     localStorage.setItem('codeck-remote-provider', state.provider);
@@ -457,6 +474,7 @@ function startNewThread({ focus = true } = {}) {
 async function switchProvider(provider) {
   if (!state.providers.includes(provider)) return;
   state.threadHandoff = null;
+  state.threadOpening = null;
   state.provider = provider;
   localStorage.setItem('codeck-remote-provider', provider);
   state.activeThreadId = null;
@@ -918,26 +936,36 @@ function renderComposerState() {
   const active = Boolean(running || state.thread?.tmux?.status === 'working');
   const readOnly = Boolean(state.thread?.readOnly && !sessionName);
   const hasText = Boolean(input.value.trim());
-  sendButton.classList.toggle('stop-mode', Boolean(active && !hasText));
-  input.disabled = readOnly;
+  const pending = composerRequestGate.pending;
+  const opening = Boolean(state.threadOpening);
+  const controls = composerControlState({
+    active, connected: state.connected, hasText, opening, pending, readOnly,
+  });
+  sendButton.classList.toggle('stop-mode', controls.stopMode);
+  input.disabled = readOnly || opening;
   $('.composer').classList.toggle('read-only', readOnly);
-  sendButton.disabled = readOnly || !state.connected || (!hasText && !active);
-  sendButton.setAttribute('aria-label', active && !hasText ? '停止当前任务' : '发送消息');
+  $('.composer').setAttribute('aria-busy', String(pending || opening));
+  sendButton.disabled = controls.disabled;
+  sendButton.setAttribute('aria-label', controls.ariaLabel);
   const status = $('#composerStatus');
   status.replaceChildren();
   const dot = element('i', `connection-dot ${state.connected ? active ? 'busy' : 'online' : 'problem'}`);
-  const message = !state.connected
-    ? '连接已断开'
-    : sessionName
-      ? state.thread?.provider === 'shell'
-        ? active ? 'Shell 命令正在运行 · 可直接输入' : '已连接 Shell 会话 · 可直接输入'
-        : active ? `${activity || '终端 Agent 正在工作'} · 可直接输入` : '已连接当前终端会话 · 可直接输入'
-      : readOnly ? '当前会话只读' : active ? `${activity || '正在处理'} · 可继续输入` : '已连接';
+  const message = opening
+    ? '正在读取会话…'
+    : !state.connected
+      ? '连接已断开'
+      : sessionName
+        ? state.thread?.provider === 'shell'
+          ? active ? 'Shell 命令正在运行 · 可直接输入' : '已连接 Shell 会话 · 可直接输入'
+          : active ? `${activity || '终端 Agent 正在工作'} · 可直接输入` : '已连接当前终端会话 · 可直接输入'
+        : readOnly ? '当前会话只读' : active ? `${activity || '正在处理'} · 可继续输入` : '已连接';
   status.append(dot, document.createTextNode(message));
-  input.placeholder = readOnly
-    ? '当前会话只读'
-    : state.thread?.provider === 'shell' ? '输入 Shell 命令'
-      : active ? '跟进当前任务' : sessionName ? `参与 ${providerDetails().name} 会话` : `给 ${providerDetails().name} 发消息`;
+  input.placeholder = opening
+    ? '正在读取会话…'
+    : readOnly
+      ? '当前会话只读'
+      : state.thread?.provider === 'shell' ? '输入 Shell 命令'
+        : active ? '跟进当前任务' : sessionName ? `参与 ${providerDetails().name} 会话` : `给 ${providerDetails().name} 发消息`;
 }
 
 function resizeComposer() {
@@ -948,8 +976,10 @@ function resizeComposer() {
 }
 
 async function submitComposer() {
+  if (composerRequestGate.pending || state.threadOpening) return;
   const input = $('#composerInput');
-  const text = input.value.trim();
+  const draft = input.value;
+  const text = draft.trim();
   const running = latestRunningTurn(state.thread);
   const sessionName = state.thread?.tmux?.name;
   const active = Boolean(running || state.thread?.tmux?.status === 'working');
@@ -958,80 +988,82 @@ async function submitComposer() {
     return;
   }
   if (!text && active) {
-    try {
-      setLiveMessage('正在停止任务…');
-      if (sessionName) {
-        await agentRequest('interruptSession', {
-          provider: state.provider,
-          threadId: state.thread.id,
-          tmuxSession: sessionName,
-        });
-        state.threadRefreshUntil = Date.now() + 3_000;
-      } else {
-        await agentRequest('interruptTurn', {
-          provider: state.provider,
-          threadId: state.thread.id,
-          turnId: running.id,
-        });
-      }
-      setLiveMessage('已发送停止请求');
-    } catch (error) { setLiveMessage(error.message); }
+    await composerRequestGate.run(async () => {
+      try {
+        setLiveMessage('正在停止任务…');
+        if (sessionName) {
+          await agentRequest('interruptSession', {
+            provider: state.provider,
+            threadId: state.thread.id,
+            tmuxSession: sessionName,
+          });
+          state.threadRefreshUntil = Date.now() + 3_000;
+        } else {
+          await agentRequest('interruptTurn', {
+            provider: state.provider,
+            threadId: state.thread.id,
+            turnId: running.id,
+          });
+        }
+        setLiveMessage('已发送停止请求');
+      } catch (error) { setLiveMessage(error.message); }
+    });
     return;
   }
   if (!text) return;
-  input.value = '';
-  resizeComposer();
-  setLiveMessage('正在发送…');
-  let sentPendingSession = false;
-  try {
-    if (!state.thread) {
-      const result = await agentRequest('newThread', {
-        provider: state.provider,
-        cwd: state.cwd || state.defaultCwd,
-        text,
-      });
-      state.activeThreadId = result.thread.id;
-      state.thread = normalizeAgentThread(state.provider, result.thread);
-      scheduleThreadRender(true);
-      await loadThreads({ quiet: true });
-    } else if (sessionName) {
-      sentPendingSession = state.thread.tmux.available === false;
-      await agentRequest('sendSessionMessage', {
-        provider: state.provider,
-        threadId: state.thread.id,
-        tmuxSession: sessionName,
-        text,
-      });
-      state.thread.tmux.status = 'working';
-      state.thread.tmux.activityAt = Date.now();
-      const listedThread = state.threads.find((candidate) => (
-        candidate.id === state.thread.id && candidate.provider === state.provider
-      ));
-      if (listedThread?.tmux) {
-        listedThread.tmux.status = 'working';
-        listedThread.tmux.activityAt = Date.now();
+  await composerRequestGate.run(async () => {
+    setLiveMessage('正在发送…');
+    let sentPendingSession = false;
+    try {
+      if (!state.thread) {
+        const result = await agentRequest('newThread', {
+          provider: state.provider,
+          cwd: state.cwd || state.defaultCwd,
+          text,
+        });
+        state.activeThreadId = result.thread.id;
+        state.thread = normalizeAgentThread(state.provider, result.thread);
+        scheduleThreadRender(true);
+        await loadThreads({ quiet: true });
+      } else if (sessionName) {
+        sentPendingSession = state.thread.tmux.available === false;
+        await agentRequest('sendSessionMessage', {
+          provider: state.provider,
+          threadId: state.thread.id,
+          tmuxSession: sessionName,
+          text,
+        });
+        state.thread.tmux.status = 'working';
+        state.thread.tmux.activityAt = Date.now();
+        const listedThread = state.threads.find((candidate) => (
+          candidate.id === state.thread.id && candidate.provider === state.provider
+        ));
+        if (listedThread?.tmux) {
+          listedThread.tmux.status = 'working';
+          listedThread.tmux.activityAt = Date.now();
+        }
+        state.threadRefreshUntil = sentPendingSession ? 0 : Date.now() + 10_000;
+        renderThreadList();
+        renderComposerState();
+        if (sentPendingSession || state.provider === 'shell') loadThreads({ quiet: true }).catch(() => {});
+        else refreshActiveThread({ force: true }).catch(() => {});
+      } else {
+        await agentRequest('sendMessage', {
+          provider: state.provider,
+          threadId: state.thread.id,
+          turnId: running?.id,
+          mode: running ? 'steer' : 'followUp',
+          text,
+        });
+        scheduleThreadRender(true);
       }
-      state.threadRefreshUntil = sentPendingSession ? 0 : Date.now() + 10_000;
-      renderThreadList();
-      renderComposerState();
-      if (sentPendingSession || state.provider === 'shell') loadThreads({ quiet: true }).catch(() => {});
-      else refreshActiveThread({ force: true }).catch(() => {});
-    } else {
-      await agentRequest('sendMessage', {
-        provider: state.provider,
-        threadId: state.thread.id,
-        turnId: running?.id,
-        mode: running ? 'steer' : 'followUp',
-        text,
-      });
-      scheduleThreadRender(true);
+      input.value = draftAfterSuccessfulSend(input.value, draft);
+      resizeComposer();
+      setLiveMessage(sentPendingSession ? '消息已发送，正在同步对话…' : '');
+    } catch (error) {
+      setLiveMessage(error.message);
     }
-    setLiveMessage(sentPendingSession ? '消息已发送，正在同步对话…' : '');
-  } catch (error) {
-    input.value = text;
-    resizeComposer();
-    setLiveMessage(error.message);
-  }
+  });
 }
 
 function openDrawer() {

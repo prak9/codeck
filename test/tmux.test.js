@@ -8,7 +8,7 @@ test('parses tmux list output into typed session records', () => {
   }]);
 });
 
-test('sends a message only to the exact verified Agent pane with tmux 2.7-compatible commands', async () => {
+test('waits for an Agent to process bracketed paste before submitting with tmux 2.7-compatible commands', async () => {
   const calls = [];
   await sendSessionMessage({ provider: 'claude', sessionName: 'work', threadId: 'thread-1', text: 'Review\nmobile' }, {
     listTmuxSessions: async () => [{
@@ -17,17 +17,17 @@ test('sends a message only to the exact verified Agent pane with tmux 2.7-compat
     bufferName: 'codeck-test',
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
   });
 
   assert.deepEqual(calls, [
     { type: 'load', bufferName: 'codeck-test', text: 'Review\nmobile' },
     {
       type: 'exec',
-      args: [
-        'paste-buffer', '-p', '-d', '-b', 'codeck-test', '-t', '%7',
-        ';', 'send-keys', '-t', '%7', 'Enter',
-      ],
+      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-test', '-t', '%7'],
     },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
   ]);
 });
 
@@ -39,6 +39,7 @@ test('allows only the server-derived pending thread id before an Agent exposes i
     bufferName: 'codeck-pending-test',
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
   };
 
   await sendSessionMessage({
@@ -60,11 +61,10 @@ test('allows only the server-derived pending thread id before an Agent exposes i
     { type: 'load', bufferName: 'codeck-pending-test', text: 'Start work' },
     {
       type: 'exec',
-      args: [
-        'paste-buffer', '-p', '-d', '-b', 'codeck-pending-test', '-t', '%7',
-        ';', 'send-keys', '-t', '%7', 'Enter',
-      ],
+      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-pending-test', '-t', '%7'],
     },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Escape'] },
   ]);
 });
@@ -113,6 +113,7 @@ test('sends shell input and Ctrl-C only to the exact verified shell pane', async
     bufferName: 'codeck-shell-test',
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
   };
 
   await sendSessionMessage({
@@ -126,11 +127,10 @@ test('sends shell input and Ctrl-C only to the exact verified shell pane', async
     { type: 'load', bufferName: 'codeck-shell-test', text: 'pwd' },
     {
       type: 'exec',
-      args: [
-        'paste-buffer', '-p', '-d', '-b', 'codeck-shell-test', '-t', '%9',
-        ';', 'send-keys', '-t', '%9', 'Enter',
-      ],
+      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-shell-test', '-t', '%9'],
     },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%9', 'Enter'] },
     { type: 'exec', args: ['send-keys', '-t', '%9', 'C-c'] },
   ]);
 });
