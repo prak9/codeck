@@ -518,10 +518,10 @@ function renderThreadList() {
     button.dataset.threadId = thread.id;
     const copy = element('span', 'thread-copy');
     const tmux = thread.tmux || {};
-    const title = tmux.title || thread.name || thread.preview || tmux.name || '未命名会话';
+    const title = tmux.name || thread.name || thread.preview || '未命名会话';
     const status = tmux.status === 'working' ? 'working' : 'done';
     const statusText = status === 'working' ? '正在干活' : '完成';
-    const meta = `${statusText} · tmux ${tmux.name || ''} · ${timeAgo(tmux.activityAt)}`;
+    const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
     copy.append(
       element('b', '', title),
       element('small', '', meta),
