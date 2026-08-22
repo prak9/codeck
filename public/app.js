@@ -1,5 +1,9 @@
 import { bindMobileScroll } from './mobile-scroll.js';
-import { fitTerminalGrid, resetTerminalInput } from './terminal-utils.js';
+import {
+  fitTerminalGrid,
+  isTerminalCopyShortcut,
+  resetTerminalInput,
+} from './terminal-utils.js?v=6';
 
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
@@ -511,6 +515,10 @@ function ensureTerminal() {
   $('#terminal').addEventListener('dragstart', handleTerminalDragStart, true);
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
+    // Let the browser emit its native copy event when xterm has a selection. xterm's
+    // copy listener puts its virtual selection on the clipboard without requiring the
+    // async Clipboard API. With no selection, Ctrl+C still reaches the pty as SIGINT.
+    if (isTerminalCopyShortcut(event, terminal.hasSelection())) return false;
     return !handleQuickSwitchKeydown(event);
   });
   terminal.onData((data) => {
@@ -518,12 +526,12 @@ function ensureTerminal() {
       state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
-  // `.xterm` sets user-select:none (its selection is a custom overlay, not a real DOM
-  // Range, since rows are virtualized) — so there is no native OS selection to hand a
-  // long-press "Copy" bubble on mobile, and no right-click menu either. Copy on select
-  // instead of requiring a shortcut or a button: works the same on every input method,
-  // and never fights Ctrl+C, which stays SIGINT even with an active selection.
+  // Touch browsers have no dependable shortcut or native selection bubble for xterm's
+  // virtual selection. Preserve copy-on-select there; pointer devices use the native
+  // copy event above, which is synchronous and works even when Clipboard API writes are
+  // not permitted.
   terminal.onSelectionChange(() => {
+    if (!matchMedia('(pointer: coarse)').matches) return;
     const text = terminal.getSelection();
     if (text) navigator.clipboard?.writeText(text).catch(() => {});
   });
@@ -566,8 +574,15 @@ function markActiveSession(session) {
 }
 
 async function connect(session) {
+  if (state.active === session && state.socket && state.socket.readyState <= WebSocket.OPEN) {
+    $('#sidebar').classList.remove('open');
+    $('#menuButton').setAttribute('aria-expanded', 'false');
+    if (state.socket.readyState === WebSocket.OPEN) state.terminal?.focus();
+    return;
+  }
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
+  const needsReset = Boolean(state.terminal);
   state.cancelMobileScroll?.();
   stopKeyRepeat();
   state.socket?.close();
@@ -579,15 +594,14 @@ async function connect(session) {
   $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
   $('#terminalTitle').title = sessionDetails?.agent ? `tmux: ${session}` : '';
   $('#connectionState').textContent = '正在连接';
+  $('#sidebar').classList.remove('open');
+  $('#menuButton').setAttribute('aria-expanded', 'false');
 
   const terminal = ensureTerminal();
   const terminalElement = $('#terminal');
-  terminalElement.style.visibility = 'hidden';
-  await resetTerminalInput(terminal);
-  if (state.connectionId !== connectionId || state.active !== session) return;
-  terminal.clear();
+  terminalElement.style.visibility = needsReset ? 'hidden' : '';
+  const reset = needsReset ? resetTerminalInput(terminal) : Promise.resolve();
   fitTerminalView();
-  terminalElement.style.visibility = '';
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   // Report the viewport on the URL so the pty attaches at this size. Sending it only as
@@ -595,21 +609,30 @@ async function connect(session) {
   // than the visible area.
   const query = new URLSearchParams({ session, cols: String(terminal.cols), rows: String(terminal.rows) });
   const socket = new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
+  const pendingOutput = [];
+  let outputReady = !needsReset;
   state.socket = socket;
   socket.addEventListener('open', () => {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = '已连接';
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
-    terminal.focus();
+    if (outputReady) terminal.focus();
   });
   socket.addEventListener('message', (event) => {
     if (state.connectionId !== connectionId) return;
-    terminal.write(event.data);
+    if (outputReady) terminal.write(event.data);
+    else pendingOutput.push(event.data);
   });
   socket.addEventListener('close', (event) => state.connectionId === connectionId && ($('#connectionState').textContent = event.reason || '连接已断开'));
   socket.addEventListener('error', () => state.connectionId === connectionId && ($('#connectionState').textContent = '连接失败'));
-  $('#sidebar').classList.remove('open');
-  $('#menuButton').setAttribute('aria-expanded', 'false');
+
+  await reset;
+  if (state.connectionId !== connectionId || state.active !== session || state.socket !== socket) return;
+  if (needsReset) terminal.clear();
+  outputReady = true;
+  terminalElement.style.visibility = '';
+  if (pendingOutput.length) terminal.write(pendingOutput.join(''));
+  if (socket.readyState === WebSocket.OPEN) terminal.focus();
 }
 
 function openNewDialog() {

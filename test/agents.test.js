@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseRolloutFilename, PS_ARGUMENTS } from '../src/agents.js';
+import { agentKindFromCommand, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -11,10 +11,46 @@ test('latest Codex session name wins for a renamed thread', () => {
   assert.equal(parseCodexSessionIndex(content).get('abc'), 'final');
 });
 
+test('uses the first real Codex prompt as the session name, not injected AGENTS context', () => {
+  const line = (role, text) => JSON.stringify({
+    type: 'response_item', payload: { type: 'message', role, content: [{ type: 'input_text', text }] },
+  });
+  const content = [
+    line('developer', 'developer instructions'),
+    line('user', '# AGENTS.md instructions\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>'),
+    line('user', '<environment_context>cwd</environment_context>'),
+    line('user', 'Review the mobile layout\nand fix overflow'),
+    line('user', 'a later follow-up'),
+  ].join('\n');
+
+  assert.equal(parseCodexPreview(content), 'Review the mobile layout');
+  assert.equal(parseCodexPreview(line('user', 'x'.repeat(300))).length, 160);
+});
+
 test('extracts Codex id and local start time from rollout filename', () => {
   const item = parseRolloutFilename('/tmp/rollout-2026-08-15T10-01-32-01a00327-27df-7f12-8505-176abc010ea0.jsonl');
   assert.equal(item.id, '01a00327-27df-7f12-8505-176abc010ea0');
   assert.equal(new Date(item.startedAt).getHours(), 10);
+});
+
+test('recovers an interactive Codex resume selection from its writer lock time', () => {
+  const selectedId = '01a01f67-bd04-7ca0-afdd-e9f2b59d27d5';
+  const newRolloutId = '01a024ba-19cd-78a2-85d2-5151ef55f75b';
+  const startedAt = 1_700_000_000_000;
+  const codex = {
+    writers: [{ id: selectedId, startedAt: startedAt + 6_000 }],
+    starts: [{ id: newRolloutId, startedAt: startedAt + 1_000 }],
+  };
+
+  assert.equal(resolveCodexSessionId({ command: 'codex --yolo resume', startedAt }, codex), selectedId);
+  assert.equal(resolveCodexSessionId({
+    command: `codex resume ${newRolloutId}`,
+    startedAt,
+  }, codex), newRolloutId);
+  assert.equal(resolveCodexSessionId({
+    command: 'codex --yolo',
+    startedAt,
+  }, { writers: [{ id: selectedId, startedAt: startedAt - 300_000 }], starts: codex.starts }), newRolloutId);
 });
 
 test('parses process ancestry fields without splitting the command', () => {
@@ -34,6 +70,23 @@ test('recognizes supported agent CLI processes', () => {
   assert.equal(agentKindFromCommand('/usr/local/bin/claude --resume abc'), 'claude');
   assert.equal(agentKindFromCommand('/opt/qoder/bin/qodercli --continue'), 'qodercli');
   assert.equal(agentKindFromCommand('/bin/bash'), null);
+});
+
+test('extracts explicit Claude and Qoder session ids from CLI arguments', () => {
+  const id = '01a00327-27df-7f12-8505-176abc010ea0';
+  assert.equal(parseResumedSessionId(`claude --resume ${id}`), id);
+  assert.equal(parseResumedSessionId(`qodercli -r ${id}`), id);
+  assert.equal(parseResumedSessionId(`qodercli --session-id=${id}`), id);
+  assert.equal(parseResumedSessionId('qodercli --continue'), null);
+});
+
+test('reads the session registry written by current Claude and Qoder CLIs', () => {
+  const id = '01a00327-27df-7f12-8505-176abc010ea0';
+  assert.deepEqual(parseRuntimeSessionRegistry(JSON.stringify({ sessionId: id, cwd: '/srv/project' })), {
+    id, cwd: '/srv/project',
+  });
+  assert.equal(parseRuntimeSessionRegistry('{incomplete'), null);
+  assert.equal(parseRuntimeSessionRegistry('{"sessionId":"not-a-uuid","cwd":"/srv/project"}'), null);
 });
 
 test('a ps format this build cannot parse yields no agents rather than bad ones', () => {

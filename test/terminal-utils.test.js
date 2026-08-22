@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clampTerminalGrid, fitTerminalGrid, resetTerminalInput } from '../public/terminal-utils.js';
+import {
+  clampTerminalGrid,
+  fitTerminalGrid,
+  isTerminalCopyShortcut,
+  resetTerminalInput,
+} from '../public/terminal-utils.js';
 
 function sizingHarness(width, height) {
   const sizes = [];
@@ -50,6 +55,14 @@ test('terminal reset is ordered inside the xterm input queue', async () => {
   finishWrite();
   await reset;
   assert.equal(finished, true);
+});
+
+test('copy shortcuts leave Ctrl+C as SIGINT when the terminal has no selection', () => {
+  assert.equal(isTerminalCopyShortcut({ type: 'keydown', key: 'c', ctrlKey: true }, true), true);
+  assert.equal(isTerminalCopyShortcut({ type: 'keydown', key: 'C', metaKey: true }, true), true);
+  assert.equal(isTerminalCopyShortcut({ type: 'keydown', key: 'c', ctrlKey: true }, false), false);
+  assert.equal(isTerminalCopyShortcut({ type: 'keyup', key: 'c', ctrlKey: true }, true), false);
+  assert.equal(isTerminalCopyShortcut({ type: 'keydown', key: 'v', ctrlKey: true }, true), false);
 });
 
 test('a short readable viewport adds rows without exploding its column count', () => {

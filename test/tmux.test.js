@@ -1,11 +1,145 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, parseSessions, parseViewport, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveScreenActivity, resolveScreenSignals, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
     name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 49,
   }]);
+});
+
+test('sends a message only to the exact verified Agent pane with tmux 2.7-compatible commands', async () => {
+  const calls = [];
+  await sendSessionMessage({ provider: 'claude', sessionName: 'work', threadId: 'thread-1', text: 'Review\nmobile' }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'claude', id: 'thread-1', paneId: '%7' },
+    }],
+    bufferName: 'codeck-test',
+    loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+  });
+
+  assert.deepEqual(calls, [
+    { type: 'load', bufferName: 'codeck-test', text: 'Review\nmobile' },
+    {
+      type: 'exec',
+      args: [
+        'paste-buffer', '-p', '-d', '-b', 'codeck-test', '-t', '%7',
+        ';', 'send-keys', '-t', '%7', 'Enter',
+      ],
+    },
+  ]);
+});
+
+test('allows only the server-derived pending thread id before an Agent exposes its persistent id', async () => {
+  const calls = [];
+  let agent = { kind: 'codex', id: null, paneId: '%7' };
+  const options = {
+    listTmuxSessions: async () => [{ name: 'codeck', agent }],
+    bufferName: 'codeck-pending-test',
+    loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+  };
+
+  await sendSessionMessage({
+    provider: 'codex', sessionName: 'codeck', threadId: 'tmux:codex:codeck', text: 'Start work',
+  }, options);
+  await interruptSession({
+    provider: 'codex', sessionName: 'codeck', threadId: 'tmux:codex:codeck',
+  }, options);
+
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'codex', sessionName: 'codeck', threadId: 'tmux:codex:other', text: 'Wrong target',
+  }, options), /匹配|刷新/);
+  agent = { ...agent, id: 'thread-1' };
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'codex', sessionName: 'codeck', threadId: 'tmux:codex:codeck', text: 'Stale target',
+  }, options), /匹配|刷新/);
+
+  assert.deepEqual(calls, [
+    { type: 'load', bufferName: 'codeck-pending-test', text: 'Start work' },
+    {
+      type: 'exec',
+      args: [
+        'paste-buffer', '-p', '-d', '-b', 'codeck-pending-test', '-t', '%7',
+        ';', 'send-keys', '-t', '%7', 'Enter',
+      ],
+    },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Escape'] },
+  ]);
+});
+
+test('refuses stale or unsafe Agent pane mappings before sending anything', async () => {
+  const calls = [];
+  const options = {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    loadBuffer: async () => calls.push('load'),
+    execTmux: async () => calls.push('exec'),
+  };
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'other-thread', text: 'hello',
+  }, options), /匹配|刷新/);
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'claude', sessionName: 'work', threadId: 'thread-1', text: 'hello',
+  }, options), /匹配|刷新/);
+  await assert.rejects(() => sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: 'hello',
+  }, {
+    ...options,
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: 'work:0.0' },
+    }],
+  }), /pane|刷新/i);
+  assert.deepEqual(calls, []);
+});
+
+test('interrupts the exact verified Agent pane with Escape', async () => {
+  const calls = [];
+  await interruptSession({ provider: 'qodercli', sessionName: 'work', threadId: 'thread-1' }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%42' },
+    }],
+    execTmux: async (args) => calls.push(args),
+  });
+  assert.deepEqual(calls, [['send-keys', '-t', '%42', 'Escape']]);
+});
+
+test('serializes concurrent input for the same tmux session', async () => {
+  let listCalls = 0;
+  let releaseFirstList;
+  let markFirstListStarted;
+  const firstListStarted = new Promise((resolve) => { markFirstListStarted = resolve; });
+  const firstListGate = new Promise((resolve) => { releaseFirstList = resolve; });
+  const loaded = [];
+  const options = {
+    listTmuxSessions: async () => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        markFirstListStarted();
+        await firstListGate;
+      }
+      return [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }];
+    },
+    loadBuffer: async (_bufferName, text) => loaded.push(text),
+    execTmux: async () => {},
+  };
+
+  const first = sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: 'first',
+  }, options);
+  await firstListStarted;
+  const second = sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: 'second',
+  }, options);
+  await new Promise((resolve) => setImmediate(resolve));
+  const loadedBeforeRelease = [...loaded];
+  releaseFirstList();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(loadedBeforeRelease, []);
+  assert.deepEqual(loaded, ['first', 'second']);
 });
 
 test('tmux 2.7 numeric status values still reserve the status row', () => {
@@ -150,6 +284,89 @@ test('reads the codex run state and background terminals', () => {
   assert.deepEqual(signals(CODEX_IDLE, 'codex'), { busy: false, background: false });
   assert.deepEqual(signals(CODEX_BACKGROUND, 'codex'), { busy: false, background: true });
   assert.equal(signals('• Working (12s · Esc to interrupt)', 'codex').busy, true);
+});
+
+test('describes live terminal Agent activity without exposing pane content', () => {
+  assert.equal(resolveAgentActivityText('codex', `
+• Explored
+  └ Read remote.js
+◦ Working (25s • esc to interrupt)
+`), '正在查看文件 · 25秒');
+  assert.equal(resolveAgentActivityText('codex', `
+• Ran npm test
+◦ Working (1m 08s • esc to interrupt)
+`), '正在运行命令 · 1分08秒');
+  assert.equal(resolveAgentActivityText('claude', `
+● Running 1 shell command…
+✳ Gesticulating… (1m 58s · ↓ 6.1k tokens)
+`), '正在运行命令 · 1分58秒');
+  assert.equal(resolveAgentActivityText('qodercli', '⠋ Generating... (esc to cancel, 25s)'), '正在生成 · 25秒');
+  assert.equal(resolveAgentActivityText('codex', '• Ran npm test\n› Follow up'), '');
+});
+
+test('extracts the exact current activity block shown in the tmux pane', () => {
+  const codexPane = `
+• Explored
+  └ Read old.js
+
+────────────────
+
+\x1b[33m• Ran node --test\x1b[0m
+  └ TAP version 13
+    ok 1 - mobile state
+
+◦ Working (25s • esc to interrupt)
+
+» Explain this codebase
+  gpt-5.6-codex · /data/code/codeck
+`;
+  assert.equal(resolveAgentLiveOutput('codex', codexPane), [
+    '• Ran node --test',
+    '  └ TAP version 13',
+    '    ok 1 - mobile state',
+    '',
+    '◦ Working (25s • esc to interrupt)',
+  ].join('\n'));
+
+  const claudePane = `
+● Running 1 shell command…
+  ⎿  $ npm test
+✳ Gesticulating… (1m 58s · ↓ 6.1k tokens)
+────────────────
+❯
+`;
+  assert.equal(resolveAgentLiveOutput('claude', claudePane), [
+    '● Running 1 shell command…',
+    '  ⎿  $ npm test',
+    '✳ Gesticulating… (1m 58s · ↓ 6.1k tokens)',
+  ].join('\n'));
+
+  assert.equal(resolveAgentLiveOutput('qodercli', `
+  Files changed: 3
+⠋ Generating... (esc to cancel, 25s)
+`), [
+    '  Files changed: 3',
+    '⠋ Generating... (esc to cancel, 25s)',
+  ].join('\n'));
+
+  assert.equal(resolveAgentLiveOutput('codex', '• Ran npm test\n› Follow up'), '');
+});
+
+test('shows the visible tail when a repainting Agent modal hides its busy marker', () => {
+  const modal = `
+────────────
+ Subagents               % of usage
+ Explore                         3%
+ d to day · w to week
+ Esc to cancel
+`;
+  assert.equal(resolveAgentLiveOutput('claude', modal, { allowTail: true }), [
+    ' Subagents               % of usage',
+    ' Explore                         3%',
+    ' d to day · w to week',
+    ' Esc to cancel',
+  ].join('\n'));
+  assert.equal(resolveAgentLiveOutput('claude', '─'.repeat(24), { allowTail: true }), '');
 });
 
 test('a completed claude turn is not mistaken for the codex working state', () => {

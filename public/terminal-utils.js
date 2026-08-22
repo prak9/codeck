@@ -9,6 +9,12 @@ export function clampTerminalGrid(cols, rows) {
   };
 }
 
+export function isTerminalCopyShortcut(event, hasSelection) {
+  if (!hasSelection || event?.type !== 'keydown' || event.altKey) return false;
+  const copyKey = event.code === 'KeyC' || String(event.key || '').toLowerCase() === 'c';
+  return copyKey && Boolean(event.ctrlKey || event.metaKey);
+}
+
 export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {
   terminal.options.fontSize = baseFontSize;
   fit.fit();

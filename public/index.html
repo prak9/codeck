@@ -5,19 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <title>Codeck · Agent sessions</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/fonts/jetbrains-mono/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=44">
+    <link rel="stylesheet" href="/styles.css?v=45">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Codeck 首页"><span class="brand-mark">C/</span><span>CODECK</span></a>
-      <div class="server-state"><span class="status-dot"></span><span id="serverLabel">本机服务器</span></div>
-      <button class="icon-button mobile-only" id="menuButton" aria-label="打开会话列表" aria-controls="sidebar" aria-expanded="false">☰</button>
+      <div class="topbar-actions"><a class="remote-entry" href="/remote.html">对话模式</a><div class="server-state"><span class="status-dot"></span><span id="serverLabel">本机服务器</span></div>
+        <button class="icon-button mobile-only" id="menuButton" aria-label="打开会话列表" aria-controls="sidebar" aria-expanded="false">☰</button>
+      </div>
     </header>
 
     <aside class="sidebar" id="sidebar">
@@ -86,6 +88,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-    <script type="module" src="/app.js?v=59"></script>
+    <script type="module" src="/app.js?v=60"></script>
 </body>
 </html>

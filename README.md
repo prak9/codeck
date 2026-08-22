@@ -1,6 +1,6 @@
 # Codeck
 
-一个轻量级的服务器 Agent 桌面：在浏览器中查看、创建、进入和结束 tmux 会话，并直接使用 Codex、Claude 或普通 shell。
+一个轻量级的服务器 Agent 桌面：既可在浏览器中管理 tmux 终端，也可用适合手机的对话界面远程操作 Codex、Claude Code 和 QoderCLI。
 
 ## 启动
 
@@ -11,7 +11,7 @@ npm start
 
 `node-pty` 是原生模块；如果当前 Node.js 没有对应的预编译版本，需要服务器具备 C/C++ 编译工具和 Python（Debian/Ubuntu 可安装 `build-essential python3`）。
 
-打开终端中显示的 HTTPS 地址，并输入同一处显示的访问令牌。默认监听 `0.0.0.0:4310`。如果你有 nginx，可在外网监听 `3392` 并反向代理到内网 `127.0.0.1:4310`。所有会话 API 和加密 WebSocket 终端连接都必须提供访问令牌。未设置 `CODECK_TOKEN` 时，每次启动会自动生成一个随机令牌。
+打开终端中显示的 HTTPS 地址，并输入同一处显示的访问令牌。默认监听 `0.0.0.0:4310`。如果你有 nginx，可在外网监听 `3392` 并反向代理到内网 `127.0.0.1:4310`；代理必须允许 `/ws` 和 `/agent` 的 WebSocket Upgrade。所有会话 API 和加密 WebSocket 连接都必须提供访问令牌。未设置 `CODECK_TOKEN` 时，每次启动会自动生成一个随机令牌。
 
 首次启动会通过 `openssl` 在 `~/.codeck` 生成并保存自签名 TLS 证书。浏览器会提示该证书不受信任，需要手动确认。正式部署可使用受信任证书：
 
@@ -33,7 +33,21 @@ CODECK_TOKEN='replace-with-a-long-secret' PORT=4310 HOST=0.0.0.0 npm start
 
 `CODECK_TOKEN` 可自定义，并支持特殊字符；在 shell 或环境文件中设置时请使用引号保护令牌。
 
-`codex`、`claude` 或 `qodercli` 必须已安装在服务器的 `PATH` 中。缺少某个 CLI 不影响 tmux 和普通 shell 功能。
+终端模式下，`codex`、`claude` 或 `qodercli` 必须已安装在服务器的 `PATH` 中。缺少某个 CLI 不影响 tmux 和普通 shell 功能。
+
+## 手机对话模式
+
+打开 `/remote.html`，或从终端页顶部进入“对话模式”。这个页面不解析终端字符网格，而是通过三套官方结构化接口统一显示对话、流式回复、工具执行、停止操作和授权请求：
+
+- Codex 使用服务器上的 `codex app-server`，需要已安装并登录 Codex CLI。
+- Claude Code 使用 Claude Agent SDK，并沿用服务用户的 `~/.claude` 登录和配置；通过 cc-switch 配置的路由也会继续生效。
+- QoderCLI 使用 Qoder Agent SDK 和服务用户现有的 `qodercli login` 状态。
+
+远程 Agent 只接受 owner 令牌，不接受单个 tmux 会话的分享令牌。手机页面中的“本次会话允许”会放宽后续同类工具操作，确认前应检查命令、路径和参数。工作目录必须是服务器上的绝对路径。
+
+手机页左栏统一列出当前仍存在于 tmux 的 Agent 会话，不按 Codex、Claude Code 或 QoderCLI 分栏；主标题显示 Coding CLI 自己的 session 名，副标题显示 tmux 名和即时的工作/完成状态。已经退出 tmux 的历史会话不会显示。打开会话后，输入区上方会显示“正在思考”“正在运行命令”“正在修改文件”或“正在回复”等活动，并在 owner 模式下实时显示 tmux pane 中当前可见的 Agent 动作块。该摘录会清除 ANSI 控制符并限制行数，单会话分享令牌不会获得 pane 内容。
+
+打开已有 tmux Agent 会话后无需“接管”：原来的 Coding CLI 会继续运行，手机输入会经服务端重新校验 provider、thread ID 和 tmux session，再只发送到该 CLI 的精确 pane。桌面终端和手机因此可以直接参与同一个 Codex、Claude Code 或 QoderCLI 会话；停止按钮会向同一 pane 发送 Escape，不会结束 CLI 或 tmux 会话。CLI 刚启动、尚未暴露持久化 thread ID 时，左栏会话仍可点击并发送首条消息；检测到真实 ID 后，Remote 会自动切换到结构化历史。Remote 仍使用结构化接口显示消息、工具活动和状态，并只在会话工作中或手机刚发送消息后短时刷新历史，避免空闲时反复读取造成卡顿。会话若已退出、切换到其他 Agent，或身份无法精确确认，发送会被拒绝并提示刷新。
 
 连接终端后，可以从剪贴板直接粘贴 PNG、JPEG、WebP 或 GIF 图片。Codeck 会将图片保存到服务用户的 `~/.codeck/uploads`（单张最大 10 MB），并把服务器文件路径输入当前会话，供支持图片路径的 Agent CLI 读取。
 

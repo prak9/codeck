@@ -64,13 +64,14 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     if (terminal) handleMessage(raw); else pending.push(raw);
   });
 
-  let initialSize;
+  let initialSize = viewport;
   let linkedSessions;
   try {
-    [initialSize, linkedSessions] = await Promise.all([
-      dependencies.getSessionSize(session),
-      dependencies.getLinkedWindowSessions(session),
-    ]);
+    const setup = [dependencies.getLinkedWindowSessions(session)];
+    if (!initialSize) setup.push(dependencies.getSessionSize(session));
+    const [links, detectedSize] = await Promise.all(setup);
+    linkedSessions = links;
+    if (detectedSize) initialSize = detectedSize;
     if (!isOpen()) return;
     // A window has one grid even when linked into multiple sessions. Refuse the attach
     // instead of disconnecting unrelated clients or letting their activity resize a phone.
@@ -85,8 +86,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     return;
   }
 
-  const requestedSize = viewport || initialSize;
-  const [width, height] = dependencies.clampViewport(requestedSize.width, requestedSize.height);
+  const [width, height] = dependencies.clampViewport(initialSize.width, initialSize.height);
   const attachSize = { width, height };
   try {
     terminal = dependencies.createTerminal(session, attachSize);

@@ -31,6 +31,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid #ff8157; outline-
 
 .app-shell { height: 100vh; height: 100dvh; display: grid; grid-template: var(--topbar-height) minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr); }
 .topbar { grid-column: 1 / -1; z-index: 4; display: grid; grid-template-columns: var(--sidebar-width) 1fr auto; align-items: center; border-bottom: 1px solid var(--line); background: #1c1c1fda; backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%); }
+.topbar-actions { grid-column: 3; height: 100%; display: flex; align-items: center; }
+.remote-entry { min-height: 34px; padding: 0 11px; border: 1px solid #ff6b353b; border-radius: 9px; background: #ff6b350d; color: #ff9874; display: inline-flex; align-items: center; text-decoration: none; font-size: 10px; font-weight: 650; }
+.remote-entry:hover { border-color: #ff6b355d; background: #ff6b3517; }
 .brand { height: 100%; padding: 0 18px; display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-size: 12px; font-weight: 700; letter-spacing: .14em; }
 .brand-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--accent); box-shadow: 0 5px 14px #ff6b3530; color: var(--accent-ink); font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; font-weight: 800; letter-spacing: -.1em; }
 .server-state { justify-self: end; margin-right: 18px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: #ffffff08; color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 7px; }
@@ -195,7 +198,9 @@ fieldset { margin: 0; padding: 0; border: 0; }
 
 @media (max-width: 720px), (max-width: 932px) and (orientation: landscape) {
   .app-shell { grid-template: calc(50px + env(safe-area-inset-top)) minmax(0, 1fr) / 1fr; }
-  .topbar { grid-template-columns: minmax(0, 1fr) auto auto; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+  .topbar { grid-template-columns: minmax(0, 1fr) auto; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+  .topbar-actions { grid-column: 2; }
+  .remote-entry { min-height: 38px; }
   .brand { padding: 0 14px; }
   .server-state { margin-right: 6px; padding: 5px 8px; }
   .mobile-only { display: block; width: 44px; height: 44px; margin-right: 8px; }
@@ -246,6 +251,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 @media (max-width: 430px) {
   .brand { padding: 0 12px; }
   .server-state { margin-right: 4px; }
+  .topbar-actions .server-state { display: none; }
   .mobile-only { margin-right: 5px; }
   .empty-state h2 { font-size: 30px; }
   .empty-state > p:not(.eyebrow) { font-size: 13px; }

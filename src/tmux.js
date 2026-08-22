@@ -6,7 +6,10 @@ import { clampTerminalGrid } from '../public/terminal-utils.js';
 
 const exec = promisify(execFile);
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
+const THREAD_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/;
+const PANE_ID = /^%\d+$/;
 const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
+const AGENT_CLIENTS = new Set(CLIENTS.slice(1));
 const SHELL_COMMANDS = new Set([
   'bash',
   'sh',
@@ -183,6 +186,113 @@ export function resolveScreenSignals(output, markers) {
   return { busy: matchesMarker(lines, markers.busy), background: matchesMarker(lines, markers.background) };
 }
 
+function elapsedActivityText(lines, markers) {
+  const activeLine = [...lines.slice(-markers.busy.lines)].reverse()
+    .find((line) => markers.busy.patterns.some((pattern) => pattern.test(line)));
+  const match = activeLine?.match(/\((?:esc to cancel,\s*)?(?:(\d+)m\s*)?(\d+)s\b/i);
+  if (!match) return '';
+  if (!match[1]) return `${Number(match[2])}秒`;
+  return `${Number(match[1])}分${String(Number(match[2])).padStart(2, '0')}秒`;
+}
+
+function activityLabel(kind, lines) {
+  if (kind === 'qodercli') return '正在生成';
+  const action = [...lines].reverse()
+    .map((line) => /^[•●]\s*(.+)$/.exec(line)?.[1] || '')
+    .find((line) => line && !/^(?:working|thinking)\b/i.test(line));
+  if (!action) return '正在处理';
+  if (/^(?:ran|running|run|executed|executing)\b/i.test(action)) return '正在运行命令';
+  if (/^(?:explored|exploring|read|reading|opened|opening|inspected|inspecting|viewed|viewing)\b/i.test(action)) return '正在查看文件';
+  if (/^(?:updated|updating)\s+(?:the\s+)?plan\b/i.test(action)) return '正在更新计划';
+  if (/^(?:edited|editing|modified|modifying|applied|applying|wrote|writing|added|adding|deleted|deleting|patched|patching|created|creating)\b/i.test(action)) return '正在修改文件';
+  if (/^(?:searched|searching|search)\b/i.test(action)) return '正在搜索';
+  if (/\b(?:tool|mcp)\b/i.test(action)) return '正在调用工具';
+  return '正在处理';
+}
+
+// Only fixed labels and elapsed time leave the server; pane text itself never reaches
+// the browser. Requiring a live marker also prevents a completed transcript item such
+// as "Ran npm test" from remaining visible as current activity.
+export function resolveAgentActivityText(kind, output) {
+  const markers = AGENT_SCREEN_MARKERS[kind];
+  if (!markers) return '';
+  const lines = screenLines(output);
+  const signals = resolveScreenSignals(output, markers);
+  if (!signals.busy && !signals.background) return '';
+  if (!signals.busy) return '后台任务运行中';
+  const label = activityLabel(kind, lines);
+  const elapsed = elapsedActivityText(lines, markers);
+  return elapsed ? `${label} · ${elapsed}` : label;
+}
+
+const LIVE_OUTPUT_MAX_LINES = 12;
+const LIVE_OUTPUT_MAX_LINE_LENGTH = 320;
+const SCREEN_SEPARATOR = /^[─━═-]{8,}$/u;
+
+function cleanScreenRows(output) {
+  return String(output || '').split('\n').map((line) => stripAnsi(line)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\s+$/, ''));
+}
+
+function markerRow(rows, marker) {
+  const candidates = rows
+    .map((line, index) => ({ index, text: line.trim() }))
+    .filter(({ text }) => text)
+    .slice(-marker.lines)
+    .filter(({ text }) => marker.patterns.some((pattern) => pattern.test(text)));
+  return [...candidates].reverse().find(({ text }) => (
+    /\((?:esc to cancel,\s*)?(?:\d+m\s*)?\d+s\b/i.test(text)
+  ))?.index ?? candidates.at(-1)?.index ?? -1;
+}
+
+function compactLiveOutput(rows) {
+  const compact = [];
+  for (const line of rows) {
+    if (SCREEN_SEPARATOR.test(line.trim())) continue;
+    const clipped = line.length > LIVE_OUTPUT_MAX_LINE_LENGTH
+      ? `${line.slice(0, LIVE_OUTPUT_MAX_LINE_LENGTH - 1)}…`
+      : line;
+    if (!clipped && !compact.at(-1)) continue;
+    compact.push(clipped);
+  }
+  while (compact.length && !compact[0]) compact.shift();
+  while (compact.length && !compact.at(-1)) compact.pop();
+  if (compact.length <= LIVE_OUTPUT_MAX_LINES) return compact;
+  return [compact[0], '  …', ...compact.slice(-(LIVE_OUTPUT_MAX_LINES - 2))];
+}
+
+// Return the current action block exactly as it appears in the visible tmux pane. The
+// block is bounded to keep polling cheap and rendered with textContent in the browser.
+// `allowTail` covers a repainting modal that temporarily hides the normal busy marker.
+export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {}) {
+  const markers = AGENT_SCREEN_MARKERS[kind];
+  if (!markers) return '';
+  const rows = cleanScreenRows(output);
+  const busyRow = markerRow(rows, markers.busy);
+  const backgroundRow = markerRow(rows, markers.background);
+  let end = busyRow >= 0 ? busyRow : backgroundRow;
+  if (end < 0) {
+    if (!allowTail) return '';
+    end = rows.findLastIndex((line) => line.trim());
+  }
+  if (end < 0) return '';
+
+  const searchStart = Math.max(0, end - 18);
+  let start = -1;
+  for (let index = end - 1; index >= searchStart; index -= 1) {
+    if (/^[•●]\s/.test(rows[index].trimStart())) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) {
+    const separator = rows.slice(searchStart, end).findLastIndex((line) => SCREEN_SEPARATOR.test(line.trim()));
+    start = separator >= 0 ? searchStart + separator + 1 : Math.max(searchStart, end - 4);
+  }
+  return compactLiveOutput(rows.slice(start, end + 1)).join('\n');
+}
+
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
 // a custom statusline adds a row, and a modal such as /usage hides the footer outright.
 // Whether the pane is repainting at all survives every one of those, and it needs no
@@ -219,6 +329,7 @@ export async function listSessions() {
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
       exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}']),
     ]);
+    const parsedSessions = parseSessions(stdout);
     const allPanes = parsePanes(paneOutput);
     const panes = [...allPanes]
       .sort((a, b) => b.score - a.score)
@@ -258,22 +369,121 @@ export async function listSessions() {
       if (!screenBySession.has(session)) screenActivity.delete(session);
     }
 
-    return parseSessions(stdout)
-      .map((session) => ({
-        ...session,
-        agent: agents.get(session.name) || null,
-        currentCommand: paneCommandBySession.get(session.name) || 'bash',
-        hasRunningProcess: resolveWorkingState({
-          agentKind: agentKindBySession.get(session.name) || null,
-          screenSignals: screenSignalsBySession.get(session.name),
+    return parsedSessions
+      .map((session) => {
+        const detectedAgent = agents.get(session.name) || null;
+        const agentKind = agentKindBySession.get(session.name) || null;
+        const screenSignals = screenSignalsBySession.get(session.name);
+        const hasRunningProcess = resolveWorkingState({
+          agentKind,
+          screenSignals,
           paneCommands: paneCommandsBySession.get(session.name) || [],
-        }),
-      }))
+        });
+        const activity = detectedAgent && hasRunningProcess
+          ? resolveAgentActivityText(agentKind, screenBySession.get(session.name))
+            || (screenSignals?.background ? '后台任务运行中' : '正在处理')
+          : '';
+        const liveOutput = detectedAgent && hasRunningProcess
+          ? resolveAgentLiveOutput(agentKind, screenBySession.get(session.name), {
+            allowTail: Boolean(screenSignals?.animating && !screenSignals.busy && !screenSignals.background),
+          })
+          : '';
+        const agent = detectedAgent ? {
+          ...detectedAgent,
+          ...(activity ? { activity } : {}),
+          ...(liveOutput ? { liveOutput } : {}),
+        } : null;
+        return {
+          ...session,
+          agent,
+          currentCommand: paneCommandBySession.get(session.name) || 'bash',
+          hasRunningProcess,
+        };
+      })
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt) || a.name.localeCompare(b.name));
   } catch (error) {
     if (error.code === 1) return [];
     throw error;
   }
+}
+
+function loadTmuxBuffer(bufferName, text) {
+  return new Promise((resolve, reject) => {
+    const child = execFile('tmux', ['load-buffer', '-b', bufferName, '-'], (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+    child.stdin.on('error', reject);
+    child.stdin.end(text);
+  });
+}
+
+async function verifiedAgentPane({ provider, sessionName, threadId }, listTmuxSessions) {
+  if (!AGENT_CLIENTS.has(provider) || !validateSessionName(sessionName) || !THREAD_ID.test(threadId || '')) {
+    throw new Error('会话信息无效，请刷新后重试');
+  }
+  const sessions = await listTmuxSessions();
+  const session = sessions.find((candidate) => candidate.name === sessionName);
+  if (!session) throw new Error('tmux 会话已不存在，请刷新后重试');
+  const expectedThreadId = session.agent?.id || `tmux:${provider}:${sessionName}`;
+  if (session.agent?.kind !== provider || expectedThreadId !== threadId) {
+    throw new Error('tmux 会话与 Agent 对话不匹配，请刷新后重试');
+  }
+  if (!PANE_ID.test(session.agent.paneId || '')) {
+    throw new Error('无法安全确认 Agent pane，请刷新后重试');
+  }
+  return session.agent.paneId;
+}
+
+let inputBufferSequence = 0;
+const sessionInputQueues = new Map();
+
+function queueSessionInput(sessionName, operation) {
+  const previous = sessionInputQueues.get(sessionName) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  sessionInputQueues.set(sessionName, current);
+  return current.then(
+    (result) => {
+      if (sessionInputQueues.get(sessionName) === current) sessionInputQueues.delete(sessionName);
+      return result;
+    },
+    (error) => {
+      if (sessionInputQueues.get(sessionName) === current) sessionInputQueues.delete(sessionName);
+      throw error;
+    },
+  );
+}
+
+export async function sendSessionMessage({ provider, sessionName, threadId, text }, overrides = {}) {
+  if (typeof text !== 'string' || !text.trim() || text.length > 100_000) throw new Error('消息内容无效');
+  if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
+  return queueSessionInput(sessionName, async () => {
+    const listTmuxSessions = overrides.listTmuxSessions || listSessions;
+    const paneId = await verifiedAgentPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
+    const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
+    const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    await loadBuffer(bufferName, text);
+    try {
+      await execTmux([
+        'paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId,
+        ';', 'send-keys', '-t', paneId, 'Enter',
+      ]);
+    } catch (error) {
+      await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
+      throw error;
+    }
+  });
+}
+
+export async function interruptSession({ provider, sessionName, threadId }, overrides = {}) {
+  if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
+  return queueSessionInput(sessionName, async () => {
+    const listTmuxSessions = overrides.listTmuxSessions || listSessions;
+    const paneId = await verifiedAgentPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    await execTmux(['send-keys', '-t', paneId, 'Escape']);
+  });
 }
 
 export async function createSession({ name, client = 'shell', cwd }) {

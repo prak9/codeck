@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#151517">
+  <meta name="color-scheme" content="dark">
+  <title>Codeck Remote</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
+  <link rel="stylesheet" href="/remote.css?v=11">
+</head>
+<body>
+  <a class="skip-link" href="#transcript">跳到对话</a>
+  <div class="remote-app">
+    <button class="drawer-scrim" id="drawerScrim" type="button" aria-label="关闭会话列表" tabindex="-1"></button>
+    <aside class="thread-drawer" id="threadDrawer" aria-label="Agent 会话">
+      <div class="drawer-brand">
+        <a href="/" aria-label="回到 Codeck 终端"><span class="brand-mark">C/</span><span>CODECK</span></a>
+        <span class="remote-label">REMOTE</span>
+      </div>
+      <div class="drawer-heading">
+        <div><p class="eyebrow">WORKSPACES</p><h1>运行中的会话</h1></div>
+        <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建对话">＋</button>
+      </div>
+      <div class="thread-list" id="threadList" aria-live="polite"></div>
+      <div class="drawer-footer">
+        <span><i class="connection-dot" id="drawerConnectionDot"></i><span id="drawerConnectionText">正在连接</span></span>
+        <a href="/">终端模式</a>
+      </div>
+    </aside>
+
+    <section class="conversation-shell">
+      <header class="conversation-header">
+        <button class="header-button menu-button" id="drawerButton" type="button" aria-label="打开会话列表" aria-controls="threadDrawer" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h11"/></svg>
+        </button>
+        <div class="conversation-heading">
+          <h2 id="threadTitle">新对话</h2>
+          <button class="provider-trigger" id="providerButton" type="button" aria-haspopup="dialog">
+            <span id="providerGlyph">C›</span><span id="providerName">Codex</span><i></i><span id="hostLabel">服务器</span>
+          </button>
+        </div>
+        <div class="header-actions">
+          <button class="header-button" id="newThreadButton" type="button" aria-label="新建对话">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="header-button" id="settingsButton" type="button" aria-label="对话设置" aria-haspopup="dialog">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="transcript" id="transcript" tabindex="-1">
+        <section class="welcome" id="welcome">
+          <div class="welcome-mark" id="welcomeMark">C›</div>
+          <p class="eyebrow">CODECK REMOTE</p>
+          <h2>从手机继续服务器上的工作。</h2>
+          <p>选择 Codex、Claude Code 或 QoderCLI，消息、工具进度和授权都会显示在这里。</p>
+          <div class="welcome-providers" id="welcomeProviders"></div>
+        </section>
+        <div class="turns" id="turns"></div>
+        <div class="approval-stack" id="approvalStack"></div>
+        <p class="live-status" id="liveStatus" role="status" aria-live="polite"></p>
+      </main>
+
+      <footer class="composer-area">
+        <div class="composer-meta" id="composerMeta">
+          <span id="composerStatus"><i class="connection-dot"></i>正在连接</span>
+          <button id="cwdButton" type="button" title="更改工作目录"><span id="cwdLabel">工作目录</span></button>
+        </div>
+        <form class="composer" id="composerForm">
+          <button class="composer-plus" id="composerPlus" type="button" aria-label="选择 Agent 和工作目录">＋</button>
+          <textarea id="composerInput" rows="1" maxlength="100000" placeholder="给 Codex 发消息" aria-label="消息"></textarea>
+          <button class="send-button" id="sendButton" type="submit" aria-label="发送消息">
+            <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5 5m5-5 5 5"/></svg>
+            <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+          </button>
+        </form>
+        <p class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
+      </footer>
+    </section>
+  </div>
+
+  <dialog class="sheet token-sheet" id="tokenDialog">
+    <form id="tokenForm">
+      <div class="sheet-mark">C/</div>
+      <p class="eyebrow">SECURE CONNECTION</p>
+      <h2>连接 Codeck</h2>
+      <p>输入服务启动时显示的 owner 访问令牌。远程 Agent 不接受只读分享令牌。</p>
+      <label for="tokenInput">访问令牌</label>
+      <input id="tokenInput" name="token" type="password" autocomplete="current-password" required autofocus>
+      <p class="form-error" id="tokenError" role="alert"></p>
+      <button class="primary-button" type="submit">验证并连接</button>
+    </form>
+  </dialog>
+
+  <dialog class="sheet provider-sheet" id="providerDialog">
+    <form method="dialog">
+      <div class="sheet-head"><div><p class="eyebrow">AGENT</p><h2>选择运行方式</h2></div><button class="close-button" value="cancel" aria-label="关闭">×</button></div>
+      <div class="provider-options" id="providerOptions"></div>
+      <p class="sheet-note">切换 Agent 会开始一段新对话；左栏统一显示当前 tmux 中的 Agent 会话。</p>
+    </form>
+  </dialog>
+
+  <dialog class="sheet settings-sheet" id="settingsDialog">
+    <form method="dialog" id="settingsForm">
+      <div class="sheet-head"><div><p class="eyebrow">SESSION</p><h2>新对话设置</h2></div><button class="close-button" value="cancel" aria-label="关闭">×</button></div>
+      <label for="settingsProvider">Agent</label>
+      <select id="settingsProvider"></select>
+      <label for="cwdInput">服务器工作目录</label>
+      <input id="cwdInput" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="/data/code/project">
+      <p class="field-help">必须是服务器上的绝对路径。设置只用于接下来新建的对话。</p>
+      <div class="settings-links"><a href="/">打开终端模式</a><button id="forgetTokenButton" type="button">更换访问令牌</button></div>
+      <div class="sheet-actions"><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存并新建</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/remote.js?v=14"></script>
+</body>
+</html>

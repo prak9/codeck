@@ -45,17 +45,17 @@ function dependencies(overrides = {}) {
 
 test('a socket closed during setup never creates a terminal', async () => {
   const ws = new FakeSocket();
-  let releaseSize;
+  let releaseLinks;
   let creates = 0;
   const setup = handleTerminalConnection(ws, 'phone', { width: 48, height: 20 }, dependencies({
-    getSessionSize: () => new Promise((resolve) => { releaseSize = resolve; }),
+    getLinkedWindowSessions: () => new Promise((resolve) => { releaseLinks = resolve; }),
     createTerminal: () => { creates += 1; return fakeTerminal(); },
   }));
   await Promise.resolve();
 
   ws.readyState = 3;
   ws.emit('close');
-  releaseSize({ width: 80, height: 24 });
+  releaseLinks([]);
   await setup;
   assert.equal(creates, 0);
 });
@@ -79,18 +79,42 @@ test('a linked active window is rejected before tmux attach', async () => {
 test('messages received during setup are applied after an exact-size attach', async () => {
   const ws = new FakeSocket();
   const terminal = fakeTerminal();
-  let releaseSize;
+  let releaseLinks;
   const setup = handleTerminalConnection(ws, 'phone', { width: 48, height: 1 }, dependencies({
-    getSessionSize: () => new Promise((resolve) => { releaseSize = resolve; }),
+    getLinkedWindowSessions: () => new Promise((resolve) => { releaseLinks = resolve; }),
     createTerminal: () => terminal,
   }));
   await Promise.resolve();
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'x' })), false);
-  releaseSize({ width: 80, height: 24 });
+  releaseLinks([]);
   await setup;
 
   assert.deepEqual(terminal.sizes, [[48, 6]]);
   assert.deepEqual(terminal.writes, ['x']);
   ws.emit('close');
   assert.equal(terminal.killed, true);
+});
+
+test('a supplied browser viewport skips the redundant tmux size lookup', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  let sizeLookups = 0;
+  await handleTerminalConnection(ws, 'desktop', { width: 120, height: 36 }, dependencies({
+    getSessionSize: async () => { sizeLookups += 1; return { width: 80, height: 24 }; },
+    createTerminal: () => terminal,
+  }));
+
+  assert.equal(sizeLookups, 0);
+  assert.deepEqual(terminal.sizes, [[120, 36]]);
+});
+
+test('a client without a viewport still attaches at the current tmux size', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'legacy', null, dependencies({
+    getSessionSize: async () => ({ width: 92, height: 28 }),
+    createTerminal: () => terminal,
+  }));
+
+  assert.deepEqual(terminal.sizes, [[92, 28]]);
 });

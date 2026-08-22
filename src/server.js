@@ -1,12 +1,15 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import https from 'node:https';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
-import { createSession, killSession, listSessions, parseViewport, renameSession, detectWindowSizeSupport, validateSessionName } from './tmux.js';
+import { createAgentBackends } from './agent-backends.js';
+import { AgentHub, AgentRegistry } from './agent-connection.js';
+import { createSession, detectWindowSizeSupport, interruptSession, killSession, listSessions, parseViewport, renameSession, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
 import { resolveSessionStatus } from './session-status.js';
@@ -51,6 +54,13 @@ app.get('/api/sessions', async (req, res, next) => {
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
     const enriched = sessions.map((session) => ({
       ...session,
+      agent: session.agent ? {
+        kind: session.agent.kind,
+        id: session.agent.id,
+        name: session.agent.name,
+        activity: session.agent.activity,
+        ...(req.auth.owner && session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
+      } : null,
       status: resolveSessionStatus(session),
     }));
     res.json({ sessions: enriched, capabilities: { flexibleSize, canManage: req.auth.owner } });
@@ -132,6 +142,13 @@ app.use((error, _req, res, _next) => {
 const tls = loadTlsOptions();
 const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
 const wss = new WebSocketServer({ noServer: true });
+const agentWss = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
+const agentRegistry = new AgentRegistry(createAgentBackends(), {
+  listTmuxSessions: listSessions,
+  sendTmuxMessage: sendSessionMessage,
+  interruptTmuxSession: interruptSession,
+});
+const agentHub = new AgentHub(agentRegistry, { defaultCwd: process.cwd(), hostname: os.hostname() });
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
@@ -139,6 +156,15 @@ server.on('upgrade', (req, socket, head) => {
   const encodedToken = protocols.find((value) => value.startsWith('codeck.'))?.slice(7);
   const credential = encodedToken ? Buffer.from(encodedToken, 'base64url').toString('utf8') : '';
   const auth = authenticateToken(accessToken, credential);
+  if (url.pathname === '/agent') {
+    if (!auth?.owner) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit('connection', ws));
+    return;
+  }
   const session = url.searchParams.get('session');
   if (url.pathname !== '/ws' || !auth || (!auth.owner && auth.session !== session)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -155,6 +181,8 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', handleTerminalConnection);
+agentWss.on('connection', (ws) => agentHub.handleConnection(ws));
+server.on('close', () => agentRegistry.close());
 
 server.listen(port, host, () => {
   console.log(`Codeck is running at https://${host}:${port}`);
