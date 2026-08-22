@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   agentActivityText,
+  applyTmuxSnapshot,
   applyAgentEvent,
   findTmuxThreadReplacement,
   latestRunningTurn,
@@ -72,6 +73,27 @@ test('refreshes a completed tmux Agent transcript even if its last live output i
   assert.equal(shouldRefreshTmuxThread(thread, {
     now: 10_000, refreshUntil: 12_000,
   }), false);
+});
+
+test('trusts tmux completion over a stale structured running turn', () => {
+  const thread = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{ id: 'turn-1', status: 'inProgress', items: [] }],
+  });
+  thread.tmux = {
+    name: 'codeck', status: 'working', available: true, liveOutput: '正在回复',
+  };
+
+  const completed = applyTmuxSnapshot(thread, {
+    name: 'codeck', status: 'done', available: true, liveOutput: '最终回答',
+  });
+
+  assert.equal(completed, true);
+  assert.equal(thread.tmux.status, 'done');
+  assert.equal(latestRunningTurn(thread)?.id, 'turn-1');
+  assert.equal(shouldRefreshTmuxThread(thread, {
+    now: 10_000, refreshUntil: 20_000,
+  }), true);
 });
 
 test('builds one ordered sidebar from all tmux sessions', () => {

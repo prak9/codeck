@@ -536,11 +536,17 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
     const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
-    const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
-    const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const waitForPaste = overrides.waitForPaste
       || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
+    if (provider !== 'shell' && text.startsWith('/') && !/[\r\n]/.test(text)) {
+      await execTmux(['send-keys', '-l', '-t', paneId, text]);
+      await waitForPaste();
+      await execTmux(['send-keys', '-t', paneId, 'Enter']);
+      return;
+    }
+    const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
+    const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
     await loadBuffer(bufferName, text);
     try {
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same

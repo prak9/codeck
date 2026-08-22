@@ -1,6 +1,7 @@
 import {
   agentActivityText,
   applyAgentEvent,
+  applyTmuxSnapshot,
   findTmuxThreadReplacement,
   latestRunningTurn,
   normalizeAgentThread,
@@ -9,7 +10,7 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=13';
+} from './agent-model.js?v=14';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
@@ -23,6 +24,7 @@ const SHELL_PROVIDER = { name: 'Shell', sessionLabel: 'Shell', glyph: '$_', shor
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const SESSION_LIST_POLL_MS = 1_500;
 const THREAD_REFRESH_POLL_MS = 1_000;
+const THREAD_COMPLETION_REFRESH_MS = 10_000;
 let viewportFrame = 0;
 
 const state = {
@@ -377,11 +379,9 @@ async function loadThreads({ quiet = false } = {}) {
       thread.id === state.thread?.id && thread.provider === state.provider
     ));
     if (activeThread?.tmux && state.thread) {
-      const wasWorking = state.thread.tmux?.status === 'working';
-      if (latestRunningTurn(state.thread)) activeThread.tmux.status = 'working';
-      state.thread.tmux = { ...activeThread.tmux };
-      if (wasWorking && activeThread.tmux.status !== 'working') {
-        state.threadRefreshUntil = Date.now() + 3_000;
+      if (applyTmuxSnapshot(state.thread, activeThread.tmux)) {
+        state.threadRefreshUntil = Date.now() + THREAD_COMPLETION_REFRESH_MS;
+        refreshActiveThread({ force: true }).catch(() => {});
       }
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);

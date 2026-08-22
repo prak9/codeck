@@ -31,6 +31,26 @@ test('waits for an Agent to process bracketed paste before submitting with tmux 
   ]);
 });
 
+test('types a single-line Agent slash command literally before submitting it', async () => {
+  const calls = [];
+  await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/model gpt-5',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
+  });
+
+  assert.deepEqual(calls, [
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/model gpt-5'] },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+  ]);
+});
+
 test('allows only the server-derived pending thread id before an Agent exposes its persistent id', async () => {
   const calls = [];
   let agent = { kind: 'codex', id: null, paneId: '%7' };
