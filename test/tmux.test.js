@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -428,6 +428,19 @@ test('shows the visible tail when a repainting Agent modal hides its busy marker
     ' Esc to cancel',
   ].join('\n'));
   assert.equal(resolveAgentLiveOutput('claude', '─'.repeat(24), { allowTail: true }), '');
+});
+
+test('keeps terminal output available while an Agent thread id is unresolved', () => {
+  const idlePane = '• Ran npm test\n  └ 115 tests passed\n› Follow up';
+  const idleSignals = { busy: false, background: false, animating: false };
+
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'codex', id: null }, false, idleSignals, idlePane,
+  ), idlePane);
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'codex', id: 'thread-1' }, false, idleSignals, idlePane,
+  ), '');
+  assert.equal(resolveAgentSessionLiveOutput(null, false, idleSignals, idlePane), '');
 });
 
 test('a completed claude turn is not mistaken for the codex working state', () => {

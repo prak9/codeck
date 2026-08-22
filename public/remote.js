@@ -295,7 +295,7 @@ function openPendingThread(thread) {
   });
   state.thread.tmux = { ...thread.tmux };
   state.threadRefreshUntil = 0;
-  setLiveMessage('该终端尚未建立对话，可直接发送首条消息。');
+  setLiveMessage('已连接当前终端会话，可直接参与。');
   renderThreadList();
   scheduleThreadRender(false);
   closeDrawer();
@@ -345,7 +345,7 @@ function handoffPendingThread(thread) {
     state.thread = normalizeAgentThread(provider, result.thread);
     state.thread.tmux = { ...thread.tmux };
     state.threadRefreshUntil = Date.now() + 2_500;
-    setLiveMessage('已建立对话，可直接参与。');
+    setLiveMessage('已同步对话记录，可直接参与。');
     renderThreadList();
     scheduleThreadRender(true);
   })();
@@ -534,7 +534,7 @@ function renderThreadList() {
       copy,
       presence,
     );
-    if (tmux.available === false) button.title = '尚未建立对话，可直接发送首条消息';
+    if (tmux.available === false) button.title = '已连接终端，可直接参与';
     button.addEventListener('click', () => {
       if (thread.provider === 'shell') {
         openShellThread(thread);
@@ -665,14 +665,16 @@ function terminalActivityNode() {
   const section = element('section', 'turn terminal-activity');
   const foot = element('div', 'turn-foot');
   const shell = state.thread?.provider === 'shell';
+  const unresolved = state.thread?.tmux?.available === false;
   const working = state.thread?.tmux?.status === 'working';
   section.dataset.activityStatus = working ? 'working' : 'done';
   foot.setAttribute('role', 'status');
   foot.setAttribute('aria-live', 'polite');
-  if (!shell || working) foot.append(element('span', 'spinner'));
+  if (working) foot.append(element('span', 'spinner'));
   foot.append(element('span', 'working', shell
     ? working ? 'Shell 命令正在运行' : 'Shell 当前输出'
-    : agentActivityText(state.thread) || '终端 Agent 正在工作'));
+    : unresolved && !working ? '终端当前输出'
+      : agentActivityText(state.thread) || '终端 Agent 正在工作'));
   const output = element('pre', 'terminal-live-output', state.thread?.tmux?.liveOutput || '');
   output.hidden = !state.thread?.tmux?.liveOutput;
   output.tabIndex = 0;
@@ -689,8 +691,10 @@ function updateTerminalActivity() {
   const current = $('.terminal-activity .working');
   const output = $('.terminal-activity .terminal-live-output');
   const shell = state.thread?.provider === 'shell';
+  const unresolved = state.thread?.tmux?.available === false;
+  const terminalOnly = shell || unresolved;
   const status = state.thread?.tmux?.status === 'working' ? 'working' : 'done';
-  const visible = shell || (status === 'working' && !latestRunningTurn(state.thread));
+  const visible = terminalOnly || (status === 'working' && !latestRunningTurn(state.thread));
   if (!visible) {
     if (current) scheduleThreadRender(false);
     return;
@@ -699,7 +703,7 @@ function updateTerminalActivity() {
     scheduleThreadRender(false);
     return;
   }
-  if (shell && section?.dataset.activityStatus !== status) {
+  if (terminalOnly && section?.dataset.activityStatus !== status) {
     scheduleThreadRender(false);
     return;
   }
@@ -708,7 +712,8 @@ function updateTerminalActivity() {
   const outputNearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
   const activity = shell
     ? status === 'working' ? 'Shell 命令正在运行' : 'Shell 当前输出'
-    : agentActivityText(state.thread) || '终端 Agent 正在工作';
+    : unresolved && status !== 'working' ? '终端当前输出'
+      : agentActivityText(state.thread) || '终端 Agent 正在工作';
   const liveOutput = state.thread?.tmux?.liveOutput || '';
   const changed = current.textContent !== activity || output.textContent !== liveOutput || output.hidden !== !liveOutput;
   if (current.textContent !== activity) current.textContent = activity;
@@ -877,7 +882,7 @@ function renderThread() {
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const nodes = (state.thread?.turns || []).map(renderTurn);
-  if (state.thread?.provider === 'shell'
+  if (state.thread?.provider === 'shell' || state.thread?.tmux?.available === false
     || (state.thread?.tmux?.status === 'working' && !latestRunningTurn(state.thread))) {
     nodes.push(terminalActivityNode());
   }
@@ -1021,7 +1026,7 @@ async function submitComposer() {
       });
       scheduleThreadRender(true);
     }
-    setLiveMessage(sentPendingSession ? '消息已发送，正在建立对话…' : '');
+    setLiveMessage(sentPendingSession ? '消息已发送，正在同步对话…' : '');
   } catch (error) {
     input.value = text;
     resizeComposer();

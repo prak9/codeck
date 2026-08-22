@@ -293,6 +293,15 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
   return compactLiveOutput(rows.slice(start, end + 1)).join('\n');
 }
 
+export function resolveAgentSessionLiveOutput(agent, hasRunningProcess, screenSignals, output) {
+  if (!agent || (!hasRunningProcess && agent.id)) return '';
+  return resolveAgentLiveOutput(agent.kind, output, {
+    allowTail: !agent.id || Boolean(
+      screenSignals?.animating && !screenSignals.busy && !screenSignals.background,
+    ),
+  });
+}
+
 // Shell sessions have no structured turn boundary, so expose only the bounded tail of
 // the currently visible pane. This is the same screen a tmux client sees, not scrollback.
 export function resolveShellLiveOutput(output) {
@@ -397,11 +406,9 @@ export async function listSessions() {
           ? resolveAgentActivityText(agentKind, screenBySession.get(session.name))
             || (screenSignals?.background ? '后台任务运行中' : '正在处理')
           : '';
-        const liveOutput = detectedAgent && hasRunningProcess
-          ? resolveAgentLiveOutput(agentKind, screenBySession.get(session.name), {
-            allowTail: Boolean(screenSignals?.animating && !screenSignals.busy && !screenSignals.background),
-          })
-          : '';
+        const liveOutput = resolveAgentSessionLiveOutput(
+          detectedAgent, hasRunningProcess, screenSignals, screenBySession.get(session.name),
+        );
         const agent = detectedAgent ? {
           ...detectedAgent,
           ...(activity ? { activity } : {}),
