@@ -6,11 +6,12 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  qoderFinalOutputTurn,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=14';
+} from './agent-model.js?v=16';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
@@ -379,10 +380,12 @@ async function loadThreads({ quiet = false } = {}) {
       thread.id === state.thread?.id && thread.provider === state.provider
     ));
     if (activeThread?.tmux && state.thread) {
-      if (applyTmuxSnapshot(state.thread, activeThread.tmux)) {
+      const { completed, transcriptChanged } = applyTmuxSnapshot(state.thread, activeThread.tmux);
+      if (completed) {
         state.threadRefreshUntil = Date.now() + THREAD_COMPLETION_REFRESH_MS;
         refreshActiveThread({ force: true }).catch(() => {});
       }
+      if (transcriptChanged) scheduleThreadRender(false);
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
     if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
@@ -902,6 +905,8 @@ function renderThread() {
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const nodes = (state.thread?.turns || []).map(renderTurn);
+  const qoderFinalTurn = qoderFinalOutputTurn(state.thread);
+  if (qoderFinalTurn) nodes.push(renderTurn(qoderFinalTurn));
   if (shouldShowTerminalActivity(state.thread)) {
     nodes.push(terminalActivityNode());
   }
