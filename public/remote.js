@@ -544,7 +544,9 @@ function renderThreadList() {
     const tmux = thread.tmux || {};
     const title = tmux.name || thread.name || thread.preview || '未命名会话';
     const status = tmux.status === 'working' ? 'working' : 'done';
-    const statusText = status === 'working' ? '正在干活' : '完成';
+    const statusText = status === 'working'
+      ? tmux.activity === '后台任务运行中' ? '后台运行' : '正在干活'
+      : '已就绪';
     const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
     copy.append(
       element('b', '', title),

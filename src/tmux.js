@@ -408,8 +408,10 @@ function readScreenSignals(session, screen, markers, now) {
   return { ...resolveScreenSignals(screen, markers), animating };
 }
 
-export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) {
-  if (agentKind) return Boolean(screenSignals?.busy || screenSignals?.background || screenSignals?.animating);
+export function resolveWorkingState({ agentKind, screenSignals, paneCommands, hasBackgroundProcess = false }) {
+  if (agentKind) return Boolean(
+    hasBackgroundProcess || screenSignals?.busy || screenSignals?.background || screenSignals?.animating,
+  );
   return (paneCommands || []).some((command) => !isShellCommand(command));
 }
 
@@ -472,10 +474,11 @@ export async function listSessions() {
           agentKind,
           screenSignals,
           paneCommands: paneCommandsBySession.get(session.name) || [],
+          hasBackgroundProcess: detectedAgent?.hasBackgroundProcess,
         });
         const activity = detectedAgent && hasRunningProcess
           ? resolveAgentActivityText(agentKind, screenBySession.get(session.name))
-            || (screenSignals?.background ? '后台任务运行中' : '正在处理')
+            || (screenSignals?.background || detectedAgent.hasBackgroundProcess ? '后台任务运行中' : '正在处理')
           : '';
         const liveOutput = resolveAgentSessionLiveOutput(
           detectedAgent, hasRunningProcess, screenSignals, screenBySession.get(session.name),

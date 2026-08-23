@@ -174,7 +174,7 @@ export function shouldRefreshTmuxThread(thread, {
   if (!thread?.id || !tmux?.name || tmux.available === false) return false;
   if (force) return true;
   const working = tmux.status === 'working';
-  if (working && tmux.liveOutput) return false;
+  if (working && (tmux.liveOutput || tmux.activity === '后台任务运行中')) return false;
   return working || now < refreshUntil;
 }
 

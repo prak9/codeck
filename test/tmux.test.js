@@ -582,9 +582,12 @@ test('a completed claude turn is not mistaken for the codex working state', () =
 });
 
 test('agent sessions are working while the agent runs or owns background tasks', () => {
-  const working = (screenSignals) => resolveWorkingState({ agentKind: 'claude', screenSignals, paneCommands: ['bash'] });
+  const working = (screenSignals, hasBackgroundProcess = false) => resolveWorkingState({
+    agentKind: 'claude', screenSignals, paneCommands: ['bash'], hasBackgroundProcess,
+  });
   assert.equal(working({ busy: true, background: false }), true);
   assert.equal(working({ busy: false, background: true }), true);
+  assert.equal(working({ busy: false, background: false }, true), true);
   assert.equal(working({ busy: false, background: false }), false);
   assert.equal(working(undefined), false);
 });

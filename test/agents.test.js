@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
+import { agentKindFromCommand, findDetachedAgentSessionIds, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -186,6 +186,35 @@ test('the pane root process is included when an Agent replaces the shell', () =>
   ].join('\n'), 10_000);
 
   assert.deepEqual(paneProcessTree(12, processes).map((process) => process.pid), [12, 13]);
+});
+
+test('finds detached tasks by Agent session id without counting the Agent process tree', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-background-'));
+  const codexId = '01a028e3-8058-73e0-bfc7-e7643f298b0f';
+  const claudeId = '81207e37-ab34-4c76-973a-0ebabb4a6560';
+  const qoderId = '5ebc3421-1111-4111-8111-111111111111';
+  const processes = [
+    { pid: 10, ppid: 1 },
+    { pid: 11, ppid: 10 },
+    { pid: 20, ppid: 1 },
+    { pid: 30, ppid: 1 },
+    { pid: 40, ppid: 1 },
+    { pid: 50, ppid: 1 },
+  ];
+  try {
+    for (const process of processes) fs.mkdirSync(path.join(root, String(process.pid)), { recursive: true });
+    fs.writeFileSync(path.join(root, '11', 'environ'), `CODEX_THREAD_ID=${codexId}\0`);
+    fs.writeFileSync(path.join(root, '20', 'environ'), `PATH=/usr/bin\0CODEX_THREAD_ID=${codexId}\0`);
+    fs.writeFileSync(path.join(root, '30', 'environ'), `CLAUDE_CODE_SESSION_ID=${claudeId}\0`);
+    fs.writeFileSync(path.join(root, '40', 'environ'), `QODER_SESSION_ID=${qoderId}\0`);
+    fs.writeFileSync(path.join(root, '50', 'environ'), 'CODEX_THREAD_ID=not-a-session\0');
+
+    assert.deepEqual(findDetachedAgentSessionIds(
+      processes, new Set([10, 11]), { procRoot: root },
+    ), new Set([codexId, claudeId, qoderId]));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('ps is asked for one field per -o, never a comma-joined header', () => {

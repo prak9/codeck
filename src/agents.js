@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'QODER_SESSION_ID']);
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], previews: new Map() };
 
@@ -155,6 +156,24 @@ export function paneProcessTree(rootPid, processes) {
     }
   }
   return result;
+}
+
+export function findDetachedAgentSessionIds(processes, attachedPids, { procRoot = '/proc' } = {}) {
+  const ids = new Set();
+  const sessionId = new RegExp(`^${UUID}$`, 'i');
+  for (const process of processes || []) {
+    if (attachedPids?.has(process.pid)) continue;
+    let entries;
+    try { entries = fs.readFileSync(path.join(procRoot, String(process.pid), 'environ'), 'utf8').split('\0'); }
+    catch { continue; }
+    for (const entry of entries) {
+      const separator = entry.indexOf('=');
+      if (separator < 0 || !AGENT_SESSION_ENV.has(entry.slice(0, separator))) continue;
+      const id = entry.slice(separator + 1);
+      if (sessionId.test(id)) ids.add(id);
+    }
+  }
+  return ids;
 }
 
 function nearestCodexId(startedAt, starts) {
@@ -321,9 +340,10 @@ export async function detectPaneAgents(panes, env = process.env) {
   const qoderHome = env.QODER_CONFIG_DIR || path.join(os.homedir(), env.QODER_CONFIG_DIR_NAME || '.qoder');
   const codex = loadCodexSessions(codexHome);
   const agents = new Map();
+  const trees = new Map(panes.map((pane) => [pane.session, paneProcessTree(pane.pid, processes)]));
 
   for (const pane of panes) {
-    const tree = paneProcessTree(pane.pid, processes);
+    const tree = trees.get(pane.session);
     const process = tree.find((item) => agentKindFromCommand(item.command));
     if (!process) continue;
     const kind = agentKindFromCommand(process.command);
@@ -366,6 +386,11 @@ export async function detectPaneAgents(panes, env = process.env) {
         ...runtime,
       });
     }
+  }
+  const attachedPids = new Set([...trees.values()].flat().map((process) => process.pid));
+  const detachedSessionIds = findDetachedAgentSessionIds(processes, attachedPids);
+  for (const agent of agents.values()) {
+    if (agent.id && detachedSessionIds.has(agent.id)) agent.hasBackgroundProcess = true;
   }
   return agents;
 }
