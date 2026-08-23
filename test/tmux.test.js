@@ -1,10 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
     name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 49,
+  }]);
+});
+
+test('uses the latest window activity as the session activity time', () => {
+  const sessions = [
+    { name: 'work', activityAt: 200_000 },
+    { name: 'recent-session', activityAt: 500_000 },
+  ];
+  const panes = [
+    { session: 'work', windowActivityAt: 300_000 },
+    { session: 'work', windowActivityAt: 400_000 },
+    { session: 'recent-session', windowActivityAt: 450_000 },
+    { session: 'other', windowActivityAt: 900_000 },
+  ];
+
+  assert.deepEqual(mergeWindowActivity(sessions, panes), [
+    { name: 'work', activityAt: 400_000 },
+    { name: 'recent-session', activityAt: 500_000 },
+  ]);
+});
+
+test('parses tmux window activity from pane records', () => {
+  assert.deepEqual(parsePanes('work\t1\t1\t42\t%7\tbash\t300\n'), [{
+    session: 'work', pid: 42, paneId: '%7', score: 2, currentCommand: 'bash', windowActivityAt: 300_000,
   }]);
 });
 

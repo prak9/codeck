@@ -152,18 +152,33 @@ export async function getLinkedWindowSessions(name) {
   return findLinkedWindowSessions(stdout, name);
 }
 
-function parsePanes(output) {
+export function parsePanes(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
-    const [session, windowActive, paneActive, pid, paneId, currentCommand] = line.split('\t');
+    const [session, windowActive, paneActive, pid, paneId, currentCommand, windowActivity] = line.split('\t');
     return {
       session,
       pid: Number(pid),
       paneId,
       score: Number(windowActive) + Number(paneActive),
       currentCommand: (currentCommand || 'bash').trim().toLowerCase(),
+      windowActivityAt: Number(windowActivity || 0) * 1000,
     };
     }).filter((pane) => pane.session);
+}
+
+export function mergeWindowActivity(sessions, panes) {
+  const latestBySession = new Map();
+  for (const pane of panes) {
+    latestBySession.set(pane.session, Math.max(
+      latestBySession.get(pane.session) || 0,
+      pane.windowActivityAt || 0,
+    ));
+  }
+  return sessions.map((session) => ({
+    ...session,
+    activityAt: Math.max(session.activityAt, latestBySession.get(session.name) || 0),
+  }));
 }
 
 function stripAnsi(input) {
@@ -453,10 +468,10 @@ export async function listSessions() {
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
-      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}']),
+      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}']),
     ]);
-    const parsedSessions = parseSessions(stdout);
     const allPanes = parsePanes(paneOutput);
+    const parsedSessions = mergeWindowActivity(parseSessions(stdout), allPanes);
     const panes = [...allPanes]
       .sort((a, b) => b.score - a.score)
       .filter((pane, index, all) => all.findIndex((item) => item.session === pane.session) === index);
