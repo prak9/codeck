@@ -9,6 +9,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'QODER_SESSION_ID']);
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], previews: new Map() };
+let clockTicksPromise;
 
 export function parseCodexSessionIndex(content) {
   const names = new Map();
@@ -161,10 +162,101 @@ export function paneProcessTree(rootPid, processes) {
 function isDetachedProcessLeader(process, procRoot) {
   if (process.ppid !== 1) return false;
   try {
-    const stat = fs.readFileSync(path.join(procRoot, String(process.pid), 'stat'), 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
-    return Number(fields[2]) === process.pid && Number(fields[3]) === process.pid;
+    const stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(process.pid), 'stat'), 'utf8'));
+    return stat?.pgrp === process.pid && stat.session === process.pid;
   } catch { return false; }
+}
+
+function parseProcStat(content) {
+  const open = content.indexOf('(');
+  const close = content.lastIndexOf(')');
+  if (open < 0 || close <= open) return null;
+  const pid = Number(content.slice(0, open).trim());
+  const fields = content.slice(close + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  const pgrp = Number(fields[2]);
+  const session = Number(fields[3]);
+  const startTicks = Number(fields[19] || 0);
+  if (![pid, ppid, pgrp, session, startTicks].every(Number.isFinite)) return null;
+  return { pid, ppid, pgrp, session, startTicks, name: content.slice(open + 1, close) };
+}
+
+function procPidList(content) {
+  return String(content || '').trim().split(/\s+/).map(Number).filter(Number.isInteger);
+}
+
+function readProcChildren(procRoot, pid) {
+  try { return procPidList(fs.readFileSync(path.join(procRoot, String(pid), 'task', String(pid), 'children'), 'utf8')); }
+  catch { return []; }
+}
+
+function readProcProcess(procRoot, pid, { clockTicks, now, uptimeMs }) {
+  let stat;
+  try { stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')); }
+  catch { return null; }
+  if (!stat) return null;
+  let command = '';
+  try {
+    command = fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'), 'utf8')
+      .split('\0').filter(Boolean).join(' ').trim();
+  } catch { /* Process may exit between the stat and cmdline reads. */ }
+  return {
+    pid: stat.pid,
+    ppid: stat.ppid,
+    startedAt: now - Math.max(0, uptimeMs - stat.startTicks / clockTicks * 1000),
+    command: command || stat.name,
+  };
+}
+
+export function readPaneProcessTrees(panes, {
+  procRoot = '/proc', clockTicks = 100, now = Date.now(), uptimeMs = 0,
+} = {}) {
+  const byRoot = new Map();
+  const trees = new Map();
+  for (const pane of panes || []) {
+    let tree = byRoot.get(pane.pid);
+    if (!tree) {
+      tree = [];
+      const seen = new Set();
+      const queue = [pane.pid];
+      while (queue.length) {
+        const pid = queue.shift();
+        if (!Number.isInteger(pid) || seen.has(pid)) continue;
+        seen.add(pid);
+        const process = readProcProcess(procRoot, pid, { clockTicks, now, uptimeMs });
+        if (!process) continue;
+        tree.push(process);
+        for (const child of readProcChildren(procRoot, pid)) {
+          if (!seen.has(child)) queue.push(child);
+        }
+      }
+      byRoot.set(pane.pid, tree);
+    }
+    trees.set(pane.session, tree);
+  }
+  return trees;
+}
+
+export function findDetachedAgentSessionIdsFromProc(attachedPids, { procRoot = '/proc' } = {}) {
+  const processes = readProcChildren(procRoot, 1).flatMap((pid) => {
+    try {
+      const stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8'));
+      return stat ? [{ pid: stat.pid, ppid: stat.ppid }] : [];
+    } catch { return []; }
+  });
+  return findDetachedAgentSessionIds(processes, attachedPids, { procRoot });
+}
+
+function readProcUptimeMs(procRoot) {
+  try { return Number(fs.readFileSync(path.join(procRoot, 'uptime'), 'utf8').trim().split(/\s+/)[0]) * 1000 || 0; }
+  catch { return 0; }
+}
+
+function processClockTicks() {
+  clockTicksPromise ||= exec('getconf', ['CLK_TCK'])
+    .then(({ stdout }) => Number(stdout.trim()) || 100)
+    .catch(() => 100);
+  return clockTicksPromise;
 }
 
 export function findDetachedAgentSessionIds(processes, attachedPids, { procRoot = '/proc' } = {}) {
@@ -231,8 +323,8 @@ async function readCodexPaneIdentity(session) {
   } catch { return null; }
 }
 
-function processCwd(pid) {
-  try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return null; }
+function processCwd(pid, procRoot = '/proc') {
+  try { return fs.readlinkSync(path.join(procRoot, String(pid), 'cwd')); } catch { return null; }
 }
 
 function normalizedPath(value) {
@@ -336,23 +428,18 @@ function readRuntimeSession(processes, configHome) {
   return null;
 }
 
-export async function detectPaneAgents(panes, env = process.env) {
+export async function detectPaneAgents(panes, env = process.env, options = {}) {
   if (!panes.length) return new Map();
-  // One -o per field. POSIX lets the header in `-o name=header` contain commas, so
-  // `-o pid=,ppid=,etimes=,args=` is a single pid column headed ",ppid=,etimes=,args="
-  // on older procps. Every row then holds one number, no row parses, and agent
-  // detection silently returns nothing.
-  const { stdout } = await exec('ps', PS_ARGUMENTS);
-  const processes = parseProcessList(stdout);
-  // A populated ps with no parsable rows is a format mismatch, not an empty system.
-  // Left silent it degrades every agent session to the command-based fallback.
-  if (!processes.length && stdout.trim()) warnProcessListUnparsed();
+  const procRoot = options.procRoot || '/proc';
+  const clockTicks = options.clockTicks || await processClockTicks();
+  const now = options.now || Date.now();
+  const uptimeMs = options.uptimeMs ?? readProcUptimeMs(procRoot);
   const codexHome = env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const qoderHome = env.QODER_CONFIG_DIR || path.join(os.homedir(), env.QODER_CONFIG_DIR_NAME || '.qoder');
   const codex = loadCodexSessions(codexHome);
   const agents = new Map();
-  const trees = new Map(panes.map((pane) => [pane.session, paneProcessTree(pane.pid, processes)]));
+  const trees = readPaneProcessTrees(panes, { procRoot, clockTicks, now, uptimeMs });
 
   for (const pane of panes) {
     const tree = trees.get(pane.session);
@@ -364,7 +451,7 @@ export async function detectPaneAgents(panes, env = process.env) {
       : kind === 'qodercli' ? readRuntimeSession(tree, qoderHome) : null;
     const runtime = {
       startedAt: registered?.startedAt || process.startedAt,
-      cwd: registered?.cwd || processCwd(registered?.pid || process.pid),
+      cwd: registered?.cwd || processCwd(registered?.pid || process.pid, procRoot),
       paneId: pane.paneId,
     };
 
@@ -389,7 +476,7 @@ export async function detectPaneAgents(panes, env = process.env) {
       // transcript the live process has actually opened.
       const explicitId = parseResumedSessionId(process.command);
       const id = registered?.id || explicitId
-        || findQoderOpenSessionId(tree, qoderHome, runtime.cwd);
+        || findQoderOpenSessionId(tree, qoderHome, runtime.cwd, { procRoot });
       agents.set(pane.session, {
         kind: 'qodercli',
         id,
@@ -400,7 +487,7 @@ export async function detectPaneAgents(panes, env = process.env) {
     }
   }
   const attachedPids = new Set([...trees.values()].flat().map((process) => process.pid));
-  const detachedSessionIds = findDetachedAgentSessionIds(processes, attachedPids);
+  const detachedSessionIds = findDetachedAgentSessionIdsFromProc(attachedPids, { procRoot });
   for (const agent of agents.values()) {
     if (agent.id && detachedSessionIds.has(agent.id)) agent.hasBackgroundProcess = true;
   }

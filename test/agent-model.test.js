@@ -8,6 +8,7 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  reconcileAgentThreadRefresh,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
@@ -97,6 +98,39 @@ test('refreshes a completed tmux Agent transcript even if its last live output i
   assert.equal(shouldRefreshTmuxThread(thread, {
     now: 10_000, refreshUntil: 12_000,
   }), false);
+});
+
+test('reuses an unchanged transcript refresh but accepts a delayed final Agent output', () => {
+  const current = normalizeAgentThread('qodercli', {
+    id: 'thread-1', updatedAt: 10,
+    turns: [{
+      id: 'turn-1', status: 'completed',
+      items: [{ id: 'answer-1', type: 'agentMessage', text: '第一段' }],
+    }],
+  });
+  current.tmux = { name: 'qoder-work', status: 'done', available: true };
+  const unchanged = normalizeAgentThread('qodercli', {
+    id: 'thread-1', updatedAt: 20,
+    turns: [{
+      id: 'turn-1', status: 'completed',
+      items: [{ id: 'answer-1', type: 'agentMessage', text: '第一段' }],
+    }],
+  });
+
+  assert.equal(reconcileAgentThreadRefresh(current, unchanged), current);
+
+  const delayed = normalizeAgentThread('qodercli', {
+    ...unchanged,
+    turns: [{
+      id: 'turn-1', status: 'completed',
+      items: [{ id: 'answer-1', type: 'agentMessage', text: '第一段\n最终结果' }],
+    }],
+  });
+  const reconciled = reconcileAgentThreadRefresh(current, delayed);
+  assert.notEqual(reconciled, current);
+  assert.equal(reconciled.turns[0].items[0].text, '第一段\n最终结果');
+  assert.deepEqual(reconciled.tmux, current.tmux);
+  assert.notEqual(reconciled.tmux, current.tmux);
 });
 
 test('does not reload a completed transcript while only a detached background task is running', () => {

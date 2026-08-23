@@ -72,6 +72,26 @@ export function normalizeAgentThread(provider, thread) {
   };
 }
 
+function renderedThreadContent(thread) {
+  return JSON.stringify([
+    thread?.id,
+    thread?.name,
+    thread?.preview,
+    thread?.cwd,
+    thread?.readOnly,
+    thread?.status,
+    thread?.turns,
+  ]);
+}
+
+export function reconcileAgentThreadRefresh(current, refreshed) {
+  if (current && renderedThreadContent(current) === renderedThreadContent(refreshed)) return current;
+  return {
+    ...refreshed,
+    ...(current?.tmux ? { tmux: { ...current.tmux } } : {}),
+  };
+}
+
 export function normalizeInteractionQuestions(params) {
   return asArray(params?.questions).slice(0, 4).map((question, index) => ({
     id: typeof question?.id === 'string' && question.id ? question.id : `question-${index + 1}`,

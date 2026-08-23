@@ -3,7 +3,20 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, findDetachedAgentSessionIds, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
+import { agentKindFromCommand, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId } from '../src/agents.js';
+
+function writeProcProcess(root, {
+  pid, ppid, pgrp = pid, session = pid, startTicks = 0, command = '', children = [], environment = '',
+}) {
+  const processRoot = path.join(root, String(pid));
+  const taskRoot = path.join(processRoot, 'task', String(pid));
+  fs.mkdirSync(taskRoot, { recursive: true });
+  const fields = ['S', ppid, pgrp, session, ...Array(15).fill(0), startTicks];
+  fs.writeFileSync(path.join(processRoot, 'stat'), `${pid} (process ${pid}) ${fields.join(' ')}\n`);
+  fs.writeFileSync(path.join(processRoot, 'cmdline'), `${command.split(' ').filter(Boolean).join('\0')}\0`);
+  fs.writeFileSync(path.join(processRoot, 'environ'), environment);
+  fs.writeFileSync(path.join(taskRoot, 'children'), children.join(' '));
+}
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -186,6 +199,66 @@ test('the pane root process is included when an Agent replaces the shell', () =>
   ].join('\n'), 10_000);
 
   assert.deepEqual(paneProcessTree(12, processes).map((process) => process.pid), [12, 13]);
+});
+
+test('reads only each pane process tree from procfs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-pane-proc-'));
+  try {
+    writeProcProcess(root, {
+      pid: 10, ppid: 1, pgrp: 10, session: 10, startTicks: 8_000,
+      command: '/bin/bash', children: [11],
+    });
+    writeProcProcess(root, {
+      pid: 11, ppid: 10, pgrp: 10, session: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo', children: [12],
+    });
+    writeProcProcess(root, {
+      pid: 12, ppid: 11, pgrp: 10, session: 10, startTicks: 9_500,
+      command: '/bin/bash -lc npm test',
+    });
+    writeProcProcess(root, {
+      pid: 99, ppid: 1, pgrp: 99, session: 99, startTicks: 1,
+      command: 'unrelated daemon',
+    });
+
+    const trees = readPaneProcessTrees([{ session: 'work', pid: 10 }], {
+      procRoot: root, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
+    });
+    assert.deepEqual(trees.get('work'), [
+      { pid: 10, ppid: 1, startedAt: 980_000, command: '/bin/bash' },
+      { pid: 11, ppid: 10, startedAt: 990_000, command: 'node /usr/bin/codex --yolo' },
+      { pid: 12, ppid: 11, startedAt: 995_000, command: '/bin/bash -lc npm test' },
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('discovers detached Agent task leaders from PID 1 children only', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-proc-'));
+  const codexId = '01a028e3-8058-73e0-bfc7-e7643f298b0f';
+  const attachedId = '81207e37-ab34-4c76-973a-0ebabb4a6560';
+  const unrelatedId = '5ebc3421-1111-4111-8111-111111111111';
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20, 30, 40] });
+    writeProcProcess(root, {
+      pid: 20, ppid: 1, environment: `CODEX_THREAD_ID=${codexId}\0`,
+    });
+    writeProcProcess(root, {
+      pid: 30, ppid: 1, environment: `CLAUDE_CODE_SESSION_ID=${attachedId}\0`,
+    });
+    writeProcProcess(root, {
+      pid: 40, ppid: 1, pgrp: 20, session: 20,
+      environment: `QODER_SESSION_ID=${unrelatedId}\0`,
+    });
+    writeProcProcess(root, {
+      pid: 50, ppid: 1, environment: `QODER_SESSION_ID=${unrelatedId}\0`,
+    });
+
+    assert.deepEqual(findDetachedAgentSessionIdsFromProc(new Set([30]), { procRoot: root }), new Set([codexId]));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('finds detached tasks by Agent session id without counting the Agent process tree', () => {

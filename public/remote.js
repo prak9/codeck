@@ -6,11 +6,12 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
+  reconcileAgentThreadRefresh,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=21';
+} from './agent-model.js?v=22';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
@@ -611,8 +612,9 @@ async function refreshActiveThread({ force = false } = {}) {
     const result = await load;
     if (state.provider !== provider || state.thread?.id !== threadId || state.thread?.tmux?.name !== sessionName) return;
     const refreshed = normalizeAgentThread(provider, result.thread);
-    refreshed.tmux = { ...state.thread.tmux };
-    state.thread = refreshed;
+    const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
+    if (reconciled === state.thread) return;
+    state.thread = reconciled;
     scheduleThreadRender(false);
   } finally {
     if (state.threadRefresh === load) state.threadRefresh = null;

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
@@ -437,9 +437,51 @@ function screenHash(output) {
   return createHash('sha1').update(String(output || '')).digest('hex');
 }
 
-function capturePane(paneId) {
+function capturePane(paneId, execTmux = exec) {
   if (!paneId) return Promise.resolve('');
-  return exec('tmux', ['capture-pane', '-p', '-t', paneId]).then(({ stdout }) => stdout).catch(() => '');
+  return execTmux('tmux', ['capture-pane', '-p', '-t', paneId]).then(({ stdout }) => stdout).catch(() => '');
+}
+
+function parsePaneCaptureBatch(output, markers) {
+  const captures = [];
+  let cursor = 0;
+  for (const { begin, end } of markers) {
+    const startMarker = `${begin}\n`;
+    const start = output.indexOf(startMarker, cursor);
+    const finish = output.indexOf(end, start + startMarker.length);
+    if (start < 0 || finish < 0) return null;
+    captures.push(output.slice(start + startMarker.length, finish));
+    cursor = finish + end.length;
+  }
+  return captures;
+}
+
+export async function capturePanes(panes, execTmux = exec) {
+  if (!panes.length) return [];
+  const token = randomUUID();
+  const markers = panes.map((_, index) => ({
+    begin: `CODECK_CAPTURE:${token}:BEGIN:${index}`,
+    end: `CODECK_CAPTURE:${token}:END:${index}`,
+  }));
+  const args = [];
+  for (const [index, pane] of panes.entries()) {
+    if (args.length) args.push(';');
+    args.push(
+      'display-message', '-p', markers[index].begin,
+      ';', 'capture-pane', '-p', '-t', pane.paneId,
+      ';', 'display-message', '-p', markers[index].end,
+    );
+  }
+  try {
+    const { stdout } = await execTmux('tmux', args, { maxBuffer: 8 * 1024 * 1024 });
+    const captures = parsePaneCaptureBatch(stdout, markers);
+    if (!captures) throw new Error('tmux batch capture was incomplete');
+    return panes.map((pane, index) => [pane.session, captures[index]]);
+  } catch {
+    return Promise.all(panes.map(async (pane) => [
+      pane.session, await capturePane(pane.paneId, execTmux),
+    ]));
+  }
 }
 
 function readScreenSignals(session, screen, markers, now) {
@@ -490,7 +532,7 @@ export async function listSessions() {
     const now = Date.now();
     const [agents, screens] = await Promise.all([
       detectPaneAgents(panes),
-      Promise.all(panes.map(async (pane) => [pane.session, await capturePane(pane.paneId)])),
+      capturePanes(panes),
     ]);
     const screenBySession = new Map(screens);
 

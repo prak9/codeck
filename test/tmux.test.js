@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, capturePanes, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -30,6 +30,47 @@ test('parses tmux window activity from pane records', () => {
   assert.deepEqual(parsePanes('work\t1\t1\t42\t%7\tbash\t300\n'), [{
     session: 'work', pid: 42, paneId: '%7', score: 2, currentCommand: 'bash', windowActivityAt: 300_000,
   }]);
+});
+
+test('captures all selected panes through one tmux process', async () => {
+  const calls = [];
+  const panes = [
+    { session: 'alpha', paneId: '%1' },
+    { session: 'beta', paneId: '%2' },
+  ];
+  const captures = await capturePanes(panes, async (command, args) => {
+    calls.push({ command, args });
+    const markers = args.filter((value) => /^CODECK_CAPTURE:[^:]+:(?:BEGIN|END):\d+$/.test(value));
+    return {
+      stdout: `${markers[0]}\nalpha output\n${markers[1]}\n${markers[2]}\nbeta 中文\n${markers[3]}\n`,
+    };
+  });
+
+  assert.deepEqual(captures, [
+    ['alpha', 'alpha output\n'],
+    ['beta', 'beta 中文\n'],
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'tmux');
+  assert.equal(calls[0].args.filter((value) => value === 'capture-pane').length, 2);
+});
+
+test('falls back to isolated pane captures when a batched capture cannot be parsed', async () => {
+  const calls = [];
+  const captures = await capturePanes([
+    { session: 'alpha', paneId: '%1' },
+    { session: 'beta', paneId: '%2' },
+  ], async (_command, args) => {
+    calls.push(args);
+    if (args.includes('display-message')) return { stdout: 'incomplete batch' };
+    return { stdout: args.at(-1) === '%1' ? 'alpha\n' : 'beta\n' };
+  });
+
+  assert.deepEqual(captures, [
+    ['alpha', 'alpha\n'],
+    ['beta', 'beta\n'],
+  ]);
+  assert.equal(calls.length, 3);
 });
 
 test('waits for an Agent to process bracketed paste before submitting with tmux 2.7-compatible commands', async () => {

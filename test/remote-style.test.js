@@ -14,10 +14,11 @@ function rootBreakpoint(cssText, width) {
   return match?.[1] || '';
 }
 
-test('remote uses Courier New for English with Noto Sans SC as its CJK fallback', () => {
-  assert.doesNotMatch(html, /\/fonts\/inter\/wght\.css/);
+test('remote keeps Courier New in the conversation and uses the normal Apple-style UI font in the sidebar', () => {
+  assert.match(html, /\/fonts\/inter\/wght\.css/);
   assert.match(html, /\/fonts\/noto-sans-sc\/wght\.css/);
   assert.match(rootCss, /font-family:\s*"Courier New",\s*Courier,\s*"Noto Sans SC Variable",\s*monospace/);
+  assert.match(css, /\.thread-drawer\s*\{[^}]*font-family:\s*"Inter Variable",\s*"Noto Sans SC Variable",\s*sans-serif/s);
   assert.match(css, /\.terminal-live-output[^}]+"Courier New"/s);
 });
 
@@ -35,7 +36,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=24/);
+  assert.match(html, /\/remote\.css\?v=25/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -113,6 +114,22 @@ test('normal and remote sidebars use the same ready and background status labels
   for (const source of [appCss, css]) {
     assert.match(source, /\.presence\.background/);
   }
+});
+
+test('normal sidebar matches the remote session hierarchy and restores its UI typography', () => {
+  assert.match(appJs, /const meta = \[statusText, timeAgo\(session\.activityAt\)\]\.filter\(Boolean\)\.join\(' · '\)/);
+  assert.match(appJs, /<span class="session-copy"><b[^>]*>\$\{escapeHtml\(session\.name\)\}<\/b><small>\$\{escapeHtml\(meta\)\}<\/small><\/span>/);
+  assert.doesNotMatch(appJs, /tmux \$\{escapeHtml\(session\.name\)\}/);
+
+  assert.doesNotMatch(appCss, /\.sidebar\s*\{[^}]*font-family:/s);
+  assert.match(appCss, /html, body\s*\{[^}]*font-family:\s*"Inter Variable",\s*"Noto Sans SC Variable",\s*sans-serif/s);
+  assert.doesNotMatch(appCss, /\.session-row\s*\{[^}]*min-height:\s*(?:66|72|78)px/s);
+  assert.doesNotMatch(appCss, /\.session-copy b\s*\{[^}]*font-size:\s*(?:13|14|15)px/s);
+});
+
+test('unchanged Agent transcript refreshes are reconciled without a full redraw', () => {
+  assert.match(remoteJs, /reconcileAgentThreadRefresh/);
+  assert.match(remoteJs, /if \(reconciled === state\.thread\) return/);
 });
 
 test('a completed tmux turn waits for the authoritative session status', () => {

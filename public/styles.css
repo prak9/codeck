@@ -45,15 +45,16 @@ button:focus-visible, input:focus-visible { outline: 2px solid #ff8157; outline-
 .presence.problem,
 .presence.intervention { background: #ff5c5c; box-shadow: 0 0 0 3px #ff5c5c18; }
 
-.sidebar { min-width: 0; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; backdrop-filter: blur(28px) saturate(130%); -webkit-backdrop-filter: blur(28px) saturate(130%); }
+.sidebar { min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: #1b1b1eee; display: flex; flex-direction: column; backdrop-filter: blur(28px) saturate(130%); -webkit-backdrop-filter: blur(28px) saturate(130%); }
 .sidebar-heading { padding: 22px 14px 13px 18px; display: flex; align-items: end; justify-content: space-between; }
+.sidebar-heading .icon-button { width: 44px; height: 44px; border-radius: 11px; font-size: 20px; }
 .eyebrow { margin: 0 0 6px; color: var(--subtle); font-size: 9px; line-height: 1; font-weight: 700; letter-spacing: .16em; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 15px; line-height: 1.25; letter-spacing: -.01em; }
 .icon-button { width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: #ffffff08; cursor: pointer; font-size: 19px; transition: background 160ms ease, border-color 160ms ease, transform 160ms ease; }
 .icon-button:hover { border-color: var(--line-strong); background: #ffffff10; }
 .icon-button:active { transform: scale(.96); }
-.session-list { flex: 1; overflow-y: auto; padding: 4px 9px; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
+.session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 4px 9px; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
 .session-entry { position: relative; }
 .session-row { width: 100%; min-height: 60px; padding: 9px 38px 9px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; display: grid; grid-template-columns: 22px 32px minmax(0, 1fr) 8px; align-items: center; gap: 9px; text-align: left; cursor: pointer; transition: background 140ms ease, border-color 140ms ease; }
 .session-entry:hover .session-row,
@@ -155,13 +156,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
 @media (min-width: 1800px) {
   :root { --topbar-height: 58px; --sidebar-width: 310px; }
   .brand { padding-inline: 22px; font-size: 13px; }
-  .sidebar-heading { padding: 27px 18px 16px 22px; }
-  h1 { font-size: 16px; }
-  .session-list { padding-inline: 12px; }
-  .session-row { min-height: 66px; padding-left: 12px; }
-  .session-icon { width: 32px; height: 32px; }
-  .session-copy b { font-size: 13px; }
-  .session-copy small { font-size: 11px; }
   .terminal-view { padding: 20px 24px 24px; }
   .terminal-header { min-height: 60px; padding-inline: 6px; }
   .terminal-frame { padding: 17px 13px 13px 18px; border-radius: 16px; }
@@ -173,12 +167,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .brand { padding-inline: 28px; font-size: 13px; }
   .brand-mark { width: 30px; height: 30px; }
   .server-state { margin-right: 26px; }
-  .sidebar-heading { padding: 34px 22px 19px 28px; }
-  .session-list { padding-inline: 16px; }
-  .session-row { min-height: 72px; }
-  .session-icon { width: 34px; height: 34px; font-size: 12px; }
-  .session-copy b { font-size: 14px; }
-  .session-copy small { font-size: 12px; }
   .terminal-view { padding: 26px 32px 32px; }
   .terminal-header { min-height: 68px; }
   .terminal-frame { padding: 20px 16px 16px 21px; border-radius: 18px; }
@@ -188,9 +176,6 @@ fieldset { margin: 0; padding: 0; border: 0; }
 
 @media (min-width: 4500px) {
   :root { --topbar-height: 70px; --sidebar-width: 390px; }
-  .session-row { min-height: 78px; }
-  .session-copy b { font-size: 15px; }
-  .session-copy small { font-size: 13px; }
   .terminal-view { padding: 34px 42px 42px; }
   .terminal-header { min-height: 76px; }
   .terminal-frame { border-radius: 20px; }
@@ -208,7 +193,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .primary-button, .secondary-button { min-height: 44px; }
   .rename-session { width: 44px; height: 44px; right: 0; opacity: 1; pointer-events: auto; }
   .session-row { padding-right: 48px; }
-  .sidebar { position: fixed; z-index: 8; inset: calc(50px + env(safe-area-inset-top)) auto 0 0; width: min(86vw, 310px); padding: 0 0 env(safe-area-inset-bottom) env(safe-area-inset-left); transform: translateX(-101%); transition: transform 180ms cubic-bezier(.2, .8, .2, 1); box-shadow: 18px 0 50px #00000070; }
+  .sidebar { position: fixed; z-index: 8; inset: calc(50px + env(safe-area-inset-top)) auto 0 0; width: min(86vw, 320px); padding: 0 0 env(safe-area-inset-bottom) env(safe-area-inset-left); transform: translateX(-101%); transition: transform 180ms cubic-bezier(.2, .8, .2, 1); box-shadow: 18px 0 50px #00000070; }
   .sidebar.open { transform: none; }
   .workspace { grid-row: 2; height: 100%; }
   .empty-state { min-height: 100%; padding: 28px calc(20px + env(safe-area-inset-right)) calc(28px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left)); }

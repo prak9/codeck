@@ -37,7 +37,7 @@ button { cursor: pointer; }
 .eyebrow { margin: 0 0 7px; color: var(--subtle); font-size: 9px; line-height: 1; font-weight: 760; letter-spacing: .16em; }
 
 .remote-app { position: absolute; top: var(--app-top); left: 0; width: 100%; height: 100vh; height: var(--app-height); display: grid; grid-template-columns: var(--drawer) minmax(0, 1fr); overflow: hidden; }
-.thread-drawer { min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: #1b1b1eee; display: flex; flex-direction: column; backdrop-filter: blur(28px) saturate(130%); -webkit-backdrop-filter: blur(28px) saturate(130%); }
+.thread-drawer { min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: #1b1b1eee; display: flex; flex-direction: column; font-family: "Inter Variable", "Noto Sans SC Variable", sans-serif; backdrop-filter: blur(28px) saturate(130%); -webkit-backdrop-filter: blur(28px) saturate(130%); }
 .drawer-brand { height: var(--header-height); padding: 0 17px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
 .drawer-brand > a { display: flex; align-items: center; gap: 9px; color: var(--ink); text-decoration: none; font-size: 11px; font-weight: 760; letter-spacing: .14em; }
 .drawer-brand > a, .drawer-footer a { min-height: 44px; align-items: center; }

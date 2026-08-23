@@ -12,7 +12,9 @@ import { AgentHub, AgentRegistry } from './agent-connection.js';
 import { createSession, detectWindowSizeSupport, interruptSession, killSession, listSessions, parseViewport, renameSession, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
+import { createSessionSnapshotLoader } from './session-snapshot.js';
 import { resolveSessionStatus } from './session-status.js';
+import { AGENT_WEBSOCKET_OPTIONS } from './websocket-options.js';
 import {
   resolveDownloadPath,
   saveFileUpload,
@@ -25,6 +27,7 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
 const app = express();
+const sessionSnapshots = createSessionSnapshotLoader(listSessions);
 app.use(express.json({ limit: '16kb' }));
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
 app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
@@ -50,7 +53,7 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/sessions', async (req, res, next) => {
   try {
-    let [sessions, flexibleSize] = await Promise.all([listSessions(), detectWindowSizeSupport()]);
+    let [sessions, flexibleSize] = await Promise.all([sessionSnapshots.get(), detectWindowSizeSupport()]);
     if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
     const enriched = sessions.map((session) => {
       const { paneId: _paneId, liveOutput, ...publicSession } = session;
@@ -74,6 +77,7 @@ app.get('/api/sessions', async (req, res, next) => {
 app.post('/api/sessions', ownerOnly, async (req, res, next) => {
   try {
     await createSession(req.body || {});
+    sessionSnapshots.invalidate();
     res.status(201).json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -81,6 +85,7 @@ app.post('/api/sessions', ownerOnly, async (req, res, next) => {
 app.patch('/api/sessions/:name', ownerOnly, async (req, res, next) => {
   try {
     await renameSession(req.params.name, req.body?.name);
+    sessionSnapshots.invalidate();
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -88,6 +93,7 @@ app.patch('/api/sessions/:name', ownerOnly, async (req, res, next) => {
 app.delete('/api/sessions/:name', ownerOnly, async (req, res, next) => {
   try {
     await killSession(req.params.name);
+    sessionSnapshots.invalidate();
     res.status(204).end();
   } catch (error) { next(error); }
 });
@@ -146,7 +152,7 @@ app.use((error, _req, res, _next) => {
 const tls = loadTlsOptions();
 const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
 const wss = new WebSocketServer({ noServer: true });
-const agentWss = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
+const agentWss = new WebSocketServer({ noServer: true, ...AGENT_WEBSOCKET_OPTIONS });
 const agentRegistry = new AgentRegistry(createAgentBackends(), {
   listTmuxSessions: listSessions,
   sendTmuxMessage: sendSessionMessage,
