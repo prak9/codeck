@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 const html = fs.readFileSync(new URL('../public/remote.html', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../public/remote.css', import.meta.url), 'utf8');
 const remoteJs = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
+const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const appCss = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const rootCss = css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] || '';
 
@@ -40,4 +41,12 @@ test('completed model turns expose a touch-accessible copy action', () => {
   assert.match(remoteJs, /setAttribute\('aria-label', '复制本轮模型输出'\)/);
   assert.match(css, /\.message-copy-button\s*\{[^}]*min-height:\s*34px/s);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.message-copy-button\s*\{[^}]*min-height:\s*44px/s);
+});
+
+test('normal and remote sidebars use the same ready and background status labels', () => {
+  for (const source of [appJs, remoteJs]) {
+    assert.match(source, /'后台运行'/);
+    assert.match(source, /'已就绪'/);
+    assert.doesNotMatch(source, /:\s*'完成'/);
+  }
 });

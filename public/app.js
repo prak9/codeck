@@ -272,7 +272,9 @@ function renderSessions() {
   }
   list.innerHTML = state.sessions.map((session, index) => {
     const status = resolveSessionStatus(session);
-    const statusText = status === 'working' ? '正在干活' : '完成';
+    const statusText = status === 'working'
+      ? session.agent?.activity === '后台任务运行中' ? '后台运行' : '正在干活'
+      : '已就绪';
     return `
     <div class="session-entry">
       <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
