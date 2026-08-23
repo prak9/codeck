@@ -49,6 +49,8 @@ CODECK_TOKEN='replace-with-a-long-secret' PORT=4310 HOST=0.0.0.0 npm start
 
 打开已有 tmux Agent 会话后无需“接管”：原来的 Coding CLI 会继续运行，手机输入会经服务端重新校验 provider、thread ID 和 tmux session，再只发送到该 CLI 的精确 pane。桌面终端和手机因此可以直接参与同一个 Codex、Claude Code 或 QoderCLI 会话；停止按钮会向同一 pane 发送 Escape，不会结束 CLI 或 tmux 会话。CLI 刚启动、尚未暴露持久化 thread ID 时，左栏会话仍可点击并发送首条消息；检测到真实 ID 后，Remote 会自动切换到结构化历史。Remote 仍使用结构化接口显示消息、工具活动和状态，并只在会话工作中或手机刚发送消息后短时刷新历史，避免空闲时反复读取造成卡顿。会话若已退出、切换到其他 Agent，或身份无法精确确认，发送会被拒绝并提示刷新。
 
+Remote 输入框左侧的 `＋` 支持从相册、相机或文件选择器添加附件，也可以直接粘贴图片或在桌面拖入文件。每次最多添加 10 个附件，单个文件最大 100 MB；发送时文件会先上传到 `~/.codeck/uploads/remote`，再把服务器路径交给 Codex、Claude Code 或 QoderCLI 读取。Shell 会话不会单独执行附件路径，必须先输入要运行的命令，Codeck 再把安全引用的路径追加到命令末尾。
+
 连接终端后，可以从剪贴板直接粘贴 PNG、JPEG、WebP 或 GIF 图片。Codeck 会将图片保存到服务用户的 `~/.codeck/uploads`（单张最大 10 MB），并把服务器文件路径输入当前会话，供支持图片路径的 Agent CLI 读取。
 
 也支持将本地文件/文件夹直接拖拽到终端区域。拖拽目录会保留目录结构，上传后的文件路径会按同样路径写入 `~/.codeck/uploads` 并在终端中自动写入对应路径。

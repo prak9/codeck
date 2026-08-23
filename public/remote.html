@@ -4,11 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#151517">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>Codeck Remote</title>
   <link rel="icon" href="data:,">
+  <script>
+    try {
+      const theme = localStorage.getItem('codeck-remote-theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = theme;
+      document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#ffffff' : '#151517';
+    } catch { document.documentElement.dataset.theme = 'dark'; }
+  </script>
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=16">
+  <link rel="stylesheet" href="/remote.css?v=23">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -69,14 +76,18 @@
           <span id="composerStatus"><i class="connection-dot"></i>正在连接</span>
           <button id="cwdButton" type="button" title="更改工作目录"><span id="cwdLabel">工作目录</span></button>
         </div>
-        <form class="composer" id="composerForm">
-          <button class="composer-plus" id="composerPlus" type="button" aria-label="选择 Agent 和工作目录">＋</button>
-          <textarea id="composerInput" rows="1" maxlength="100000" placeholder="给 Codex 发消息" aria-label="消息"></textarea>
-          <button class="send-button" id="sendButton" type="submit" aria-label="发送消息">
-            <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5 5m5-5 5 5"/></svg>
-            <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
-          </button>
-        </form>
+        <div class="composer-stack">
+          <div class="slash-command-menu" id="slashCommandMenu" role="listbox" aria-label="内置命令" hidden></div>
+          <div class="attachment-tray" id="attachmentTray" aria-label="待发送附件" aria-live="polite" hidden></div>
+          <form class="composer" id="composerForm">
+            <button class="composer-plus" id="composerPlus" type="button" aria-label="添加图片或文件" aria-haspopup="dialog" aria-controls="attachmentDialog">＋</button>
+            <textarea id="composerInput" role="combobox" rows="1" maxlength="100000" placeholder="给 Codex 发消息" aria-label="消息" aria-autocomplete="list" aria-controls="slashCommandMenu" aria-expanded="false" autocomplete="off" autocapitalize="none" spellcheck="false"></textarea>
+            <button class="send-button" id="sendButton" type="submit" aria-label="发送消息">
+              <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5 5m5-5 5 5"/></svg>
+              <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+            </button>
+          </form>
+        </div>
         <p class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
       </footer>
     </section>
@@ -103,9 +114,35 @@
     </form>
   </dialog>
 
+  <dialog class="sheet attachment-sheet" id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
+    <form method="dialog">
+      <div class="sheet-head"><div><p class="eyebrow">ATTACH</p><h2 id="attachmentDialogTitle">添加附件</h2></div><button class="close-button" value="cancel" aria-label="关闭附件选择">×</button></div>
+      <div class="attachment-options">
+        <button class="attachment-option" id="chooseImagesButton" type="button"><span class="attachment-option-icon" aria-hidden="true">▧</span><span><strong>照片或相机</strong><small>选择一张或多张图片</small></span></button>
+        <button class="attachment-option" id="chooseFilesButton" type="button"><span class="attachment-option-icon" aria-hidden="true">＋</span><span><strong>选择文件</strong><small>文档、代码、压缩包等</small></span></button>
+      </div>
+      <p class="sheet-note">最多 10 个附件，单个文件最大 100 MB。文件会安全上传到当前服务器。</p>
+    </form>
+  </dialog>
+  <input id="attachmentImageInput" type="file" accept="image/*" multiple hidden>
+  <input id="attachmentFileInput" type="file" multiple hidden>
+
+  <dialog class="sheet command-sheet" id="commandDialog" aria-labelledby="commandDialogTitle" aria-describedby="commandDialogSummary">
+    <form>
+      <div class="sheet-head">
+        <div><p class="eyebrow" id="commandDialogKicker">COMMAND</p><h2 id="commandDialogTitle">命令结果</h2><p class="sheet-note command-dialog-summary" id="commandDialogSummary"></p></div>
+        <button class="close-button" id="commandDialogClose" type="button" aria-label="关闭命令弹窗">×</button>
+      </div>
+      <div id="commandDialogContent"></div>
+    </form>
+  </dialog>
+
   <dialog class="sheet settings-sheet" id="settingsDialog">
     <form method="dialog" id="settingsForm">
       <div class="sheet-head"><div><p class="eyebrow">SESSION</p><h2>新对话设置</h2></div><button class="close-button" value="cancel" aria-label="关闭">×</button></div>
+      <label for="settingsTheme">界面主题</label>
+      <select id="settingsTheme" name="theme"><option value="dark">深色</option><option value="light">浅色（白底黑字）</option></select>
+      <p class="field-help">自动保存，只影响 Remote 界面。</p>
       <label for="settingsProvider">Agent</label>
       <select id="settingsProvider"></select>
       <label for="cwdInput">服务器工作目录</label>
@@ -116,6 +153,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=28"></script>
+  <script type="module" src="/remote.js?v=41"></script>
 </body>
 </html>

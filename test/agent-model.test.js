@@ -63,6 +63,27 @@ test('hides completed Qoder terminal output once structured history is available
   assert.equal(shouldShowTerminalActivity(thread), true);
 });
 
+test('keeps an explicit slash-command result across tmux polling while idle', () => {
+  const thread = normalizeAgentThread('codex', { id: 'thread-1', turns: [] });
+  thread.tmux = {
+    name: 'codeck', status: 'done', available: true,
+    commandOutput: { command: '/status', text: 'Model: gpt-5\nContext: 80% left' },
+  };
+
+  assert.equal(shouldShowTerminalActivity(thread), true);
+  applyTmuxSnapshot(thread, {
+    name: 'codeck', status: 'done', available: true,
+  });
+  assert.deepEqual(thread.tmux.commandOutput, {
+    command: '/status', text: 'Model: gpt-5\nContext: 80% left',
+  });
+  applyTmuxSnapshot(thread, {
+    name: 'codeck', status: 'working', available: true, liveOutput: '正在运行命令',
+  });
+  assert.equal(thread.tmux.commandOutput, undefined);
+  assert.equal(shouldShowTerminalActivity(thread), true);
+});
+
 test('refreshes a completed tmux Agent transcript even if its last live output is still attached', () => {
   const thread = normalizeAgentThread('qodercli', { id: 'thread-1', turns: [] });
   thread.tmux = {

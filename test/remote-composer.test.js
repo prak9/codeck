@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from '../public/remote-composer.js';
+import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionWorkingAfterSend } from '../public/remote-composer.js';
 
 test('a pending composer request cannot be reinterpreted as an interrupt', async () => {
   const pendingChanges = [];
@@ -42,4 +42,29 @@ test('opening a thread blocks send and stop actions until the target is ready', 
     disabled: true,
     stopMode: false,
   });
+});
+
+test('a completed local slash command does not leave an idle session busy', () => {
+  assert.equal(sessionWorkingAfterSend({ wasWorking: false, result: undefined }), true);
+  assert.equal(sessionWorkingAfterSend({
+    wasWorking: false, result: { terminalOutput: 'Model: gpt-5' },
+  }), false);
+  assert.equal(sessionWorkingAfterSend({
+    wasWorking: false, result: { terminalOutput: 'Reviewing', terminalWorking: true },
+  }), true);
+  assert.equal(sessionWorkingAfterSend({
+    wasWorking: true, result: { terminalOutput: 'Model: gpt-5' },
+  }), true);
+});
+
+test('an attachment-only Agent follow-up cannot be mistaken for stop', () => {
+  assert.equal(composerSubmitAction({ active: true, attachmentCount: 1, provider: 'codex', text: '' }), 'send');
+  assert.equal(composerSubmitAction({ active: false, attachmentCount: 1, provider: 'claude', text: '' }), 'send');
+});
+
+test('Shell attachments require a command and preserve the normal stop action', () => {
+  assert.equal(composerSubmitAction({ active: false, attachmentCount: 1, provider: 'shell', text: '' }), 'needsShellCommand');
+  assert.equal(composerSubmitAction({ active: true, attachmentCount: 1, provider: 'shell', text: '' }), 'needsShellCommand');
+  assert.equal(composerSubmitAction({ active: true, attachmentCount: 1, provider: 'shell', text: 'python inspect.py' }), 'send');
+  assert.equal(composerSubmitAction({ active: true, attachmentCount: 0, provider: 'shell', text: '' }), 'interrupt');
 });

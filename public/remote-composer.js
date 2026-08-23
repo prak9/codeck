@@ -31,3 +31,16 @@ export function composerControlState({ active, connected, hasText, opening, pend
       : pending ? '正在发送消息' : active && !hasText ? '停止当前任务' : '发送消息',
   };
 }
+
+export function composerSubmitAction({ active, attachmentCount, provider, text }) {
+  const hasText = Boolean(String(text || '').trim());
+  const hasAttachments = Number(attachmentCount || 0) > 0;
+  if (!hasText && hasAttachments && provider === 'shell') return 'needsShellCommand';
+  if (!hasText && active && !hasAttachments) return 'interrupt';
+  if (!hasText && !hasAttachments) return 'none';
+  return 'send';
+}
+
+export function sessionWorkingAfterSend({ wasWorking, result }) {
+  return Boolean(wasWorking || !result?.terminalOutput || result.terminalWorking);
+}

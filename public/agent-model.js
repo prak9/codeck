@@ -163,7 +163,9 @@ export function latestRunningTurn(thread) {
 export function applyTmuxSnapshot(thread, tmux) {
   if (!thread || !tmux) return false;
   const completed = thread.tmux?.status === 'working' && tmux.status === 'done';
-  thread.tmux = { ...tmux };
+  const started = thread.tmux?.status !== 'working' && tmux.status === 'working';
+  const commandOutput = thread.tmux?.commandOutput;
+  thread.tmux = { ...tmux, ...(!started && commandOutput ? { commandOutput } : {}) };
   return completed;
 }
 
@@ -181,6 +183,7 @@ export function shouldRefreshTmuxThread(thread, {
 export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;
+  if (tmux.commandOutput?.text) return true;
   if (thread.provider === 'shell' || tmux.available === false) return true;
   if (latestRunningTurn(thread)) return false;
   return tmux.status === 'working';

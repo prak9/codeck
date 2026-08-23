@@ -10,10 +10,18 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=18';
-import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
+} from './agent-model.js?v=20';
+import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionWorkingAfterSend } from './remote-composer.js?v=4';
+import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
+import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
+import {
+  completeSlashCommand,
+  slashCommandKeyAction,
+  slashCommandMenuAvailable,
+  slashCommandSuggestions,
+} from './slash-commands.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
 const PROVIDERS = {
@@ -30,6 +38,7 @@ let viewportFrame = 0;
 
 const state = {
   token: localStorage.getItem('codeck-token') || '',
+  theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   provider: localStorage.getItem('codeck-remote-provider') || 'codex',
   providers: Object.keys(PROVIDERS),
   socket: null,
@@ -56,6 +65,10 @@ const state = {
   threadRefreshUntil: 0,
   threadHandoff: null,
   threadOpening: null,
+  slashCommandIndex: 0,
+  slashCommandDismissedValue: null,
+  attachments: [],
+  attachmentDragDepth: 0,
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 
@@ -87,6 +100,16 @@ function preferredAgentProvider() {
   return state.providers[0] || Object.keys(PROVIDERS)[0];
 }
 
+function applyTheme(theme, { persist = false } = {}) {
+  const selected = theme === 'light' ? 'light' : 'dark';
+  state.theme = selected;
+  document.documentElement.dataset.theme = selected;
+  document.querySelector('meta[name="theme-color"]').content = selected === 'light' ? '#ffffff' : '#151517';
+  const select = $('#settingsTheme');
+  if (select) select.value = selected;
+  if (persist) localStorage.setItem('codeck-remote-theme', selected);
+}
+
 function setConnectionStatus(status, message) {
   state.connected = status === 'online';
   const dot = $('#drawerConnectionDot');
@@ -98,6 +121,140 @@ function setConnectionStatus(status, message) {
 function setLiveMessage(message) {
   state.liveMessage = message || '';
   $('#liveStatus').textContent = state.liveMessage;
+}
+
+function attachmentSize(size) {
+  const bytes = Number(size || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function attachmentBadge(file) {
+  if (file.type?.startsWith('image/')) return 'IMG';
+  const extension = file.name?.split('.').at(-1);
+  return extension && extension !== file.name ? extension.slice(0, 4).toUpperCase() : 'FILE';
+}
+
+function attachmentStatus(attachment) {
+  if (attachment.status === 'uploading') return '正在上传…';
+  if (attachment.status === 'uploaded') return `${attachmentSize(attachment.file.size)} · 已上传`;
+  if (attachment.status === 'error') return '上传失败，发送时重试';
+  return `${attachmentSize(attachment.file.size)} · 待上传`;
+}
+
+function renderAttachments() {
+  const tray = $('#attachmentTray');
+  if (!tray) return;
+  const disabled = composerRequestGate.pending || Boolean(state.threadOpening);
+  const items = state.attachments.map((attachment) => {
+    const item = element('div', `attachment-item${attachment.status === 'error' ? ' error' : ''}`);
+    const preview = element('span', 'attachment-preview', attachmentBadge(attachment.file));
+    if (attachment.previewUrl) {
+      const image = document.createElement('img');
+      image.src = attachment.previewUrl;
+      image.alt = '';
+      image.width = 44;
+      image.height = 44;
+      image.addEventListener('error', () => preview.replaceChildren(document.createTextNode('IMG')));
+      preview.replaceChildren(image);
+    }
+    const copy = element('span', 'attachment-copy');
+    copy.append(
+      element('strong', '', attachment.file.name || '未命名文件'),
+      element('small', '', attachmentStatus(attachment)),
+    );
+    const remove = element('button', 'attachment-remove', '×');
+    remove.type = 'button';
+    remove.disabled = disabled || attachment.status === 'uploading';
+    remove.setAttribute('aria-label', `移除附件 ${attachment.file.name || '未命名文件'}`);
+    remove.addEventListener('click', () => removeAttachment(attachment.id));
+    item.append(preview, copy, remove);
+    return item;
+  });
+  tray.replaceChildren(...items);
+  tray.hidden = !items.length;
+}
+
+function removeAttachment(id) {
+  const attachment = state.attachments.find((candidate) => candidate.id === id);
+  if (!attachment || attachment.status === 'uploading' || composerRequestGate.pending) return;
+  if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  state.attachments = state.attachments.filter((candidate) => candidate.id !== id);
+  renderAttachments();
+  renderComposerState();
+}
+
+function clearAttachments(attachments) {
+  const sentIds = new Set(attachments.map((attachment) => attachment.id));
+  for (const attachment of state.attachments) {
+    if (sentIds.has(attachment.id) && attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  }
+  state.attachments = state.attachments.filter((attachment) => !sentIds.has(attachment.id));
+  renderAttachments();
+}
+
+function addAttachmentFiles(files) {
+  const { accepted, rejected } = validateAttachmentSelection(files, state.attachments.length);
+  for (const file of accepted) {
+    state.attachments.push({
+      id: crypto.randomUUID(),
+      file,
+      previewUrl: file.type?.startsWith('image/') ? URL.createObjectURL(file) : '',
+      status: 'pending',
+      path: '',
+      error: '',
+    });
+  }
+  renderAttachments();
+  renderComposerState();
+  if (rejected.length) setLiveMessage([...new Set(rejected.map((item) => item.message))].join('；'));
+  else if (accepted.length && state.provider === 'shell') setLiveMessage('附件已就绪，请输入要执行的 Shell 命令。');
+  else if (accepted.length) setLiveMessage(`已添加 ${accepted.length} 个附件`);
+}
+
+async function uploadAttachment(attachment) {
+  if (attachment.path) return attachment.path;
+  attachment.status = 'uploading';
+  attachment.error = '';
+  renderAttachments();
+  const params = new URLSearchParams({
+    name: `${Date.now()}-${attachment.id.slice(0, 8)}-${attachment.file.name || 'attachment'}`,
+    relativePath: 'remote',
+  });
+  try {
+    const response = await fetch(`/api/uploads/files?${params}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        Authorization: `Bearer ${state.token}`,
+      },
+      body: attachment.file,
+    });
+    if (response.status === 401) throw new Error('访问令牌已失效');
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `上传失败 (${response.status})`);
+    }
+    const result = await response.json();
+    if (!result.path) throw new Error('服务器没有返回附件路径');
+    attachment.path = result.path;
+    attachment.status = 'uploaded';
+    renderAttachments();
+    return result.path;
+  } catch (error) {
+    attachment.status = 'error';
+    attachment.error = error.message;
+    renderAttachments();
+    throw error;
+  }
+}
+
+async function uploadAttachments(attachments) {
+  const outcomes = await Promise.allSettled(attachments.map(uploadAttachment));
+  const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+  if (failure) throw failure.reason;
+  return outcomes.map((outcome) => outcome.value);
 }
 
 async function validateOwnerToken(token) {
@@ -212,6 +369,9 @@ function handleSocketMessage(message) {
       updateThreadActivity(message.provider, message.params?.threadId, 'done');
     }
     if (message.provider === state.provider && state.thread?.id === message.params?.threadId) {
+      if (message.method === 'turn/started' && state.thread.tmux?.commandOutput) {
+        delete state.thread.tmux.commandOutput;
+      }
       state.thread = applyAgentEvent(state.thread, message.method, message.params);
       if (message.method === 'turn/completed') {
         clearPendingForTurn(message.provider, message.params?.threadId, message.params?.turn?.id);
@@ -634,6 +794,163 @@ function toolCard({ id, icon, title, body, status, className = '' }) {
   return details;
 }
 
+function skillCard({ name, description }) {
+  const row = element('div', 'skill-row');
+  row.append(
+    element('code', 'skill-name', name),
+    element('span', 'skill-description', description || ''),
+  );
+  return row;
+}
+
+function commandPendingMessage(text) {
+  const command = text.match(/^\/\S+/)?.[0];
+  if (command === '/model') {
+    const label = text.slice(command.length).trim();
+    return label ? `正在切换到 ${label}…` : '正在切换模型…';
+  }
+  if (command === '/status') return '正在读取状态…';
+  return '正在发送…';
+}
+
+function modelRowButton({ label, description }, selected) {
+  const button = element('button', `model-row${label === selected ? ' primary' : ''}`);
+  button.type = 'button';
+  button.append(
+    element('code', 'model-name', label),
+    element('span', 'model-description', description || '点击直接切换模型'),
+  );
+  button.addEventListener('click', () => {
+    const input = $('#composerInput');
+    const form = $('#composerForm');
+    if (!input || input.disabled || !form || composerRequestGate.pending || state.threadOpening) return;
+    dismissCommandDialog({ restoreFocus: false });
+    input.value = `/model ${label}`;
+    state.slashCommandIndex = 0;
+    state.slashCommandDismissedValue = input.value;
+    resizeComposer();
+    renderComposerState();
+    setLiveMessage(commandPendingMessage(input.value));
+    form.requestSubmit();
+  });
+  return button;
+}
+
+function modelCommandDialog(commandOutput) {
+  const parsed = parseModelCommandOutput(commandOutput.text);
+  const panel = element('div', 'model-panel');
+  if (parsed.items.length) {
+    const list = element('div', 'model-list');
+    parsed.items.forEach((item) => list.append(modelRowButton(item, parsed.selected)));
+    panel.append(list);
+  }
+  if (parsed.notes.length) {
+    const details = element('details', 'model-raw');
+    details.append(
+      element('summary', '', '原始输出'),
+      element('pre', 'model-raw-body', parsed.notes.join('\n')),
+    );
+    panel.append(details);
+  }
+  if (!parsed.items.length && !parsed.notes.length) {
+    panel.append(element('pre', 'terminal-live-output', commandOutput.text));
+  }
+  return {
+    kicker: 'MODEL',
+    title: '选择模型',
+    summary: [parsed.selected && `当前 ${parsed.selected}`, parsed.count]
+      .filter(Boolean).join(' · ') || parsed.heading || '选择后立即应用到当前会话',
+    content: panel,
+    focusSelector: '.model-row.primary, .model-row',
+  };
+}
+
+function skillsCommandDialog(commandOutput) {
+  const parsed = parseSkillsCommandOutput(commandOutput.text);
+  const panel = element('div', 'skills-panel');
+  if (parsed.items.length) {
+    const list = element('div', 'skills-list');
+    parsed.items.forEach((item) => list.append(skillCard(item)));
+    panel.append(list);
+  }
+  if (parsed.notes.length) {
+    const details = element('details', 'skills-raw');
+    details.append(
+      element('summary', '', '原始输出'),
+      element('pre', 'skills-raw-body', parsed.notes.join('\n')),
+    );
+    panel.append(details);
+  }
+  if (!parsed.items.length && !parsed.notes.length) {
+    panel.append(element('pre', 'terminal-live-output', commandOutput.text));
+  }
+  return {
+    kicker: 'SKILLS',
+    title: parsed.heading || 'Skills',
+    summary: parsed.count || `${parsed.items.length || parsed.notes.length || 0} 项`,
+    content: panel,
+  };
+}
+
+function commandDialogPresentation(commandOutput) {
+  if (commandOutput.command === '/model') return modelCommandDialog(commandOutput);
+  if (commandOutput.command === '/skills') return skillsCommandDialog(commandOutput);
+  const output = element('pre', 'terminal-live-output command-output-body', commandOutput.text);
+  output.tabIndex = 0;
+  return {
+    kicker: 'COMMAND',
+    title: commandOutput.command || '命令结果',
+    summary: '命令输出',
+    content: output,
+    focusSelector: '.command-output-body',
+  };
+}
+
+function openCommandDialog(commandOutput) {
+  const dialog = $('#commandDialog');
+  const commandKey = `${state.provider}:${state.thread?.id || ''}:${commandOutput.command}:${commandOutput.text}`;
+  if (dialog.open && dialog.dataset.commandKey === commandKey) return;
+  const presentation = commandDialogPresentation(commandOutput);
+  $('#commandDialogKicker').textContent = presentation.kicker;
+  $('#commandDialogTitle').textContent = presentation.title;
+  $('#commandDialogSummary').textContent = presentation.summary;
+  $('#commandDialogContent').replaceChildren(presentation.content);
+  dialog.dataset.commandKey = commandKey;
+  if (!dialog.open) {
+    $('#composerInput').blur();
+    dialog.showModal();
+  }
+  requestAnimationFrame(() => {
+    const target = (presentation.focusSelector && dialog.querySelector(presentation.focusSelector))
+      || $('#commandDialogClose');
+    target.focus({ preventScroll: true });
+  });
+}
+
+function dismissCommandDialog({ restoreFocus = true } = {}) {
+  const dialog = $('#commandDialog');
+  const commandOutput = state.thread?.tmux?.commandOutput;
+  if (commandOutput?.command?.startsWith('/')) {
+    delete state.thread.tmux.commandOutput;
+  }
+  if (dialog.open) dialog.close();
+  dialog.dataset.commandKey = '';
+  $('#commandDialogContent').replaceChildren();
+  scheduleThreadRender(false);
+  if (restoreFocus) requestAnimationFrame(() => $('#composerInput').focus({ preventScroll: true }));
+}
+
+function syncCommandDialog(commandOutput) {
+  const dialog = $('#commandDialog');
+  if (commandOutput) {
+    openCommandDialog(commandOutput);
+    return;
+  }
+  if (dialog.open) dialog.close();
+  dialog.dataset.commandKey = '';
+  $('#commandDialogContent').replaceChildren();
+}
+
 function itemNode(item, turn) {
   if (item.type === 'userMessage') return element('div', 'message user-message', userMessageText(item));
   if (item.type === 'agentMessage') {
@@ -720,22 +1037,19 @@ function renderTurn(turn) {
 }
 
 function terminalActivityNode() {
+  const content = terminalActivityContent();
   const section = element('section', 'turn terminal-activity');
+  section.dataset.activityStatus = content.status;
+  section.dataset.activityKind = 'text';
   const foot = element('div', 'turn-foot');
-  const shell = state.thread?.provider === 'shell';
-  const working = state.thread?.tmux?.status === 'working';
-  section.dataset.activityStatus = working ? 'working' : 'done';
   foot.setAttribute('role', 'status');
   foot.setAttribute('aria-live', 'polite');
-  if (working) foot.append(element('span', 'spinner'));
-  foot.append(element('span', 'working', shell
-    ? working ? 'Shell 命令正在运行' : 'Shell 当前输出'
-    : !working ? '终端当前输出'
-      : agentActivityText(state.thread) || '终端 Agent 正在工作'));
-  const output = element('pre', 'terminal-live-output', state.thread?.tmux?.liveOutput || '');
-  output.hidden = !state.thread?.tmux?.liveOutput;
+  if (content.working) foot.append(element('span', 'spinner'));
+  foot.append(element('span', 'working', content.label));
+  const output = element('pre', 'terminal-live-output', content.output);
+  output.hidden = !content.output;
   output.tabIndex = 0;
-  output.setAttribute('aria-label', 'tmux 当前实时输出');
+  output.setAttribute('aria-label', content.ariaLabel);
   section.append(foot, output);
   requestAnimationFrame(() => {
     if (output.isConnected) output.scrollTop = output.scrollHeight;
@@ -743,37 +1057,73 @@ function terminalActivityNode() {
   return section;
 }
 
+function terminalActivityContent() {
+  const commandOutput = state.thread?.tmux?.commandOutput;
+  if (commandOutput?.command?.startsWith('/') && commandOutput.text) return {
+    kind: 'command',
+    commandOutput,
+    status: 'command',
+    working: false,
+    label: `${commandOutput.command} 输出`,
+    output: commandOutput.text,
+    ariaLabel: `${commandOutput.command} 命令输出`,
+  };
+  if (commandOutput?.text) return {
+    kind: 'text',
+    status: 'command',
+    working: false,
+    label: `${commandOutput.command} 输出`,
+    output: commandOutput.text,
+    ariaLabel: `${commandOutput.command} 终端输出`,
+  };
+  const shell = state.thread?.provider === 'shell';
+  const working = state.thread?.tmux?.status === 'working';
+  return {
+    status: working ? 'working' : 'done',
+    working,
+    label: shell
+      ? working ? 'Shell 命令正在运行' : 'Shell 当前输出'
+      : !working ? '终端当前输出'
+        : agentActivityText(state.thread) || '终端 Agent 正在工作',
+    output: state.thread?.tmux?.liveOutput || '',
+    ariaLabel: 'tmux 当前实时输出',
+  };
+}
+
 function updateTerminalActivity() {
   const section = $('.terminal-activity');
   const current = $('.terminal-activity .working');
   const output = $('.terminal-activity .terminal-live-output');
-  const shell = state.thread?.provider === 'shell';
-  const status = state.thread?.tmux?.status === 'working' ? 'working' : 'done';
+  const content = terminalActivityContent();
   const visible = shouldShowTerminalActivity(state.thread);
   if (!visible) {
+    syncCommandDialog(null);
     if (current) scheduleThreadRender(false);
     return;
   }
+  if (content.kind === 'command') {
+    syncCommandDialog(content.commandOutput);
+    return;
+  }
+  syncCommandDialog(null);
   if (!current || !output) {
     scheduleThreadRender(false);
     return;
   }
-  if (section?.dataset.activityStatus !== status) {
+  if (section?.dataset.activityKind !== content.kind || section?.dataset.activityStatus !== content.status) {
     scheduleThreadRender(false);
     return;
   }
   const transcript = $('#transcript');
   const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
   const outputNearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
-  const activity = shell
-    ? status === 'working' ? 'Shell 命令正在运行' : 'Shell 当前输出'
-    : status !== 'working' ? '终端当前输出'
-      : agentActivityText(state.thread) || '终端 Agent 正在工作';
-  const liveOutput = state.thread?.tmux?.liveOutput || '';
-  const changed = current.textContent !== activity || output.textContent !== liveOutput || output.hidden !== !liveOutput;
-  if (current.textContent !== activity) current.textContent = activity;
-  if (output.textContent !== liveOutput) output.textContent = liveOutput;
-  output.hidden = !liveOutput;
+  const changed = current.textContent !== content.label
+    || output.textContent !== content.output
+    || output.hidden !== !content.output;
+  if (current.textContent !== content.label) current.textContent = content.label;
+  if (output.textContent !== content.output) output.textContent = content.output;
+  output.hidden = !content.output;
+  output.setAttribute('aria-label', content.ariaLabel);
   if (changed) requestAnimationFrame(() => {
     if (outputNearBottom) output.scrollTop = output.scrollHeight;
     if (nearBottom) transcript.scrollTop = transcript.scrollHeight;
@@ -937,7 +1287,8 @@ function renderThread() {
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const nodes = (state.thread?.turns || []).map(renderTurn);
-  if (shouldShowTerminalActivity(state.thread)) {
+  const terminalContent = terminalActivityContent();
+  if (shouldShowTerminalActivity(state.thread) && terminalContent.kind !== 'command') {
     nodes.push(terminalActivityNode());
   }
   $('#turns').replaceChildren(...nodes);
@@ -957,6 +1308,7 @@ function renderThread() {
     ...interactions.map(([key, entry]) => existingRequests.get(key) || interactionNode(key, entry)),
     ...approvals.map(([key, entry]) => existingRequests.get(key) || approvalNode(key, entry)),
   );
+  syncCommandDialog(terminalContent.kind === 'command' ? terminalContent.commandOutput : null);
   renderHeader();
   if (state.forceScroll || nearBottom) requestAnimationFrame(() => { transcript.scrollTop = transcript.scrollHeight; });
   state.forceScroll = false;
@@ -972,17 +1324,21 @@ function renderComposerState() {
   const active = Boolean(running || state.thread?.tmux?.status === 'working');
   const readOnly = Boolean(state.thread?.readOnly && !sessionName);
   const hasText = Boolean(input.value.trim());
+  const hasContent = hasText || Boolean(state.attachments.length && state.provider !== 'shell');
+  const shellAttachmentOnly = state.provider === 'shell' && state.attachments.length && !hasText;
   const pending = composerRequestGate.pending;
   const opening = Boolean(state.threadOpening);
   const controls = composerControlState({
-    active, connected: state.connected, hasText, opening, pending, readOnly,
+    active, connected: state.connected, hasText: hasContent, opening, pending, readOnly,
   });
-  sendButton.classList.toggle('stop-mode', controls.stopMode);
+  sendButton.classList.toggle('stop-mode', controls.stopMode && !shellAttachmentOnly);
   input.disabled = readOnly || opening;
   $('.composer').classList.toggle('read-only', readOnly);
   $('.composer').setAttribute('aria-busy', String(pending || opening));
-  sendButton.disabled = controls.disabled;
-  sendButton.setAttribute('aria-label', controls.ariaLabel);
+  sendButton.disabled = controls.disabled || Boolean(shellAttachmentOnly);
+  sendButton.setAttribute('aria-label', shellAttachmentOnly ? '请先输入 Shell 命令' : controls.ariaLabel);
+  $('#composerPlus').disabled = readOnly || opening || pending || !state.connected;
+  for (const remove of document.querySelectorAll('.attachment-remove')) remove.disabled = opening || pending;
   const status = $('#composerStatus');
   status.replaceChildren();
   const dot = element('i', `connection-dot ${state.connected ? active ? 'busy' : 'online' : 'problem'}`);
@@ -1002,6 +1358,80 @@ function renderComposerState() {
       ? '当前会话只读'
       : state.thread?.provider === 'shell' ? '输入 Shell 命令'
         : active ? '跟进当前任务' : sessionName ? `参与 ${providerDetails().name} 会话` : `给 ${providerDetails().name} 发消息`;
+  renderSlashCommandMenu();
+}
+
+function currentSlashCommandSuggestions() {
+  const input = $('#composerInput');
+  if (
+    !input
+    || input.disabled
+    || !state.connected
+    || state.threadOpening
+    || composerRequestGate.pending
+    || state.attachments.length
+    || state.slashCommandDismissedValue === input.value
+    || !slashCommandMenuAvailable({
+      provider: state.provider,
+      tmuxSession: state.thread?.tmux?.name,
+    })
+  ) return [];
+  return slashCommandSuggestions(state.provider, input.value);
+}
+
+function applySlashCommandCompletion(command) {
+  const input = $('#composerInput');
+  const completed = completeSlashCommand(input.value, command);
+  if (completed === input.value && completed !== command) return;
+  input.value = completed;
+  input.setSelectionRange(completed.length, completed.length);
+  state.slashCommandIndex = 0;
+  state.slashCommandDismissedValue = completed;
+  resizeComposer();
+  input.focus({ preventScroll: true });
+}
+
+function renderSlashCommandMenu() {
+  const input = $('#composerInput');
+  const menu = $('#slashCommandMenu');
+  if (!input || !menu) return;
+  const suggestions = currentSlashCommandSuggestions();
+  if (!suggestions.length) {
+    menu.hidden = true;
+    menu.replaceChildren();
+    menu.dataset.renderKey = '';
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    return;
+  }
+  state.slashCommandIndex = Math.min(Math.max(0, state.slashCommandIndex), suggestions.length - 1);
+  const renderKey = `${state.provider}:${input.value}:${state.slashCommandIndex}`;
+  input.setAttribute('aria-expanded', 'true');
+  input.setAttribute('aria-activedescendant', `slash-command-option-${state.slashCommandIndex}`);
+  if (!menu.hidden && menu.dataset.renderKey === renderKey) return;
+  const options = suggestions.map((suggestion, index) => {
+    const option = element('button', `slash-command-option${index === state.slashCommandIndex ? ' active' : ''}`);
+    option.type = 'button';
+    option.tabIndex = -1;
+    option.id = `slash-command-option-${index}`;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(index === state.slashCommandIndex));
+    option.append(
+      element('code', '', suggestion.command),
+      element('span', '', suggestion.description),
+    );
+    option.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+    });
+    option.addEventListener('click', (event) => {
+      event.preventDefault();
+      applySlashCommandCompletion(suggestion.command);
+    });
+    return option;
+  });
+  menu.replaceChildren(...options);
+  menu.dataset.renderKey = renderKey;
+  menu.hidden = false;
 }
 
 function resizeComposer() {
@@ -1019,11 +1449,19 @@ async function submitComposer() {
   const running = latestRunningTurn(state.thread);
   const sessionName = state.thread?.tmux?.name;
   const active = Boolean(running || state.thread?.tmux?.status === 'working');
+  const attachments = [...state.attachments];
+  const submitAction = composerSubmitAction({
+    active, attachmentCount: attachments.length, provider: state.provider, text,
+  });
   if (state.thread?.readOnly && !sessionName) {
     setLiveMessage('当前会话只读。');
     return;
   }
-  if (!text && active) {
+  if (submitAction === 'needsShellCommand') {
+    setLiveMessage('请先输入 Shell 命令，附件路径会安全追加到命令末尾。');
+    return;
+  }
+  if (submitAction === 'interrupt') {
     await composerRequestGate.run(async () => {
       try {
         setLiveMessage('正在停止任务…');
@@ -1046,54 +1484,86 @@ async function submitComposer() {
     });
     return;
   }
-  if (!text) return;
+  if (submitAction === 'none') return;
   await composerRequestGate.run(async () => {
-    setLiveMessage('正在发送…');
+    setLiveMessage(attachments.length ? `正在上传 ${attachments.length} 个附件…` : commandPendingMessage(text));
     let sentPendingSession = false;
     try {
+      const targetProvider = state.provider;
+      const targetThreadId = state.thread?.id || null;
+      const targetSessionName = sessionName || null;
+      const paths = await uploadAttachments(attachments);
+      if (
+        state.provider !== targetProvider
+        || (state.thread?.id || null) !== targetThreadId
+        || (state.thread?.tmux?.name || null) !== targetSessionName
+      ) throw new Error('会话已切换，附件未发送');
+      const message = attachmentMessage({ provider: targetProvider, text, paths });
+      if (!message) throw new Error('请输入要发送的内容');
+      if (attachments.length) setLiveMessage('附件已上传，正在发送…');
       if (!state.thread) {
         const result = await agentRequest('newThread', {
-          provider: state.provider,
+          provider: targetProvider,
           cwd: state.cwd || state.defaultCwd,
-          text,
+          text: message,
         });
         state.activeThreadId = result.thread.id;
-        state.thread = normalizeAgentThread(state.provider, result.thread);
+        state.thread = normalizeAgentThread(targetProvider, result.thread);
         scheduleThreadRender(true);
         await loadThreads({ quiet: true });
       } else if (sessionName) {
+        const wasWorking = state.thread.tmux.status === 'working';
         sentPendingSession = state.thread.tmux.available === false;
-        await agentRequest('sendSessionMessage', {
-          provider: state.provider,
-          threadId: state.thread.id,
+        const result = await agentRequest('sendSessionMessage', {
+          provider: targetProvider,
+          threadId: targetThreadId,
           tmuxSession: sessionName,
-          text,
+          text: message,
         });
-        state.thread.tmux.status = 'working';
-        state.thread.tmux.activityAt = Date.now();
+        const workingAfterSend = sessionWorkingAfterSend({ wasWorking, result });
+        const stillActive = state.provider === targetProvider
+          && state.thread?.id === targetThreadId
+          && state.thread?.tmux?.name === sessionName;
+        if (stillActive) {
+          delete state.thread.tmux.commandOutput;
+          if (result?.terminalOutput && !workingAfterSend) {
+            state.thread.tmux.commandOutput = {
+              command: message.match(/^\/\S*/)?.[0] || '终端命令',
+              text: result.terminalOutput,
+            };
+          }
+          state.thread.tmux.status = workingAfterSend ? 'working' : 'done';
+          state.thread.tmux.activityAt = Date.now();
+        }
         const listedThread = state.threads.find((candidate) => (
-          candidate.id === state.thread.id && candidate.provider === state.provider
+          candidate.id === targetThreadId && candidate.provider === targetProvider
         ));
         if (listedThread?.tmux) {
-          listedThread.tmux.status = 'working';
+          listedThread.tmux.status = workingAfterSend ? 'working' : 'done';
           listedThread.tmux.activityAt = Date.now();
         }
-        state.threadRefreshUntil = sentPendingSession ? 0 : Date.now() + 10_000;
+        if (stillActive) state.threadRefreshUntil = workingAfterSend && !sentPendingSession
+          ? Date.now() + 10_000
+          : 0;
         renderThreadList();
         renderComposerState();
-        if (sentPendingSession || state.provider === 'shell') loadThreads({ quiet: true }).catch(() => {});
-        else refreshActiveThread({ force: true }).catch(() => {});
+        if (stillActive) {
+          scheduleThreadRender(true);
+          if (sentPendingSession || targetProvider === 'shell') loadThreads({ quiet: true }).catch(() => {});
+          else if (workingAfterSend) refreshActiveThread({ force: true }).catch(() => {});
+        }
       } else {
         await agentRequest('sendMessage', {
-          provider: state.provider,
+          provider: targetProvider,
           threadId: state.thread.id,
           turnId: running?.id,
           mode: running ? 'steer' : 'followUp',
-          text,
+          text: message,
         });
         scheduleThreadRender(true);
       }
       input.value = draftAfterSuccessfulSend(input.value, draft);
+      clearAttachments(attachments);
       resizeComposer();
       setLiveMessage(sentPendingSession ? '消息已发送，正在同步对话…' : '');
     } catch (error) {
@@ -1119,7 +1589,38 @@ function openProviderDialog() {
   $('#providerDialog').showModal();
 }
 
+function openAttachmentDialog() {
+  const button = $('#composerPlus');
+  if (button.disabled) return;
+  $('#attachmentDialog').showModal();
+}
+
+function chooseAttachments(input) {
+  $('#attachmentDialog').close();
+  input.click();
+}
+
+function handleAttachmentInput(input) {
+  addAttachmentFiles(input.files);
+  input.value = '';
+}
+
+function hasDraggedFiles(event) {
+  return [...(event.dataTransfer?.types || [])].includes('Files');
+}
+
+function handleAttachmentPaste(event) {
+  const files = [...(event.clipboardData?.items || [])]
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  if (!files.length) return;
+  event.preventDefault();
+  addAttachmentFiles(files);
+}
+
 function openSettings() {
+  $('#settingsTheme').value = state.theme;
   $('#settingsProvider').value = preferredAgentProvider();
   $('#cwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
   $('#settingsDialog').showModal();
@@ -1151,10 +1652,60 @@ $('#drawerNewButton').addEventListener('click', () => startNewThread());
 $('#newThreadButton').addEventListener('click', () => startNewThread());
 $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
-$('#composerPlus').addEventListener('click', openSettings);
+$('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#cwdButton').addEventListener('click', openSettings);
-$('#composerInput').addEventListener('input', resizeComposer);
+$('#chooseImagesButton').addEventListener('click', () => chooseAttachments($('#attachmentImageInput')));
+$('#chooseFilesButton').addEventListener('click', () => chooseAttachments($('#attachmentFileInput')));
+$('#attachmentImageInput').addEventListener('change', () => handleAttachmentInput($('#attachmentImageInput')));
+$('#attachmentFileInput').addEventListener('change', () => handleAttachmentInput($('#attachmentFileInput')));
+$('#commandDialogClose').addEventListener('click', () => dismissCommandDialog());
+$('#commandDialog').addEventListener('cancel', (event) => {
+  event.preventDefault();
+  dismissCommandDialog();
+});
+$('#commandDialog').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) dismissCommandDialog();
+});
+$('#settingsTheme').addEventListener('change', (event) => applyTheme(event.target.value, { persist: true }));
+$('#composerInput').addEventListener('paste', handleAttachmentPaste);
+$('#composerInput').addEventListener('input', () => {
+  state.slashCommandIndex = 0;
+  state.slashCommandDismissedValue = null;
+  resizeComposer();
+});
+$('#composerInput').addEventListener('blur', () => {
+  if ($('#slashCommandMenu').hidden) return;
+  state.slashCommandDismissedValue = $('#composerInput').value;
+  renderSlashCommandMenu();
+});
 $('#composerInput').addEventListener('keydown', (event) => {
+  const slashCommandKey = event.key === 'ArrowDown'
+    || event.key === 'ArrowUp'
+    || event.key === 'Tab'
+    || event.key === 'Escape'
+    || event.key === 'Enter';
+  if (slashCommandKey && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && !event.isComposing) {
+    const action = slashCommandKeyAction({
+      key: event.key,
+      value: $('#composerInput').value,
+      suggestions: currentSlashCommandSuggestions(),
+      activeIndex: state.slashCommandIndex,
+    });
+    if (action) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (action.type === 'select') {
+        state.slashCommandIndex = action.index;
+        renderSlashCommandMenu();
+      } else if (action.type === 'complete') {
+        applySlashCommandCompletion(action.command);
+      } else {
+        state.slashCommandDismissedValue = $('#composerInput').value;
+        renderSlashCommandMenu();
+      }
+      return;
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     $('#composerForm').requestSubmit();
@@ -1163,6 +1714,29 @@ $('#composerInput').addEventListener('keydown', (event) => {
 $('#composerForm').addEventListener('submit', (event) => {
   event.preventDefault();
   submitComposer();
+});
+$('.composer-area').addEventListener('dragenter', (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  state.attachmentDragDepth += 1;
+  $('.composer-area').classList.add('drag-over');
+});
+$('.composer-area').addEventListener('dragover', (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+});
+$('.composer-area').addEventListener('dragleave', (event) => {
+  if (!hasDraggedFiles(event)) return;
+  state.attachmentDragDepth = Math.max(0, state.attachmentDragDepth - 1);
+  if (!state.attachmentDragDepth) $('.composer-area').classList.remove('drag-over');
+});
+$('.composer-area').addEventListener('drop', (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  state.attachmentDragDepth = 0;
+  $('.composer-area').classList.remove('drag-over');
+  addAttachmentFiles(event.dataTransfer.files);
 });
 $('#settingsForm').addEventListener('submit', (event) => {
   event.preventDefault();
@@ -1225,6 +1799,11 @@ document.addEventListener('visibilitychange', () => {
 window.visualViewport?.addEventListener('resize', syncViewportHeight);
 window.visualViewport?.addEventListener('scroll', syncViewportHeight);
 window.addEventListener('resize', syncViewportHeight);
+window.addEventListener('pagehide', () => {
+  for (const attachment of state.attachments) {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  }
+});
 setInterval(() => {
   if (state.connected && document.visibilityState === 'visible') loadThreads({ quiet: true }).catch(() => {});
 }, SESSION_LIST_POLL_MS);
@@ -1232,6 +1811,7 @@ setInterval(() => {
   refreshActiveThread().catch(() => {});
 }, THREAD_REFRESH_POLL_MS);
 
+applyTheme(state.theme);
 syncViewportHeight();
 renderProviderControls();
 renderThreadList();

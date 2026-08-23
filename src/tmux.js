@@ -239,6 +239,7 @@ export function resolveAgentActivityText(kind, output) {
 
 const LIVE_OUTPUT_MAX_LINES = 12;
 const LIVE_OUTPUT_MAX_LINE_LENGTH = 320;
+const SLASH_OUTPUT_MAX_LINES = 30;
 const SCREEN_SEPARATOR = /^[─━═-]{8,}$/u;
 
 function cleanScreenRows(output) {
@@ -383,6 +384,28 @@ export function resolveShellLiveOutput(output) {
   )).join('\n');
 }
 
+export function resolveSlashCommandOutput(output) {
+  const rows = cleanScreenRows(output);
+  while (rows.length && !rows[0]) rows.shift();
+  while (rows.length && !rows.at(-1)) rows.pop();
+  const modalEnd = rows.findLastIndex((line) => /^\s*[╰└╚].*[╯┘╝]\s*$/u.test(line));
+  const modalStart = modalEnd < 0 ? -1 : rows.slice(0, modalEnd)
+    .findLastIndex((line) => /^\s*[╭┌╔].*[╮┐╗]\s*$/u.test(line));
+  const visible = modalStart >= 0
+    ? rows.slice(modalStart + 1, modalEnd).map((line) => {
+      const content = /^\s*[│║](.*)[│║]\s*$/u.exec(line)?.[1];
+      return content == null ? line.trim() : content.trim();
+    })
+    : rows.slice(-SLASH_OUTPUT_MAX_LINES);
+  while (visible.length && !visible[0]) visible.shift();
+  while (visible.length && !visible.at(-1)) visible.pop();
+  return visible.slice(-SLASH_OUTPUT_MAX_LINES).map((line) => (
+    line.length > LIVE_OUTPUT_MAX_LINE_LENGTH
+      ? `${line.slice(0, LIVE_OUTPUT_MAX_LINE_LENGTH - 1)}…`
+      : line
+  )).join('\n');
+}
+
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
 // a custom statusline adds a row, and a modal such as /usage hides the footer outright.
 // Whether the pane is repainting at all survives every one of those, and it needs no
@@ -390,9 +413,13 @@ export function resolveShellLiveOutput(output) {
 // A working agent always animates something, at minimum the elapsed seconds in its
 // spinner, while an idle pane is byte for byte identical between polls.
 export function resolveScreenActivity(previous, output, now) {
-  const hash = createHash('sha1').update(String(output || '')).digest('hex');
+  const hash = screenHash(output);
   if (!previous) return { hash, changedAt: 0 };
   return { hash, changedAt: previous.hash === hash ? previous.changedAt : now };
+}
+
+function screenHash(output) {
+  return createHash('sha1').update(String(output || '')).digest('hex');
 }
 
 function capturePane(paneId) {
@@ -408,10 +435,13 @@ function readScreenSignals(session, screen, markers, now) {
   return { ...resolveScreenSignals(screen, markers), animating };
 }
 
-export function resolveWorkingState({ agentKind, screenSignals, paneCommands, hasBackgroundProcess = false }) {
-  if (agentKind) return Boolean(
-    hasBackgroundProcess || screenSignals?.busy || screenSignals?.background || screenSignals?.animating,
-  );
+export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) {
+  if (agentKind) {
+    // A detached task can outlive the turn that started it. It only keeps the Agent
+    // busy while the Agent itself still renders a running turn; a background-only
+    // footer is informational and must not hold the ready indicator open.
+    return Boolean(screenSignals?.busy || (screenSignals?.animating && !screenSignals?.background));
+  }
   return (paneCommands || []).some((command) => !isShellCommand(command));
 }
 
@@ -474,11 +504,10 @@ export async function listSessions() {
           agentKind,
           screenSignals,
           paneCommands: paneCommandsBySession.get(session.name) || [],
-          hasBackgroundProcess: detectedAgent?.hasBackgroundProcess,
         });
         const activity = detectedAgent && hasRunningProcess
           ? resolveAgentActivityText(agentKind, screenBySession.get(session.name))
-            || (screenSignals?.background || detectedAgent.hasBackgroundProcess ? '后台任务运行中' : '正在处理')
+            || (screenSignals?.background ? '后台任务运行中' : '正在处理')
           : '';
         const liveOutput = resolveAgentSessionLiveOutput(
           detectedAgent, hasRunningProcess, screenSignals, screenBySession.get(session.name),
@@ -548,6 +577,8 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
 let inputBufferSequence = 0;
 const sessionInputQueues = new Map();
 const PASTE_SUBMIT_DELAY_MS = 80;
+const SLASH_OUTPUT_DELAY_MS = 150;
+const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model']);
 
 function queueSessionInput(sessionName, operation) {
   const previous = sessionInputQueues.get(sessionName) || Promise.resolve();
@@ -575,10 +606,34 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const waitForPaste = overrides.waitForPaste
       || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
     if (provider !== 'shell' && text.startsWith('/') && !/[\r\n]/.test(text)) {
+      const command = text.trim().match(/^\/\S+/)?.[0] || '';
       await execTmux(['send-keys', '-l', '-t', paneId, text]);
       await waitForPaste();
       await execTmux(['send-keys', '-t', paneId, 'Enter']);
-      return;
+      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return {};
+      const waitForSlashOutput = overrides.waitForSlashOutput
+        || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
+      const captureSessionPane = overrides.capturePane || capturePane;
+      try {
+        await waitForSlashOutput();
+        const screen = await captureSessionPane(paneId);
+        const terminalOutput = resolveSlashCommandOutput(screen);
+        const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
+        if (!signals.busy && !signals.background) {
+          // A local command redraw (for example /status or /model) is complete work, not Agent
+          // animation. Seed that exact frame as the new idle baseline so the next
+          // session poll does not turn the ready indicator yellow for six seconds.
+          screenActivity.set(sessionName, { hash: screenHash(screen), changedAt: 0 });
+        }
+        return terminalOutput ? {
+          terminalOutput,
+          ...(signals.busy || signals.background ? { terminalWorking: true } : {}),
+        } : {};
+      } catch {
+        // The command was already delivered. A failed best-effort capture must not turn
+        // a successful local CLI action into a send error.
+        return {};
+      }
     }
     const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;

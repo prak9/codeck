@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -31,10 +31,10 @@ test('waits for an Agent to process bracketed paste before submitting with tmux 
   ]);
 });
 
-test('types a single-line Agent slash command literally before submitting it', async () => {
+test('captures the /status slash-command output after submitting it literally', async () => {
   const calls = [];
-  await sendSessionMessage({
-    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/model gpt-5',
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/status',
   }, {
     listTmuxSessions: async () => [{
       name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
@@ -42,13 +42,113 @@ test('types a single-line Agent slash command literally before submitting it', a
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'wait' }),
+    waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return Array.from({ length: 34 }, (_, index) => (
+        index === 33 ? '  gpt-5 · /data/code/codeck' : `status row ${index + 1}`
+      )).join('\n');
+    },
   });
 
+  assert.deepEqual(result, {
+    terminalOutput: [
+      'status row 5',
+      ...Array.from({ length: 28 }, (_, index) => `status row ${index + 6}`),
+      '  gpt-5 · /data/code/codeck',
+    ].join('\n'),
+  });
+  assert.deepEqual(calls, [
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/status'] },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'output-wait' },
+    { type: 'capture', paneId: '%7' },
+  ]);
+});
+
+test('captures the /model slash-command output after submitting it literally', async () => {
+  const calls = [];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/model gpt-5',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
+    waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return [
+        '• Current model',
+        '',
+        '╭────────────────────────╮',
+        '│ GPT-5                  │',
+        '│ Reasoning: High        │',
+        '╰────────────────────────╯',
+      ].join('\n');
+    },
+  });
+
+  assert.deepEqual(result, {
+    terminalOutput: [
+      'GPT-5',
+      'Reasoning: High',
+    ].join('\n'),
+  });
   assert.deepEqual(calls, [
     { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/model gpt-5'] },
     { type: 'wait' },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'output-wait' },
+    { type: 'capture', paneId: '%7' },
   ]);
+});
+
+test('does not special-case slash commands other than /status and /model', async () => {
+  const calls = [];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/skills',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return '╭────────────────────────╮\n│ Model: gpt-5           │\n╰────────────────────────╯';
+    },
+  });
+
+  assert.deepEqual(result, {});
+  assert.deepEqual(calls, [
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/skills'] },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+  ]);
+});
+
+test('isolates a slash-command modal from the surrounding terminal transcript', () => {
+  const pane = [
+    '• Prior agent output',
+    '',
+    '/status',
+    '',
+    '╭────────────────────────╮',
+    '│ Model: gpt-5           │',
+    '│ Context: 80% left      │',
+    '╰────────────────────────╯',
+    '',
+    '› Follow up',
+    '  gpt-5 · /data/codeck',
+  ].join('\n');
+
+  assert.equal(resolveSlashCommandOutput(pane), [
+    'Model: gpt-5',
+    'Context: 80% left',
+  ].join('\n'));
 });
 
 test('allows only the server-derived pending thread id before an Agent exposes its persistent id', async () => {
@@ -581,13 +681,16 @@ test('a completed claude turn is not mistaken for the codex working state', () =
   assert.equal(signals(CLAUDE_IDLE, 'codex').busy, false);
 });
 
-test('agent sessions are working while the agent runs or owns background tasks', () => {
+test('agent sessions are working only while the current turn is active', () => {
   const working = (screenSignals, hasBackgroundProcess = false) => resolveWorkingState({
     agentKind: 'claude', screenSignals, paneCommands: ['bash'], hasBackgroundProcess,
   });
   assert.equal(working({ busy: true, background: false }), true);
-  assert.equal(working({ busy: false, background: true }), true);
-  assert.equal(working({ busy: false, background: false }, true), true);
+  assert.equal(working({ busy: true, background: true }), true);
+  assert.equal(working({ busy: false, background: true }), false);
+  assert.equal(working({ busy: false, background: true, animating: true }), false);
+  assert.equal(working({ busy: false, background: false }, true), false);
+  assert.equal(working({ busy: false, background: false, animating: true }), true);
   assert.equal(working({ busy: false, background: false }), false);
   assert.equal(working(undefined), false);
 });
