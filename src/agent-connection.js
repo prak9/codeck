@@ -77,7 +77,9 @@ function tmuxThreads(provider, sessions, threads) {
 
   const candidates = [];
   for (const session of providerSessions) {
-    if (assignments.has(session) || !session.agent.cwd) continue;
+    // Resumed Agents can explicitly opt out when their CLI selects an older thread
+    // interactively. In that state a nearby transcript is not evidence of identity.
+    if (assignments.has(session) || !session.agent.cwd || session.agent.matchByStart === false) continue;
     const startedAt = timestampMs(session.agent.startedAt);
     if (!startedAt) continue;
     for (const thread of availableThreads) {

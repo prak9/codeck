@@ -161,15 +161,10 @@ export function latestRunningTurn(thread) {
 }
 
 export function applyTmuxSnapshot(thread, tmux) {
-  if (!thread || !tmux) return { completed: false, transcriptChanged: false };
-  const previousFinalOutput = qoderFinalOutputTurn(thread)?.items[0]?.text || '';
+  if (!thread || !tmux) return false;
   const completed = thread.tmux?.status === 'working' && tmux.status === 'done';
   thread.tmux = { ...tmux };
-  const nextFinalOutput = qoderFinalOutputTurn(thread)?.items[0]?.text || '';
-  return {
-    completed,
-    transcriptChanged: previousFinalOutput !== nextFinalOutput,
-  };
+  return completed;
 }
 
 export function shouldRefreshTmuxThread(thread, {
@@ -183,46 +178,9 @@ export function shouldRefreshTmuxThread(thread, {
   return working || now < refreshUntil;
 }
 
-function comparableAgentText(value) {
-  return String(value || '')
-    .split('\n')
-    .map((line) => line.trim().replace(/^[●•]\s*/, ''))
-    .filter((line) => line && !/^Credits\b.*(?:exhausted|remaining|\/usage|\/upgrade)/i.test(line))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-export function qoderFinalOutputTurn(thread) {
-  const tmux = thread?.tmux;
-  if (thread?.provider !== 'qodercli' || tmux?.status === 'working') return null;
-  const output = String(tmux?.liveOutput || '').trim();
-  if (!output) return null;
-
-  const latestTurn = asArray(thread.turns).at(-1);
-  const latestAnswer = latestTurn?.status !== 'inProgress'
-    ? [...asArray(latestTurn?.items)].reverse().find((item) => item?.type === 'agentMessage')?.text
-    : '';
-  const comparableOutput = comparableAgentText(output);
-  const comparableAnswer = comparableAgentText(latestAnswer);
-  if (comparableAnswer && (
-    comparableOutput === comparableAnswer
-    || Math.min(comparableOutput.length, comparableAnswer.length) >= 8
-      && comparableAnswer.includes(comparableOutput)
-  )) return null;
-
-  const id = `tmux-final:${tmux.name || thread.id}`;
-  return {
-    id,
-    status: 'completed',
-    items: [{ id: `${id}:message`, type: 'agentMessage', text: output }],
-  };
-}
-
 export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;
-  if (thread.provider === 'qodercli' && tmux.status !== 'working' && tmux.liveOutput) return false;
   if (thread.provider === 'shell' || tmux.available === false) return true;
   if (thread.provider === 'qodercli' && tmux.liveOutput) return true;
   if (latestRunningTurn(thread)) return false;

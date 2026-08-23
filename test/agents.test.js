@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
+import { agentKindFromCommand, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, resolveCodexSessionId } from '../src/agents.js';
 
 test('latest Codex session name wins for a renamed thread', () => {
   const content = [
@@ -93,6 +96,54 @@ test('extracts explicit Claude and Qoder session ids from CLI arguments', () => 
   assert.equal(parseResumedSessionId(`qodercli -r ${id}`), id);
   assert.equal(parseResumedSessionId(`qodercli --session-id=${id}`), id);
   assert.equal(parseResumedSessionId('qodercli --continue'), null);
+});
+
+test('recognizes Qoder commands that resume without an explicit session id', () => {
+  assert.equal(isQoderResumeCommand('qodercli --resume --yolo'), true);
+  assert.equal(isQoderResumeCommand('qodercli --continue'), true);
+  assert.equal(isQoderResumeCommand('qodercli --yolo'), false);
+});
+
+test('resolves a resumed Qoder session from the transcript opened by its process', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-qoder-fd-'));
+  try {
+    const qoderHome = path.join(root, '.qoder');
+    const project = path.join(qoderHome, 'projects', '-srv-project');
+    const otherProject = path.join(qoderHome, 'projects', '-srv-other');
+    const procRoot = path.join(root, 'proc');
+    const fdRoot = path.join(procRoot, '105873', 'fd');
+    const sessionId = '5ebc3421-1111-4111-8111-111111111111';
+    const otherId = 'd0d06e09-2222-4222-8222-222222222222';
+    fs.mkdirSync(project, { recursive: true });
+    fs.mkdirSync(otherProject, { recursive: true });
+    fs.mkdirSync(fdRoot, { recursive: true });
+    const transcript = path.join(project, `${sessionId}.jsonl`);
+    const otherTranscript = path.join(otherProject, `${otherId}.jsonl`);
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: 'workspace-directories', sessionId, directories: ['/srv/project'] }),
+      JSON.stringify({ type: 'assistant', sessionId, cwd: '/srv/project', message: { content: [{ type: 'text', text: 'Done' }] } }),
+    ].join('\n'));
+    fs.writeFileSync(otherTranscript, JSON.stringify({
+      type: 'workspace-directories', sessionId: otherId, directories: ['/srv/other'],
+    }));
+    fs.symlinkSync(transcript, path.join(fdRoot, '39'));
+    fs.symlinkSync(otherTranscript, path.join(fdRoot, '40'));
+
+    assert.equal(findQoderOpenSessionId(
+      [{ pid: 105873 }], qoderHome, '/srv/project', { procRoot },
+    ), sessionId);
+    assert.equal(findQoderOpenSessionId(
+      [{ pid: 105873 }], qoderHome, '/srv/missing', { procRoot },
+    ), null);
+    fs.writeFileSync(otherTranscript, JSON.stringify({
+      type: 'workspace-directories', sessionId: otherId, directories: ['/srv/project'],
+    }));
+    assert.equal(findQoderOpenSessionId(
+      [{ pid: 105873 }], qoderHome, '/srv/project', { procRoot },
+    ), null, 'ambiguous open transcripts must not be guessed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('reads the session registry written by current Claude and Qoder CLIs', () => {

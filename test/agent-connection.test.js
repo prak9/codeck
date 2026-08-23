@@ -110,7 +110,7 @@ test('matches a newly started tmux agent to its local SDK session without guessi
   const listTmuxSessions = async () => [
     {
       name: 'qoder-project', createdAt: 1_000, activityAt: 9_000, hasRunningProcess: false,
-      agent: { kind: 'qodercli', id: null, name: 'qoder-project', cwd: '/srv/project', startedAt: 1_700_000_000_000 },
+      agent: { kind: 'qodercli', id: null, name: 'qoder-project', cwd: '/srv/project', startedAt: 1_700_000_000_000, matchByStart: true },
     },
   ];
   const { backends, registry } = setup({ listTmuxSessions });
@@ -124,6 +124,28 @@ test('matches a newly started tmux agent to its local SDK session without guessi
 
   assert.deepEqual(result.data.map((thread) => thread.id), ['qoder-live']);
   assert.equal(result.data[0].tmux.name, 'qoder-project');
+});
+
+test('does not bind a bare Qoder resume to a nearby temporary transcript', async () => {
+  const listTmuxSessions = async () => [
+    {
+      name: 'qoder-resume', createdAt: 1_000, activityAt: 9_000, hasRunningProcess: false,
+      agent: {
+        kind: 'qodercli', id: null, name: 'qoder-resume', cwd: '/srv/project',
+        startedAt: 1_700_000_000_000, matchByStart: false,
+      },
+    },
+  ];
+  const { backends, registry } = setup({ listTmuxSessions });
+  backends.qodercli.listThreads = async () => ({ data: [
+    { id: 'temporary-session', cwd: '/srv/project', createdAt: 1_700_000_001 },
+    { id: 'actual-session', cwd: '/srv/project', createdAt: 1_700_000_030 },
+  ] });
+
+  const result = await registry.listThreads('qodercli');
+
+  assert.equal(result.data[0].id, 'tmux:qodercli:qoder-resume');
+  assert.equal(result.data[0].tmux.available, false);
 });
 
 test('advertises and routes all three providers through one owner-scoped socket', async () => {

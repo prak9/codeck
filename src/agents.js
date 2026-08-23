@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], previews: new Map() };
 
 export function parseCodexSessionIndex(content) {
@@ -69,6 +70,10 @@ export function agentKindFromCommand(command) {
 
 export function parseResumedSessionId(command) {
   return command.match(new RegExp(`(?:--resume(?:=|\\s+)|-r\\s+|--session-id(?:=|\\s+))(${UUID})`, 'i'))?.[1] || null;
+}
+
+export function isQoderResumeCommand(command) {
+  return /(?:^|\s)(?:--resume(?=$|[\s=])|-r(?=$|\s)|--continue(?=$|\s))/i.test(command);
 }
 
 export function parseRuntimeSessionRegistry(content) {
@@ -199,6 +204,67 @@ function processCwd(pid) {
   try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return null; }
 }
 
+function normalizedPath(value) {
+  if (!value) return null;
+  try { return fs.realpathSync(value); }
+  catch { return path.resolve(value); }
+}
+
+function qoderTranscriptMatches(file, id, cwd) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, 'r');
+    const length = Math.min(fs.fstatSync(descriptor).size, QODER_TRANSCRIPT_READ_LIMIT);
+    const buffer = Buffer.alloc(length);
+    fs.readSync(descriptor, buffer, 0, length, 0);
+    const expectedId = id.toLowerCase();
+    const expectedCwd = normalizedPath(cwd);
+    let idFound = false;
+    let cwdFound = false;
+    for (const line of buffer.toString('utf8').split('\n')) {
+      if (!line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(line); }
+      catch { continue; }
+      if (String(entry?.sessionId || '').toLowerCase() !== expectedId) continue;
+      idFound = true;
+      const directories = Array.isArray(entry.directories) ? entry.directories : [];
+      const candidates = [entry.cwd, ...directories].filter((value) => typeof value === 'string' && value);
+      if (candidates.some((candidate) => normalizedPath(candidate) === expectedCwd)) cwdFound = true;
+    }
+    return idFound && cwdFound;
+  } catch { return false; }
+  finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+}
+
+export function findQoderOpenSessionId(processes, qoderHome, cwd, { procRoot = '/proc' } = {}) {
+  if (!processes?.length || !qoderHome || !cwd) return null;
+  let projectsRoot;
+  try { projectsRoot = fs.realpathSync(path.join(qoderHome, 'projects')); }
+  catch { return null; }
+  const ids = new Set();
+  for (const process of processes) {
+    const fdRoot = path.join(procRoot, String(process.pid), 'fd');
+    let descriptors;
+    try { descriptors = fs.readdirSync(fdRoot); }
+    catch { continue; }
+    for (const descriptor of descriptors) {
+      let target;
+      try {
+        const link = fs.readlinkSync(path.join(fdRoot, descriptor));
+        target = fs.realpathSync(path.isAbsolute(link) ? link : path.resolve(fdRoot, link));
+      } catch { continue; }
+      const relative = path.relative(projectsRoot, target);
+      if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      if (relative.split(path.sep).length !== 2) continue;
+      const match = path.basename(target).match(new RegExp(`^(${UUID})\\.jsonl$`, 'i'));
+      if (!match || !qoderTranscriptMatches(target, match[1], cwd)) continue;
+      ids.add(match[1]);
+    }
+  }
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
 function readRuntimeSession(processes, configHome) {
   for (const process of processes) {
     try {
@@ -256,7 +322,19 @@ export async function detectPaneAgents(panes, env = process.env) {
       const name = findClaudeSlug(id, claudeHome) || pane.session;
       agents.set(pane.session, { kind: 'claude', id, name, ...runtime });
     } else {
-      agents.set(pane.session, { kind: 'qodercli', id: registered?.id || parseResumedSessionId(process.command), name: pane.session, ...runtime });
+      // A bare --resume selects a transcript inside Qoder's TUI, so its start time is
+      // not an identity. Prefer the runtime registry and explicit UUID, then the main
+      // transcript the live process has actually opened.
+      const explicitId = parseResumedSessionId(process.command);
+      const id = registered?.id || explicitId
+        || findQoderOpenSessionId(tree, qoderHome, runtime.cwd);
+      agents.set(pane.session, {
+        kind: 'qodercli',
+        id,
+        name: pane.session,
+        matchByStart: !isQoderResumeCommand(process.command),
+        ...runtime,
+      });
     }
   }
   return agents;

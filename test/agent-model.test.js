@@ -8,7 +8,6 @@ import {
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
-  qoderFinalOutputTurn,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
@@ -48,54 +47,17 @@ test('keeps terminal Agent activity visible while structured history is catching
   assert.equal(agentActivityText(thread), '');
 });
 
-test('promotes completed Qoder terminal output into an Agent answer', () => {
+test('shows captured Qoder output even when legacy tmux cannot expose a busy footer', () => {
   const thread = normalizeAgentThread('qodercli', { id: 'thread-1', turns: [] });
   thread.tmux = {
     name: 'qoder-work', status: 'done', available: true, liveOutput: 'Files changed: 3\nReady',
   };
 
-  assert.deepEqual(qoderFinalOutputTurn(thread), {
-    id: 'tmux-final:qoder-work',
-    status: 'completed',
-    items: [{
-      id: 'tmux-final:qoder-work:message',
-      type: 'agentMessage',
-      text: 'Files changed: 3\nReady',
-    }],
-  });
-  assert.equal(shouldShowTerminalActivity(thread), false);
-  thread.tmux.status = 'working';
-  assert.equal(qoderFinalOutputTurn(thread), null);
   assert.equal(shouldShowTerminalActivity(thread), true);
-  thread.tmux.status = 'done';
+  thread.turns.push({ id: 'turn-1', status: 'inProgress', items: [] });
+  assert.equal(shouldShowTerminalActivity(thread), true);
   delete thread.tmux.liveOutput;
   assert.equal(shouldShowTerminalActivity(thread), false);
-});
-
-test('does not duplicate Qoder output already present in structured history', () => {
-  const thread = normalizeAgentThread('qodercli', {
-    id: 'thread-1',
-    turns: [{
-      id: 'turn-1', status: 'completed', items: [{
-        id: 'answer', type: 'agentMessage', text: 'The final answer is ready.',
-      }],
-    }],
-  });
-  thread.tmux = {
-    name: 'qoder-work', status: 'done', available: true,
-    liveOutput: 'The final answer is ready.\n\nCredits remaining: 100',
-  };
-
-  assert.equal(qoderFinalOutputTurn(thread), null);
-  thread.turns[0].items[0].text = 'Summary: checks passed. The final answer is ready.';
-  thread.tmux.liveOutput = 'The final answer is ready.';
-  assert.equal(qoderFinalOutputTurn(thread), null);
-  thread.turns[0].items[0].text = 'The final';
-  assert.equal(qoderFinalOutputTurn(thread)?.items[0].text, 'The final answer is ready.');
-  thread.tmux.liveOutput = 'A newer terminal-only answer';
-  assert.equal(qoderFinalOutputTurn(thread)?.items[0].text, 'A newer terminal-only answer');
-  thread.provider = 'codex';
-  assert.equal(qoderFinalOutputTurn(thread), null);
 });
 
 test('refreshes a completed tmux Agent transcript even if its last live output is still attached', () => {
@@ -122,28 +84,16 @@ test('trusts tmux completion over a stale structured running turn', () => {
     name: 'codeck', status: 'working', available: true, liveOutput: '正在回复',
   };
 
-  const snapshot = applyTmuxSnapshot(thread, {
+  const completed = applyTmuxSnapshot(thread, {
     name: 'codeck', status: 'done', available: true, liveOutput: '最终回答',
   });
 
-  assert.deepEqual(snapshot, { completed: true, transcriptChanged: false });
+  assert.equal(completed, true);
   assert.equal(thread.tmux.status, 'done');
   assert.equal(latestRunningTurn(thread)?.id, 'turn-1');
   assert.equal(shouldRefreshTmuxThread(thread, {
     now: 10_000, refreshUntil: 20_000,
   }), true);
-});
-
-test('reports when completed Qoder output arrives after the initial transcript render', () => {
-  const thread = normalizeAgentThread('qodercli', { id: 'thread-1', turns: [] });
-  thread.tmux = { name: 'qoder-work', status: 'done', available: false };
-
-  const snapshot = applyTmuxSnapshot(thread, {
-    name: 'qoder-work', status: 'done', available: false, liveOutput: '最终回答正文',
-  });
-
-  assert.deepEqual(snapshot, { completed: false, transcriptChanged: true });
-  assert.equal(qoderFinalOutputTurn(thread)?.items[0].text, '最终回答正文');
 });
 
 test('builds one ordered sidebar from all tmux sessions', () => {
