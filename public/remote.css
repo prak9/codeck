@@ -63,7 +63,8 @@ button { cursor: pointer; }
 .thread-copy small { color: var(--muted); font-size: 10px; }
 .presence { width: 7px; height: 7px; border-radius: 50%; }
 .presence.done { background: #65d46e; box-shadow: 0 0 0 3px #65d46e18; }
-.presence.working { background: #ffd45a; box-shadow: 0 0 0 3px #ffd45a1f; }
+.presence.working,
+.presence.background { background: #ffd45a; box-shadow: 0 0 0 3px #ffd45a1f; }
 .thread-empty { padding: 52px 20px; color: var(--subtle); text-align: center; font-size: 11px; line-height: 1.6; }
 .thread-empty span { display: block; margin-bottom: 9px; font: 20px "Courier New", Courier, monospace; }
 .drawer-footer { min-height: 50px; padding: 0 17px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; color: var(--subtle); font-size: 10px; }
@@ -340,7 +341,8 @@ button { cursor: pointer; }
 :root[data-theme="light"] .thread-glyph { background: #00000005; color: #303033; }
 :root[data-theme="light"] .thread-row.active .thread-glyph { border-color: #00000016; background: #fff; color: #a43a11; }
 :root[data-theme="light"] .presence.done { background: #24823c; box-shadow: 0 0 0 3px #24823c18; }
-:root[data-theme="light"] .presence.working { background: #a66d00; box-shadow: 0 0 0 3px #a66d001c; }
+:root[data-theme="light"] .presence.working,
+:root[data-theme="light"] .presence.background { background: #a66d00; box-shadow: 0 0 0 3px #a66d001c; }
 :root[data-theme="light"] .connection-dot { box-shadow: 0 0 0 3px #0000000b; }
 :root[data-theme="light"] .connection-dot.online { box-shadow: 0 0 0 3px #16733318; }
 :root[data-theme="light"] .connection-dot.busy { background: #a66d00; box-shadow: 0 0 0 3px #a66d0018; }

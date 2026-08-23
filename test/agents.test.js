@@ -193,6 +193,8 @@ test('finds detached tasks by Agent session id without counting the Agent proces
   const codexId = '01a028e3-8058-73e0-bfc7-e7643f298b0f';
   const claudeId = '81207e37-ab34-4c76-973a-0ebabb4a6560';
   const qoderId = '5ebc3421-1111-4111-8111-111111111111';
+  const staleUtilityId = '11111111-2222-4333-8444-555555555555';
+  const orphanHelperId = '66666666-7777-4888-8999-aaaaaaaaaaaa';
   const processes = [
     { pid: 10, ppid: 1 },
     { pid: 11, ppid: 10 },
@@ -200,6 +202,8 @@ test('finds detached tasks by Agent session id without counting the Agent proces
     { pid: 30, ppid: 1 },
     { pid: 40, ppid: 1 },
     { pid: 50, ppid: 1 },
+    { pid: 60, ppid: 999 },
+    { pid: 70, ppid: 1 },
   ];
   try {
     for (const process of processes) fs.mkdirSync(path.join(root, String(process.pid)), { recursive: true });
@@ -208,6 +212,13 @@ test('finds detached tasks by Agent session id without counting the Agent proces
     fs.writeFileSync(path.join(root, '30', 'environ'), `CLAUDE_CODE_SESSION_ID=${claudeId}\0`);
     fs.writeFileSync(path.join(root, '40', 'environ'), `QODER_SESSION_ID=${qoderId}\0`);
     fs.writeFileSync(path.join(root, '50', 'environ'), 'CODEX_THREAD_ID=not-a-session\0');
+    fs.writeFileSync(path.join(root, '60', 'environ'), `CODEX_THREAD_ID=${staleUtilityId}\0`);
+    fs.writeFileSync(path.join(root, '70', 'environ'), `CODEX_THREAD_ID=${orphanHelperId}\0`);
+    for (const pid of [20, 30, 40]) {
+      fs.writeFileSync(path.join(root, String(pid), 'stat'), `${pid} (worker) S 1 ${pid} ${pid} 0 0 0\n`);
+    }
+    fs.writeFileSync(path.join(root, '60', 'stat'), '60 (firefox) S 999 60 60 0 0 0\n');
+    fs.writeFileSync(path.join(root, '70', 'stat'), '70 (crashhelper) S 1 60 60 0 0 0\n');
 
     assert.deepEqual(findDetachedAgentSessionIds(
       processes, new Set([10, 11]), { procRoot: root },

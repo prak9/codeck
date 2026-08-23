@@ -438,11 +438,15 @@ function readScreenSignals(session, screen, markers, now) {
 export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) {
   if (agentKind) {
     // A detached task can outlive the turn that started it. It only keeps the Agent
-    // busy while the Agent itself still renders a running turn; a background-only
-    // footer is informational and must not hold the ready indicator open.
+    // foreground-busy while the Agent still renders a running turn; background-only
+    // work is represented separately so it cannot enable the stop action.
     return Boolean(screenSignals?.busy || (screenSignals?.animating && !screenSignals?.background));
   }
   return (paneCommands || []).some((command) => !isShellCommand(command));
+}
+
+export function resolveAgentBackgroundState({ agent, screenSignals }) {
+  return Boolean(agent && (agent.hasBackgroundProcess || screenSignals?.background));
 }
 
 export async function listSessions() {
@@ -505,6 +509,10 @@ export async function listSessions() {
           screenSignals,
           paneCommands: paneCommandsBySession.get(session.name) || [],
         });
+        const hasBackgroundProcess = resolveAgentBackgroundState({
+          agent: detectedAgent,
+          screenSignals,
+        });
         const activity = detectedAgent && hasRunningProcess
           ? resolveAgentActivityText(agentKind, screenBySession.get(session.name))
             || (screenSignals?.background ? '后台任务运行中' : '正在处理')
@@ -514,6 +522,7 @@ export async function listSessions() {
         );
         const agent = detectedAgent ? {
           ...detectedAgent,
+          ...(hasBackgroundProcess ? { hasBackgroundProcess: true } : {}),
           ...(activity ? { activity } : {}),
           ...(liveOutput ? { liveOutput } : {}),
         } : null;

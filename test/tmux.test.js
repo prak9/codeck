@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -693,6 +693,21 @@ test('agent sessions are working only while the current turn is active', () => {
   assert.equal(working({ busy: false, background: false, animating: true }), true);
   assert.equal(working({ busy: false, background: false }), false);
   assert.equal(working(undefined), false);
+});
+
+test('only Agent-owned processes or Agent footer markers count as background work', () => {
+  assert.equal(resolveAgentBackgroundState({
+    agent: { kind: 'codex', hasBackgroundProcess: true },
+    screenSignals: { background: false },
+  }), true);
+  assert.equal(resolveAgentBackgroundState({
+    agent: { kind: 'claude' },
+    screenSignals: { background: true },
+  }), true);
+  assert.equal(resolveAgentBackgroundState({
+    agent: null,
+    screenSignals: { background: true },
+  }), false);
 });
 
 test('plain shell sessions are working while a pane runs something other than a shell', () => {

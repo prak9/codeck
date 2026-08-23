@@ -3,5 +3,6 @@ export function isSessionActive(session) {
 }
 
 export function resolveSessionStatus(session) {
-  return isSessionActive(session) ? 'working' : 'done';
+  if (isSessionActive(session)) return 'working';
+  return session?.agent?.hasBackgroundProcess ? 'background' : 'done';
 }

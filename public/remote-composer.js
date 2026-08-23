@@ -44,3 +44,8 @@ export function composerSubmitAction({ active, attachmentCount, provider, text }
 export function sessionWorkingAfterSend({ wasWorking, result }) {
   return Boolean(wasWorking || !result?.terminalOutput || result.terminalWorking);
 }
+
+export function sessionStatusAfterSend({ previousStatus, result }) {
+  if (sessionWorkingAfterSend({ wasWorking: previousStatus === 'working', result })) return 'working';
+  return previousStatus === 'background' ? 'background' : 'done';
+}

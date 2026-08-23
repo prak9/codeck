@@ -35,7 +35,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=23/);
+  assert.match(html, /\/remote\.css\?v=24/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -105,10 +105,22 @@ test('all slash command results use the same dismissible dialog', () => {
 
 test('normal and remote sidebars use the same ready and background status labels', () => {
   for (const source of [appJs, remoteJs]) {
+    assert.match(source, /status === 'background'/);
     assert.match(source, /'后台运行'/);
     assert.match(source, /'已就绪'/);
     assert.doesNotMatch(source, /:\s*'完成'/);
   }
+  for (const source of [appCss, css]) {
+    assert.match(source, /\.presence\.background/);
+  }
+});
+
+test('a completed tmux turn waits for the authoritative session status', () => {
+  assert.doesNotMatch(
+    remoteJs,
+    /message\.method === 'turn\/completed'\)\s*\{\s*updateThreadActivity\([^;]*'done'/s,
+  );
+  assert.match(remoteJs, /message\.method === 'turn\/completed'[\s\S]*loadThreads\(\{ quiet: true \}\)/);
 });
 
 test('remote slash commands use explicit pending status messages', () => {

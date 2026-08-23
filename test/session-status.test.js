@@ -16,6 +16,17 @@ test('session is working when process is running regardless of output window', (
   assert.equal(resolveSessionStatus(session), 'working');
 });
 
+test('session is not ready while an Agent-owned background process is running', () => {
+  const session = {
+    hasRunningProcess: false,
+    agent: { hasBackgroundProcess: true },
+  };
+  assert.equal(isSessionActive(session), false);
+  assert.equal(resolveSessionStatus(session), 'background');
+  session.hasRunningProcess = true;
+  assert.equal(resolveSessionStatus(session), 'working');
+});
+
 test('session is done even if only file activity exists', () => {
   const session = {
     hasRunningProcess: false,

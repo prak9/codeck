@@ -40,7 +40,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid #ff8157; outline-
 .status-dot, .presence { width: 7px; height: 7px; border-radius: 50%; background: #ffca3a; }
 .status-dot { background: #66666b; }
 .presence.done { background: #65d46e; box-shadow: 0 0 0 3px #65d46e18; }
-.presence.working { background: #ffd45a; box-shadow: 0 0 0 3px #ffd45a1f; }
+.presence.working,
+.presence.background { background: #ffd45a; box-shadow: 0 0 0 3px #ffd45a1f; }
 .presence.problem,
 .presence.intervention { background: #ff5c5c; box-shadow: 0 0 0 3px #ff5c5c18; }
 

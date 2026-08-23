@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionWorkingAfterSend } from '../public/remote-composer.js';
+import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend, sessionWorkingAfterSend } from '../public/remote-composer.js';
 
 test('a pending composer request cannot be reinterpreted as an interrupt', async () => {
   const pendingChanges = [];
@@ -55,6 +55,18 @@ test('a completed local slash command does not leave an idle session busy', () =
   assert.equal(sessionWorkingAfterSend({
     wasWorking: true, result: { terminalOutput: 'Model: gpt-5' },
   }), true);
+});
+
+test('a local command cannot make a background session look ready', () => {
+  assert.equal(sessionStatusAfterSend({
+    previousStatus: 'background', result: { terminalOutput: 'Model: gpt-5' },
+  }), 'background');
+  assert.equal(sessionStatusAfterSend({
+    previousStatus: 'done', result: { terminalOutput: 'Model: gpt-5' },
+  }), 'done');
+  assert.equal(sessionStatusAfterSend({
+    previousStatus: 'background', result: undefined,
+  }), 'working');
 });
 
 test('an attachment-only Agent follow-up cannot be mistaken for stop', () => {

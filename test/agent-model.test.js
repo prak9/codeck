@@ -100,14 +100,22 @@ test('refreshes a completed tmux Agent transcript even if its last live output i
 });
 
 test('does not reload a completed transcript while only a detached background task is running', () => {
-  const thread = normalizeAgentThread('codex', { id: 'thread-1', turns: [] });
-  thread.tmux = {
-    name: 'research', status: 'working', available: true, activity: '后台任务运行中',
-  };
+  const [thread] = tmuxSessionsToThreads([{
+    name: 'research', activityAt: 10_000, status: 'background',
+    agent: { kind: 'codex', id: 'thread-1', name: 'Research', activity: '后台任务运行中' },
+  }]);
 
+  assert.equal(thread.tmux.status, 'background');
   assert.equal(shouldRefreshTmuxThread(thread, {
     now: 10_000, refreshUntil: 0,
   }), false);
+  assert.equal(shouldShowTerminalActivity(thread), false);
+
+  thread.tmux.status = 'working';
+  assert.equal(applyTmuxSnapshot(thread, {
+    ...thread.tmux,
+    status: 'background',
+  }), true);
 });
 
 test('trusts tmux completion over a stale structured running turn', () => {

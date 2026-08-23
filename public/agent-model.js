@@ -35,7 +35,9 @@ export function tmuxSessionsToThreads(sessions) {
         name: session.name,
         title: session.agent?.name || session.name,
         activityAt: session.activityAt,
-        status: session.status === 'working' ? 'working' : 'done',
+        status: session.status === 'working' || session.status === 'background'
+          ? session.status
+          : 'done',
         available,
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
         ...(liveOutput ? { liveOutput } : {}),
@@ -162,7 +164,7 @@ export function latestRunningTurn(thread) {
 
 export function applyTmuxSnapshot(thread, tmux) {
   if (!thread || !tmux) return false;
-  const completed = thread.tmux?.status === 'working' && tmux.status === 'done';
+  const completed = thread.tmux?.status === 'working' && tmux.status !== 'working';
   const started = thread.tmux?.status !== 'working' && tmux.status === 'working';
   const commandOutput = thread.tmux?.commandOutput;
   thread.tmux = { ...tmux, ...(!started && commandOutput ? { commandOutput } : {}) };

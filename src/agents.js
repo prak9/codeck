@@ -158,11 +158,23 @@ export function paneProcessTree(rootPid, processes) {
   return result;
 }
 
+function isDetachedProcessLeader(process, procRoot) {
+  if (process.ppid !== 1) return false;
+  try {
+    const stat = fs.readFileSync(path.join(procRoot, String(process.pid), 'stat'), 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    return Number(fields[2]) === process.pid && Number(fields[3]) === process.pid;
+  } catch { return false; }
+}
+
 export function findDetachedAgentSessionIds(processes, attachedPids, { procRoot = '/proc' } = {}) {
   const ids = new Set();
   const sessionId = new RegExp(`^${UUID}$`, 'i');
   for (const process of processes || []) {
-    if (attachedPids?.has(process.pid)) continue;
+    // Every tool subprocess inherits the Agent session id. Count only independently
+    // detached task leaders: direct app-server children can be abandoned utilities,
+    // while reparented crash/helper children are not tasks in their own right.
+    if (attachedPids?.has(process.pid) || !isDetachedProcessLeader(process, procRoot)) continue;
     let entries;
     try { entries = fs.readFileSync(path.join(procRoot, String(process.pid), 'environ'), 'utf8').split('\0'); }
     catch { continue; }

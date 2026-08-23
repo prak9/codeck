@@ -10,8 +10,8 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=20';
-import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionWorkingAfterSend } from './remote-composer.js?v=4';
+} from './agent-model.js?v=21';
+import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=2';
@@ -365,9 +365,9 @@ function handleSocketMessage(message) {
   if (message.type === 'event') {
     if (message.method === 'turn/started' || message.method === 'item/started') {
       updateThreadActivity(message.provider, message.params?.threadId, 'working');
-    } else if (message.method === 'turn/completed') {
-      updateThreadActivity(message.provider, message.params?.threadId, 'done');
     }
+    // A completed turn may leave Agent-owned work behind. The tmux snapshot loaded
+    // below decides between background and done instead of flashing a false ready state.
     if (message.provider === state.provider && state.thread?.id === message.params?.threadId) {
       if (message.method === 'turn/started' && state.thread.tmux?.commandOutput) {
         delete state.thread.tmux.commandOutput;
@@ -703,10 +703,12 @@ function renderThreadList() {
     const copy = element('span', 'thread-copy');
     const tmux = thread.tmux || {};
     const title = tmux.name || thread.name || thread.preview || '未命名会话';
-    const status = tmux.status === 'working' ? 'working' : 'done';
+    const status = tmux.status === 'working' || tmux.status === 'background'
+      ? tmux.status
+      : 'done';
     const statusText = status === 'working'
-      ? tmux.activity === '后台任务运行中' ? '后台运行' : '正在干活'
-      : '已就绪';
+      ? '正在干活'
+      : status === 'background' ? '后台运行' : '已就绪';
     const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
     copy.append(
       element('b', '', title),
@@ -1322,6 +1324,7 @@ function renderComposerState() {
   const activity = agentActivityText(state.thread);
   const sessionName = state.thread?.tmux?.name;
   const active = Boolean(running || state.thread?.tmux?.status === 'working');
+  const background = state.thread?.tmux?.status === 'background';
   const readOnly = Boolean(state.thread?.readOnly && !sessionName);
   const hasText = Boolean(input.value.trim());
   const hasContent = hasText || Boolean(state.attachments.length && state.provider !== 'shell');
@@ -1341,7 +1344,7 @@ function renderComposerState() {
   for (const remove of document.querySelectorAll('.attachment-remove')) remove.disabled = opening || pending;
   const status = $('#composerStatus');
   status.replaceChildren();
-  const dot = element('i', `connection-dot ${state.connected ? active ? 'busy' : 'online' : 'problem'}`);
+  const dot = element('i', `connection-dot ${state.connected ? active || background ? 'busy' : 'online' : 'problem'}`);
   const message = opening
     ? '正在读取会话…'
     : !state.connected
@@ -1349,7 +1352,8 @@ function renderComposerState() {
       : sessionName
         ? state.thread?.provider === 'shell'
           ? active ? 'Shell 命令正在运行 · 可直接输入' : '已连接 Shell 会话 · 可直接输入'
-          : active ? `${activity || '终端 Agent 正在工作'} · 可直接输入` : '已连接当前终端会话 · 可直接输入'
+          : active ? `${activity || '终端 Agent 正在工作'} · 可直接输入`
+            : background ? 'Agent 后台任务运行中 · 可直接输入' : '已连接当前终端会话 · 可直接输入'
         : readOnly ? '当前会话只读' : active ? `${activity || '正在处理'} · 可继续输入` : '已连接';
   status.append(dot, document.createTextNode(message));
   input.placeholder = opening
@@ -1512,7 +1516,7 @@ async function submitComposer() {
         scheduleThreadRender(true);
         await loadThreads({ quiet: true });
       } else if (sessionName) {
-        const wasWorking = state.thread.tmux.status === 'working';
+        const previousStatus = state.thread.tmux.status;
         sentPendingSession = state.thread.tmux.available === false;
         const result = await agentRequest('sendSessionMessage', {
           provider: targetProvider,
@@ -1520,7 +1524,8 @@ async function submitComposer() {
           tmuxSession: sessionName,
           text: message,
         });
-        const workingAfterSend = sessionWorkingAfterSend({ wasWorking, result });
+        const nextStatus = sessionStatusAfterSend({ previousStatus, result });
+        const workingAfterSend = nextStatus === 'working';
         const stillActive = state.provider === targetProvider
           && state.thread?.id === targetThreadId
           && state.thread?.tmux?.name === sessionName;
@@ -1532,14 +1537,14 @@ async function submitComposer() {
               text: result.terminalOutput,
             };
           }
-          state.thread.tmux.status = workingAfterSend ? 'working' : 'done';
+          state.thread.tmux.status = nextStatus;
           state.thread.tmux.activityAt = Date.now();
         }
         const listedThread = state.threads.find((candidate) => (
           candidate.id === targetThreadId && candidate.provider === targetProvider
         ));
         if (listedThread?.tmux) {
-          listedThread.tmux.status = workingAfterSend ? 'working' : 'done';
+          listedThread.tmux.status = nextStatus;
           listedThread.tmux.activityAt = Date.now();
         }
         if (stillActive) state.threadRefreshUntil = workingAfterSend && !sentPendingSession
