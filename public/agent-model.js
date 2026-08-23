@@ -182,9 +182,8 @@ export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;
   if (thread.provider === 'shell' || tmux.available === false) return true;
-  if (thread.provider === 'qodercli' && tmux.liveOutput) return true;
   if (latestRunningTurn(thread)) return false;
-  return tmux.status === 'working' || Boolean(tmux.liveOutput);
+  return tmux.status === 'working';
 }
 
 export function agentActivityText(thread) {

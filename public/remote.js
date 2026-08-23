@@ -10,7 +10,7 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=17';
+} from './agent-model.js?v=18';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';

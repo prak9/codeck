@@ -47,17 +47,20 @@ test('keeps terminal Agent activity visible while structured history is catching
   assert.equal(agentActivityText(thread), '');
 });
 
-test('shows captured Qoder output even when legacy tmux cannot expose a busy footer', () => {
+test('hides completed Qoder terminal output once structured history is available', () => {
   const thread = normalizeAgentThread('qodercli', { id: 'thread-1', turns: [] });
   thread.tmux = {
     name: 'qoder-work', status: 'done', available: true, liveOutput: 'Files changed: 3\nReady',
   };
 
+  assert.equal(shouldShowTerminalActivity(thread), false);
+  thread.tmux.status = 'working';
   assert.equal(shouldShowTerminalActivity(thread), true);
   thread.turns.push({ id: 'turn-1', status: 'inProgress', items: [] });
-  assert.equal(shouldShowTerminalActivity(thread), true);
-  delete thread.tmux.liveOutput;
   assert.equal(shouldShowTerminalActivity(thread), false);
+  thread.tmux.status = 'done';
+  thread.tmux.available = false;
+  assert.equal(shouldShowTerminalActivity(thread), true);
 });
 
 test('refreshes a completed tmux Agent transcript even if its last live output is still attached', () => {
