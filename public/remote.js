@@ -12,6 +12,7 @@ import {
   userMessageText,
 } from './agent-model.js?v=17';
 import { composerControlState, createComposerRequestGate, draftAfterSuccessfulSend } from './remote-composer.js?v=2';
+import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
@@ -669,11 +670,43 @@ function itemNode(item, turn) {
   return toolCard({ id: item.id, icon: '·', title: item.type || 'Agent 事件', body: safeJson(item), status: item.status || 'completed' });
 }
 
+function agentOutputActions(text) {
+  const actions = element('div', 'agent-message-actions');
+  const button = element('button', 'message-copy-button', '复制输出');
+  button.type = 'button';
+  button.setAttribute('aria-label', '复制本轮模型输出');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await writeAgentOutputToClipboard(text);
+      button.dataset.copyState = 'success';
+      button.textContent = '已复制';
+      setLiveMessage('已复制模型输出');
+    } catch (error) {
+      button.dataset.copyState = 'error';
+      button.textContent = '复制失败';
+      setLiveMessage(error.message);
+    }
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.disabled = false;
+      delete button.dataset.copyState;
+      button.textContent = '复制输出';
+    }, 1_600);
+  });
+  actions.append(button);
+  return actions;
+}
+
 function renderTurn(turn) {
   const section = element('section', 'turn');
   section.dataset.turnId = turn.id;
   for (const item of turn.items || []) section.append(itemNode(item, turn));
   if (turn.error) section.append(element('div', 'turn-error', turn.error));
+  const output = agentOutputText(turn);
+  if (output && turn.status !== 'inProgress' && turn.status !== 'running') {
+    section.append(agentOutputActions(output));
+  }
   const foot = element('div', 'turn-foot');
   if (turn.status === 'inProgress') foot.append(element('span', 'spinner'), element('span', 'working', '正在处理'));
   else {

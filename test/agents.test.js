@@ -104,30 +104,32 @@ test('recognizes Qoder commands that resume without an explicit session id', () 
   assert.equal(isQoderResumeCommand('qodercli --yolo'), false);
 });
 
-test('resolves a resumed Qoder session from the transcript opened by its process', () => {
+test('resolves a resumed Qoder session from its open segment log and validates the main transcript', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-qoder-fd-'));
   try {
     const qoderHome = path.join(root, '.qoder');
     const project = path.join(qoderHome, 'projects', '-srv-project');
-    const otherProject = path.join(qoderHome, 'projects', '-srv-other');
+    const logProject = path.join(qoderHome, 'logs', 'sessions', '-srv-project');
     const procRoot = path.join(root, 'proc');
     const fdRoot = path.join(procRoot, '105873', 'fd');
     const sessionId = '5ebc3421-1111-4111-8111-111111111111';
-    const otherId = 'd0d06e09-2222-4222-8222-222222222222';
+    const temporaryId = '1b59ca82-2222-4222-8222-222222222222';
     fs.mkdirSync(project, { recursive: true });
-    fs.mkdirSync(otherProject, { recursive: true });
     fs.mkdirSync(fdRoot, { recursive: true });
     const transcript = path.join(project, `${sessionId}.jsonl`);
-    const otherTranscript = path.join(otherProject, `${otherId}.jsonl`);
+    const temporaryTranscript = path.join(project, `${temporaryId}.jsonl`);
+    const segment = path.join(logProject, sessionId, 'segments', '2026-08-23T10-00-00-p105873.jsonl');
+    const temporarySegment = path.join(logProject, temporaryId, 'segments', '2026-08-23T09-59-59-p105873.jsonl');
+    fs.mkdirSync(path.dirname(segment), { recursive: true });
+    fs.mkdirSync(path.dirname(temporarySegment), { recursive: true });
     fs.writeFileSync(transcript, [
       JSON.stringify({ type: 'workspace-directories', sessionId, directories: ['/srv/project'] }),
       JSON.stringify({ type: 'assistant', sessionId, cwd: '/srv/project', message: { content: [{ type: 'text', text: 'Done' }] } }),
     ].join('\n'));
-    fs.writeFileSync(otherTranscript, JSON.stringify({
-      type: 'workspace-directories', sessionId: otherId, directories: ['/srv/other'],
-    }));
-    fs.symlinkSync(transcript, path.join(fdRoot, '39'));
-    fs.symlinkSync(otherTranscript, path.join(fdRoot, '40'));
+    fs.writeFileSync(segment, '{"level":"info"}\n');
+    fs.writeFileSync(temporarySegment, '{"level":"info"}\n');
+    fs.symlinkSync(segment, path.join(fdRoot, '39'));
+    fs.symlinkSync(temporarySegment, path.join(fdRoot, '40'));
 
     assert.equal(findQoderOpenSessionId(
       [{ pid: 105873 }], qoderHome, '/srv/project', { procRoot },
@@ -135,12 +137,20 @@ test('resolves a resumed Qoder session from the transcript opened by its process
     assert.equal(findQoderOpenSessionId(
       [{ pid: 105873 }], qoderHome, '/srv/missing', { procRoot },
     ), null);
-    fs.writeFileSync(otherTranscript, JSON.stringify({
-      type: 'workspace-directories', sessionId: otherId, directories: ['/srv/project'],
+    fs.writeFileSync(temporaryTranscript, JSON.stringify({
+      type: 'workspace-directories', sessionId: temporaryId, directories: ['/srv/project'],
     }));
     assert.equal(findQoderOpenSessionId(
       [{ pid: 105873 }], qoderHome, '/srv/project', { procRoot },
-    ), null, 'ambiguous open transcripts must not be guessed');
+    ), null, 'ambiguous validated segment sessions must not be guessed');
+
+    fs.rmSync(temporaryTranscript);
+    fs.rmSync(path.join(fdRoot, '39'));
+    fs.rmSync(path.join(fdRoot, '40'));
+    fs.symlinkSync(transcript, path.join(fdRoot, '41'));
+    assert.equal(findQoderOpenSessionId(
+      [{ pid: 105873 }], qoderHome, '/srv/project', { procRoot },
+    ), sessionId, 'direct project transcript FDs remain supported');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

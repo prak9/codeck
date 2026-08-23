@@ -210,6 +210,13 @@ function normalizedPath(value) {
   catch { return path.resolve(value); }
 }
 
+function pathPartsWithin(root, target) {
+  if (!root) return null;
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep);
+}
+
 function qoderTranscriptMatches(file, id, cwd) {
   let descriptor;
   try {
@@ -240,8 +247,11 @@ function qoderTranscriptMatches(file, id, cwd) {
 export function findQoderOpenSessionId(processes, qoderHome, cwd, { procRoot = '/proc' } = {}) {
   if (!processes?.length || !qoderHome || !cwd) return null;
   let projectsRoot;
+  let sessionLogsRoot = null;
   try { projectsRoot = fs.realpathSync(path.join(qoderHome, 'projects')); }
   catch { return null; }
+  try { sessionLogsRoot = fs.realpathSync(path.join(qoderHome, 'logs', 'sessions')); }
+  catch { /* Older Qoder versions may open the project transcript directly. */ }
   const ids = new Set();
   for (const process of processes) {
     const fdRoot = path.join(procRoot, String(process.pid), 'fd');
@@ -254,12 +264,32 @@ export function findQoderOpenSessionId(processes, qoderHome, cwd, { procRoot = '
         const link = fs.readlinkSync(path.join(fdRoot, descriptor));
         target = fs.realpathSync(path.isAbsolute(link) ? link : path.resolve(fdRoot, link));
       } catch { continue; }
-      const relative = path.relative(projectsRoot, target);
-      if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
-      if (relative.split(path.sep).length !== 2) continue;
-      const match = path.basename(target).match(new RegExp(`^(${UUID})\\.jsonl$`, 'i'));
-      if (!match || !qoderTranscriptMatches(target, match[1], cwd)) continue;
-      ids.add(match[1]);
+      const projectParts = pathPartsWithin(projectsRoot, target);
+      const directMatch = projectParts?.length === 2
+        ? projectParts[1].match(new RegExp(`^(${UUID})\\.jsonl$`, 'i'))
+        : null;
+      let id = directMatch?.[1] || null;
+      let transcript = directMatch ? target : null;
+
+      if (!transcript) {
+        const logParts = pathPartsWithin(sessionLogsRoot, target);
+        const segmentMatch = logParts?.length === 4
+          && logParts[2] === 'segments'
+          && logParts[3].endsWith('.jsonl')
+          ? logParts[1].match(new RegExp(`^(${UUID})$`, 'i'))
+          : null;
+        if (!segmentMatch) continue;
+        id = segmentMatch[1];
+        try { transcript = fs.realpathSync(path.join(projectsRoot, logParts[0], `${id}.jsonl`)); }
+        catch { continue; }
+        const transcriptParts = pathPartsWithin(projectsRoot, transcript);
+        if (transcriptParts?.length !== 2
+          || transcriptParts[0] !== logParts[0]
+          || transcriptParts[1].toLowerCase() !== `${id}.jsonl`.toLowerCase()) continue;
+      }
+
+      if (!qoderTranscriptMatches(transcript, id, cwd)) continue;
+      ids.add(id);
     }
   }
   return ids.size === 1 ? [...ids][0] : null;

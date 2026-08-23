@@ -107,6 +107,12 @@ button { cursor: pointer; }
 .user-message { max-width: min(76%, 620px); margin: 0 0 22px auto; padding: 12px 15px; border: 1px solid #ff8c6340; border-radius: 18px 18px 5px 18px; background: linear-gradient(145deg, #ff6b3529, #ff6b3518); color: #fff7f3; box-shadow: 0 8px 24px #00000016; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .assistant-message { max-width: 78ch; margin: 0 0 15px; color: #ebe8e5; font-size: 14px; line-height: 1.72; white-space: pre-wrap; }
 .assistant-message.streaming::after { content: ''; width: 6px; height: 16px; margin-left: 3px; background: #ff8b64; display: inline-block; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+.agent-message-actions { min-height: 34px; margin: -6px 0 5px; display: flex; align-items: center; }
+.message-copy-button { min-width: 72px; min-height: 34px; padding: 0 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--subtle); font-size: 9px; transition: color 120ms ease, background 120ms ease, border-color 120ms ease; }
+.message-copy-button:hover { border-color: var(--line); background: #ffffff08; color: var(--muted); }
+.message-copy-button:disabled { cursor: default; }
+.message-copy-button[data-copy-state="success"] { color: var(--success); }
+.message-copy-button[data-copy-state="error"] { color: var(--danger); }
 .turn-error { margin: 11px 0; padding: 11px 13px; border: 1px solid #ff716b38; border-radius: 11px; background: #ff716b10; color: #ffaaa6; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
 .tool-card { margin: 8px 0 13px; border: 1px solid var(--line); border-radius: 12px; background: #ffffff05; overflow: clip; }
 .tool-card[open] { border-color: var(--line-strong); }
@@ -240,6 +246,7 @@ button { cursor: pointer; }
   .conversation-heading h2 { max-width: 52vw; margin-inline: auto; }
   .provider-trigger { min-height: 44px; margin-block: -6px; }
   .turns { padding: 24px max(18px, env(safe-area-inset-right)) 8px max(18px, env(safe-area-inset-left)); }
+  .message-copy-button { min-height: 44px; }
   .approval-stack, .live-status { padding-inline: max(18px, env(safe-area-inset-left)); }
   .welcome { padding: 48px 22px 70px; }
   .composer-area { padding-top: 4px; }
