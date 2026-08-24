@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken } from './auth.js';
+import { createAuthRateLimiter, requestClientAddress } from './auth-rate-limit.js';
 import { createAgentBackends } from './agent-backends.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
 import { createSession, detectWindowSizeSupport, interruptSession, killSession, listSessions, parseViewport, renameSession, sendSessionMessage, validateSessionName } from './tmux.js';
@@ -15,6 +16,15 @@ import { loadTlsOptions } from './tls.js';
 import { createSessionSnapshotLoader } from './session-snapshot.js';
 import { resolveSessionStatus } from './session-status.js';
 import { AGENT_WEBSOCKET_OPTIONS } from './websocket-options.js';
+import {
+  WEB_SESSION_TTL_SECONDS,
+  authenticateWebSession,
+  clearWebSessionCookie,
+  createWebSessionToken,
+  readWebSessionCookie,
+  safeNextPath,
+  serializeWebSessionCookie,
+} from './web-session.js';
 import {
   resolveDownloadPath,
   saveFileUpload,
@@ -25,30 +35,122 @@ import {
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
-const accessToken = process.env.CODECK_TOKEN || crypto.randomBytes(18).toString('base64url');
+const configuredAccessToken = process.env.CODECK_TOKEN;
+const accessToken = configuredAccessToken || crypto.randomBytes(18).toString('base64url');
+const webAuthEnabled = process.env.CODECK_WEB_AUTH === '1';
+const publicDir = path.join(dirname, '../public');
 const app = express();
 const sessionSnapshots = createSessionSnapshotLoader(listSessions);
+const authRateLimiter = createAuthRateLimiter();
+app.disable('x-powered-by');
+app.use(setSecurityHeaders);
 app.use(express.json({ limit: '16kb' }));
-app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
-app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
-app.use('/vendor/fit', express.static(path.join(dirname, '../node_modules/@xterm/addon-fit/lib')));
-app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@fontsource-variable/inter')));
-app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
-app.use('/fonts/jetbrains-mono', express.static(path.join(dirname, '../node_modules/@fontsource-variable/jetbrains-mono')));
+
+function setSecurityHeaders(_req, res, next) {
+  res.set({
+    'Content-Security-Policy': "frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  });
+  next();
+}
 
 function requestAuth(req) {
   const header = req.headers.authorization || '';
-  return header.startsWith('Bearer ') ? authenticateToken(accessToken, header.slice(7)) : null;
+  if (header.startsWith('Bearer ')) return authenticateToken(accessToken, header.slice(7));
+  if (webAuthEnabled && req.method === 'GET' && req.path === '/download' && requestHasWebSession(req)) {
+    return { owner: true, session: null };
+  }
+  return null;
 }
 
 function ownerOnly(req, res, next) {
   return req.auth.owner ? next() : res.status(403).json({ error: '分享链接无权管理会话' });
 }
 
-app.use('/api', (req, res, next) => {
+function rejectRateLimited(res, retryAfter) {
+  res.set('Retry-After', String(retryAfter));
+  return res.status(429).json({ error: '鉴权尝试次数过多，请稍后再试' });
+}
+
+function authenticateApiRequest(req, res, next) {
+  const address = requestClientAddress(req);
+  const limit = authRateLimiter.status(address);
+  if (limit.blocked) return rejectRateLimited(res, limit.retryAfter);
   req.auth = requestAuth(req);
-  return req.auth ? next() : res.status(401).json({ error: '访问令牌无效或分享链接已过期' });
+  if (req.auth) {
+    if (req.auth.owner) authRateLimiter.reset(address);
+    return next();
+  }
+  authRateLimiter.recordFailure(address);
+  return res.status(401).json({ error: '访问令牌无效或分享链接已过期' });
+}
+
+function requestHasWebSession(req) {
+  const token = readWebSessionCookie(req.headers.cookie);
+  return authenticateWebSession(accessToken, token);
+}
+
+function requireWebSession(req, res, next) {
+  if (!webAuthEnabled || req.path.startsWith('/api/') || requestHasWebSession(req)) return next();
+  res.set('Cache-Control', 'no-store');
+  const acceptsHtml = (req.headers.accept || '').includes('text/html');
+  const navigation = req.method === 'GET' && (req.get('sec-fetch-mode') === 'navigate' || acceptsHtml);
+  if (navigation) {
+    const target = safeNextPath(req.originalUrl);
+    return res.redirect(302, `/login.html?next=${encodeURIComponent(target)}`);
+  }
+  return res.status(401).json({ error: '请先登录 Codeck' });
+}
+
+function setLoginPageHeaders(res) {
+  res.set({
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; connect-src 'self'; form-action 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  });
+}
+
+app.get('/login.html', (req, res) => {
+  if (!webAuthEnabled) return res.redirect('/');
+  if (requestHasWebSession(req)) return res.redirect(safeNextPath(req.query.next));
+  setLoginPageHeaders(res);
+  return res.sendFile(path.join(publicDir, 'login.html'));
 });
+
+app.post('/api/web-login', (req, res) => {
+  if (!webAuthEnabled) return res.status(404).json({ error: '持久登录未启用' });
+  const address = requestClientAddress(req);
+  const limit = authRateLimiter.status(address);
+  if (limit.blocked) return rejectRateLimited(res, limit.retryAfter);
+  const auth = authenticateToken(accessToken, req.body?.token);
+  res.set('Cache-Control', 'no-store');
+  if (!auth?.owner) {
+    authRateLimiter.recordFailure(address);
+    return res.status(401).json({ error: '访问令牌不正确' });
+  }
+  authRateLimiter.reset(address);
+  const now = Date.now();
+  const token = createWebSessionToken(accessToken, now);
+  res.setHeader('Set-Cookie', serializeWebSessionCookie(token, now));
+  return res.json({
+    ok: true,
+    next: safeNextPath(req.body?.next),
+    expiresAt: now + WEB_SESSION_TTL_SECONDS * 1000,
+  });
+});
+
+app.post('/api/web-logout', (_req, res) => {
+  if (!webAuthEnabled) return res.status(404).json({ error: '持久登录未启用' });
+  res.set('Cache-Control', 'no-store');
+  res.setHeader('Set-Cookie', clearWebSessionCookie());
+  return res.status(204).end();
+});
+
+app.use('/api', authenticateApiRequest);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
@@ -110,14 +212,14 @@ app.post('/api/sessions/:name/share', ownerOnly, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.post('/api/uploads/images', express.raw({ type: 'image/*', limit: '10mb' }), (req, res, next) => {
+app.post('/api/uploads/images', ownerOnly, express.raw({ type: 'image/*', limit: '10mb' }), (req, res, next) => {
   try {
     const contentType = req.headers['content-type']?.split(';')[0].trim().toLowerCase();
     res.status(201).json({ path: saveImageUpload(req.body, contentType) });
   } catch (error) { next(error); }
 });
 
-app.post('/api/uploads/files', express.raw({ type: '*/*', limit: '100mb' }), (req, res, next) => {
+app.post('/api/uploads/files', ownerOnly, express.raw({ type: '*/*', limit: '100mb' }), (req, res, next) => {
   try {
     const fileName = req.query.name || req.get('x-file-name') || 'upload';
     const relativePath = req.query.relativePath || req.get('x-relative-path') || '';
@@ -125,13 +227,8 @@ app.post('/api/uploads/files', express.raw({ type: '*/*', limit: '100mb' }), (re
   } catch (error) { next(error); }
 });
 
-app.get('/api/download', (req, res, next) => {
+app.get('/api/download', ownerOnly, (req, res, next) => {
   try {
-    const queryToken = req.query.token;
-    const tokenHeader = req.headers.authorization || '';
-    const token = tokenHeader.startsWith('Bearer ') ? tokenHeader.slice(7) : queryToken;
-    const auth = authenticateToken(accessToken, token);
-    if (!auth) return res.status(401).json({ error: '访问令牌无效或下载凭据已过期' });
     const filePath = resolveDownloadPath(req.query.path, uploadRoot);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: '文件不存在' });
     const stat = fs.statSync(filePath);
@@ -140,7 +237,14 @@ app.get('/api/download', (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.use(express.static(path.join(dirname, '../public')));
+app.use(requireWebSession);
+app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
+app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
+app.use('/vendor/fit', express.static(path.join(dirname, '../node_modules/@xterm/addon-fit/lib')));
+app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@fontsource-variable/inter')));
+app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
+app.use('/fonts/jetbrains-mono', express.static(path.join(dirname, '../node_modules/@fontsource-variable/jetbrains-mono')));
+app.use(express.static(publicDir));
 app.use((error, _req, res, _next) => {
   const status = error.type === 'entity.too.large'
     ? 413
@@ -162,11 +266,20 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
 const agentHub = new AgentHub(agentRegistry, { defaultCwd: process.cwd(), hostname: os.hostname() });
 
 server.on('upgrade', (req, socket, head) => {
+  const address = requestClientAddress(req);
+  const limit = authRateLimiter.status(address);
+  if (limit.blocked) {
+    socket.write(`HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${limit.retryAfter}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    socket.destroy();
+    return;
+  }
   const url = new URL(req.url, 'http://localhost');
   const protocols = (req.headers['sec-websocket-protocol'] || '').split(',').map((value) => value.trim());
   const encodedToken = protocols.find((value) => value.startsWith('codeck.'))?.slice(7);
   const credential = encodedToken ? Buffer.from(encodedToken, 'base64url').toString('utf8') : '';
   const auth = authenticateToken(accessToken, credential);
+  if (!auth) authRateLimiter.recordFailure(address);
+  else if (auth.owner) authRateLimiter.reset(address);
   if (url.pathname === '/agent') {
     if (!auth?.owner) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -188,15 +301,16 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const viewport = parseViewport(url.searchParams);
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport));
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, !auth.owner));
 });
 
-wss.on('connection', handleTerminalConnection);
+wss.on('connection', (ws, session, viewport, readOnly) => handleTerminalConnection(ws, session, viewport, { readOnly }));
 agentWss.on('connection', (ws) => agentHub.handleConnection(ws));
 server.on('close', () => agentRegistry.close());
 
 server.listen(port, host, () => {
   console.log(`Codeck is running at https://${host}:${port}`);
   if (tls.generated) console.log('TLS: using the persistent self-signed certificate in ~/.codeck');
-  console.log(`Access token: ${accessToken}`);
+  if (configuredAccessToken) console.log('Access token: configured through CODECK_TOKEN');
+  else console.log(`Access token: ${accessToken}`);
 });

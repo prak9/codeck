@@ -193,7 +193,6 @@ function extractDownloadPath(selection) {
 
 function buildDownloadUrl(filePath) {
   const params = new URLSearchParams({ path: filePath });
-  if (state.token) params.set('token', state.token);
   return `${location.origin}/api/download?${params}`;
 }
 
@@ -203,7 +202,7 @@ function extractFileName(filePath) {
 }
 
 function handleTerminalDragStart(event) {
-  if (!state.terminal?.getSelection) return;
+  if (!state.canManage || !state.terminal?.getSelection) return;
   const selected = state.terminal.getSelection();
   const filePath = extractDownloadPath(selected);
   if (!filePath) return;
@@ -221,6 +220,7 @@ function handleTerminalDragEnter(event) {
   if (!hasFileDrag(event)) return;
   event.preventDefault();
   event.stopPropagation();
+  if (!state.canManage) return;
   state.terminalDropDepth = (state.terminalDropDepth || 0) + 1;
   $('#terminal').closest('.terminal-frame')?.classList.add('drag-over');
   event.dataTransfer.dropEffect = 'copy';
@@ -230,6 +230,7 @@ function handleTerminalDragOver(event) {
   if (!hasFileDrag(event)) return;
   event.preventDefault();
   event.stopPropagation();
+  if (!state.canManage) return;
   state.terminalDropDepth = state.terminalDropDepth || 0;
   event.dataTransfer.dropEffect = 'copy';
 }
@@ -328,6 +329,7 @@ async function refreshSessions() {
   if (requestId !== state.sessionsRefreshSeq) return;
   state.sessions = data.sessions;
   state.canManage = data.capabilities?.canManage !== false;
+  syncTerminalAccess();
   // A sole tmux 2.7 client can still resize through the pty. The missing window-size
   // option only affects arbitration between clients, so it must not disable readable mode.
   $('#viewModeButton').hidden = false;
@@ -336,6 +338,17 @@ async function refreshSessions() {
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
   if (state.active && state.terminal) fitTerminalView();
+}
+
+function connectedStateLabel() {
+  return state.canManage ? '已连接' : '已连接（只读）';
+}
+
+function syncTerminalAccess() {
+  if (state.terminal) state.terminal.options.disableStdin = !state.canManage;
+  for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
+    control.disabled = !state.canManage;
+  }
 }
 
 function isQuickSwitchKey(event) {
@@ -411,11 +424,12 @@ function openQuickSwitcher() {
 function setConnectionMessage(message, restore = true) {
   $('#connectionState').textContent = message;
   if (restore) setTimeout(() => {
-    if ($('#connectionState').textContent === message) $('#connectionState').textContent = state.socket?.readyState === WebSocket.OPEN ? '已连接' : '连接已断开';
+    if ($('#connectionState').textContent === message) $('#connectionState').textContent = state.socket?.readyState === WebSocket.OPEN ? connectedStateLabel() : '连接已断开';
   }, 1800);
 }
 
 async function pasteImages(event) {
+  if (!state.canManage) return;
   const images = [...(event.clipboardData?.items || [])]
     .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
     .map((item) => item.getAsFile()).filter(Boolean);
@@ -445,6 +459,7 @@ async function handleTerminalDrop(event) {
   event.stopPropagation();
   state.terminalDropDepth = 0;
   $('#terminal').closest('.terminal-frame')?.classList.remove('drag-over');
+  if (!state.canManage) return setConnectionMessage('分享链接为只读');
   const socket = state.socket;
   const files = await collectDroppedFilesFromDataTransfer(event.dataTransfer);
   if (!files.length) return;
@@ -492,6 +507,7 @@ function ensureTerminal() {
     // down while keeping the column, then erases and redraws from there, so forcing the
     // column to 0 makes the erase miss and leaves the previous frame's text behind.
     cursorBlink: true, cursorStyle: 'block',
+    disableStdin: !state.canManage,
     fontFamily: '"Courier New", "Noto Sans SC Variable", monospace',
     fontSize: 16, lineHeight: 1.2, scrollback: 5000,
     theme: {
@@ -526,7 +542,7 @@ function ensureTerminal() {
     return !handleQuickSwitchKeydown(event);
   });
   terminal.onData((data) => {
-    if (state.socket?.readyState === WebSocket.OPEN) {
+    if (state.canManage && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -618,7 +634,7 @@ async function connect(session) {
   state.socket = socket;
   socket.addEventListener('open', () => {
     if (state.connectionId !== connectionId) return;
-    $('#connectionState').textContent = '已连接';
+    $('#connectionState').textContent = connectedStateLabel();
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
     if (outputReady) terminal.focus();
   });
@@ -698,6 +714,7 @@ function stopKeyRepeat() {
 }
 
 function sendTerminalKey(name) {
+  if (!state.canManage) return false;
   if (state.socket?.readyState !== WebSocket.OPEN) return false;
   state.socket.send(JSON.stringify({ type: 'input', data: TERMINAL_KEYS[name] }));
   return true;
@@ -748,6 +765,7 @@ $('.mobile-keybar').addEventListener('click', async (event) => {
     return;
   }
   if (button.dataset.terminalAction === 'paste') {
+    if (!state.canManage) return;
     if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
     try {
       // Reading the clipboard needs the user gesture this click provides; iOS additionally

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleTerminalConnection } from '../src/terminal-connection.js';
+import { handleTerminalConnection, terminalAttachArgs } from '../src/terminal-connection.js';
 
 class FakeSocket extends EventEmitter {
   OPEN = 1;
@@ -42,6 +42,11 @@ function dependencies(overrides = {}) {
     ...overrides,
   };
 }
+
+test('read-only clients attach without detaching the session owner', () => {
+  assert.deepEqual(terminalAttachArgs('shared', { readOnly: true }), ['attach-session', '-r', '-t', 'shared']);
+  assert.deepEqual(terminalAttachArgs('owner'), ['attach-session', '-d', '-t', 'owner']);
+});
 
 test('a socket closed during setup never creates a terminal', async () => {
   const ws = new FakeSocket();
@@ -93,6 +98,28 @@ test('messages received during setup are applied after an exact-size attach', as
   assert.deepEqual(terminal.writes, ['x']);
   ws.emit('close');
   assert.equal(terminal.killed, true);
+});
+
+test('a read-only terminal never forwards client input to tmux', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  let releaseLinks;
+  let terminalOptions;
+  const setup = handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+    readOnly: true,
+    getLinkedWindowSessions: () => new Promise((resolve) => { releaseLinks = resolve; }),
+    createTerminal: (_session, _size, options) => { terminalOptions = options; return terminal; },
+  }));
+  await Promise.resolve();
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'sudo id\r' })), false);
+  releaseLinks([]);
+  await setup;
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'whoami\r' })), false);
+  terminal.dataCallback('visible output');
+
+  assert.deepEqual(terminal.writes, []);
+  assert.deepEqual(terminalOptions, { readOnly: true });
+  assert.deepEqual(ws.sent, ['visible output']);
 });
 
 test('a supplied browser viewport skips the redundant tmux size lookup', async () => {

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#151517">
+  <title>登录 Codeck</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+      background: #151517;
+      color: #f5f3f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      min-height: 100dvh;
+      margin: 0;
+      padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+      background: #151517;
+      display: grid;
+      place-items: center;
+    }
+    main { width: min(100%, 390px); }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 38px; color: #aaa6a3; font-size: 12px; font-weight: 700; letter-spacing: .16em; }
+    .brand-mark { width: 42px; height: 42px; border: 1px solid #ffffff18; border-radius: 12px; background: #ffffff08; color: #ff936d; display: grid; place-items: center; font: 700 14px/1 "Courier New", Courier, monospace; letter-spacing: 0; }
+    .eyebrow { margin: 0 0 9px; color: #8c8885; font-size: 11px; font-weight: 700; letter-spacing: .14em; }
+    h1 { margin: 0; font-size: clamp(30px, 9vw, 42px); line-height: 1.06; letter-spacing: -.045em; }
+    .intro { max-width: 34em; margin: 15px 0 30px; color: #aaa6a3; font-size: 14px; line-height: 1.65; }
+    label { display: block; margin-bottom: 9px; font-size: 13px; font-weight: 650; }
+    input {
+      width: 100%;
+      min-height: 52px;
+      padding: 0 14px;
+      border: 1px solid #ffffff1d;
+      border-radius: 12px;
+      outline: 0;
+      background: #0f0f11;
+      color: inherit;
+      font-size: 16px;
+      font-family: "Courier New", Courier, monospace;
+    }
+    input:focus-visible { border-color: #ff8a60; box-shadow: 0 0 0 3px #ff6b3525; }
+    .form-error { min-height: 20px; margin: 8px 0 0; color: #ffaaa6; font-size: 12px; line-height: 1.5; }
+    button {
+      width: 100%;
+      min-height: 48px;
+      margin-top: 13px;
+      border: 0;
+      border-radius: 12px;
+      background: #ff6b35;
+      color: #fff;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+    }
+    button:focus-visible { outline: 3px solid #ffb296; outline-offset: 3px; }
+    button:disabled { opacity: .58; cursor: wait; }
+    .privacy { margin: 18px 0 0; color: #777370; font-size: 11px; line-height: 1.6; }
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: light; background: #fff; color: #111; }
+      body { background: #fff; }
+      .brand, .intro { color: #5d5a58; }
+      .brand-mark { border-color: #00000012; background: #f4f4f4; color: #b53c13; }
+      .eyebrow, .privacy { color: #777; }
+      input { border-color: #0000001c; background: #f7f7f7; }
+      input:focus-visible { border-color: #c34a1f; box-shadow: 0 0 0 3px #ff6b351a; }
+      .form-error { color: #a82218; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">C/</span><span>CODECK REMOTE</span></div>
+    <p class="eyebrow">SECURE ACCESS</p>
+    <h1>继续服务器上的工作</h1>
+    <p class="intro">输入 Codeck owner 访问令牌。验证成功后，此设备将在 30 天内保持登录。</p>
+    <form id="webLoginForm">
+      <label for="webTokenInput">访问令牌</label>
+      <input id="webTokenInput" name="token" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required autofocus>
+      <p class="form-error" id="webLoginError" role="alert" aria-live="polite"></p>
+      <button id="webLoginButton" type="submit">登录 Codeck</button>
+    </form>
+    <p class="privacy">令牌会保存在此浏览器中供 API 与 WebSocket 使用；登录 Cookie 本身不可由页面脚本读取。</p>
+  </main>
+  <script>
+    const form = document.querySelector('#webLoginForm');
+    const input = document.querySelector('#webTokenInput');
+    const button = document.querySelector('#webLoginButton');
+    const error = document.querySelector('#webLoginError');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (button.disabled) return;
+      const token = input.value.trim();
+      error.textContent = '';
+      button.disabled = true;
+      button.textContent = '正在验证…';
+      try {
+        const response = await fetch('/api/web-login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, next: new URLSearchParams(location.search).get('next') }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 429) throw new Error(body.error || '尝试次数过多，请稍后再试');
+        if (!response.ok) throw new Error(body.error || '登录失败，请重试');
+        localStorage.setItem('codeck-token', token);
+        location.replace(body.next || '/');
+      } catch (reason) {
+        error.textContent = reason.message || '登录失败，请重试';
+        input.focus();
+        input.select();
+      } finally {
+        button.disabled = false;
+        button.textContent = '登录 Codeck';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -33,6 +33,12 @@ CODECK_TOKEN='replace-with-a-long-secret' PORT=4310 HOST=0.0.0.0 npm start
 
 `CODECK_TOKEN` 可自定义，并支持特殊字符；在 shell 或环境文件中设置时请使用引号保护令牌。
 
+公网反向代理部署可设置 `CODECK_WEB_AUTH=1`，启用网页持久登录。首次输入 owner 访问令牌后，服务器会签发仅限当前主机、有效期 30 天的安全 Cookie；静态页面和资源需要该 Cookie，API 与 WebSocket 仍独立校验访问令牌。该选项默认关闭，可信内网直接运行时无需启用。
+
+连续 10 次鉴权失败会让同一来源地址暂停尝试 5 分钟；公网 Nginx 还可以单独对 `/api/web-login` 配置请求限流。单会话分享链接有效期 24 小时且严格只读：可以查看、滚动和复制终端，但不能输入、上传、下载或管理会话，也不会把原有 tmux 客户端踢下线。
+
+已配置的 `CODECK_TOKEN` 不会自动轮换。需要轮换时手动修改环境文件并重启 Codeck；旧的网页登录 Cookie 和分享链接会随即失效。未配置固定令牌时，Codeck 仍会在每次进程启动时生成新的随机令牌。
+
 终端模式下，`codex`、`claude` 或 `qodercli` 必须已安装在服务器的 `PATH` 中。缺少某个 CLI 不影响 tmux 和普通 shell 功能。
 
 ## 手机对话模式
@@ -55,7 +61,7 @@ Remote 输入框左侧的 `＋` 支持从相册、相机或文件选择器添加
 
 也支持将本地文件/文件夹直接拖拽到终端区域。拖拽目录会保留目录结构，上传后的文件路径会按同样路径写入 `~/.codeck/uploads` 并在终端中自动写入对应路径。
 
-支持从终端中选中 `~/.codeck/uploads/...` 下的文件路径直接拖拽到本地下载。拖拽时会携带当前 token，后端按 token 校验后返回文件二进制。
+支持从终端中选中 `~/.codeck/uploads/...` 下的文件路径直接拖拽到本地下载。公网持久登录模式使用 HttpOnly 登录 Cookie 鉴权，不会把 owner token 写入下载 URL 或代理日志；直接调用下载 API 时也可以继续使用 Bearer token。
 
 ## 运维指南
 

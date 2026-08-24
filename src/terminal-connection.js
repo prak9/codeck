@@ -8,8 +8,12 @@ import {
   withoutTmuxEnvironment,
 } from './tmux.js';
 
-function spawnTerminal(session, size) {
-  return pty.spawn('tmux', ['attach-session', '-d', '-t', session], {
+export function terminalAttachArgs(session, { readOnly = false } = {}) {
+  return ['attach-session', readOnly ? '-r' : '-d', '-t', session];
+}
+
+function spawnTerminal(session, size, options) {
+  return pty.spawn('tmux', terminalAttachArgs(session, options), {
     name: 'xterm-256color',
     cols: size.width,
     rows: size.height,
@@ -28,7 +32,8 @@ const defaultDependencies = {
 };
 
 export async function handleTerminalConnection(ws, session, viewport, overrides = {}) {
-  const dependencies = { ...defaultDependencies, ...overrides };
+  const { readOnly = false, ...dependencyOverrides } = overrides;
+  const dependencies = { ...defaultDependencies, ...dependencyOverrides };
   let terminal = null;
   let closed = ws.readyState !== ws.OPEN;
   const pending = [];
@@ -50,7 +55,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const handleMessage = (raw) => {
     try {
       const message = JSON.parse(raw.toString());
-      if (message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
+      if (!readOnly && message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
         terminal.resize(...dependencies.clampViewport(message.cols, message.rows));
       }
@@ -89,7 +94,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const [width, height] = dependencies.clampViewport(initialSize.width, initialSize.height);
   const attachSize = { width, height };
   try {
-    terminal = dependencies.createTerminal(session, attachSize);
+    terminal = dependencies.createTerminal(session, attachSize, { readOnly });
   } catch (error) {
     if (isOpen()) ws.close(1011, error.message || 'tmux attach failed');
     return;
