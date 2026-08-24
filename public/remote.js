@@ -107,6 +107,11 @@ function preferredAgentProvider() {
   return state.providers[0] || Object.keys(PROVIDERS)[0];
 }
 
+function preferredNewSessionProvider() {
+  const saved = localStorage.getItem('codeck-remote-provider');
+  return state.providers.includes(saved) ? saved : preferredAgentProvider();
+}
+
 function applyTheme(theme, { persist = false } = {}) {
   const selected = theme === 'light' ? 'light' : 'dark';
   state.theme = selected;
@@ -701,13 +706,14 @@ function renderProviderControls() {
   });
   $('#providerOptions').replaceChildren(...options);
 
-  const select = $('#settingsProvider');
-  select.replaceChildren(...state.providers.map((provider) => {
-    const option = element('option', '', providerDetails(provider).name);
-    option.value = provider;
-    return option;
-  }));
-  select.value = selectedProvider;
+  for (const select of [$('#settingsProvider'), $('#sessionProvider')]) {
+    select.replaceChildren(...state.providers.map((provider) => {
+      const option = element('option', '', providerDetails(provider).name);
+      option.value = provider;
+      return option;
+    }));
+    select.value = selectedProvider;
+  }
   renderHeader();
 }
 
@@ -1516,7 +1522,7 @@ async function submitComposer() {
   if (submitAction === 'none') return;
   if (!state.thread) {
     setLiveMessage('请先为新的 tmux 会话命名。');
-    openSettings();
+    openNewSession();
     return;
   }
   await composerRequestGate.run(async () => {
@@ -1644,14 +1650,21 @@ function handleAttachmentPaste(event) {
   addAttachmentFiles(files);
 }
 
-function openSettings() {
+function openNewSession() {
   if (state.sessionCreationPending) return;
-  const provider = preferredAgentProvider();
-  $('#settingsTheme').value = state.theme;
-  $('#settingsProvider').value = provider;
-  $('#cwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
-  $('#settingsError').textContent = '';
+  const provider = preferredNewSessionProvider();
+  $('#sessionProvider').value = provider;
+  $('#sessionCwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
+  $('#sessionError').textContent = '';
   updateSuggestedSessionName(provider, { force: true });
+  $('#newSessionDialog').showModal();
+}
+
+function openSettings() {
+  $('#settingsTheme').value = state.theme;
+  $('#settingsProvider').value = preferredNewSessionProvider();
+  $('#cwdInput').value = state.cwd || state.defaultCwd;
+  $('#settingsError').textContent = '';
   $('#settingsDialog').showModal();
 }
 
@@ -1710,8 +1723,8 @@ function syncViewportHeight() {
 
 $('#drawerButton').addEventListener('click', openDrawer);
 $('#drawerScrim').addEventListener('click', closeDrawer);
-$('#drawerNewButton').addEventListener('click', openSettings);
-$('#newThreadButton').addEventListener('click', openSettings);
+$('#drawerNewButton').addEventListener('click', openNewSession);
+$('#newThreadButton').addEventListener('click', openNewSession);
 $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
@@ -1728,11 +1741,11 @@ $('#commandDialog').addEventListener('cancel', (event) => {
 $('#commandDialog').addEventListener('click', (event) => {
   if (event.target === event.currentTarget) dismissCommandDialog();
 });
-$('#settingsDialog').addEventListener('cancel', (event) => {
+$('#newSessionDialog').addEventListener('cancel', (event) => {
   if (state.sessionCreationPending) event.preventDefault();
 });
 $('#settingsTheme').addEventListener('change', (event) => applyTheme(event.target.value, { persist: true }));
-$('#settingsProvider').addEventListener('change', (event) => updateSuggestedSessionName(event.target.value));
+$('#sessionProvider').addEventListener('change', (event) => updateSuggestedSessionName(event.target.value));
 $('#composerInput').addEventListener('paste', handleAttachmentPaste);
 $('#composerInput').addEventListener('input', () => {
   state.slashCommandIndex = 0;
@@ -1804,27 +1817,27 @@ $('.composer-area').addEventListener('drop', (event) => {
   $('.composer-area').classList.remove('drag-over');
   addAttachmentFiles(event.dataTransfer.files);
 });
-$('#settingsForm').addEventListener('submit', async (event) => {
+$('#newSessionForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (state.sessionCreationPending) return;
   if (event.submitter?.value === 'cancel') {
-    $('#settingsDialog').close();
+    $('#newSessionDialog').close();
     return;
   }
-  const button = $('#saveSettingsButton');
-  $('#settingsError').textContent = '';
+  const button = $('#createSessionButton');
+  $('#sessionError').textContent = '';
   let payload;
   try {
     payload = createRemoteSessionPayload({
       name: $('#sessionNameInput').value,
-      provider: $('#settingsProvider').value,
-      cwd: $('#cwdInput').value,
+      provider: $('#sessionProvider').value,
+      cwd: $('#sessionCwdInput').value,
     });
   } catch (error) {
-    $('#settingsError').textContent = error.message;
+    $('#sessionError').textContent = error.message;
     return;
   }
-  const controls = [...$('#settingsForm').querySelectorAll('button, input, select')];
+  const controls = [...$('#newSessionForm').querySelectorAll('button, input, select')];
   state.sessionCreationPending = true;
   for (const control of controls) control.disabled = true;
   button.disabled = true;
@@ -1842,7 +1855,7 @@ $('#settingsForm').addEventListener('submit', async (event) => {
     startNewThread({ focus: false });
     setLiveMessage(`正在启动 tmux 会话“${payload.name}”…`);
     const thread = await waitForCreatedSession(payload.name, payload.client);
-    $('#settingsDialog').close();
+    $('#newSessionDialog').close();
     if (!thread) {
       setLiveMessage(`tmux 会话“${payload.name}”已创建，Agent 仍在启动，请稍后从左栏进入。`);
       return;
@@ -1852,10 +1865,10 @@ $('#settingsForm').addEventListener('submit', async (event) => {
     setTimeout(() => $('#composerInput').focus(), 50);
   } catch (error) {
     if (created) {
-      $('#settingsDialog').open && $('#settingsDialog').close();
+      $('#newSessionDialog').open && $('#newSessionDialog').close();
       setLiveMessage(error.message);
     } else {
-      $('#settingsError').textContent = error.message;
+      $('#sessionError').textContent = error.message;
     }
   } finally {
     state.sessionCreationPending = false;
@@ -1863,6 +1876,29 @@ $('#settingsForm').addEventListener('submit', async (event) => {
     button.disabled = false;
     button.textContent = '创建会话';
   }
+});
+$('#settingsForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (event.submitter?.value === 'cancel') {
+    $('#settingsDialog').close();
+    return;
+  }
+  const cwd = $('#cwdInput').value.trim() || state.defaultCwd;
+  if (!cwd.startsWith('/')) {
+    $('#settingsError').textContent = '请输入服务器上的绝对路径';
+    return;
+  }
+  const provider = $('#settingsProvider').value;
+  state.cwd = cwd;
+  localStorage.setItem('codeck-remote-provider', provider);
+  localStorage.setItem('codeck-remote-cwd', cwd);
+  if (!state.thread) {
+    state.provider = provider;
+    renderProviderControls();
+    scheduleThreadRender(false);
+  }
+  $('#settingsDialog').close();
+  setLiveMessage('设置已保存。');
 });
 $('#forgetTokenButton').addEventListener('click', () => {
   localStorage.removeItem('codeck-token');

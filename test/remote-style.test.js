@@ -31,13 +31,26 @@ test('remote restores and persists a selectable light theme before first paint',
 });
 
 test('remote new sessions request and submit a tmux session name', () => {
+  assert.match(html, /<dialog class="sheet settings-sheet" id="newSessionDialog">/);
   assert.match(html, /<label for="sessionNameInput">会话名称<\/label>/);
   assert.match(html, /id="sessionNameInput"[^>]*name="name"[^>]*required/);
   assert.match(remoteJs, /createRemoteSessionPayload/);
   assert.match(remoteJs, /fetch\('\/api\/sessions'/);
-  assert.match(remoteJs, /\$\('#drawerNewButton'\)\.addEventListener\('click', openSettings\)/);
-  assert.match(remoteJs, /if \(!state\.thread\)[\s\S]{0,180}openSettings\(\)/);
+  assert.match(remoteJs, /\$\('#drawerNewButton'\)\.addEventListener\('click', openNewSession\)/);
+  assert.match(remoteJs, /\$\('#newThreadButton'\)\.addEventListener\('click', openNewSession\)/);
+  assert.match(remoteJs, /if \(!state\.thread\)[\s\S]{0,180}openNewSession\(\)/);
   assert.doesNotMatch(remoteJs, /agentRequest\('newThread'/);
+});
+
+test('remote keeps the overflow menu as settings instead of session creation', () => {
+  const settingsDialog = html.match(/<dialog class="sheet settings-sheet" id="settingsDialog">([\s\S]*?)<\/dialog>/)?.[1] || '';
+  assert.match(settingsDialog, /<h2>设置<\/h2>/);
+  assert.match(settingsDialog, /id="settingsTheme"/);
+  assert.doesNotMatch(settingsDialog, /sessionNameInput/);
+  assert.match(remoteJs, /\$\('#settingsButton'\)\.addEventListener\('click', openSettings\)/);
+  assert.match(remoteJs, /\$\('#cwdButton'\)\.addEventListener\('click', openSettings\)/);
+  assert.match(remoteJs, /\$\('#newSessionForm'\)\.addEventListener\('submit'/);
+  assert.match(remoteJs, /\$\('#settingsForm'\)\.addEventListener\('submit'/);
 });
 
 test('remote light theme uses the neutral floating surfaces from the supplied reference', () => {
