@@ -59,6 +59,7 @@ test('all responses receive baseline browser security headers', () => {
   assert.match(serverSource, /app\.disable\('x-powered-by'\)/);
   assert.match(serverSource, /'X-Frame-Options': 'DENY'/);
   assert.match(serverSource, /frame-ancestors 'none'/);
+  assert.match(serverSource, /'Permissions-Policy': 'microphone=\(self\)'/);
 });
 
 test('a configured owner token is never written to process logs', () => {

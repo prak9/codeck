@@ -49,6 +49,7 @@ app.use(express.json({ limit: '16kb' }));
 function setSecurityHeaders(_req, res, next) {
   res.set({
     'Content-Security-Policy': "frame-ancestors 'none'",
+    'Permissions-Policy': 'microphone=(self)',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',

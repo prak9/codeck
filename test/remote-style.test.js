@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 const html = fs.readFileSync(new URL('../public/remote.html', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../public/remote.css', import.meta.url), 'utf8');
 const remoteJs = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
+const speechJs = fs.readFileSync(new URL('../public/remote-speech.js', import.meta.url), 'utf8');
 const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const appCss = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const rootCss = css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] || '';
@@ -20,6 +21,21 @@ test('remote keeps Courier New in the conversation and uses the normal Apple-sty
   assert.match(rootCss, /font-family:\s*"Courier New",\s*Courier,\s*"Noto Sans SC Variable",\s*monospace/);
   assert.match(css, /\.thread-drawer\s*\{[^}]*font-family:\s*"Inter Variable",\s*"Noto Sans SC Variable",\s*sans-serif/s);
   assert.match(css, /\.terminal-live-output[^}]+"Courier New"/s);
+});
+
+test('remote voice input is touch-sized, accessible and absent when unsupported', () => {
+  assert.ok(html.indexOf('SpeechRecognition') < html.indexOf('/remote.css'));
+  assert.match(html, /id="voiceInputButton"[^>]*type="button"[^>]*aria-label="开始语音输入"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="speechInputStatus"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(css, /\.speech-input \.composer\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\) 44px 44px/s);
+  assert.match(css, /\.voice-input-button\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/s);
+  assert.match(css, /\.voice-input-button\s*\{[^}]*display:\s*none/s);
+  assert.match(css, /\.speech-input \.voice-input-button\s*\{[^}]*display:\s*grid/s);
+  assert.match(css, /\.voice-input-button\.listening/);
+  assert.match(remoteJs, /createSpeechInput\(/);
+  assert.match(remoteJs, /voiceInputButton'[\s\S]*pointerdown[\s\S]*preventDefault\(\)/);
+  assert.match(remoteJs, /speechInput\.abort\(\)/);
+  assert.doesNotMatch(speechJs, /fetch\(|WebSocket|MediaRecorder/);
 });
 
 test('remote restores and persists a selectable light theme before first paint', () => {
@@ -59,7 +75,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=25/);
+  assert.match(html, /\/remote\.css\?v=26/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {

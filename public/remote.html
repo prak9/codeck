@@ -13,10 +13,11 @@
       document.documentElement.dataset.theme = theme;
       document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#ffffff' : '#151517';
     } catch { document.documentElement.dataset.theme = 'dark'; }
+    if (window.SpeechRecognition || window.webkitSpeechRecognition) document.documentElement.classList.add('speech-input');
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=25">
+  <link rel="stylesheet" href="/remote.css?v=26">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -83,11 +84,15 @@
           <form class="composer" id="composerForm">
             <button class="composer-plus" id="composerPlus" type="button" aria-label="添加图片或文件" aria-haspopup="dialog" aria-controls="attachmentDialog">＋</button>
             <textarea id="composerInput" role="combobox" rows="1" maxlength="100000" placeholder="给 Codex 发消息" aria-label="消息" aria-autocomplete="list" aria-controls="slashCommandMenu" aria-expanded="false" autocomplete="off" autocapitalize="none" spellcheck="false"></textarea>
+            <button class="voice-input-button" id="voiceInputButton" type="button" aria-label="开始语音输入" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg>
+            </button>
             <button class="send-button" id="sendButton" type="submit" aria-label="发送消息">
               <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5 5m5-5 5 5"/></svg>
               <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
             </button>
           </form>
+          <span class="visually-hidden" id="speechInputStatus" role="status" aria-live="polite"></span>
         </div>
         <p class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
       </footer>
@@ -171,6 +176,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=45"></script>
+  <script type="module" src="/remote.js?v=46"></script>
 </body>
 </html>

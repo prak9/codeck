@@ -17,6 +17,7 @@ import { attachmentMessage, validateAttachmentSelection } from './remote-attachm
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=1';
 import {
   completeSlashCommand,
   slashCommandKeyAction,
@@ -78,6 +79,41 @@ const state = {
   sessionCreationPending: false,
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
+let speechBaseDraft = '';
+let speechHadResult = false;
+
+function setSpeechInputState(active, message = '') {
+  const button = $('#voiceInputButton');
+  button.classList.toggle('listening', active);
+  button.setAttribute('aria-pressed', String(active));
+  const label = active ? '停止语音输入' : '开始语音输入';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  $('#speechInputStatus').textContent = message;
+}
+
+const speechInput = createSpeechInput({
+  scope: window,
+  lang: document.documentElement.lang || navigator.language || 'zh-CN',
+  onListeningChange: (listening) => {
+    setSpeechInputState(listening, listening
+      ? '正在听写，再点一次麦克风停止。'
+      : speechHadResult ? '语音已写入草稿。' : '语音输入已结束。');
+  },
+  onTranscript: ({ transcript }) => {
+    const input = $('#composerInput');
+    input.value = mergeSpeechDraft(speechBaseDraft, transcript);
+    speechHadResult = Boolean(transcript);
+    state.slashCommandIndex = 0;
+    state.slashCommandDismissedValue = null;
+    resizeComposer();
+  },
+  onError: (message) => {
+    setSpeechInputState(false, message);
+    setLiveMessage(message);
+  },
+});
+if (!speechInput.supported) document.documentElement.classList.remove('speech-input');
 
 if (!PROVIDERS[state.provider]) state.provider = 'codex';
 
@@ -1372,6 +1408,9 @@ function renderComposerState() {
   sendButton.disabled = controls.disabled || Boolean(shellAttachmentOnly);
   sendButton.setAttribute('aria-label', shellAttachmentOnly ? '请先输入 Shell 命令' : controls.ariaLabel);
   $('#composerPlus').disabled = readOnly || opening || pending || !state.connected;
+  const voiceButton = $('#voiceInputButton');
+  voiceButton.disabled = !speechInput.supported || readOnly || opening || pending || !state.connected;
+  if (voiceButton.disabled && speechInput.active) speechInput.abort();
   for (const remove of document.querySelectorAll('.attachment-remove')) remove.disabled = opening || pending;
   const status = $('#composerStatus');
   status.replaceChildren();
@@ -1478,6 +1517,7 @@ function resizeComposer() {
 
 async function submitComposer() {
   if (composerRequestGate.pending || state.threadOpening) return;
+  abortSpeechInput();
   const input = $('#composerInput');
   const draft = input.value;
   const text = draft.trim();
@@ -1601,6 +1641,24 @@ async function submitComposer() {
       setLiveMessage(error.message);
     }
   });
+}
+
+function toggleSpeechInput() {
+  if (speechInput.active) {
+    speechInput.stop();
+    setSpeechInputState(true, '正在完成语音识别…');
+    return;
+  }
+  const input = $('#composerInput');
+  if (!speechInput.supported || input.disabled || $('#voiceInputButton').disabled) return;
+  speechBaseDraft = input.value;
+  speechHadResult = false;
+  if (speechInput.start()) setSpeechInputState(true, '正在请求麦克风权限…');
+}
+
+function abortSpeechInput() {
+  if (!speechInput.abort()) return;
+  setSpeechInputState(false, '');
 }
 
 function openDrawer() {
@@ -1728,6 +1786,10 @@ $('#newThreadButton').addEventListener('click', openNewSession);
 $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
+$('#voiceInputButton').addEventListener('pointerdown', (event) => {
+  event.preventDefault();
+});
+$('#voiceInputButton').addEventListener('click', toggleSpeechInput);
 $('#cwdButton').addEventListener('click', openSettings);
 $('#chooseImagesButton').addEventListener('click', () => chooseAttachments($('#attachmentImageInput')));
 $('#chooseFilesButton').addEventListener('click', () => chooseAttachments($('#attachmentFileInput')));
@@ -1930,7 +1992,10 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeDrawer();
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible') {
+    abortSpeechInput();
+    return;
+  }
   if (state.token && !state.socket) connectSocket();
   else if (state.connected) {
     loadThreads({ quiet: true }).catch(() => {});
@@ -1941,6 +2006,7 @@ window.visualViewport?.addEventListener('resize', syncViewportHeight);
 window.visualViewport?.addEventListener('scroll', syncViewportHeight);
 window.addEventListener('resize', syncViewportHeight);
 window.addEventListener('pagehide', () => {
+  abortSpeechInput();
   for (const attachment of state.attachments) {
     if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
   }
