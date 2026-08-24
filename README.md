@@ -11,7 +11,7 @@ npm start
 
 `node-pty` 是原生模块；如果当前 Node.js 没有对应的预编译版本，需要服务器具备 C/C++ 编译工具和 Python（Debian/Ubuntu 可安装 `build-essential python3`）。
 
-打开终端中显示的 HTTPS 地址，并输入同一处显示的访问令牌。默认监听 `0.0.0.0:4310`。如果你有 nginx，可在外网监听 `3392` 并反向代理到内网 `127.0.0.1:4310`；代理必须允许 `/ws` 和 `/agent` 的 WebSocket Upgrade。所有会话 API 和加密 WebSocket 连接都必须提供访问令牌。未设置 `CODECK_TOKEN` 时，每次启动会自动生成一个随机令牌。
+打开终端中显示的 HTTPS 地址，并输入同一处显示的访问令牌。默认监听 `0.0.0.0:4310`，适合不经过 nginx 的可信内网；公网通过 nginx 反向代理时，应显式设置 `HOST=127.0.0.1`，再由 nginx 在外网监听 `3392`。代理必须允许 `/ws` 和 `/agent` 的 WebSocket Upgrade。所有会话 API 和加密 WebSocket 连接都必须提供访问令牌。未设置 `CODECK_TOKEN` 时，每次启动会自动生成一个随机令牌。
 
 首次启动会通过 `openssl` 在 `~/.codeck` 生成并保存自签名 TLS 证书。浏览器会提示该证书不受信任，需要手动确认。正式部署可使用受信任证书：
 

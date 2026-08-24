@@ -45,11 +45,12 @@ function ownerOnly(req, res, next) {
   return req.auth.owner ? next() : res.status(403).json({ error: '分享链接无权管理会话' });
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.use('/api', (req, res, next) => {
   req.auth = requestAuth(req);
   return req.auth ? next() : res.status(401).json({ error: '访问令牌无效或分享链接已过期' });
 });
+
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.get('/api/sessions', async (req, res, next) => {
   try {
