@@ -23,6 +23,11 @@ import {
   slashCommandMenuAvailable,
   slashCommandSuggestions,
 } from './slash-commands.js?v=1';
+import {
+  createRemoteSessionPayload,
+  findCreatedRemoteSession,
+  suggestedRemoteSessionName,
+} from './remote-session.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
 const PROVIDERS = {
@@ -70,6 +75,7 @@ const state = {
   slashCommandDismissedValue: null,
   attachments: [],
   attachmentDragDepth: 0,
+  sessionCreationPending: false,
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 
@@ -265,6 +271,23 @@ async function validateOwnerToken(token) {
   const data = await response.json();
   if (data.capabilities?.canManage === false) throw new Error('远程 Agent 需要 owner 令牌，分享令牌只有终端只读权限。');
   return data;
+}
+
+async function requestSessionCreation(payload) {
+  const response = await fetch('/api/sessions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${state.token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (response.status === 401) throw new Error('访问令牌已失效');
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `创建会话失败 (${response.status})`);
+  }
+  return response.json();
 }
 
 function rejectPendingRequests(message) {
@@ -1491,6 +1514,11 @@ async function submitComposer() {
     return;
   }
   if (submitAction === 'none') return;
+  if (!state.thread) {
+    setLiveMessage('请先为新的 tmux 会话命名。');
+    openSettings();
+    return;
+  }
   await composerRequestGate.run(async () => {
     setLiveMessage(attachments.length ? `正在上传 ${attachments.length} 个附件…` : commandPendingMessage(text));
     let sentPendingSession = false;
@@ -1507,17 +1535,7 @@ async function submitComposer() {
       const message = attachmentMessage({ provider: targetProvider, text, paths });
       if (!message) throw new Error('请输入要发送的内容');
       if (attachments.length) setLiveMessage('附件已上传，正在发送…');
-      if (!state.thread) {
-        const result = await agentRequest('newThread', {
-          provider: targetProvider,
-          cwd: state.cwd || state.defaultCwd,
-          text: message,
-        });
-        state.activeThreadId = result.thread.id;
-        state.thread = normalizeAgentThread(targetProvider, result.thread);
-        scheduleThreadRender(true);
-        await loadThreads({ quiet: true });
-      } else if (sessionName) {
+      if (sessionName) {
         const previousStatus = state.thread.tmux.status;
         sentPendingSession = state.thread.tmux.available === false;
         const result = await agentRequest('sendSessionMessage', {
@@ -1627,10 +1645,47 @@ function handleAttachmentPaste(event) {
 }
 
 function openSettings() {
+  if (state.sessionCreationPending) return;
+  const provider = preferredAgentProvider();
   $('#settingsTheme').value = state.theme;
-  $('#settingsProvider').value = preferredAgentProvider();
+  $('#settingsProvider').value = provider;
   $('#cwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
+  $('#settingsError').textContent = '';
+  updateSuggestedSessionName(provider, { force: true });
   $('#settingsDialog').showModal();
+}
+
+function updateSuggestedSessionName(provider, { force = false } = {}) {
+  const input = $('#sessionNameInput');
+  if (!force && input.value.trim() && input.value.trim() !== input.dataset.suggested) return;
+  const suggestion = suggestedRemoteSessionName(
+    provider,
+    state.threads.map((thread) => thread.tmux?.name).filter(Boolean),
+  );
+  input.value = suggestion;
+  input.dataset.suggested = suggestion;
+}
+
+async function waitForCreatedSession(name, provider, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  let threads = [];
+  while (true) {
+    const snapshot = await validateOwnerToken(state.token);
+    threads = tmuxSessionsToThreads(snapshot.sessions)
+      .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
+    const created = findCreatedRemoteSession(threads, name, provider);
+    if (created) {
+      state.threads = threads;
+      renderThreadList();
+      return created;
+    }
+    if (Date.now() >= deadline) {
+      state.threads = threads;
+      renderThreadList();
+      return null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 }
 
 function syncViewportHeight() {
@@ -1655,8 +1710,8 @@ function syncViewportHeight() {
 
 $('#drawerButton').addEventListener('click', openDrawer);
 $('#drawerScrim').addEventListener('click', closeDrawer);
-$('#drawerNewButton').addEventListener('click', () => startNewThread());
-$('#newThreadButton').addEventListener('click', () => startNewThread());
+$('#drawerNewButton').addEventListener('click', openSettings);
+$('#newThreadButton').addEventListener('click', openSettings);
 $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
@@ -1673,7 +1728,11 @@ $('#commandDialog').addEventListener('cancel', (event) => {
 $('#commandDialog').addEventListener('click', (event) => {
   if (event.target === event.currentTarget) dismissCommandDialog();
 });
+$('#settingsDialog').addEventListener('cancel', (event) => {
+  if (state.sessionCreationPending) event.preventDefault();
+});
 $('#settingsTheme').addEventListener('change', (event) => applyTheme(event.target.value, { persist: true }));
+$('#settingsProvider').addEventListener('change', (event) => updateSuggestedSessionName(event.target.value));
 $('#composerInput').addEventListener('paste', handleAttachmentPaste);
 $('#composerInput').addEventListener('input', () => {
   state.slashCommandIndex = 0;
@@ -1745,26 +1804,65 @@ $('.composer-area').addEventListener('drop', (event) => {
   $('.composer-area').classList.remove('drag-over');
   addAttachmentFiles(event.dataTransfer.files);
 });
-$('#settingsForm').addEventListener('submit', (event) => {
+$('#settingsForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (state.sessionCreationPending) return;
   if (event.submitter?.value === 'cancel') {
     $('#settingsDialog').close();
     return;
   }
-  const cwd = $('#cwdInput').value.trim();
-  if (!cwd.startsWith('/')) {
-    $('#cwdInput').setCustomValidity('请输入服务器上的绝对路径');
-    $('#cwdInput').reportValidity();
+  const button = $('#saveSettingsButton');
+  $('#settingsError').textContent = '';
+  let payload;
+  try {
+    payload = createRemoteSessionPayload({
+      name: $('#sessionNameInput').value,
+      provider: $('#settingsProvider').value,
+      cwd: $('#cwdInput').value,
+    });
+  } catch (error) {
+    $('#settingsError').textContent = error.message;
     return;
   }
-  $('#cwdInput').setCustomValidity('');
-  state.cwd = cwd;
-  localStorage.setItem('codeck-remote-cwd', cwd);
-  const provider = $('#settingsProvider').value;
-  $('#settingsDialog').close();
-  const changed = provider !== state.provider;
-  const action = changed ? switchProvider(provider) : Promise.resolve();
-  action.then(() => startNewThread()).catch((error) => setLiveMessage(error.message));
+  const controls = [...$('#settingsForm').querySelectorAll('button, input, select')];
+  state.sessionCreationPending = true;
+  for (const control of controls) control.disabled = true;
+  button.disabled = true;
+  button.textContent = '正在创建…';
+  let created = false;
+  try {
+    await requestSessionCreation(payload);
+    created = true;
+    state.sessionSnapshot = null;
+    state.provider = payload.client;
+    state.cwd = payload.cwd || state.defaultCwd;
+    localStorage.setItem('codeck-remote-provider', state.provider);
+    localStorage.setItem('codeck-remote-cwd', state.cwd);
+    renderProviderControls();
+    startNewThread({ focus: false });
+    setLiveMessage(`正在启动 tmux 会话“${payload.name}”…`);
+    const thread = await waitForCreatedSession(payload.name, payload.client);
+    $('#settingsDialog').close();
+    if (!thread) {
+      setLiveMessage(`tmux 会话“${payload.name}”已创建，Agent 仍在启动，请稍后从左栏进入。`);
+      return;
+    }
+    if (thread.tmux.available === false) openPendingThread(thread, { refresh: false });
+    else await openThread(thread.id, { provider: thread.provider, readOnly: true });
+    setTimeout(() => $('#composerInput').focus(), 50);
+  } catch (error) {
+    if (created) {
+      $('#settingsDialog').open && $('#settingsDialog').close();
+      setLiveMessage(error.message);
+    } else {
+      $('#settingsError').textContent = error.message;
+    }
+  } finally {
+    state.sessionCreationPending = false;
+    for (const control of controls) control.disabled = false;
+    button.disabled = false;
+    button.textContent = '创建会话';
+  }
 });
 $('#forgetTokenButton').addEventListener('click', () => {
   localStorage.removeItem('codeck-token');

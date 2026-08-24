@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  createRemoteSessionPayload,
+  findCreatedRemoteSession,
+  suggestedRemoteSessionName,
+} from '../public/remote-session.js';
+
+test('remote session creation preserves the chosen tmux name and Agent', () => {
+  assert.deepEqual(createRemoteSessionPayload({
+    name: 'research-ui',
+    provider: 'qodercli',
+    cwd: '  /srv/research  ',
+  }), {
+    name: 'research-ui',
+    client: 'qodercli',
+    cwd: '/srv/research',
+  });
+});
+
+test('remote session creation rejects names tmux cannot safely address', () => {
+  for (const name of ['', '-bad', 'two words', 'x;whoami', 'a'.repeat(65)]) {
+    assert.throws(
+      () => createRemoteSessionPayload({ name, provider: 'codex', cwd: '/srv/codeck' }),
+      /会话名/,
+    );
+  }
+  assert.throws(
+    () => createRemoteSessionPayload({ name: 'work', provider: 'codex', cwd: 'relative/path' }),
+    /绝对路径/,
+  );
+});
+
+test('remote session suggestions avoid existing tmux names', () => {
+  const now = { getHours: () => 15, getMinutes: () => 7 };
+  assert.equal(suggestedRemoteSessionName('claude', [], now), 'claude-1507');
+  assert.equal(
+    suggestedRemoteSessionName('claude', ['claude-1507', 'claude-1507-2'], now),
+    'claude-1507-3',
+  );
+});
+
+test('a newly created session waits for the requested Agent identity', () => {
+  const threads = [
+    { provider: 'shell', tmux: { name: 'research-ui' } },
+    { provider: 'qodercli', tmux: { name: 'research-ui', available: false } },
+  ];
+  assert.equal(findCreatedRemoteSession(threads, 'research-ui', 'qodercli'), threads[1]);
+  assert.equal(findCreatedRemoteSession(threads, 'research-ui', 'claude'), null);
+});

@@ -29,7 +29,7 @@
       </div>
       <div class="drawer-heading">
         <div><p class="eyebrow">WORKSPACES</p><h1>运行中的会话</h1></div>
-        <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建对话">＋</button>
+        <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建会话">＋</button>
       </div>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
@@ -50,7 +50,7 @@
           </button>
         </div>
         <div class="header-actions">
-          <button class="header-button" id="newThreadButton" type="button" aria-label="新建对话">
+          <button class="header-button" id="newThreadButton" type="button" aria-label="新建会话">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           </button>
           <button class="header-button" id="settingsButton" type="button" aria-label="对话设置" aria-haspopup="dialog">
@@ -140,20 +140,24 @@
 
   <dialog class="sheet settings-sheet" id="settingsDialog">
     <form method="dialog" id="settingsForm">
-      <div class="sheet-head"><div><p class="eyebrow">SESSION</p><h2>新对话设置</h2></div><button class="close-button" value="cancel" aria-label="关闭">×</button></div>
-      <label for="settingsTheme">界面主题</label>
-      <select id="settingsTheme" name="theme"><option value="dark">深色</option><option value="light">浅色（白底黑字）</option></select>
-      <p class="field-help">自动保存，只影响 Remote 界面。</p>
+      <div class="sheet-head"><div><p class="eyebrow">SESSION</p><h2>新建会话</h2></div><button class="close-button" value="cancel" formnovalidate aria-label="关闭">×</button></div>
+      <label for="sessionNameInput">会话名称</label>
+      <input id="sessionNameInput" name="name" type="text" inputmode="text" autocomplete="off" autocapitalize="none" spellcheck="false" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}" maxlength="64" placeholder="feature-auth" required>
+      <p class="field-help">用于 tmux 和左侧会话列表，可使用字母、数字、点、短横线和下划线。</p>
       <label for="settingsProvider">Agent</label>
       <select id="settingsProvider"></select>
       <label for="cwdInput">服务器工作目录</label>
       <input id="cwdInput" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="/data/code/project">
-      <p class="field-help">必须是服务器上的绝对路径。设置只用于接下来新建的对话。</p>
+      <p class="field-help">必须是服务器上的绝对路径。</p>
+      <label for="settingsTheme">界面主题</label>
+      <select id="settingsTheme" name="theme"><option value="dark">深色</option><option value="light">浅色（白底黑字）</option></select>
+      <p class="field-help">自动保存，只影响 Remote 界面。</p>
+      <p class="form-error" id="settingsError" role="alert"></p>
       <div class="settings-links"><a href="/">打开终端模式</a><button id="forgetTokenButton" type="button">更换访问令牌</button></div>
-      <div class="sheet-actions"><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存并新建</button></div>
+      <div class="sheet-actions"><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="saveSettingsButton" value="default">创建会话</button></div>
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=43"></script>
+  <script type="module" src="/remote.js?v=44"></script>
 </body>
 </html>

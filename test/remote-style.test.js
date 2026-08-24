@@ -30,6 +30,16 @@ test('remote restores and persists a selectable light theme before first paint',
   assert.match(css, /:root\[data-theme="light"\]\s*\{[^}]*color-scheme:\s*light[^}]*--base:\s*#fff[^}]*--ink:\s*#111/s);
 });
 
+test('remote new sessions request and submit a tmux session name', () => {
+  assert.match(html, /<label for="sessionNameInput">会话名称<\/label>/);
+  assert.match(html, /id="sessionNameInput"[^>]*name="name"[^>]*required/);
+  assert.match(remoteJs, /createRemoteSessionPayload/);
+  assert.match(remoteJs, /fetch\('\/api\/sessions'/);
+  assert.match(remoteJs, /\$\('#drawerNewButton'\)\.addEventListener\('click', openSettings\)/);
+  assert.match(remoteJs, /if \(!state\.thread\)[\s\S]{0,180}openSettings\(\)/);
+  assert.doesNotMatch(remoteJs, /agentRequest\('newThread'/);
+});
+
 test('remote light theme uses the neutral floating surfaces from the supplied reference', () => {
   assert.match(css, /:root\[data-theme="light"\] \.conversation-shell\s*\{[^}]*background:\s*#fff;/s);
   assert.match(css, /:root\[data-theme="light"\] \.user-message\s*\{[^}]*background:\s*#f4f4f4;[^}]*color:\s*#111;/s);
