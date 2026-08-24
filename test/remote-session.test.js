@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createRemoteSessionPayload,
   findCreatedRemoteSession,
+  nextThreadAfterClose,
   suggestedRemoteSessionName,
 } from '../public/remote-session.js';
 
@@ -47,4 +48,18 @@ test('a newly created session waits for the requested Agent identity', () => {
   ];
   assert.equal(findCreatedRemoteSession(threads, 'research-ui', 'qodercli'), threads[1]);
   assert.equal(findCreatedRemoteSession(threads, 'research-ui', 'claude'), null);
+});
+
+test('closing a remote session selects its nearest remaining neighbor', () => {
+  const threads = [
+    { id: 'one', tmux: { name: 'one' } },
+    { id: 'two', tmux: { name: 'two' } },
+    { id: 'three', tmux: { name: 'three' } },
+  ];
+
+  assert.equal(nextThreadAfterClose(threads, 'two'), threads[2]);
+  assert.equal(nextThreadAfterClose(threads, 'three'), threads[1]);
+  assert.equal(nextThreadAfterClose(threads, 'one'), threads[1]);
+  assert.equal(nextThreadAfterClose(threads, 'missing'), null);
+  assert.equal(nextThreadAfterClose([], 'one'), null);
 });

@@ -27,8 +27,9 @@ import {
 import {
   createRemoteSessionPayload,
   findCreatedRemoteSession,
+  nextThreadAfterClose,
   suggestedRemoteSessionName,
-} from './remote-session.js?v=1';
+} from './remote-session.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 const PROVIDERS = {
@@ -68,6 +69,7 @@ const state = {
   liveMessage: '',
   sessionSnapshot: null,
   threadLoad: null,
+  threadListGeneration: 0,
   threadRefresh: null,
   threadRefreshUntil: 0,
   threadHandoff: null,
@@ -77,6 +79,8 @@ const state = {
   attachments: [],
   attachmentDragDepth: 0,
   sessionCreationPending: false,
+  sessionClosePending: false,
+  sessionCloseTarget: null,
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -329,6 +333,18 @@ async function requestSessionCreation(payload) {
     throw new Error(body.error || `创建会话失败 (${response.status})`);
   }
   return response.json();
+}
+
+async function requestSessionClose(name) {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${state.token}` },
+  });
+  if (response.status === 401) throw new Error('访问令牌已失效');
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `关闭会话失败 (${response.status})`);
+  }
 }
 
 function rejectPendingRequests(message) {
@@ -593,12 +609,14 @@ function handoffPendingThread(thread) {
 
 async function loadThreads({ quiet = false } = {}) {
   if (state.threadLoad) return state.threadLoad;
+  const generation = state.threadListGeneration;
   const load = (async () => {
     if (!quiet) {
       $('#threadList').replaceChildren(element('div', 'thread-empty', '正在读取会话…'));
     }
     const snapshot = state.sessionSnapshot || await validateOwnerToken(state.token);
     state.sessionSnapshot = null;
+    if (generation !== state.threadListGeneration) return;
     state.threads = tmuxSessionsToThreads(snapshot.sessions)
       .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
     const activeThread = state.threads.find((thread) => (
@@ -753,6 +771,22 @@ function renderProviderControls() {
   renderHeader();
 }
 
+function openListedThread(thread, { quiet = false } = {}) {
+  if (thread.provider === 'shell') {
+    openShellThread(thread, { quiet });
+    return Promise.resolve();
+  }
+  if (thread.tmux?.available === false) {
+    openPendingThread(thread, { quiet });
+    return Promise.resolve();
+  }
+  return openThread(thread.id, {
+    provider: thread.provider,
+    quiet,
+    readOnly: thread.readOnly,
+  });
+}
+
 function renderThreadList() {
   if (!state.threads.length) {
     const empty = element('div', 'thread-empty');
@@ -766,6 +800,7 @@ function renderThreadList() {
     const details = providerDetails(thread.provider);
     const button = element('button', `thread-row${active ? ' active' : ''}`);
     button.type = 'button';
+    button.disabled = state.sessionClosePending;
     button.dataset.threadId = thread.id;
     const copy = element('span', 'thread-copy');
     const tmux = thread.tmux || {};
@@ -791,18 +826,7 @@ function renderThreadList() {
     );
     if (tmux.available === false) button.title = '已连接终端，可直接参与';
     button.addEventListener('click', () => {
-      if (thread.provider === 'shell') {
-        openShellThread(thread);
-        return;
-      }
-      if (tmux.available === false) {
-        openPendingThread(thread);
-        return;
-      }
-      openThread(thread.id, {
-        provider: thread.provider,
-        readOnly: thread.readOnly,
-      }).catch((error) => setLiveMessage(error.message));
+      openListedThread(thread).catch((error) => setLiveMessage(error.message));
     });
     return button;
   });
@@ -1398,24 +1422,27 @@ function renderComposerState() {
   const shellAttachmentOnly = state.provider === 'shell' && state.attachments.length && !hasText;
   const pending = composerRequestGate.pending;
   const opening = Boolean(state.threadOpening);
+  const closing = state.sessionClosePending;
   const controls = composerControlState({
-    active, connected: state.connected, hasText: hasContent, opening, pending, readOnly,
+    active, connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
   });
   sendButton.classList.toggle('stop-mode', controls.stopMode && !shellAttachmentOnly);
-  input.disabled = readOnly || opening;
+  input.disabled = readOnly || opening || closing;
   $('.composer').classList.toggle('read-only', readOnly);
-  $('.composer').setAttribute('aria-busy', String(pending || opening));
+  $('.composer').setAttribute('aria-busy', String(pending || opening || closing));
   sendButton.disabled = controls.disabled || Boolean(shellAttachmentOnly);
   sendButton.setAttribute('aria-label', shellAttachmentOnly ? '请先输入 Shell 命令' : controls.ariaLabel);
-  $('#composerPlus').disabled = readOnly || opening || pending || !state.connected;
+  $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected;
   const voiceButton = $('#voiceInputButton');
-  voiceButton.disabled = !speechInput.supported || readOnly || opening || pending || !state.connected;
+  voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
   for (const remove of document.querySelectorAll('.attachment-remove')) remove.disabled = opening || pending;
   const status = $('#composerStatus');
   status.replaceChildren();
   const dot = element('i', `connection-dot ${state.connected ? active || background ? 'busy' : 'online' : 'problem'}`);
-  const message = opening
+  const message = closing
+    ? '正在关闭会话…'
+    : opening
     ? '正在读取会话…'
     : !state.connected
       ? '连接已断开'
@@ -1426,7 +1453,9 @@ function renderComposerState() {
             : background ? 'Agent 后台任务运行中 · 可直接输入' : '已连接当前终端会话 · 可直接输入'
         : readOnly ? '当前会话只读' : active ? `${activity || '正在处理'} · 可继续输入` : '已连接';
   status.append(dot, document.createTextNode(message));
-  input.placeholder = opening
+  input.placeholder = closing
+    ? '正在关闭会话…'
+    : opening
     ? '正在读取会话…'
     : readOnly
       ? '当前会话只读'
@@ -1709,7 +1738,7 @@ function handleAttachmentPaste(event) {
 }
 
 function openNewSession() {
-  if (state.sessionCreationPending) return;
+  if (state.sessionCreationPending || state.sessionClosePending) return;
   const provider = preferredNewSessionProvider();
   $('#sessionProvider').value = provider;
   $('#sessionCwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
@@ -1723,7 +1752,103 @@ function openSettings() {
   $('#settingsProvider').value = preferredNewSessionProvider();
   $('#cwdInput').value = state.cwd || state.defaultCwd;
   $('#settingsError').textContent = '';
+  const sessionName = state.thread?.tmux?.name || '';
+  const closeButton = $('#closeSessionButton');
+  closeButton.hidden = !sessionName;
+  closeButton.disabled = !sessionName || state.sessionClosePending || Boolean(state.threadOpening);
+  closeButton.title = sessionName ? `关闭 tmux 会话“${sessionName}”` : '';
+  closeButton.setAttribute('aria-label', closeButton.title || '关闭当前会话');
   $('#settingsDialog').showModal();
+}
+
+function dismissCloseSessionDialog() {
+  if (state.sessionClosePending) return;
+  const dialog = $('#closeSessionDialog');
+  if (dialog.open) dialog.close();
+  state.sessionCloseTarget = null;
+  $('#closeSessionError').textContent = '';
+}
+
+function openCloseSessionDialog() {
+  const sessionName = state.thread?.tmux?.name;
+  if (!sessionName || state.sessionClosePending || state.threadOpening) return;
+  state.sessionCloseTarget = sessionName;
+  $('#settingsDialog').open && $('#settingsDialog').close();
+  $('#closeSessionName').textContent = sessionName;
+  $('#closeSessionError').textContent = '';
+  $('#closeSessionDialog').showModal();
+  requestAnimationFrame(() => $('#cancelCloseSessionButton').focus({ preventScroll: true }));
+}
+
+async function closeCurrentSession() {
+  const sessionName = state.sessionCloseTarget;
+  if (!sessionName || state.sessionClosePending) return;
+  const nextThread = nextThreadAfterClose(state.threads, sessionName);
+  const controls = [...$('#closeSessionForm').querySelectorAll('button')];
+  const confirmButton = $('#confirmCloseSessionButton');
+  state.sessionClosePending = true;
+  for (const control of controls) control.disabled = true;
+  confirmButton.textContent = '正在关闭…';
+  $('#closeSessionError').textContent = '';
+  renderComposerState();
+
+  try {
+    await requestSessionClose(sessionName);
+  } catch (error) {
+    state.sessionClosePending = false;
+    for (const control of controls) control.disabled = false;
+    confirmButton.textContent = '关闭会话';
+    $('#closeSessionError').textContent = error.message;
+    renderComposerState();
+    return;
+  }
+
+  $('#closeSessionDialog').close();
+  state.sessionCloseTarget = null;
+  state.threadListGeneration += 1;
+  const staleThreadLoad = state.threadLoad;
+  state.sessionSnapshot = null;
+  state.threads = state.threads.filter((thread) => thread.tmux?.name !== sessionName);
+  startNewThread({ focus: false });
+  abortSpeechInput();
+  const input = $('#composerInput');
+  input.value = '';
+  clearAttachments([...state.attachments]);
+  state.slashCommandIndex = 0;
+  state.slashCommandDismissedValue = null;
+  syncCommandDialog(null);
+  resizeComposer();
+  renderThreadList();
+  scheduleThreadRender(false);
+
+  if (staleThreadLoad) await staleThreadLoad.catch(() => {});
+  let refreshError = '';
+  try {
+    await loadThreads({ quiet: true });
+  } catch (error) {
+    refreshError = error.message;
+  }
+  const nextSessionName = nextThread?.tmux?.name;
+  const replacement = state.threads.find((thread) => thread.tmux?.name === nextSessionName)
+    || state.threads[0]
+    || null;
+  let openError = '';
+  if (replacement) {
+    try {
+      await openListedThread(replacement, { quiet: true });
+    } catch (error) {
+      openError = error.message;
+    }
+  }
+
+  state.sessionClosePending = false;
+  for (const control of controls) control.disabled = false;
+  confirmButton.textContent = '关闭会话';
+  renderThreadList();
+  renderComposerState();
+  const switchedTo = replacement && !openError ? `，已切换到“${replacement.tmux?.name || replacement.preview}”` : '';
+  const warning = openError || refreshError;
+  setLiveMessage(`已关闭会话“${sessionName}”${switchedTo}${warning ? `；${warning}` : '。'}`);
 }
 
 function updateSuggestedSessionName(provider, { force = false } = {}) {
@@ -1785,6 +1910,7 @@ $('#drawerNewButton').addEventListener('click', openNewSession);
 $('#newThreadButton').addEventListener('click', openNewSession);
 $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
+$('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
@@ -1802,6 +1928,20 @@ $('#commandDialog').addEventListener('cancel', (event) => {
 });
 $('#commandDialog').addEventListener('click', (event) => {
   if (event.target === event.currentTarget) dismissCommandDialog();
+});
+$('#closeSessionDialogClose').addEventListener('click', dismissCloseSessionDialog);
+$('#cancelCloseSessionButton').addEventListener('click', dismissCloseSessionDialog);
+$('#closeSessionDialog').addEventListener('cancel', (event) => {
+  if (state.sessionClosePending) {
+    event.preventDefault();
+    return;
+  }
+  state.sessionCloseTarget = null;
+  $('#closeSessionError').textContent = '';
+});
+$('#closeSessionForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  closeCurrentSession();
 });
 $('#newSessionDialog').addEventListener('cancel', (event) => {
   if (state.sessionCreationPending) event.preventDefault();

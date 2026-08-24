@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=26">
+  <link rel="stylesheet" href="/remote.css?v=27">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -172,10 +172,22 @@
       <p class="field-help">用于接下来新建的会话，必须是服务器上的绝对路径。</p>
       <p class="form-error" id="settingsError" role="alert"></p>
       <div class="settings-links"><a href="/">打开终端模式</a><button id="forgetTokenButton" type="button">更换访问令牌</button></div>
+      <button class="settings-danger-button" id="closeSessionButton" type="button" hidden>关闭当前会话</button>
       <div class="sheet-actions"><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存</button></div>
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=46"></script>
+  <dialog class="sheet destructive-sheet" id="closeSessionDialog" aria-labelledby="closeSessionTitle" aria-describedby="closeSessionDescription">
+    <form id="closeSessionForm">
+      <div class="sheet-head"><div><p class="eyebrow">CLOSE SESSION</p><h2 id="closeSessionTitle">关闭会话？</h2></div><button class="close-button" id="closeSessionDialogClose" type="button" aria-label="取消关闭会话">×</button></div>
+      <p id="closeSessionDescription">这会结束对应的 tmux 会话及其中正在运行的进程。</p>
+      <div class="destructive-session"><span>TMUX SESSION</span><strong id="closeSessionName"></strong></div>
+      <p class="sheet-note">此操作无法撤销，未保存的进程状态和当前草稿会丢失。</p>
+      <p class="form-error" id="closeSessionError" role="alert"></p>
+      <div class="sheet-actions"><button class="secondary-button" id="cancelCloseSessionButton" type="button">取消</button><button class="destructive-button" id="confirmCloseSessionButton" type="submit">关闭会话</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/remote.js?v=47"></script>
 </body>
 </html>

@@ -34,3 +34,10 @@ export function findCreatedRemoteSession(threads, name, provider) {
     thread?.provider === provider && thread.tmux?.name === name
   )) || null;
 }
+
+export function nextThreadAfterClose(threads, sessionName) {
+  const list = Array.isArray(threads) ? threads : [];
+  const closedIndex = list.findIndex((thread) => thread?.tmux?.name === sessionName);
+  if (closedIndex < 0) return null;
+  return list[closedIndex + 1] || list[closedIndex - 1] || null;
+}

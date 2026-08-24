@@ -290,6 +290,15 @@ button { cursor: pointer; }
 .settings-links { margin-top: 20px; padding: 13px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
 .settings-links a, .settings-links button { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; font-size: 10px; }
 .settings-links button { color: #ffaaa6; }
+.settings-danger-button { width: 100%; min-height: 44px; margin-top: 12px; padding: 0 13px; border: 1px solid #ff716b38; border-radius: 10px; background: #ff716b0b; color: #ffaaa6; font-size: 10px; font-weight: 680; text-align: left; }
+.settings-danger-button:hover { border-color: #ff716b66; background: #ff716b14; }
+.destructive-sheet { width: min(440px, calc(100vw - 24px)); }
+.destructive-session { min-width: 0; margin-top: 18px; padding: 13px; border: 1px solid #ff716b2e; border-radius: 11px; background: #ff716b08; display: flex; flex-direction: column; gap: 6px; }
+.destructive-session span { color: var(--subtle); font: 650 8px "Courier New", Courier, monospace; letter-spacing: .12em; }
+.destructive-session strong { overflow: hidden; color: var(--ink); font: 600 12px "Courier New", Courier, "Noto Sans SC Variable", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.destructive-button { min-height: 44px; padding: 0 16px; border: 1px solid #ff716b52; border-radius: 10px; background: #b8322c; color: #fff; font-size: 11px; font-weight: 700; }
+.destructive-button:hover { background: #c83a33; }
+.destructive-button:disabled, .settings-danger-button:disabled { cursor: wait; opacity: .52; }
 .sheet-actions { margin-top: 17px; display: flex; justify-content: flex-end; gap: 8px; }
 
 :root[data-theme="light"] {
@@ -399,6 +408,11 @@ button { cursor: pointer; }
 :root[data-theme="light"] .approval-actions .allow { border-color: #16733345; background: #1673330d; color: #145c2b; }
 :root[data-theme="light"] .approval-actions .deny,
 :root[data-theme="light"] .settings-links button { color: #9f2117; }
+:root[data-theme="light"] .settings-danger-button { border-color: #b4231830; background: #b4231807; color: #9f2117; }
+:root[data-theme="light"] .settings-danger-button:hover { border-color: #b4231852; background: #b423180d; }
+:root[data-theme="light"] .destructive-session { border-color: #b4231826; background: #b4231806; }
+:root[data-theme="light"] .destructive-button { border-color: #9f2117; background: #b42318; }
+:root[data-theme="light"] .destructive-button:hover { background: #9f2117; }
 :root[data-theme="light"] .question-card { border-color: #0000000f; background: #f7f7f8; box-shadow: none; }
 :root[data-theme="light"] .question-kicker { color: #5b21b6; }
 :root[data-theme="light"] .question-field legend { color: #4c1d95; }

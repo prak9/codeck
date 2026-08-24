@@ -69,13 +69,29 @@ test('remote keeps the overflow menu as settings instead of session creation', (
   assert.match(remoteJs, /\$\('#settingsForm'\)\.addEventListener\('submit'/);
 });
 
+test('remote closes only the active tmux session after explicit confirmation', () => {
+  const settingsDialog = html.match(/<dialog class="sheet settings-sheet" id="settingsDialog">([\s\S]*?)<\/dialog>/)?.[1] || '';
+  const closeDialog = html.match(/<dialog class="sheet destructive-sheet" id="closeSessionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+  assert.match(settingsDialog, /id="closeSessionButton"[^>]*type="button"[^>]*hidden/);
+  assert.match(closeDialog, /id="closeSessionName"/);
+  assert.match(closeDialog, /id="confirmCloseSessionButton"[^>]*type="submit"/);
+  assert.match(closeDialog, /未保存的进程状态和当前草稿会丢失/);
+  assert.match(remoteJs, /function requestSessionClose\(name\)/);
+  assert.match(remoteJs, /fetch\(`\/api\/sessions\/\$\{encodeURIComponent\(name\)\}`,[\s\S]*method: 'DELETE'/);
+  assert.match(remoteJs, /nextThreadAfterClose\(state\.threads, sessionName\)/);
+  assert.match(remoteJs, /sessionClosePending/);
+  assert.match(remoteJs, /clearAttachments\(\[\.\.\.state\.attachments\]\)/);
+  assert.match(css, /\.destructive-button\s*\{[^}]*min-height:\s*44px/s);
+});
+
 test('remote light theme uses the neutral floating surfaces from the supplied reference', () => {
   assert.match(css, /:root\[data-theme="light"\] \.conversation-shell\s*\{[^}]*background:\s*#fff;/s);
   assert.match(css, /:root\[data-theme="light"\] \.user-message\s*\{[^}]*background:\s*#f4f4f4;[^}]*color:\s*#111;/s);
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=26/);
+  assert.match(html, /\/remote\.css\?v=27/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
