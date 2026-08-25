@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { agentKindFromCommand, detectPaneAgents, findCodexHistorySessionId, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexHistory, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId } from '../src/agents.js';
 
 function writeProcProcess(root, {
-  pid, ppid, pgrp = pid, session = pid, startTicks = 0, command = '', children = [], environment = '',
+  pid, ppid, pgrp = pid, session = pid, startTicks = 0, command = '', children = [], environment = '', cwd = null,
 }) {
   const processRoot = path.join(root, String(pid));
   const taskRoot = path.join(processRoot, 'task', String(pid));
@@ -16,6 +16,7 @@ function writeProcProcess(root, {
   fs.writeFileSync(path.join(processRoot, 'cmdline'), `${command.split(' ').filter(Boolean).join('\0')}\0`);
   fs.writeFileSync(path.join(processRoot, 'environ'), environment);
   fs.writeFileSync(path.join(taskRoot, 'children'), children.join(' '));
+  if (cwd) fs.symlinkSync(cwd, path.join(processRoot, 'cwd'));
 }
 
 test('latest Codex session name wins for a renamed thread', () => {
@@ -158,6 +159,73 @@ test('Codex output quoting another thread prompt cannot switch the tmux session 
   assert.equal(findCodexHistorySessionId(pane, history), codeckId);
 });
 
+test('a prompt shared by multiple Codex threads is ambiguous', () => {
+  const codeckId = '01a01f67-bd04-7ca0-afdd-e9f2b59d27d5';
+  const skillsId = '01a03781-258c-7e12-85a9-97f5c8440771';
+  const history = parseCodexHistory([
+    JSON.stringify({ session_id: codeckId, ts: 100, text: '提交并推送' }),
+    JSON.stringify({ session_id: skillsId, ts: 200, text: '提交并推送' }),
+  ].join('\n'));
+
+  assert.equal(findCodexHistorySessionId('› 提交并推送', history), null);
+  assert.equal(findCodexHistorySessionId('› 提交并推送', history, (id) => id === codeckId), codeckId);
+});
+
+test('Codex rollout cwd disambiguates identical prompts in different tmux panes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-cwd-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const codeckCwd = path.join(root, 'codeck-workspace');
+  const skillsCwd = path.join(root, 'skills-workspace');
+  const codeckId = '01a04000-1111-7111-8111-111111111111';
+  const skillsId = '01a04001-2222-7222-8222-222222222222';
+  const oldSkillsId = '01a04002-3333-7333-8333-333333333333';
+  try {
+    fs.mkdirSync(codeckCwd, { recursive: true });
+    fs.mkdirSync(skillsCwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, command: 'node /usr/bin/codex --yolo', cwd: codeckCwd });
+    writeProcProcess(procRoot, { pid: 20, ppid: 1, command: '/bin/bash', children: [21] });
+    writeProcProcess(procRoot, { pid: 21, ppid: 20, command: 'node /usr/bin/codex --yolo', cwd: skillsCwd });
+    writeProcProcess(procRoot, { pid: 30, ppid: 1, command: '/bin/bash', children: [31] });
+    writeProcProcess(procRoot, { pid: 31, ppid: 30, command: 'node /usr/bin/codex --yolo', cwd: skillsCwd });
+    const sessions = path.join(codexHome, 'sessions', '2026', '08', '25');
+    fs.mkdirSync(sessions, { recursive: true });
+    const transcript = (id, cwd) => [
+      JSON.stringify({ type: 'session_meta', payload: { id, cwd } }),
+      JSON.stringify({
+        type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '提交并推送' }] },
+      }),
+    ].join('\n');
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-25T10-00-00-${codeckId}.jsonl`), transcript(codeckId, codeckCwd));
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-25T10-01-00-${oldSkillsId}.jsonl`), transcript(oldSkillsId, skillsCwd));
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-25T10-02-00-${skillsId}.jsonl`), transcript(skillsId, skillsCwd));
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [
+      JSON.stringify({ session_id: oldSkillsId, ts: 50, text: '提交并推送' }),
+      JSON.stringify({ session_id: codeckId, ts: 100, text: '提交并推送' }),
+      JSON.stringify({ session_id: skillsId, ts: 150, text: '更新现有 code review skill' }),
+      JSON.stringify({ session_id: skillsId, ts: 200, text: '提交并推送' }),
+    ].join('\n'));
+
+    const agents = await detectPaneAgents([
+      { session: 'codeck-cwd', pid: 10, paneId: '%1' },
+      { session: 'skills-cwd', pid: 20, paneId: '%2' },
+      { session: 'ambiguous-cwd', pid: 30, paneId: '%3' },
+    ], { CODEX_HOME: codexHome }, {
+      procRoot, clockTicks: 100, now: new Date('2026-08-25T10:02:40').getTime(), uptimeMs: 100_000,
+      readCodexPaneOutput: async (session) => session === 'skills-cwd'
+        ? '› 更新现有 code review skill\n• 已完成\n› 提交并推送\n• 已完成'
+        : '› 提交并推送\n• 已完成',
+    });
+
+    assert.equal(agents.get('codeck-cwd')?.id, codeckId);
+    assert.equal(agents.get('skills-cwd')?.id, skillsId);
+    assert.equal(agents.get('ambiguous-cwd')?.id, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('detects the current Codex thread after a long-lived tmux process switches threads', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-switch-'));
   const procRoot = path.join(root, 'proc');
@@ -177,6 +245,8 @@ test('detects the current Codex thread after a long-lived tmux process switches 
     fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [
       JSON.stringify({ session_id: oldId, ts: 100, text: '提炼这个链接里的内容' }),
       JSON.stringify({ session_id: currentId, ts: 200, text: '深度发挥分析下中芯国际投资价值' }),
+      JSON.stringify({ session_id: currentId, ts: 250, text: '提交并推送' }),
+      JSON.stringify({ session_id: oldId, ts: 300, text: '提交并推送' }),
     ].join('\n'));
 
     const agents = await detectPaneAgents([{ session: 'skills', pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome }, {
@@ -189,7 +259,7 @@ test('detects the current Codex thread after a long-lived tmux process switches 
 
     const afterScroll = await detectPaneAgents([{ session: 'skills', pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome }, {
       procRoot, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
-      readCodexPaneOutput: async () => '• 最终输出很长，当前提示已经滚出捕获范围',
+      readCodexPaneOutput: async () => '› 提交并推送\n• 正在处理',
     });
     assert.equal(afterScroll.get('skills')?.id, currentId);
   } finally {

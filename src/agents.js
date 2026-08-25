@@ -9,7 +9,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'QODER_SESSION_ID']);
 const CODEX_HISTORY_READ_LIMIT = 2 * 1024 * 1024;
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
-let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', previews: new Map() };
+let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', cwds: new Map(), previews: new Map() };
 const codexPaneSessions = new Map();
 let clockTicksPromise;
 
@@ -140,22 +140,39 @@ function codexPromptBlocks(output) {
   return prompts;
 }
 
-export function findCodexHistorySessionId(output, history) {
+function matchCodexHistorySession(output, history, acceptId = () => true) {
   const prompts = codexPromptBlocks(output);
-  let best = null;
+  const candidatesByPrompt = prompts.map(() => new Set());
+  let matched = false;
   for (const item of history || []) {
     const text = compactCodexText(item?.text);
     if (!text || !item?.id) continue;
     const needle = text.slice(0, 320);
-    for (const prompt of prompts) {
+    for (const [index, prompt] of prompts.entries()) {
       const matches = text.length > needle.length ? prompt.text.startsWith(needle) : prompt.text === text;
       if (!matches) continue;
-      if (!best || prompt.position > best.position || prompt.position === best.position && item.timestamp > best.timestamp) {
-        best = { id: item.id, position: prompt.position, timestamp: item.timestamp };
-      }
+      matched = true;
+      if (!acceptId(item.id)) continue;
+      candidatesByPrompt[index].add(item.id);
     }
   }
-  return best?.id || null;
+  let candidates = null;
+  for (let index = candidatesByPrompt.length - 1; index >= 0; index -= 1) {
+    const promptCandidates = candidatesByPrompt[index];
+    if (!promptCandidates.size) continue;
+    if (!candidates) candidates = new Set(promptCandidates);
+    else if (candidates.size > 1) {
+      const overlap = new Set([...candidates].filter((id) => promptCandidates.has(id)));
+      if (!overlap.size) return { id: null, matched };
+      candidates = overlap;
+    }
+    if (candidates.size === 1) return { id: candidates.values().next().value, matched };
+  }
+  return { id: null, matched };
+}
+
+export function findCodexHistorySessionId(output, history, acceptId = () => true) {
+  return matchCodexHistorySession(output, history, acceptId).id;
 }
 
 function walkFiles(root, accept, results = []) {
@@ -206,8 +223,38 @@ function loadCodexSessions(codexHome) {
     });
   let history = [];
   try { history = parseCodexHistory(readTextTail(historyFile, CODEX_HISTORY_READ_LIMIT)); } catch { /* No history yet. */ }
-  codexCache = { expires: Date.now() + 15_000, names, starts, writers, history, historySignature, previews: codexCache.previews };
+  codexCache = {
+    expires: Date.now() + 15_000, names, starts, writers, history, historySignature,
+    cwds: codexCache.cwds, previews: codexCache.previews,
+  };
   return codexCache;
+}
+
+function codexSessionCwd(id, codex) {
+  if (!id) return null;
+  if (codex.cwds.has(id)) return codex.cwds.get(id);
+  const file = codex.starts.find((item) => item.id === id)?.file;
+  let cwd = null;
+  if (file) {
+    try {
+      const descriptor = fs.openSync(file, 'r');
+      try {
+        const size = Math.min(fs.fstatSync(descriptor).size, 64 * 1024);
+        const buffer = Buffer.alloc(size);
+        fs.readSync(descriptor, buffer, 0, size, 0);
+        for (const line of buffer.toString('utf8').split('\n')) {
+          if (!line.trim()) continue;
+          const item = JSON.parse(line);
+          if (item?.type === 'session_meta' && typeof item.payload?.cwd === 'string') {
+            cwd = item.payload.cwd;
+            break;
+          }
+        }
+      } finally { fs.closeSync(descriptor); }
+    } catch { /* The rollout may rotate or contain a partial line. */ }
+  }
+  if (cwd) codex.cwds.set(id, cwd);
+  return cwd;
 }
 
 function codexPreview(id, codex) {
@@ -552,14 +599,22 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     if (kind === 'codex') {
       const paneOutput = codexPaneOutputs.get(pane.session) || '';
       const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
-      const visibleId = explicitId ? null : findCodexHistorySessionId(paneOutput, codex.history);
+      const paneCwd = normalizedPath(runtime.cwd);
+      const cwdMatches = new Map();
+      const visibleMatch = explicitId ? { id: null, matched: false } : matchCodexHistorySession(paneOutput, codex.history, (id) => {
+        if (!paneCwd) return true;
+        if (!cwdMatches.has(id)) cwdMatches.set(id, normalizedPath(codexSessionCwd(id, codex)) === paneCwd);
+        return cwdMatches.get(id);
+      });
+      const visibleId = visibleMatch.id;
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
       const remembered = codexPaneSessions.get(pane.session);
       const rememberedId = remembered?.pid === process.pid
         && remembered.startedAt === process.startedAt
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
-      let id = explicitId || verifiedVisibleId || rememberedId || resolveCodexSessionId(process, codex);
+      let id = explicitId || verifiedVisibleId || rememberedId
+        || (visibleMatch.matched ? null : resolveCodexSessionId(process, codex));
       if (explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
       let name = codex.names.get(id) || codexPreview(id, codex);
       if (!name) {
