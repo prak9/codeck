@@ -2,6 +2,7 @@ import {
   agentActivityText,
   applyAgentEvent,
   applyTmuxSnapshot,
+  findTmuxThreadTarget,
   findTmuxThreadReplacement,
   latestRunningTurn,
   normalizeAgentThread,
@@ -11,7 +12,7 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=22';
+} from './agent-model.js?v=23';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
@@ -408,9 +409,11 @@ async function handleReady(message) {
   renderHeader();
   await loadThreads();
   if (state.activeThreadId) {
-    const listedThread = state.threads.find((thread) => (
-      thread.id === state.activeThreadId && thread.provider === state.provider
-    ));
+    const listedThread = findTmuxThreadTarget(state.threads, {
+      id: state.activeThreadId,
+      provider: state.provider,
+      tmux: state.thread?.tmux,
+    });
     if (state.provider === 'shell') {
       if (listedThread) openShellThread(listedThread, { quiet: true });
       else startNewThread({ focus: false });
@@ -424,6 +427,7 @@ async function handleReady(message) {
     openThread(state.activeThreadId, {
       quiet: true,
       readOnly: listedThread?.readOnly ?? (state.thread?.readOnly === true),
+      tmuxSession: listedThread?.tmux?.name,
     })
       .catch((error) => setLiveMessage(error.message));
   }
@@ -477,7 +481,8 @@ function handleSocketMessage(message) {
 }
 
 function updateThreadActivity(provider, threadId, status) {
-  const thread = state.threads.find((candidate) => candidate.provider === provider && candidate.id === threadId);
+  const matches = state.threads.filter((candidate) => candidate.provider === provider && candidate.id === threadId);
+  const thread = matches.length === 1 ? matches[0] : findTmuxThreadTarget(matches, state.thread);
   if (thread?.tmux) {
     thread.tmux.status = status;
     thread.tmux.activityAt = Date.now();
@@ -619,9 +624,7 @@ async function loadThreads({ quiet = false } = {}) {
     if (generation !== state.threadListGeneration) return;
     state.threads = tmuxSessionsToThreads(snapshot.sessions)
       .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
-    const activeThread = state.threads.find((thread) => (
-      thread.id === state.thread?.id && thread.provider === state.provider
-    ));
+    const activeThread = findTmuxThreadTarget(state.threads, state.thread);
     if (activeThread?.tmux && state.thread) {
       if (applyTmuxSnapshot(state.thread, activeThread.tmux)) {
         state.threadRefreshUntil = Date.now() + THREAD_COMPLETION_REFRESH_MS;
@@ -646,7 +649,9 @@ async function loadThreads({ quiet = false } = {}) {
   }
 }
 
-async function openThread(threadId, { provider = state.provider, quiet = false, readOnly = false } = {}) {
+async function openThread(threadId, {
+  provider = state.provider, quiet = false, readOnly = false, tmuxSession = null,
+} = {}) {
   state.threadHandoff = null;
   const opening = {};
   state.threadOpening = opening;
@@ -655,7 +660,11 @@ async function openThread(threadId, { provider = state.provider, quiet = false, 
     localStorage.setItem('codeck-remote-provider', provider);
     renderProviderControls();
   }
-  const listedThread = state.threads.find((thread) => thread.id === threadId && thread.provider === provider);
+  const listedThread = findTmuxThreadTarget(state.threads, {
+    id: threadId,
+    provider,
+    ...(tmuxSession ? { tmux: { name: tmuxSession } } : {}),
+  });
   if (!quiet) setLiveMessage('正在读取会话…');
   renderComposerState();
   const directSession = Boolean(listedThread?.tmux?.name);
@@ -784,6 +793,7 @@ function openListedThread(thread, { quiet = false } = {}) {
     provider: thread.provider,
     quiet,
     readOnly: thread.readOnly,
+    tmuxSession: thread.tmux?.name,
   });
 }
 
@@ -796,7 +806,8 @@ function renderThreadList() {
     return;
   }
   const rows = state.threads.map((thread, index) => {
-    const active = thread.id === state.activeThreadId && thread.provider === state.provider;
+    const active = thread.id === state.activeThreadId
+      && findTmuxThreadTarget([thread], state.thread) === thread;
     const details = providerDetails(thread.provider);
     const button = element('button', `thread-row${active ? ' active' : ''}`);
     button.type = 'button';
@@ -1635,9 +1646,11 @@ async function submitComposer() {
           state.thread.tmux.status = nextStatus;
           state.thread.tmux.activityAt = Date.now();
         }
-        const listedThread = state.threads.find((candidate) => (
-          candidate.id === targetThreadId && candidate.provider === targetProvider
-        ));
+        const listedThread = findTmuxThreadTarget(state.threads, {
+          id: targetThreadId,
+          provider: targetProvider,
+          ...(targetSessionName ? { tmux: { name: targetSessionName } } : {}),
+        });
         if (listedThread?.tmux) {
           listedThread.tmux.status = nextStatus;
           listedThread.tmux.activityAt = Date.now();
@@ -2063,7 +2076,11 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
       return;
     }
     if (thread.tmux.available === false) openPendingThread(thread, { refresh: false });
-    else await openThread(thread.id, { provider: thread.provider, readOnly: true });
+    else await openThread(thread.id, {
+      provider: thread.provider,
+      readOnly: true,
+      tmuxSession: thread.tmux?.name,
+    });
     setTimeout(() => $('#composerInput').focus(), 50);
   } catch (error) {
     if (created) {

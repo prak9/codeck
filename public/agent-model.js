@@ -46,6 +46,16 @@ export function tmuxSessionsToThreads(sessions) {
   });
 }
 
+export function findTmuxThreadTarget(threads, target) {
+  if (!target?.id || !target?.provider) return null;
+  const sessionName = target.tmux?.name;
+  return asArray(threads).find((thread) => (
+    thread.id === target.id
+    && thread.provider === target.provider
+    && (!sessionName || thread.tmux?.name === sessionName)
+  )) || null;
+}
+
 export function findTmuxThreadReplacement(threads, currentThread) {
   const currentTmux = currentThread?.tmux;
   if (!currentTmux?.name) return null;

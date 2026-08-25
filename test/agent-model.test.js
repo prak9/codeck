@@ -4,6 +4,7 @@ import {
   agentActivityText,
   applyTmuxSnapshot,
   applyAgentEvent,
+  findTmuxThreadTarget,
   findTmuxThreadReplacement,
   latestRunningTurn,
   normalizeAgentThread,
@@ -218,6 +219,26 @@ test('builds one ordered sidebar from all tmux sessions', () => {
       tmux: { name: 'qoder-work', title: 'Qoder task', activityAt: 5_000, status: 'done', available: false },
     },
   ]);
+});
+
+test('tmux session name disambiguates duplicate backend thread ids', () => {
+  const threads = tmuxSessionsToThreads([
+    {
+      name: 'skills', activityAt: 10_000, status: 'done',
+      agent: { kind: 'codex', id: 'shared-thread', name: 'Skills' },
+    },
+    {
+      name: 'codeck', activityAt: 12_000, status: 'working',
+      agent: { kind: 'codex', id: 'shared-thread', name: 'Codeck' },
+    },
+  ]);
+
+  assert.equal(findTmuxThreadTarget(threads, {
+    id: 'shared-thread', provider: 'codex', tmux: { name: 'skills' },
+  })?.tmux.name, 'skills');
+  assert.equal(findTmuxThreadTarget(threads, {
+    id: 'shared-thread', provider: 'codex', tmux: { name: 'codeck' },
+  })?.tmux.name, 'codeck');
 });
 
 test('a tmux-backed Codex thread stays backend-read-only while retaining its direct session target', () => {

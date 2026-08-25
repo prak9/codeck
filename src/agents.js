@@ -280,27 +280,29 @@ export function findDetachedAgentSessionIds(processes, attachedPids, { procRoot 
   return ids;
 }
 
-function nearestCodexId(startedAt, starts) {
+function nearestCodexCandidate(startedAt, starts) {
   const candidate = starts.reduce((best, item) => {
     const distance = Math.abs(item.startedAt - startedAt);
     return !best || distance < best.distance ? { id: item.id, distance } : best;
   }, null);
-  return candidate?.distance <= 120_000 ? candidate.id : null;
+  return candidate?.distance <= 120_000 ? candidate : null;
 }
 
 export function resolveCodexSessionId(process, codex) {
   const resumed = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1];
   if (resumed) return resumed;
   const starts = codex.starts || [];
-  const writer = nearestCodexId(process.startedAt, codex.writers || []);
+  const writer = nearestCodexCandidate(process.startedAt, codex.writers || []);
+  const rollout = nearestCodexCandidate(process.startedAt, starts);
   if (/\bresume(?:\s|$)/i.test(process.command)) {
-    return writer || nearestCodexId(process.startedAt, starts);
+    return writer?.id || rollout?.id || null;
   }
   // A new Codex process creates its writer lock before the first prompt creates a
   // rollout. Until that rollout exists, app-server cannot read the thread, so keep
   // the tmux session on the directly manageable pending path.
-  if (writer && !starts.some((item) => item.id === writer)) return null;
-  return writer || nearestCodexId(process.startedAt, starts);
+  if (writer && !starts.some((item) => item.id === writer.id)) return null;
+  if (rollout && (!writer || rollout.distance <= writer.distance)) return rollout.id;
+  return writer?.id || rollout?.id || null;
 }
 
 function findClaudeSlug(sessionId, claudeHome) {

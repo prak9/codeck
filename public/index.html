@@ -6,11 +6,14 @@
   <meta name="color-scheme" content="dark">
   <title>Codeck · Agent sessions</title>
   <link rel="icon" href="data:,">
+  <script>
+    if (window.SpeechRecognition || window.webkitSpeechRecognition) document.documentElement.classList.add('speech-input');
+  </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/fonts/jetbrains-mono/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=48">
+    <link rel="stylesheet" href="/styles.css?v=49">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -44,11 +47,11 @@
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button voice-input-trigger" id="terminalVoiceButton" type="button" data-terminal-action="voice" aria-label="语音输入" aria-haspopup="dialog" aria-controls="terminalVoiceDialog" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg><span>语音</span></button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <div class="mobile-keybar" aria-label="移动终端快捷键">
-          <button type="button" data-terminal-key="escape">Esc</button><button type="button" data-terminal-key="tab">Tab</button><button type="button" data-terminal-key="ctrl-c">⌃C</button><button type="button" data-terminal-key="ctrl-d">⌃D</button><button type="button" data-terminal-key="ctrl-l">⌃L</button><button type="button" data-terminal-action="copy">复制屏幕</button><button type="button" data-terminal-action="paste">粘贴</button><button type="button" data-terminal-key="left" aria-label="向左">←</button><button type="button" data-terminal-key="up" aria-label="向上">↑</button><button type="button" data-terminal-key="down" aria-label="向下">↓</button><button type="button" data-terminal-key="right" aria-label="向右">→</button>
+          <button type="button" data-terminal-key="escape">Esc</button><button type="button" data-terminal-key="tab">Tab</button><button type="button" data-terminal-key="ctrl-c">⌃C</button><button type="button" data-terminal-key="ctrl-d">⌃D</button><button type="button" data-terminal-key="ctrl-l">⌃L</button><button type="button" data-terminal-action="copy">复制屏幕</button><button type="button" data-terminal-action="paste">粘贴</button><button class="voice-input-trigger mobile-voice-trigger" type="button" data-terminal-action="voice" aria-label="语音输入" aria-haspopup="dialog" aria-controls="terminalVoiceDialog" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg><span>语音</span></button><button type="button" data-terminal-key="left" aria-label="向左">←</button><button type="button" data-terminal-key="up" aria-label="向上">↑</button><button type="button" data-terminal-key="down" aria-label="向下">↓</button><button type="button" data-terminal-key="right" aria-label="向右">→</button>
         </div>
       </section>
     </main>
@@ -86,8 +89,19 @@
     <p class="switch-help"><kbd>Alt</kbd> + <kbd>数字</kbd> 直接跳转（<kbd>0</kbd> 为第 1 个），<kbd>Alt</kbd> + <kbd>K</kbd> 直接切到下一个，<kbd>↑</kbd><kbd>↓</kbd> 在列表选择，<kbd>Enter</kbd> 切换，<kbd>Esc</kbd> 关闭</p>
   </dialog>
 
+  <dialog class="voice-dialog" id="terminalVoiceDialog" aria-labelledby="terminalVoiceTitle">
+    <form id="terminalVoiceForm">
+      <div class="dialog-head"><div><p class="eyebrow">VOICE INPUT</p><h2 id="terminalVoiceTitle">语音输入</h2></div><button class="icon-button" id="closeTerminalVoiceButton" type="button" aria-label="关闭">×</button></div>
+      <p>识别文字会先显示在这里，不会自动执行。确认后插入终端，再由你按 Enter。</p>
+      <label for="terminalVoiceDraft">识别文字</label>
+      <textarea id="terminalVoiceDraft" rows="4" autocomplete="off" spellcheck="false" placeholder="点击开始录音后说话，也可以在这里修改识别结果"></textarea>
+      <p class="voice-status" id="terminalVoiceStatus" role="status" aria-live="polite">准备开始语音识别。</p>
+      <div class="dialog-actions voice-dialog-actions"><button class="secondary-button" id="cancelTerminalVoiceButton" type="button">取消</button><button class="secondary-button voice-capture-button" id="terminalVoiceCaptureButton" type="button">开始录音</button><button class="primary-button" id="insertTerminalVoiceButton" type="submit">插入终端</button></div>
+    </form>
+  </dialog>
+
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-    <script type="module" src="/app.js?v=63"></script>
+    <script type="module" src="/app.js?v=64"></script>
 </body>
 </html>

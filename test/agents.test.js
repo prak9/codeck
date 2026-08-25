@@ -84,6 +84,20 @@ test('does not expose a fresh Codex writer before its first rollout exists', () 
   assert.equal(resolveCodexSessionId(process, codex), freshId);
 });
 
+test('a fresh Codex process prefers its nearby rollout over another session writer', () => {
+  const resumedId = '01a01f67-bd04-7ca0-afdd-e9f2b59d27d5';
+  const freshId = '01a028e8-3750-7050-98d2-27078915be46';
+  const startedAt = 1_700_000_000_000;
+
+  assert.equal(resolveCodexSessionId({ command: 'codex --yolo', startedAt }, {
+    writers: [{ id: resumedId, startedAt: startedAt - 96_000 }],
+    starts: [
+      { id: resumedId, startedAt: startedAt - 86_400_000 },
+      { id: freshId, startedAt: startedAt + 2_000 },
+    ],
+  }), freshId);
+});
+
 test('parses process ancestry fields without splitting the command', () => {
   assert.deepEqual(parseProcessList('  12  5  7 node /usr/bin/codex --yolo resume abc', 10_000), [{
     pid: 12, ppid: 5, startedAt: 3_000, command: 'node /usr/bin/codex --yolo resume abc',
