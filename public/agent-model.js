@@ -65,10 +65,10 @@ export function findTmuxThreadReplacement(threads, currentThread) {
   }
   const shell = sameSession.find((thread) => thread.provider === 'shell');
   if (shell) return shell;
-  if (currentTmux.available !== false) return null;
   return sameSession.find((thread) => (
     thread.provider === currentThread.provider
     && thread.tmux.available === true
+    && thread.id !== currentThread.id
   )) || null;
 }
 

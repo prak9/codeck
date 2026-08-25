@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId } from '../src/agents.js';
+import { agentKindFromCommand, detectPaneAgents, findCodexHistorySessionId, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexHistory, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId } from '../src/agents.js';
 
 function writeProcProcess(root, {
   pid, ppid, pgrp = pid, session = pid, startTicks = 0, command = '', children = [], environment = '',
@@ -108,6 +108,93 @@ test('extracts the latest renamed Codex session from terminal history', () => {
   const output = '• Session renamed to first. To resume this session run codex resume, then select first (019fe08c-beed-79b0-aef6-b1d4b40506bb)\n'
     + '• Session renamed to test. To resume this session run codex resume, then select test (01a00327-27df-7f12-8505-176abc010ea0)\n';
   assert.deepEqual(parseCodexRename(output), { name: 'test', id: '01a00327-27df-7f12-8505-176abc010ea0' });
+});
+
+test('the latest visible Codex prompt follows a thread switch inside a long-lived pane', () => {
+  const oldId = '01a028e8-3750-7050-98d2-27078915be46';
+  const currentId = '01a03781-258c-7e12-85a9-97f5c8440771';
+  const history = parseCodexHistory([
+    JSON.stringify({ session_id: oldId, ts: 100, text: '提炼这个链接里的内容' }),
+    '{partially-written',
+    JSON.stringify({ session_id: currentId, ts: 200, text: '深度发挥分析下中芯国际投资价值' }),
+    JSON.stringify({ session_id: currentId, ts: 300, text: '分析中芯国际的投资价值怎么样了' }),
+  ].join('\n'));
+  const pane = [
+    '› 提炼这个链接里的内容',
+    '• 已完成旧任务',
+    '› 深度发挥分析下中芯国际投',
+    '  资价值',
+    '• 正在分析',
+    '› 分析中芯国际的投资价值怎么样了',
+  ].join('\n');
+
+  assert.deepEqual(history.map(({ id, timestamp, text }) => ({ id, timestamp, text })), [
+    { id: oldId, timestamp: 100_000, text: '提炼这个链接里的内容' },
+    { id: currentId, timestamp: 200_000, text: '深度发挥分析下中芯国际投资价值' },
+    { id: currentId, timestamp: 300_000, text: '分析中芯国际的投资价值怎么样了' },
+  ]);
+  assert.equal(findCodexHistorySessionId(pane, history), currentId);
+});
+
+test('Codex output quoting another thread prompt cannot switch the tmux session id', () => {
+  const skillsId = '01a03781-258c-7e12-85a9-97f5c8440771';
+  const codeckId = '01a01f67-bd04-7ca0-afdd-e9f2b59d27d5';
+  const history = parseCodexHistory([
+    JSON.stringify({ session_id: skillsId, ts: 100, text: '深度发挥分析下中芯国际投资价值' }),
+    JSON.stringify({ session_id: codeckId, ts: 200, text: '普通版的语音录入能否做成类似remote版的操作界面和体验' }),
+    JSON.stringify({ session_id: skillsId, ts: 300, text: 'Summarize recent commits' }),
+  ].join('\n'));
+  const pane = [
+    '› 普通版的语音录入能否做成类似remote版的操作界面和体验',
+    '',
+    '• Reviewed the regression test',
+    "  const skillsPrompt = '深度发挥分析下中芯国际投资价值';",
+    '',
+    '› Summarize recent commits',
+    '',
+    '  gpt-5.6-sol max · /data/code/codeck',
+  ].join('\n');
+
+  assert.equal(findCodexHistorySessionId(pane, history), codeckId);
+});
+
+test('detects the current Codex thread after a long-lived tmux process switches threads', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-switch-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const oldId = '01a028e8-3750-7050-98d2-27078915be46';
+  const currentId = '01a03781-258c-7e12-85a9-97f5c8440771';
+  try {
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, startTicks: 8_000, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, startTicks: 9_000, command: 'node /usr/bin/codex --yolo' });
+    const sessions = path.join(codexHome, 'sessions', '2026', '08', '25');
+    fs.mkdirSync(sessions, { recursive: true });
+    const promptLine = (text) => JSON.stringify({
+      type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+    });
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-22T10-00-00-${oldId}.jsonl`), promptLine('旧任务'));
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-25T10-00-00-${currentId}.jsonl`), promptLine('深度发挥分析下中芯国际投资价值'));
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [
+      JSON.stringify({ session_id: oldId, ts: 100, text: '提炼这个链接里的内容' }),
+      JSON.stringify({ session_id: currentId, ts: 200, text: '深度发挥分析下中芯国际投资价值' }),
+    ].join('\n'));
+
+    const agents = await detectPaneAgents([{ session: 'skills', pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome }, {
+      procRoot, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
+      readCodexPaneOutput: async () => '› 深度发挥分析下中芯国际投资价值\n• 正在分析',
+    });
+
+    assert.equal(agents.get('skills')?.id, currentId);
+    assert.equal(agents.get('skills')?.name, '深度发挥分析下中芯国际投资价值');
+
+    const afterScroll = await detectPaneAgents([{ session: 'skills', pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome }, {
+      procRoot, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
+      readCodexPaneOutput: async () => '• 最终输出很长，当前提示已经滚出捕获范围',
+    });
+    assert.equal(afterScroll.get('skills')?.id, currentId);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('recognizes supported agent CLI processes', () => {

@@ -7,8 +7,10 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'QODER_SESSION_ID']);
+const CODEX_HISTORY_READ_LIMIT = 2 * 1024 * 1024;
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
-let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], previews: new Map() };
+let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', previews: new Map() };
+const codexPaneSessions = new Map();
 let clockTicksPromise;
 
 export function parseCodexSessionIndex(content) {
@@ -94,6 +96,68 @@ export function parseCodexRename(output) {
   return matches.length ? { name: matches.at(-1)[1].trim(), id: matches.at(-1)[2] } : null;
 }
 
+export function parseCodexHistory(content) {
+  const sessionId = new RegExp(`^${UUID}$`, 'i');
+  return String(content).split('\n').flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const item = JSON.parse(line);
+      const timestamp = Number(item?.ts) * 1000;
+      if (!sessionId.test(item?.session_id || '') || !Number.isFinite(timestamp) || typeof item?.text !== 'string' || !item.text.trim()) return [];
+      return [{ id: item.session_id, timestamp, text: item.text }];
+    } catch { return []; }
+  });
+}
+
+function stripCodexAnsi(value) {
+  return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function compactCodexText(value) {
+  return stripCodexAnsi(value).replace(/\s+/gu, '');
+}
+
+function codexPromptBlocks(output) {
+  const lines = stripCodexAnsi(output).split('\n');
+  const prompts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^›(?:\s(.*)|$)/u);
+    if (!match) continue;
+    const parts = [match[1] || ''];
+    let cursor = index + 1;
+    while (cursor < lines.length) {
+      const continuation = lines[cursor].match(/^ {2,}(\S.*)$/u);
+      if (!continuation) break;
+      parts.push(continuation[1]);
+      cursor += 1;
+    }
+    let next = cursor;
+    while (next < lines.length && !lines[next].trim()) next += 1;
+    if (/^\s*(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*\s·\s(?:~(?:\/|$)|\/)/i.test(lines[next] || '')) continue;
+    const text = compactCodexText(parts.join('\n'));
+    if (text) prompts.push({ position: index, text });
+  }
+  return prompts;
+}
+
+export function findCodexHistorySessionId(output, history) {
+  const prompts = codexPromptBlocks(output);
+  let best = null;
+  for (const item of history || []) {
+    const text = compactCodexText(item?.text);
+    if (!text || !item?.id) continue;
+    const needle = text.slice(0, 320);
+    for (const prompt of prompts) {
+      const matches = text.length > needle.length ? prompt.text.startsWith(needle) : prompt.text === text;
+      if (!matches) continue;
+      if (!best || prompt.position > best.position || prompt.position === best.position && item.timestamp > best.timestamp) {
+        best = { id: item.id, position: prompt.position, timestamp: item.timestamp };
+      }
+    }
+  }
+  return best?.id || null;
+}
+
 function walkFiles(root, accept, results = []) {
   if (!fs.existsSync(root)) return results;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -104,8 +168,28 @@ function walkFiles(root, accept, results = []) {
   return results;
 }
 
+function readTextTail(file, limit) {
+  const descriptor = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(descriptor).size;
+    const length = Math.min(size, limit);
+    const buffer = Buffer.alloc(length);
+    fs.readSync(descriptor, buffer, 0, length, size - length);
+    const content = buffer.toString('utf8');
+    if (length === size) return content;
+    const firstNewline = content.indexOf('\n');
+    return firstNewline < 0 ? '' : content.slice(firstNewline + 1);
+  } finally { fs.closeSync(descriptor); }
+}
+
 function loadCodexSessions(codexHome) {
-  if (codexCache.expires > Date.now()) return codexCache;
+  const historyFile = path.join(codexHome, 'history.jsonl');
+  let historySignature = '';
+  try {
+    const stat = fs.statSync(historyFile);
+    historySignature = `${stat.size}:${stat.mtimeMs}`;
+  } catch { /* No history yet. */ }
+  if (codexCache.expires > Date.now() && codexCache.historySignature === historySignature) return codexCache;
   let names = new Map();
   try { names = parseCodexSessionIndex(fs.readFileSync(path.join(codexHome, 'session_index.jsonl'), 'utf8')); } catch { /* No index yet. */ }
   const starts = walkFiles(path.join(codexHome, 'sessions'), (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'))
@@ -120,7 +204,9 @@ function loadCodexSessions(codexHome) {
       try { return [{ id, startedAt: fs.statSync(file).mtimeMs }]; }
       catch { return []; }
     });
-  codexCache = { expires: Date.now() + 15_000, names, starts, writers, previews: codexCache.previews };
+  let history = [];
+  try { history = parseCodexHistory(readTextTail(historyFile, CODEX_HISTORY_READ_LIMIT)); } catch { /* No history yet. */ }
+  codexCache = { expires: Date.now() + 15_000, names, starts, writers, history, historySignature, previews: codexCache.previews };
   return codexCache;
 }
 
@@ -318,11 +404,11 @@ function findClaudeSlug(sessionId, claudeHome) {
   return slugs.at(-1)?.[1] || null;
 }
 
-async function readCodexPaneIdentity(session) {
+async function readCodexPaneOutput(session) {
   try {
-    const { stdout } = await exec('tmux', ['capture-pane', '-p', '-t', `${session}:`, '-S', '-500']);
-    return parseCodexRename(stdout);
-  } catch { return null; }
+    const { stdout } = await exec('tmux', ['capture-pane', '-p', '-t', `${session}:`, '-S', '-2000']);
+    return stdout;
+  } catch { return ''; }
 }
 
 function processCwd(pid, procRoot = '/proc') {
@@ -442,6 +528,12 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
   const codex = loadCodexSessions(codexHome);
   const agents = new Map();
   const trees = readPaneProcessTrees(panes, { procRoot, clockTicks, now, uptimeMs });
+  const readPaneOutput = options.readCodexPaneOutput || readCodexPaneOutput;
+  const codexPaneOutputs = new Map(await Promise.all(panes.flatMap((pane) => (
+    trees.get(pane.session)?.some((item) => agentKindFromCommand(item.command) === 'codex')
+      ? [Promise.resolve().then(() => readPaneOutput(pane.session)).then((output) => [pane.session, output]).catch(() => [pane.session, ''])]
+      : []
+  ))));
 
   for (const pane of panes) {
     const tree = trees.get(pane.session);
@@ -458,10 +550,20 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     };
 
     if (kind === 'codex') {
-      let id = resolveCodexSessionId(process, codex);
+      const paneOutput = codexPaneOutputs.get(pane.session) || '';
+      const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
+      const visibleId = explicitId ? null : findCodexHistorySessionId(paneOutput, codex.history);
+      const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
+      const remembered = codexPaneSessions.get(pane.session);
+      const rememberedId = remembered?.pid === process.pid
+        && remembered.startedAt === process.startedAt
+        && codex.starts.some((item) => item.id === remembered.id)
+        ? remembered.id : null;
+      let id = explicitId || verifiedVisibleId || rememberedId || resolveCodexSessionId(process, codex);
+      if (explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
       let name = codex.names.get(id) || codexPreview(id, codex);
       if (!name) {
-        const paneIdentity = await readCodexPaneIdentity(pane.session);
+        const paneIdentity = parseCodexRename(paneOutput);
         if (paneIdentity && (!id || paneIdentity.id === id)) {
           id = paneIdentity.id;
           name = paneIdentity.name || codex.names.get(id) || codexPreview(id, codex);

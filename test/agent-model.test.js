@@ -275,6 +275,17 @@ test('replaces a pending tmux thread only with the same provider and session', (
   assert.equal(findTmuxThreadReplacement(threads.slice(0, 2), pending), null);
 });
 
+test('follows a new Agent thread id inside the same live tmux session', () => {
+  const current = normalizeAgentThread('codex', { id: 'old-thread', turns: [] });
+  current.tmux = { name: 'skills', available: true, status: 'done' };
+  const [replacement] = tmuxSessionsToThreads([{
+    name: 'skills', activityAt: 20_000, status: 'working',
+    agent: { kind: 'codex', id: 'new-thread', name: 'Current task' },
+  }]);
+
+  assert.equal(findTmuxThreadReplacement([replacement], current), replacement);
+});
+
 test('follows the same tmux session when an ssh shell starts or exits an Agent', () => {
   const shell = tmuxSessionsToThreads([{
     name: 'cli', activityAt: 10_000, status: 'working', agent: null,

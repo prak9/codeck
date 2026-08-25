@@ -12,7 +12,7 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=23';
+} from './agent-model.js?v=24';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
@@ -577,9 +577,9 @@ function openShellThread(thread, { quiet = false } = {}) {
   closeDrawer();
 }
 
-function handoffPendingThread(thread) {
+function handoffTmuxThread(thread) {
   if (state.threadHandoff) return state.threadHandoff.promise;
-  const pendingThreadId = state.thread?.id;
+  const previousThreadId = state.thread?.id;
   const provider = thread.provider;
   const sessionName = thread.tmux.name;
   const handoff = { promise: null };
@@ -592,10 +592,9 @@ function handoffPendingThread(thread) {
     if (
       state.threadHandoff !== handoff
       || state.provider !== provider
-      || state.activeThreadId !== pendingThreadId
-      || state.thread?.id !== pendingThreadId
+      || state.activeThreadId !== previousThreadId
+      || state.thread?.id !== previousThreadId
       || state.thread?.tmux?.name !== sessionName
-      || state.thread.tmux.available !== false
     ) return;
     state.activeThreadId = thread.id;
     state.thread = normalizeAgentThread(provider, result.thread);
@@ -636,7 +635,7 @@ async function loadThreads({ quiet = false } = {}) {
     else if (replacement?.tmux?.available === false) {
       openPendingThread(replacement, { quiet: true, refresh: false });
     }
-    else if (replacement) await handoffPendingThread(replacement);
+    else if (replacement) await handoffTmuxThread(replacement);
     renderThreadList();
     updateTerminalActivity();
     renderComposerState();

@@ -76,7 +76,8 @@ function setTerminalVoiceState(active, message = '') {
   }
   const capture = $('#terminalVoiceCaptureButton');
   capture.classList.toggle('listening', active);
-  capture.textContent = active ? '停止录音' : terminalVoiceHadResult ? '重新录音' : '开始录音';
+  capture.setAttribute('aria-pressed', String(active));
+  capture.setAttribute('aria-label', active ? '停止语音输入' : terminalVoiceHadResult ? '重新语音输入' : '开始语音输入');
   $('#terminalVoiceStatus').textContent = message;
 }
 
@@ -86,11 +87,12 @@ const voiceInput = createSpeechInput({
   onListeningChange: (listening) => {
     setTerminalVoiceState(listening, listening
       ? '正在听写，再点一次停止录音。'
-      : terminalVoiceHadResult ? '识别完成，可以修改后插入终端。' : '语音输入已结束。');
+      : terminalVoiceHadResult ? '识别完成，可以修改后发送。' : '语音输入已结束。');
   },
   onTranscript: ({ transcript }) => {
     $('#terminalVoiceDraft').value = mergeSpeechDraft(terminalVoiceBaseDraft, transcript);
     terminalVoiceHadResult = Boolean(transcript);
+    resizeTerminalVoiceDraft();
     syncTerminalVoiceControls();
   },
   onError: (message) => {
@@ -100,19 +102,26 @@ const voiceInput = createSpeechInput({
 });
 if (!voiceInput.supported) document.documentElement.classList.remove('speech-input');
 
+function resizeTerminalVoiceDraft() {
+  const draft = $('#terminalVoiceDraft');
+  draft.style.height = 'auto';
+  draft.style.height = `${Math.min(96, draft.scrollHeight)}px`;
+}
+
 function syncTerminalVoiceControls() {
   const connected = state.canManage && state.socket?.readyState === WebSocket.OPEN;
+  const composerOpen = !$('#terminalVoiceComposer').hidden;
   for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
-    trigger.hidden = !state.canManage;
+    trigger.hidden = !state.canManage || composerOpen;
     trigger.disabled = !connected;
   }
   $('#terminalVoiceCaptureButton').disabled = !connected;
-  $('#insertTerminalVoiceButton').disabled = !connected || !speechDraftForTerminal($('#terminalVoiceDraft').value);
+  $('#sendTerminalVoiceButton').disabled = !connected || !speechDraftForTerminal($('#terminalVoiceDraft').value);
   if (!connected && voiceInput.active) {
     voiceInput.abort();
-    setTerminalVoiceState(false, '终端连接已断开，语音草稿尚未插入。');
+    setTerminalVoiceState(false, '终端连接已断开，语音草稿仍保留。');
   }
-  if (!state.canManage && $('#terminalVoiceDialog').open) closeTerminalVoiceDialog({ restoreFocus: false });
+  if (!state.canManage && !$('#terminalVoiceComposer').hidden) closeTerminalVoiceComposer({ restoreFocus: false });
 }
 
 function startTerminalVoiceInput() {
@@ -131,38 +140,52 @@ function toggleTerminalVoiceInput() {
   startTerminalVoiceInput();
 }
 
-function openTerminalVoiceDialog() {
+function openTerminalVoiceComposer() {
   if (!voiceInput.supported) return setConnectionMessage('当前浏览器不支持语音识别');
   if (!state.canManage) return setConnectionMessage('分享链接为只读');
   if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
   terminalVoiceBaseDraft = '';
   terminalVoiceHadResult = false;
   $('#terminalVoiceDraft').value = '';
+  $('#terminalVoiceComposer').hidden = false;
+  resizeTerminalVoiceDraft();
   setTerminalVoiceState(false, '准备开始语音识别。');
-  $('#terminalVoiceDialog').showModal();
   syncTerminalVoiceControls();
   startTerminalVoiceInput();
 }
 
-function closeTerminalVoiceDialog({ restoreFocus = true } = {}) {
-  voiceInput.abort();
-  if ($('#terminalVoiceDialog').open) $('#terminalVoiceDialog').close();
-  if (restoreFocus) state.terminal?.focus();
+function toggleTerminalVoiceComposer() {
+  if ($('#terminalVoiceComposer').hidden) return openTerminalVoiceComposer();
+  toggleTerminalVoiceInput();
 }
 
-function insertTerminalVoiceDraft() {
+function closeTerminalVoiceComposer({ restoreFocus = true } = {}) {
+  voiceInput.abort();
+  $('#terminalVoiceComposer').hidden = true;
+  setTerminalVoiceState(false, '语音输入已关闭。');
+  syncTerminalVoiceControls();
+  if (restoreFocus && !matchMedia('(pointer: coarse)').matches) state.terminal?.focus();
+}
+
+function submitTerminalVoiceDraft() {
   const socket = state.socket;
   const text = speechDraftForTerminal($('#terminalVoiceDraft').value);
   if (!text) return setTerminalVoiceState(false, '请先说话或输入文字。');
   if (!state.canManage) return setTerminalVoiceState(false, '分享链接为只读。');
   if (socket?.readyState !== WebSocket.OPEN) return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
   try {
-    socket.send(JSON.stringify({ type: 'input', data: text }));
+    socket.send(JSON.stringify({ type: 'input', data: `${text}\r` }));
   } catch {
-    return setTerminalVoiceState(false, '插入失败，终端连接可能已断开。');
+    return setTerminalVoiceState(false, '发送失败，终端连接可能已断开。');
   }
-  closeTerminalVoiceDialog();
-  setConnectionMessage('语音文字已插入，确认后按 Enter');
+  voiceInput.abort();
+  terminalVoiceBaseDraft = '';
+  terminalVoiceHadResult = false;
+  $('#terminalVoiceDraft').value = '';
+  resizeTerminalVoiceDraft();
+  setTerminalVoiceState(false, '已发送到终端。');
+  syncTerminalVoiceControls();
+  setConnectionMessage('语音文字已发送到终端');
 }
 
 async function api(path, options = {}) {
@@ -700,7 +723,7 @@ async function connect(session) {
     if (state.socket.readyState === WebSocket.OPEN) state.terminal?.focus();
     return;
   }
-  closeTerminalVoiceDialog({ restoreFocus: false });
+  closeTerminalVoiceComposer({ restoreFocus: false });
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
   const needsReset = Boolean(state.terminal);
@@ -849,19 +872,23 @@ for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
 
 for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
   trigger.addEventListener('pointerdown', (event) => event.preventDefault());
-  trigger.addEventListener('click', openTerminalVoiceDialog);
+  trigger.addEventListener('click', toggleTerminalVoiceComposer);
 }
+$('#terminalVoiceCaptureButton').addEventListener('pointerdown', (event) => event.preventDefault());
 $('#terminalVoiceCaptureButton').addEventListener('click', toggleTerminalVoiceInput);
-$('#closeTerminalVoiceButton').addEventListener('click', () => closeTerminalVoiceDialog());
-$('#cancelTerminalVoiceButton').addEventListener('click', () => closeTerminalVoiceDialog());
-$('#terminalVoiceForm').addEventListener('submit', (event) => {
+$('#closeTerminalVoiceButton').addEventListener('click', () => closeTerminalVoiceComposer());
+$('#terminalVoiceComposer').addEventListener('submit', (event) => {
   event.preventDefault();
-  insertTerminalVoiceDraft();
+  submitTerminalVoiceDraft();
 });
-$('#terminalVoiceDraft').addEventListener('input', syncTerminalVoiceControls);
-$('#terminalVoiceDialog').addEventListener('cancel', (event) => {
+$('#terminalVoiceDraft').addEventListener('input', () => {
+  resizeTerminalVoiceDraft();
+  syncTerminalVoiceControls();
+});
+$('#terminalVoiceDraft').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
   event.preventDefault();
-  closeTerminalVoiceDialog();
+  $('#terminalVoiceComposer').requestSubmit();
 });
 
 // Neither clipboard direction has a touch gesture to hang off. `.xterm` sets
@@ -940,7 +967,7 @@ $('#newForm').addEventListener('submit', async (event) => {
 
 $('#killButton').addEventListener('click', async () => {
   if (!state.active || !confirm(`确定结束 tmux 会话“${state.active}”吗？其中未保存的进程状态会丢失。`)) return;
-  closeTerminalVoiceDialog({ restoreFocus: false });
+  closeTerminalVoiceComposer({ restoreFocus: false });
   await api(`/api/sessions/${encodeURIComponent(state.active)}`, { method: 'DELETE' });
   state.socket?.close();
   state.active = null;
