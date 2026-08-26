@@ -66,7 +66,7 @@ function warnProcessListUnparsed() {
 }
 
 export function agentKindFromCommand(command) {
-  if (/(?:^|[ /])codex(?:\s|$)/i.test(command) && !/app-server/.test(command)) return 'codex';
+  if (/(?:^|[ /])codex(?:\s|$)/i.test(command) && !/(?:^|\s)app-server(?:\s|$)/i.test(command)) return 'codex';
   if (/(?:^|[ /])claude(?:\s|$)/i.test(command)) return 'claude';
   if (/(?:^|[ /])qodercli(?:\s|$)/i.test(command)) return 'qodercli';
   return null;

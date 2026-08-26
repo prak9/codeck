@@ -16,3 +16,14 @@ test('normal mode enters a created session before refreshing the full session li
   assert.ok(create >= 0 && connect > create, 'the terminal opens only after tmux creation succeeds');
   assert.ok(refresh > connect, 'a cold session-list scan cannot block terminal attachment');
 });
+
+test('normal session polling does not refit an unchanged desktop terminal', () => {
+  const start = appJs.indexOf('async function refreshSessions()');
+  const end = appJs.indexOf('\n\nfunction connectedStateLabel()', start);
+  const refresh = appJs.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'session refresh function exists');
+  assert.match(refresh, /const activeGridChanged =/);
+  assert.match(refresh, /if \(state\.terminal && isMobileOverview\(\) && activeGridChanged\) fitTerminalView\(\);/);
+  assert.doesNotMatch(refresh, /if \(state\.active && state\.terminal\) fitTerminalView\(\);/);
+});

@@ -269,6 +269,8 @@ test('detects the current Codex thread after a long-lived tmux process switches 
 
 test('recognizes supported agent CLI processes', () => {
   assert.equal(agentKindFromCommand('node /usr/bin/codex resume abc'), 'codex');
+  assert.equal(agentKindFromCommand('/home/x/.local/bin/codex --remote unix:///data/.codex/app-server-control/app-server-control.sock resume 01a02936-cfd6-7eb1-8a66-d18af33402c5'), 'codex');
+  assert.equal(agentKindFromCommand('/home/x/.local/bin/codex app-server --listen unix:///tmp/codex.sock'), null);
   assert.equal(agentKindFromCommand('/usr/local/bin/claude --resume abc'), 'claude');
   assert.equal(agentKindFromCommand('/opt/qoder/bin/qodercli --continue'), 'qodercli');
   assert.equal(agentKindFromCommand('/bin/bash'), null);

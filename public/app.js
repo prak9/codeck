@@ -583,9 +583,15 @@ function websocketProtocolToken(value) {
 
 async function refreshSessions() {
   const requestId = ++state.sessionsRefreshSeq;
+  const previousActiveSession = state.sessions.find((item) => item.name === state.active);
   const data = await api('/api/sessions');
   if (requestId !== state.sessionsRefreshSeq) return;
   state.sessions = data.sessions;
+  const activeSession = state.sessions.find((item) => item.name === state.active);
+  const activeGridChanged = Boolean(activeSession) && (
+    activeSession.width !== previousActiveSession?.width
+    || activeSession.height !== previousActiveSession?.height
+  );
   state.canManage = data.capabilities?.canManage !== false;
   state.canWrite = data.capabilities?.canWrite ?? state.canManage;
   syncTerminalAccess();
@@ -596,7 +602,7 @@ async function refreshSessions() {
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
-  if (state.active && state.terminal) fitTerminalView();
+  if (state.terminal && isMobileOverview() && activeGridChanged) fitTerminalView();
 }
 
 function connectedStateLabel() {
@@ -830,11 +836,15 @@ function ensureTerminal() {
   return terminal;
 }
 
+function isMobileOverview() {
+  return state.overview && matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
+}
+
 function fitTerminalView() {
   if (!state.terminal || state.fitting) return;
   state.fitting = true;
   const terminal = state.terminal;
-  const mobileOverview = matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches && state.overview;
+  const mobileOverview = isMobileOverview();
   const session = state.sessions.find((item) => item.name === state.active);
   const result = fitTerminalGrid(terminal, state.fit, {
     baseFontSize: state.baseFontSize,
