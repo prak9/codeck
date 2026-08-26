@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
-import { authenticateToken, createShareToken } from './auth.js';
+import { authenticateToken, createShareToken, terminalAccessForAuth } from './auth.js';
 import { createAuthRateLimiter, requestClientAddress } from './auth-rate-limit.js';
 import { createAgentBackends } from './agent-backends.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
@@ -49,7 +49,7 @@ app.use(express.json({ limit: '16kb' }));
 function setSecurityHeaders(_req, res, next) {
   res.set({
     'Content-Security-Policy': "frame-ancestors 'none'",
-    'Permissions-Policy': 'microphone=(self)',
+    'Permissions-Policy': 'microphone=(self), on-device-speech-recognition=(self)',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
@@ -61,7 +61,7 @@ function requestAuth(req) {
   const header = req.headers.authorization || '';
   if (header.startsWith('Bearer ')) return authenticateToken(accessToken, header.slice(7));
   if (webAuthEnabled && req.method === 'GET' && req.path === '/download' && requestHasWebSession(req)) {
-    return { owner: true, session: null };
+    return { owner: true, session: null, canWrite: true };
   }
   return null;
 }
@@ -174,7 +174,7 @@ app.get('/api/sessions', async (req, res, next) => {
         status: resolveSessionStatus(session),
       };
     });
-    res.json({ sessions: enriched, capabilities: { flexibleSize, canManage: req.auth.owner } });
+    res.json({ sessions: enriched, capabilities: { flexibleSize, canManage: req.auth.owner, canWrite: req.auth.canWrite } });
   } catch (error) { next(error); }
 });
 
@@ -302,10 +302,11 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const viewport = parseViewport(url.searchParams);
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, !auth.owner));
+  const terminalAccess = terminalAccessForAuth(auth);
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, terminalAccess));
 });
 
-wss.on('connection', (ws, session, viewport, readOnly) => handleTerminalConnection(ws, session, viewport, { readOnly }));
+wss.on('connection', (ws, session, viewport, terminalAccess) => handleTerminalConnection(ws, session, viewport, terminalAccess));
 agentWss.on('connection', (ws) => agentHub.handleConnection(ws));
 server.on('close', () => agentRegistry.close());
 

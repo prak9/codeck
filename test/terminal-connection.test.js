@@ -46,6 +46,7 @@ function dependencies(overrides = {}) {
 test('read-only clients attach without detaching the session owner', () => {
   assert.deepEqual(terminalAttachArgs('shared', { readOnly: true }), ['attach-session', '-r', '-t', 'shared']);
   assert.deepEqual(terminalAttachArgs('owner'), ['attach-session', '-d', '-t', 'owner']);
+  assert.deepEqual(terminalAttachArgs('collaborator', { detachOtherClients: false }), ['attach-session', '-t', 'collaborator']);
 });
 
 test('a socket closed during setup never creates a terminal', async () => {
@@ -120,6 +121,21 @@ test('a read-only terminal never forwards client input to tmux', async () => {
   assert.deepEqual(terminal.writes, []);
   assert.deepEqual(terminalOptions, { readOnly: true });
   assert.deepEqual(ws.sent, ['visible output']);
+});
+
+test('a writable collaborator forwards input without detaching another tmux client', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  let terminalOptions;
+  await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+    readOnly: false,
+    detachOtherClients: false,
+    createTerminal: (_session, _size, options) => { terminalOptions = options; return terminal; },
+  }));
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: '继续\r' })), false);
+
+  assert.deepEqual(terminal.writes, ['继续\r']);
+  assert.deepEqual(terminalOptions, { readOnly: false, detachOtherClients: false });
 });
 
 test('a supplied browser viewport skips the redundant tmux size lookup', async () => {

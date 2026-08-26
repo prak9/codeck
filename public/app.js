@@ -4,7 +4,14 @@ import {
   isTerminalCopyShortcut,
   resetTerminalInput,
 } from './terminal-utils.js?v=6';
-import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=2';
+import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
+import {
+  SESSION_VISIBILITY_STORAGE_KEY,
+  loadHiddenSessionPrefixes,
+  parseSessionPrefixInput,
+  partitionSessionsByPrefix,
+  saveHiddenSessionPrefixes,
+} from './session-visibility.js?v=1';
 
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
@@ -40,6 +47,7 @@ function parseFontSizeParam(raw) {
 const state = {
   token: sharedToken || storedShareToken || storedOwnerToken || '',
   sessions: [],
+  hiddenSessionPrefixes: loadHiddenSessionPrefixes(localStorage),
   active: null,
   socket: null,
   terminal: null,
@@ -62,6 +70,7 @@ const state = {
   baseFontSize: parseFontSizeParam(displayParams.get('fontSize')) ?? 16,
   fitting: false,
   canManage: true,
+  canWrite: true,
   openedShareLink: Boolean(sharedToken || storedShareToken),
 };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
@@ -78,6 +87,8 @@ function setTerminalVoiceState(active, message = '') {
   capture.classList.toggle('listening', active);
   capture.setAttribute('aria-pressed', String(active));
   capture.setAttribute('aria-label', active ? '停止语音输入' : terminalVoiceHadResult ? '重新语音输入' : '开始语音输入');
+  const draft = $('#terminalVoiceDraft');
+  if (!draft.value) draft.placeholder = message || '语音输入，也可以修改后发送';
   $('#terminalVoiceStatus').textContent = message;
 }
 
@@ -95,6 +106,7 @@ const voiceInput = createSpeechInput({
     resizeTerminalVoiceDraft();
     syncTerminalVoiceControls();
   },
+  onStatus: (message) => setTerminalVoiceState(true, message),
   onError: (message) => {
     setTerminalVoiceState(false, message);
     setConnectionMessage(message);
@@ -109,10 +121,10 @@ function resizeTerminalVoiceDraft() {
 }
 
 function syncTerminalVoiceControls() {
-  const connected = state.canManage && state.socket?.readyState === WebSocket.OPEN;
+  const connected = state.canWrite && state.socket?.readyState === WebSocket.OPEN;
   const composerOpen = !$('#terminalVoiceComposer').hidden;
   for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
-    trigger.hidden = !state.canManage || composerOpen;
+    trigger.hidden = !state.canWrite || composerOpen;
     trigger.disabled = !connected;
   }
   $('#terminalVoiceCaptureButton').disabled = !connected;
@@ -121,7 +133,7 @@ function syncTerminalVoiceControls() {
     voiceInput.abort();
     setTerminalVoiceState(false, '终端连接已断开，语音草稿仍保留。');
   }
-  if (!state.canManage && !$('#terminalVoiceComposer').hidden) closeTerminalVoiceComposer({ restoreFocus: false });
+  if (!state.canWrite && !$('#terminalVoiceComposer').hidden) closeTerminalVoiceComposer({ restoreFocus: false });
 }
 
 function startTerminalVoiceInput() {
@@ -142,7 +154,7 @@ function toggleTerminalVoiceInput() {
 
 function openTerminalVoiceComposer() {
   if (!voiceInput.supported) return setConnectionMessage('当前浏览器不支持语音识别');
-  if (!state.canManage) return setConnectionMessage('分享链接为只读');
+  if (!state.canWrite) return setConnectionMessage('当前分享链接为只读');
   if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
   terminalVoiceBaseDraft = '';
   terminalVoiceHadResult = false;
@@ -171,7 +183,7 @@ function submitTerminalVoiceDraft() {
   const socket = state.socket;
   const text = speechDraftForTerminal($('#terminalVoiceDraft').value);
   if (!text) return setTerminalVoiceState(false, '请先说话或输入文字。');
-  if (!state.canManage) return setTerminalVoiceState(false, '分享链接为只读。');
+  if (!state.canWrite) return setTerminalVoiceState(false, '当前分享链接为只读。');
   if (socket?.readyState !== WebSocket.OPEN) return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
   try {
     socket.send(JSON.stringify({ type: 'input', data: `${text}\r` }));
@@ -386,15 +398,77 @@ function resolveSessionStatus(session) {
   return 'done';
 }
 
+function sessionVisibilityPartition(prefixes = state.hiddenSessionPrefixes) {
+  return partitionSessionsByPrefix(state.sessions, prefixes);
+}
+
+function updateSessionVisibilitySummary(prefixes = parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value)) {
+  const { visible, hidden } = sessionVisibilityPartition(prefixes);
+  $('#sessionVisibilitySummary').textContent = state.sessions.length
+    ? `将显示 ${visible.length} 个会话，隐藏 ${hidden.length} 个。`
+    : '当前没有运行中的 tmux 会话。';
+}
+
+function syncSessionVisibilityButton(hiddenCount = sessionVisibilityPartition().hidden.length) {
+  const button = $('#sessionVisibilityButton');
+  const count = $('#sessionVisibilityRuleCount');
+  const ruleCount = state.hiddenSessionPrefixes.length;
+  count.hidden = !ruleCount;
+  count.textContent = ruleCount > 99 ? '99+' : String(ruleCount);
+  const label = ruleCount
+    ? `设置会话显示，已配置 ${ruleCount} 个隐藏前缀，当前隐藏 ${hiddenCount} 个会话`
+    : '设置会话显示';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+}
+
+function openSessionVisibilityDialog() {
+  const input = $('#hiddenSessionPrefixesInput');
+  input.value = state.hiddenSessionPrefixes.join('\n');
+  updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+  const dialog = $('#sessionVisibilityDialog');
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => input.focus({ preventScroll: true }));
+}
+
+function applySessionVisibility(prefixes) {
+  state.hiddenSessionPrefixes = saveHiddenSessionPrefixes(localStorage, prefixes);
+  renderSessions();
+}
+
+function sessionListEmpty(hiddenCount) {
+  const empty = document.createElement('div');
+  empty.className = 'list-empty';
+  const glyph = document.createElement('span');
+  glyph.textContent = '∅';
+  const copy = document.createElement('p');
+  copy.textContent = hiddenCount
+    ? `当前浏览器隐藏了 ${hiddenCount} 个会话`
+    : '还没有 tmux 会话';
+  empty.append(glyph, copy);
+  if (hiddenCount) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'visibility-empty-button';
+    button.textContent = '调整显示';
+    button.addEventListener('click', openSessionVisibilityDialog);
+    empty.append(button);
+  }
+  return empty;
+}
+
 function renderSessions() {
   const list = $('#sessionList');
   const scrollTop = list.scrollTop;
   const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
-  if (!state.sessions.length) {
-    list.innerHTML = '<div class="list-empty"><span>∅</span><p>还没有 tmux 会话</p></div>';
+  const { visible, hidden } = sessionVisibilityPartition();
+  syncSessionVisibilityButton(hidden.length);
+  if ($('#sessionVisibilityDialog').open) updateSessionVisibilitySummary();
+  if (!visible.length) {
+    list.replaceChildren(sessionListEmpty(hidden.length));
     return;
   }
-  list.innerHTML = state.sessions.map((session, index) => {
+  list.innerHTML = visible.map((session, index) => {
     const status = resolveSessionStatus(session);
     const statusText = status === 'working'
       ? '正在干活'
@@ -451,6 +525,7 @@ async function refreshSessions() {
   if (requestId !== state.sessionsRefreshSeq) return;
   state.sessions = data.sessions;
   state.canManage = data.capabilities?.canManage !== false;
+  state.canWrite = data.capabilities?.canWrite ?? state.canManage;
   syncTerminalAccess();
   // A sole tmux 2.7 client can still resize through the pty. The missing window-size
   // option only affects arbitration between clients, so it must not disable readable mode.
@@ -463,13 +538,13 @@ async function refreshSessions() {
 }
 
 function connectedStateLabel() {
-  return state.canManage ? '已连接' : '已连接（只读）';
+  return state.canManage ? '已连接' : state.canWrite ? '已连接（共享协作）' : '已连接（只读）';
 }
 
 function syncTerminalAccess() {
-  if (state.terminal) state.terminal.options.disableStdin = !state.canManage;
+  if (state.terminal) state.terminal.options.disableStdin = !state.canWrite;
   for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
-    control.disabled = !state.canManage;
+    control.disabled = !state.canWrite;
   }
   syncTerminalVoiceControls();
 }
@@ -488,7 +563,7 @@ function parseDigit(event) {
 
 function getSessionByIndex(index) {
   if (!Number.isInteger(index) || index < 1) return null;
-  return state.sessions[index - 1] || null;
+  return sessionVisibilityPartition().visible[index - 1] || null;
 }
 
 function switchToSession(sessionName) {
@@ -506,10 +581,11 @@ function switchByQuickSessionIndex(index) {
 }
 
 function cycleSession() {
-  if (state.sessions.length < 2) return;
-  const currentIndex = state.sessions.findIndex((session) => session.name === state.active);
-  const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % state.sessions.length;
-  switchToSession(state.sessions[nextIndex].name);
+  const sessions = sessionVisibilityPartition().visible;
+  if (sessions.length < 2) return;
+  const currentIndex = sessions.findIndex((session) => session.name === state.active);
+  const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % sessions.length;
+  switchToSession(sessions[nextIndex].name);
 }
 
 function handleQuickSwitchKeydown(event) {
@@ -527,18 +603,19 @@ function handleQuickSwitchKeydown(event) {
   event.preventDefault();
   event.stopPropagation();
   if (event.altKey) return cycleSession(), true;
-  if (state.sessions.length) openQuickSwitcher();
+  if (sessionVisibilityPartition().visible.length) openQuickSwitcher();
   return true;
 }
 
 function openQuickSwitcher() {
   const list = $('#switchList');
-  list.innerHTML = state.sessions.map((session, index) => `
+  const sessions = sessionVisibilityPartition().visible;
+  list.innerHTML = sessions.map((session, index) => `
     <button class="switch-row ${session.name === state.active ? 'active' : ''}" data-switch-session="${escapeHtml(session.name)}">
       <span class="switch-index">${index + 1}</span>
       <span class="switch-name">${escapeHtml(session.agent?.name || session.name)}</span>
       <small>${session.agent ? `${agentLabels[session.agent.kind]?.name || session.agent.kind} · ${escapeHtml(session.name)}` : 'tmux session'}</small>
-    </button>`).join('') || '<p class="list-empty">还没有 tmux 会话</p>';
+    </button>`).join('') || '<p class="list-empty">没有可见的 tmux 会话</p>';
   if (!$('#switchDialog').open) $('#switchDialog').showModal();
   const rows = [...list.querySelectorAll('.switch-row')];
   (rows.find((row) => row.dataset.switchSession === state.active) || rows[0])?.focus();
@@ -552,13 +629,15 @@ function setConnectionMessage(message, restore = true) {
 }
 
 async function pasteImages(event) {
-  if (!state.canManage) return;
   const images = [...(event.clipboardData?.items || [])]
     .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
     .map((item) => item.getAsFile()).filter(Boolean);
   if (!images.length) return;
   event.preventDefault();
   event.stopImmediatePropagation();
+  if (!state.canManage) {
+    return setConnectionMessage(state.canWrite ? '协作链接暂不支持上传图片' : '当前分享链接为只读');
+  }
   const socket = state.socket;
   if (socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
   setConnectionMessage(images.length > 1 ? `正在上传 ${images.length} 张图片…` : '正在上传图片…', false);
@@ -582,7 +661,9 @@ async function handleTerminalDrop(event) {
   event.stopPropagation();
   state.terminalDropDepth = 0;
   $('#terminal').closest('.terminal-frame')?.classList.remove('drag-over');
-  if (!state.canManage) return setConnectionMessage('分享链接为只读');
+  if (!state.canManage) {
+    return setConnectionMessage(state.canWrite ? '协作链接暂不支持上传文件' : '当前分享链接为只读');
+  }
   const socket = state.socket;
   const files = await collectDroppedFilesFromDataTransfer(event.dataTransfer);
   if (!files.length) return;
@@ -630,7 +711,7 @@ function ensureTerminal() {
     // down while keeping the column, then erases and redraws from there, so forcing the
     // column to 0 makes the erase miss and leaves the previous frame's text behind.
     cursorBlink: true, cursorStyle: 'block',
-    disableStdin: !state.canManage,
+    disableStdin: !state.canWrite,
     fontFamily: '"Courier New", "Noto Sans SC Variable", monospace',
     fontSize: 16, lineHeight: 1.2, scrollback: 5000,
     theme: {
@@ -665,7 +746,7 @@ function ensureTerminal() {
     return !handleQuickSwitchKeydown(event);
   });
   terminal.onData((data) => {
-    if (state.canManage && state.socket?.readyState === WebSocket.OPEN) {
+    if (state.canWrite && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -817,6 +898,19 @@ async function renameSession(currentName) {
   }
 }
 ['#newButton', '#newButtonBottom', '#emptyNewButton'].forEach((id) => $(id).addEventListener('click', openNewDialog));
+$('#sessionVisibilityButton').addEventListener('click', openSessionVisibilityDialog);
+$('#hiddenSessionPrefixesInput').addEventListener('input', () => updateSessionVisibilitySummary());
+$('#sessionVisibilityForm').addEventListener('submit', (event) => {
+  if (event.submitter?.value === 'cancel') return;
+  event.preventDefault();
+  applySessionVisibility(parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value));
+  $('#sessionVisibilityDialog').close();
+});
+$('#showAllSessionsButton').addEventListener('click', () => {
+  $('#hiddenSessionPrefixesInput').value = '';
+  applySessionVisibility([]);
+  $('#sessionVisibilityDialog').close();
+});
 $('#menuButton').addEventListener('click', () => {
   const open = $('#sidebar').classList.toggle('open');
   $('#menuButton').setAttribute('aria-expanded', String(open));
@@ -848,7 +942,7 @@ function stopKeyRepeat() {
 }
 
 function sendTerminalKey(name) {
-  if (!state.canManage) return false;
+  if (!state.canWrite) return false;
   if (state.socket?.readyState !== WebSocket.OPEN) return false;
   state.socket.send(JSON.stringify({ type: 'input', data: TERMINAL_KEYS[name] }));
   return true;
@@ -920,7 +1014,7 @@ $('.mobile-keybar').addEventListener('click', async (event) => {
     return;
   }
   if (button.dataset.terminalAction === 'paste') {
-    if (!state.canManage) return;
+    if (!state.canWrite) return;
     if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
     try {
       // Reading the clipboard needs the user gesture this click provides; iOS additionally
@@ -939,7 +1033,7 @@ $('#shareButton').addEventListener('click', async () => {
     const data = await api(`/api/sessions/${encodeURIComponent(state.active)}/share`, { method: 'POST' });
     url = `${location.origin}${data.url}`;
     await navigator.clipboard.writeText(url);
-    setConnectionMessage('分享链接已复制，有效期24小时');
+    setConnectionMessage('协作链接已复制，可继续对话，有效期24小时');
   } catch (error) {
     if (url) prompt('复制这个分享链接（24小时内有效）', url);
     else setConnectionMessage(`生成分享链接失败：${error.message}`);
@@ -996,6 +1090,15 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden && voiceInput.abort()) setTerminalVoiceState(false, '语音输入已暂停，草稿仍保留在这里。');
 });
 window.addEventListener('pagehide', () => voiceInput.abort());
+window.addEventListener('storage', (event) => {
+  if (event.key !== null && event.key !== SESSION_VISIBILITY_STORAGE_KEY) return;
+  state.hiddenSessionPrefixes = loadHiddenSessionPrefixes(localStorage);
+  renderSessions();
+  if ($('#sessionVisibilityDialog').open) {
+    $('#hiddenSessionPrefixesInput').value = state.hiddenSessionPrefixes.join('\n');
+    updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+  }
+});
 
 $('#quickSwitchButton').addEventListener('click', openQuickSwitcher);
 
@@ -1035,6 +1138,7 @@ $('#sessionList').addEventListener('keydown', (event) => {
   }
 });
 
+syncSessionVisibilityButton();
 if (state.token) refreshSessions().then(() => {
   if (state.openedShareLink && state.sessions.length === 1) connect(state.sessions[0].name);
 }).catch((error) => {

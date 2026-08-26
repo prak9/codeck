@@ -8,8 +8,9 @@ import {
   withoutTmuxEnvironment,
 } from './tmux.js';
 
-export function terminalAttachArgs(session, { readOnly = false } = {}) {
-  return ['attach-session', readOnly ? '-r' : '-d', '-t', session];
+export function terminalAttachArgs(session, { readOnly = false, detachOtherClients = true } = {}) {
+  const accessArgs = readOnly ? ['-r'] : detachOtherClients ? ['-d'] : [];
+  return ['attach-session', ...accessArgs, '-t', session];
 }
 
 function spawnTerminal(session, size, options) {
@@ -32,7 +33,7 @@ const defaultDependencies = {
 };
 
 export async function handleTerminalConnection(ws, session, viewport, overrides = {}) {
-  const { readOnly = false, ...dependencyOverrides } = overrides;
+  const { readOnly = false, detachOtherClients = true, ...dependencyOverrides } = overrides;
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
   let terminal = null;
   let closed = ws.readyState !== ws.OPEN;
@@ -45,7 +46,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   };
 
   // Register cancellation before the first await. A closed setup must never reach the
-  // side-effectful attach-session -d, where it could evict a newer connection.
+  // side-effectful attach-session, where an exclusive owner attach could evict a newer connection.
   ws.on('close', () => {
     closed = true;
     pending.length = 0;
@@ -94,7 +95,10 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const [width, height] = dependencies.clampViewport(initialSize.width, initialSize.height);
   const attachSize = { width, height };
   try {
-    terminal = dependencies.createTerminal(session, attachSize, { readOnly });
+    terminal = dependencies.createTerminal(session, attachSize, {
+      readOnly,
+      ...(detachOtherClients === false ? { detachOtherClients: false } : {}),
+    });
   } catch (error) {
     if (isOpen()) ws.close(1011, error.message || 'tmux attach failed');
     return;
@@ -110,8 +114,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     if (terminal === attached) terminal = null;
     if (isOpen()) ws.close(1000, `terminal exited (${exitCode})`);
   });
-  // tmux 2.7 has no window-size=latest. Once -d leaves this as the sole client, this
-  // explicit SIGWINCH makes the old server adopt the browser's exact dimensions.
+  // tmux 2.7 has no window-size=latest. This explicit SIGWINCH makes the old server
+  // adopt the browser's exact dimensions after attaching.
   attached.resize(attachSize.width, attachSize.height);
   while (pending.length && terminal === attached) handleMessage(pending.shift());
 }

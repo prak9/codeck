@@ -32,11 +32,13 @@ export function createSpeechInput({
   lang = 'zh-CN',
   onTranscript = () => {},
   onListeningChange = () => {},
+  onStatus = () => {},
   onError = () => {},
 } = {}) {
   const Recognition = speechRecognitionConstructor(scope);
   let recognition = null;
   let listening = false;
+  let started = false;
 
   function setListening(next) {
     if (listening === next) return;
@@ -47,7 +49,41 @@ export function createSpeechInput({
   function finish(active) {
     if (recognition !== active) return;
     recognition = null;
+    started = false;
     setListening(false);
+  }
+
+  function begin(active) {
+    if (recognition !== active) return false;
+    try {
+      started = true;
+      active.start();
+      return true;
+    } catch (error) {
+      finish(active);
+      onError(speechRecognitionError(error));
+      return false;
+    }
+  }
+
+  async function beginWithLocalRecognition(active, availability) {
+    let local = false;
+    try {
+      const result = await availability;
+      if (recognition !== active) return;
+      local = result === 'available';
+      if (!local && (result === 'downloadable' || result === 'downloading') && typeof Recognition.install === 'function') {
+        onStatus('正在下载本地语音识别语言包…');
+        local = await Recognition.install({ langs: [lang], processLocally: true, quality: 'dictation' });
+      }
+    } catch { /* Fall back to the browser's online recognizer. */ }
+    if (recognition !== active) return;
+    if (local) {
+      try { active.processLocally = true; }
+      catch { local = false; }
+    }
+    if (!local) onStatus('本地识别不可用，正在使用浏览器在线识别…');
+    begin(active);
   }
 
   function start() {
@@ -76,19 +112,29 @@ export function createSpeechInput({
     };
     active.onend = () => finish(active);
     recognition = active;
-    try {
-      active.start();
+    if (typeof Recognition.available === 'function') {
+      onStatus('正在检查本地语音识别…');
+      let availability;
+      try {
+        availability = Recognition.available({ langs: [lang], processLocally: true, quality: 'dictation' });
+      } catch {
+        return begin(active);
+      }
+      beginWithLocalRecognition(active, availability);
       return true;
-    } catch (error) {
-      finish(active);
-      onError(speechRecognitionError(error));
-      return false;
     }
+    return begin(active);
   }
 
   function stop() {
     if (!recognition) return false;
-    recognition.stop();
+    if (!started) return abort();
+    try { recognition.stop(); }
+    catch (error) {
+      const active = recognition;
+      finish(active);
+      onError(speechRecognitionError(error));
+    }
     return true;
   }
 
@@ -96,8 +142,9 @@ export function createSpeechInput({
     if (!recognition) return false;
     const active = recognition;
     recognition = null;
+    started = false;
     setListening(false);
-    active.abort();
+    try { active.abort(); } catch { /* It may still be preparing a local language pack. */ }
     return true;
   }
 

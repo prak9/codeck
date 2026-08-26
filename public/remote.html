@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=27">
+  <link rel="stylesheet" href="/remote.css?v=28">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -30,7 +30,12 @@
       </div>
       <div class="drawer-heading">
         <div><p class="eyebrow">WORKSPACES</p><h1>运行中的会话</h1></div>
-        <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建会话">＋</button>
+        <div class="sidebar-heading-actions">
+          <button class="icon-button session-visibility-button" id="sessionVisibilityButton" type="button" aria-haspopup="dialog" aria-controls="sessionVisibilityDialog" aria-label="设置会话显示">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg><span class="session-visibility-count" id="sessionVisibilityRuleCount" hidden></span>
+          </button>
+          <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建会话">＋</button>
+        </div>
       </div>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
@@ -159,6 +164,18 @@
     </form>
   </dialog>
 
+  <dialog class="sheet session-visibility-dialog" id="sessionVisibilityDialog" aria-labelledby="sessionVisibilityTitle">
+    <form method="dialog" id="sessionVisibilityForm">
+      <div class="sheet-head"><div><p class="eyebrow">SIDEBAR</p><h2 id="sessionVisibilityTitle">会话显示</h2></div><button class="close-button" value="cancel" formnovalidate aria-label="关闭会话显示设置">×</button></div>
+      <p>隐藏名称以指定文字开头的 session。每行一个前缀，区分大小写。</p>
+      <label for="hiddenSessionPrefixesInput">隐藏的 session 前缀</label>
+      <textarea class="session-prefix-input" id="hiddenSessionPrefixesInput" name="prefixes" rows="5" maxlength="4096" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="tmp-&#10;archive-"></textarea>
+      <p class="session-visibility-summary" id="sessionVisibilitySummary" role="status" aria-live="polite"></p>
+      <p class="session-visibility-note">例如 <code>tmp-</code> 会隐藏 <code>tmp-debug</code>。配置只保存在当前浏览器，不会修改或结束服务器上的 tmux 会话。</p>
+      <div class="sheet-actions"><button class="secondary-button show-all-sessions-button" id="showAllSessionsButton" type="button">全部显示</button><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="saveSessionVisibilityButton" value="default">保存</button></div>
+    </form>
+  </dialog>
+
   <dialog class="sheet settings-sheet" id="settingsDialog">
     <form method="dialog" id="settingsForm">
       <div class="sheet-head"><div><p class="eyebrow">SETTINGS</p><h2>设置</h2></div><button class="close-button" value="cancel" formnovalidate aria-label="关闭">×</button></div>
@@ -188,6 +205,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=49"></script>
+  <script type="module" src="/remote.js?v=50"></script>
 </body>
 </html>

@@ -46,8 +46,12 @@ button { cursor: pointer; }
 .remote-label { padding: 4px 7px; border: 1px solid #ff6b3540; border-radius: 999px; background: var(--accent-soft); color: #ff9874; font: 650 8px "Courier New", Courier, monospace; letter-spacing: .1em; }
 .drawer-heading { padding: 22px 14px 13px 18px; display: flex; align-items: end; justify-content: space-between; }
 .drawer-heading h1 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+.sidebar-heading-actions { display: flex; align-items: center; gap: 6px; }
 .icon-button, .header-button, .close-button { width: 44px; height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: #ffffff08; display: grid; place-items: center; }
 .icon-button { width: 44px; height: 44px; border-radius: 11px; font-size: 20px; }
+.session-visibility-button { position: relative; width: 44px; height: 44px; }
+.session-visibility-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.session-visibility-count { position: absolute; top: 3px; right: 3px; min-width: 16px; height: 16px; padding: 0 4px; border: 2px solid #1b1b1e; border-radius: 999px; background: var(--accent); color: white; font-size: 8px; font-weight: 750; line-height: 12px; text-align: center; }
 .icon-button:active, .header-button:active, .close-button:active, .send-button:active, .composer-plus:active, .voice-input-button:active { transform: scale(.95); }
 .thread-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 4px 9px; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
 .thread-row { width: 100%; min-height: 60px; padding: 9px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; display: grid; grid-template-columns: 22px 32px minmax(0, 1fr) 8px; align-items: center; gap: 9px; text-align: left; transition: background 140ms ease, border-color 140ms ease; }
@@ -68,6 +72,8 @@ button { cursor: pointer; }
 .presence.background { background: #ffd45a; box-shadow: 0 0 0 3px #ffd45a1f; }
 .thread-empty { padding: 52px 20px; color: var(--subtle); text-align: center; font-size: 11px; line-height: 1.6; }
 .thread-empty span { display: block; margin-bottom: 9px; font: 20px "Courier New", Courier, monospace; }
+.thread-empty .visibility-empty-button { min-height: 44px; margin: 10px auto 0; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: #ffffff08; color: var(--muted); display: block; }
+.thread-empty .visibility-empty-button:hover { border-color: #ff6b3555; color: #ff956f; }
 .drawer-footer { min-height: 50px; padding: 0 17px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; color: var(--subtle); font-size: 10px; }
 .drawer-footer > span { display: flex; align-items: center; gap: 7px; }
 .drawer-footer a { min-width: 44px; color: var(--muted); text-decoration: none; display: inline-flex; justify-content: flex-end; }
@@ -264,6 +270,7 @@ button { cursor: pointer; }
 .command-sheet .terminal-live-output { margin-top: 0; }
 .sheet label { display: block; margin: 16px 0 7px; color: #dedad7; font-size: 11px; font-weight: 640; }
 .sheet input, .sheet select { width: 100%; height: 46px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: #101012a8; color: var(--ink); font-size: 16px; }
+.session-prefix-input { width: 100%; min-height: 132px; padding: 11px 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 10px; background: #101012a8; color: var(--ink); font-size: 16px; line-height: 1.5; }
 .sheet select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, #8e8986 50%), linear-gradient(135deg, #8e8986 50%, transparent 50%); background-position: calc(100% - 17px) 20px, calc(100% - 12px) 20px; background-size: 5px 5px; background-repeat: no-repeat; }
 .form-error { min-height: 19px; margin: 9px 0 0; color: var(--danger); font-size: 11px; }
 .primary-button, .secondary-button { min-height: 44px; padding: 0 16px; border: 1px solid transparent; border-radius: 10px; font-size: 11px; font-weight: 680; }
@@ -287,6 +294,10 @@ button { cursor: pointer; }
 .attachment-option strong { font-size: 12px; }
 .attachment-option small { color: var(--muted); font-size: 9px; }
 .sheet-note, .field-help { margin: 11px 0 0; color: var(--subtle); font-size: 9px; line-height: 1.55; }
+.session-visibility-summary { min-height: 18px; margin: 9px 0 0; color: var(--ink); }
+.session-visibility-note { margin-top: 7px !important; }
+.session-visibility-note code { color: #ff9a76; }
+.show-all-sessions-button { margin-right: auto; }
 .settings-links { margin-top: 20px; padding: 13px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
 .settings-links a, .settings-links button { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; font-size: 10px; }
 .settings-links button { color: #ffaaa6; }
@@ -327,6 +338,7 @@ button { cursor: pointer; }
 :root[data-theme="light"] .icon-button,
 :root[data-theme="light"] .close-button,
 :root[data-theme="light"] .header-button { border-color: #00000012; background: #fff; box-shadow: 0 8px 24px #0000000d; }
+:root[data-theme="light"] .session-visibility-count { border-color: #f7f7f7; }
 :root[data-theme="light"] .welcome-provider,
 :root[data-theme="light"] .question-option,
 :root[data-theme="light"] .approval-actions button,
@@ -420,7 +432,9 @@ button { cursor: pointer; }
 :root[data-theme="light"] .question-option:has(input:checked) { border-color: #6d28d95c; background: #6d28d90d; }
 :root[data-theme="light"] .question-other,
 :root[data-theme="light"] .sheet input,
-:root[data-theme="light"] .sheet select { background-color: #fff; }
+:root[data-theme="light"] .sheet select,
+:root[data-theme="light"] .session-prefix-input { background-color: #fff; }
+:root[data-theme="light"] .session-visibility-note code { color: #a83a10; }
 :root[data-theme="light"] .question-actions button { border-color: #6d28d952; background: #6d28d90d; color: #4c1d95; }
 :root[data-theme="light"] .composer-area { border-color: transparent; background: linear-gradient(180deg, #ffffff00, #fff 30%); }
 :root[data-theme="light"] .slash-command-menu { border-color: #00000012; background: #fffffff7; box-shadow: 0 20px 55px #0000001a, inset 0 1px #fff; }

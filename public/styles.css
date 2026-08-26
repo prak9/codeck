@@ -47,7 +47,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 
 .sidebar { min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: #1b1b1eee; display: flex; flex-direction: column; backdrop-filter: blur(28px) saturate(130%); -webkit-backdrop-filter: blur(28px) saturate(130%); }
 .sidebar-heading { padding: 22px 14px 13px 18px; display: flex; align-items: end; justify-content: space-between; }
+.sidebar-heading-actions { display: flex; align-items: center; gap: 6px; }
 .sidebar-heading .icon-button { width: 44px; height: 44px; border-radius: 11px; font-size: 20px; }
+.session-visibility-button { position: relative; width: 44px; height: 44px; }
+.session-visibility-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.session-visibility-count { position: absolute; top: 3px; right: 3px; min-width: 16px; height: 16px; padding: 0 4px; border: 2px solid #1b1b1e; border-radius: 999px; background: var(--accent); color: white; font-size: 8px; font-weight: 750; line-height: 12px; text-align: center; }
 .eyebrow { margin: 0 0 6px; color: var(--subtle); font-size: 9px; line-height: 1; font-weight: 700; letter-spacing: .16em; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 15px; line-height: 1.25; letter-spacing: -.01em; }
@@ -72,6 +76,8 @@ h1 { margin-bottom: 0; font-size: 15px; line-height: 1.25; letter-spacing: -.01e
 .session-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
 .list-empty { padding: 54px 16px; color: var(--subtle); text-align: center; font-size: 12px; }
 .list-empty span { font: 21px monospace; }
+.list-empty .visibility-empty-button { min-height: 44px; margin: 8px auto 0; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: #ffffff08; color: var(--muted); display: block; cursor: pointer; }
+.list-empty .visibility-empty-button:hover { border-color: #ff6b3555; color: #ff956f; }
 .new-session-button { margin: 10px 12px; min-height: 42px; border: 1px solid var(--line); border-radius: 10px; background: #ffffff07; color: #d7d7da; cursor: pointer; transition: background 160ms ease, border-color 160ms ease; }
 .new-session-button:hover { border-color: #ff6b3555; background: #ff6b3510; color: #ff956f; }
 .sidebar footer { min-height: 46px; padding: 0 18px; border-top: 1px solid var(--line); display: flex; align-items: center; color: var(--subtle); font-size: 10px; }
@@ -157,6 +163,11 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .dialog-actions { align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .dialog-actions .primary-button { margin-top: 0; }
 .form-error { min-height: 18px; margin: 9px 0 0; color: var(--danger); font-size: 11px; }
+.session-visibility-dialog { width: min(520px, calc(100vw - 30px)); }
+.session-prefix-input { width: 100%; min-height: 132px; padding: 11px 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: #11111499; color: var(--ink); font-size: 16px; line-height: 1.5; }
+.session-visibility-summary { min-height: 18px; margin: 9px 0 0; color: #d7d7da; }
+.session-visibility-note code { color: #ff9a76; font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
+.show-all-sessions-button { margin-right: auto; }
 
 .switch-dialog { width: min(500px, calc(100vw - 30px)); padding: 16px; }
 .switch-head { padding: 3px 3px 13px; display: flex; align-items: start; justify-content: space-between; }

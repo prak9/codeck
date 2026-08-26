@@ -78,3 +78,94 @@ test('unsupported browsers and microphone errors fail recoverably', () => {
   assert.equal(speechRecognitionError('network'), '语音识别网络不可用，请稍后重试。');
   assert.equal(speechRecognitionError('no-speech'), '没有听清，请再试一次。');
 });
+
+test('a synchronous recognition start failure is reported without becoming active', () => {
+  class BrokenRecognition extends FakeRecognition {
+    start() {
+      const error = new Error('blocked');
+      error.name = 'NotAllowedError';
+      throw error;
+    }
+  }
+  const errors = [];
+  const speech = createSpeechInput({
+    scope: { SpeechRecognition: BrokenRecognition },
+    onError: (message) => errors.push(message),
+  });
+
+  assert.equal(speech.start(), false);
+  assert.equal(speech.active, false);
+  assert.deepEqual(errors, ['麦克风权限被拒绝，请在浏览器设置中允许。']);
+});
+
+test('speech input prefers an available on-device language pack', async () => {
+  class LocalRecognition extends FakeRecognition {
+    static availableCalls = [];
+
+    static available(options) {
+      this.availableCalls.push(options);
+      return Promise.resolve('available');
+    }
+  }
+  FakeRecognition.instances.length = 0;
+  const statuses = [];
+  const speech = createSpeechInput({
+    scope: { SpeechRecognition: LocalRecognition },
+    lang: 'zh-CN',
+    onStatus: (message) => statuses.push(message),
+  });
+
+  assert.equal(speech.start(), true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const recognition = FakeRecognition.instances[0];
+  assert.deepEqual(LocalRecognition.availableCalls, [{ langs: ['zh-CN'], processLocally: true, quality: 'dictation' }]);
+  assert.equal(recognition.processLocally, true);
+  assert.equal(recognition.started, true);
+  assert.deepEqual(statuses, ['正在检查本地语音识别…']);
+});
+
+test('speech input installs a downloadable local pack and falls back online when unavailable', async () => {
+  class DownloadableRecognition extends FakeRecognition {
+    static installCalls = [];
+
+    static available() { return Promise.resolve('downloadable'); }
+
+    static install(options) {
+      this.installCalls.push(options);
+      return Promise.resolve(true);
+    }
+  }
+  FakeRecognition.instances.length = 0;
+  const downloadStatuses = [];
+  const localSpeech = createSpeechInput({
+    scope: { SpeechRecognition: DownloadableRecognition },
+    lang: 'zh-CN',
+    onStatus: (message) => downloadStatuses.push(message),
+  });
+
+  assert.equal(localSpeech.start(), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(DownloadableRecognition.installCalls, [{ langs: ['zh-CN'], processLocally: true, quality: 'dictation' }]);
+  assert.equal(FakeRecognition.instances[0].processLocally, true);
+  assert.equal(FakeRecognition.instances[0].started, true);
+  assert.deepEqual(downloadStatuses, ['正在检查本地语音识别…', '正在下载本地语音识别语言包…']);
+
+  class OnlineRecognition extends FakeRecognition {
+    static available() { return Promise.resolve('unavailable'); }
+  }
+  FakeRecognition.instances.length = 0;
+  const onlineStatuses = [];
+  const onlineSpeech = createSpeechInput({
+    scope: { SpeechRecognition: OnlineRecognition },
+    lang: 'zh-CN',
+    onStatus: (message) => onlineStatuses.push(message),
+  });
+
+  assert.equal(onlineSpeech.start(), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(FakeRecognition.instances[0].processLocally, true);
+  assert.equal(FakeRecognition.instances[0].started, true);
+  assert.deepEqual(onlineStatuses, ['正在检查本地语音识别…', '本地识别不可用，正在使用浏览器在线识别…']);
+});

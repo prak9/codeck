@@ -18,7 +18,7 @@ import { attachmentMessage, validateAttachmentSelection } from './remote-attachm
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
-import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=1';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=3';
 import {
   completeSlashCommand,
   slashCommandKeyAction,
@@ -31,6 +31,13 @@ import {
   nextThreadAfterClose,
   suggestedRemoteSessionName,
 } from './remote-session.js?v=2';
+import {
+  SESSION_VISIBILITY_STORAGE_KEY,
+  loadHiddenSessionPrefixes,
+  parseSessionPrefixInput,
+  partitionSessionsByPrefix,
+  saveHiddenSessionPrefixes,
+} from './session-visibility.js?v=1';
 
 const $ = (selector) => document.querySelector(selector);
 const PROVIDERS = {
@@ -61,6 +68,7 @@ const state = {
   cwd: localStorage.getItem('codeck-remote-cwd') || '',
   hostname: '',
   threads: [],
+  hiddenSessionPrefixes: loadHiddenSessionPrefixes(localStorage),
   activeThreadId: null,
   thread: null,
   approvals: new Map(),
@@ -796,15 +804,70 @@ function openListedThread(thread, { quiet = false } = {}) {
   });
 }
 
+function sessionVisibilityPartition(prefixes = state.hiddenSessionPrefixes) {
+  return partitionSessionsByPrefix(state.threads, prefixes, (thread) => thread.tmux?.name);
+}
+
+function updateSessionVisibilitySummary(prefixes = parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value)) {
+  const { visible, hidden } = sessionVisibilityPartition(prefixes);
+  $('#sessionVisibilitySummary').textContent = state.threads.length
+    ? `将显示 ${visible.length} 个会话，隐藏 ${hidden.length} 个。`
+    : '当前没有运行中的 tmux 会话。';
+}
+
+function syncSessionVisibilityButton(hiddenCount = sessionVisibilityPartition().hidden.length) {
+  const button = $('#sessionVisibilityButton');
+  const count = $('#sessionVisibilityRuleCount');
+  const ruleCount = state.hiddenSessionPrefixes.length;
+  count.hidden = !ruleCount;
+  count.textContent = ruleCount > 99 ? '99+' : String(ruleCount);
+  const label = ruleCount
+    ? `设置会话显示，已配置 ${ruleCount} 个隐藏前缀，当前隐藏 ${hiddenCount} 个会话`
+    : '设置会话显示';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+}
+
+function openSessionVisibilityDialog() {
+  const input = $('#hiddenSessionPrefixesInput');
+  input.value = state.hiddenSessionPrefixes.join('\n');
+  updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+  const dialog = $('#sessionVisibilityDialog');
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => input.focus({ preventScroll: true }));
+}
+
+function applySessionVisibility(prefixes) {
+  state.hiddenSessionPrefixes = saveHiddenSessionPrefixes(localStorage, prefixes);
+  renderThreadList();
+}
+
+function threadListEmpty(hiddenCount) {
+  const empty = element('div', 'thread-empty');
+  empty.append(
+    element('span', '', '∅'),
+    document.createTextNode(hiddenCount
+      ? `当前浏览器隐藏了 ${hiddenCount} 个会话`
+      : '当前没有运行中的 tmux 会话。'),
+  );
+  if (hiddenCount) {
+    const button = element('button', 'visibility-empty-button', '调整显示');
+    button.type = 'button';
+    button.addEventListener('click', openSessionVisibilityDialog);
+    empty.append(button);
+  }
+  return empty;
+}
+
 function renderThreadList() {
-  if (!state.threads.length) {
-    const empty = element('div', 'thread-empty');
-    empty.append(element('span', '', '∅'), document.createTextNode('当前没有运行中的 tmux 会话。'));
-    empty.style.whiteSpace = 'pre-line';
-    $('#threadList').replaceChildren(empty);
+  const { visible, hidden } = sessionVisibilityPartition();
+  syncSessionVisibilityButton(hidden.length);
+  if ($('#sessionVisibilityDialog').open) updateSessionVisibilitySummary();
+  if (!visible.length) {
+    $('#threadList').replaceChildren(threadListEmpty(hidden.length));
     return;
   }
-  const rows = state.threads.map((thread, index) => {
+  const rows = visible.map((thread, index) => {
     const active = thread.id === state.activeThreadId
       && findTmuxThreadTarget([thread], state.thread) === thread;
     const details = providerDetails(thread.provider);
@@ -1919,6 +1982,19 @@ function syncViewportHeight() {
 $('#drawerButton').addEventListener('click', openDrawer);
 $('#drawerScrim').addEventListener('click', closeDrawer);
 $('#drawerNewButton').addEventListener('click', openNewSession);
+$('#sessionVisibilityButton').addEventListener('click', openSessionVisibilityDialog);
+$('#hiddenSessionPrefixesInput').addEventListener('input', () => updateSessionVisibilitySummary());
+$('#sessionVisibilityForm').addEventListener('submit', (event) => {
+  if (event.submitter?.value === 'cancel') return;
+  event.preventDefault();
+  applySessionVisibility(parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value));
+  $('#sessionVisibilityDialog').close();
+});
+$('#showAllSessionsButton').addEventListener('click', () => {
+  $('#hiddenSessionPrefixesInput').value = '';
+  applySessionVisibility([]);
+  $('#sessionVisibilityDialog').close();
+});
 $('#newThreadButton').addEventListener('click', openNewSession);
 $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
@@ -2161,6 +2237,15 @@ document.addEventListener('visibilitychange', () => {
 window.visualViewport?.addEventListener('resize', syncViewportHeight);
 window.visualViewport?.addEventListener('scroll', syncViewportHeight);
 window.addEventListener('resize', syncViewportHeight);
+window.addEventListener('storage', (event) => {
+  if (event.key !== null && event.key !== SESSION_VISIBILITY_STORAGE_KEY) return;
+  state.hiddenSessionPrefixes = loadHiddenSessionPrefixes(localStorage);
+  renderThreadList();
+  if ($('#sessionVisibilityDialog').open) {
+    $('#hiddenSessionPrefixesInput').value = state.hiddenSessionPrefixes.join('\n');
+    updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+  }
+});
 window.addEventListener('pagehide', () => {
   abortSpeechInput();
   for (const attachment of state.attachments) {
@@ -2177,6 +2262,7 @@ setInterval(() => {
 applyTheme(state.theme);
 syncViewportHeight();
 renderProviderControls();
+syncSessionVisibilityButton();
 renderThreadList();
 renderThread();
 resizeComposer();

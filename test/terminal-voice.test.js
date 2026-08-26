@@ -26,6 +26,8 @@ test('normal terminal voice input uses an inline Remote-style draft composer', (
   assert.match(css, /\.speech-input \.voice-input-trigger\s*\{[^}]*display:\s*inline-flex/s);
   assert.match(css, /\.terminal-voice-composer textarea\s*\{[^}]*font-size:\s*16px/s);
   assert.match(appJs, /createSpeechInput/);
+  assert.match(appJs, /onStatus:\s*\(message\)\s*=>\s*setTerminalVoiceState/);
+  assert.match(appJs, /if \(!draft\.value\) draft\.placeholder = message/);
   assert.match(appJs, /speechDraftForTerminal/);
   assert.match(appJs, /function submitTerminalVoiceDraft\(/);
   assert.match(appJs, /socket\.send\(JSON\.stringify\(\{ type: 'input', data: `\$\{text\}\\r` \}\)\)/);
@@ -34,7 +36,7 @@ test('normal terminal voice input uses an inline Remote-style draft composer', (
 
 test('terminal voice input follows terminal access and browser support', () => {
   assert.match(appJs, /voiceInput\.supported/);
-  assert.match(appJs, /trigger\.hidden = !state\.canManage \|\| composerOpen/);
+  assert.match(appJs, /trigger\.hidden = !state\.canWrite \|\| composerOpen/);
   assert.match(appJs, /trigger\.disabled = !connected/);
   assert.match(appJs, /voiceInput\.abort\(\)/);
   assert.match(appJs, /closeTerminalVoiceComposer\(\{ restoreFocus: false \}\)/);
