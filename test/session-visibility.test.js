@@ -2,13 +2,21 @@ import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SESSION_FOLDER_EXPANSION_STORAGE_KEY,
+  SESSION_FOLDER_PREFIXES_STORAGE_KEY,
   SESSION_VISIBILITY_STORAGE_KEY,
+  groupSessionsByPrefix,
+  loadExpandedSessionFolders,
   isSessionVisible,
   loadHiddenSessionPrefixes,
+  loadSessionFolderPrefixes,
   normalizeSessionPrefixes,
   parseSessionPrefixInput,
   partitionSessionsByPrefix,
+  saveExpandedSessionFolders,
   saveHiddenSessionPrefixes,
+  saveSessionFolderPrefixes,
+  setSessionFolderExpanded,
 } from '../public/session-visibility.js';
 
 const appHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -65,22 +73,73 @@ test('normal sessions and remote tmux threads use the same prefix partition', ()
   });
 });
 
-test('both sidebars expose an accessible browser-local prefix visibility dialog', () => {
+test('sessions use the longest matching folder prefix and preserve first-folder order', () => {
+  const sessions = [
+    { name: 'work-ui' },
+    { name: 'work-api-auth' },
+    { name: 'skills' },
+    { name: 'work-docs' },
+  ];
+  assert.deepEqual(groupSessionsByPrefix(sessions, ['work-', 'work-api-']), [
+    { type: 'folder', prefix: 'work-', items: [sessions[0], sessions[3]] },
+    { type: 'folder', prefix: 'work-api-', items: [sessions[1]] },
+    { type: 'session', item: sessions[2] },
+  ]);
+
+  const threads = [
+    { id: 'one', tmux: { name: 'client-web' } },
+    { id: 'two', tmux: { name: 'research' } },
+  ];
+  assert.deepEqual(groupSessionsByPrefix(threads, ['client-'], (thread) => thread.tmux?.name), [
+    { type: 'folder', prefix: 'client-', items: [threads[0]] },
+    { type: 'session', item: threads[1] },
+  ]);
+});
+
+test('folder prefixes and expanded folders persist only in browser storage', () => {
+  const storage = memoryStorage();
+  assert.deepEqual(saveSessionFolderPrefixes(storage, ['work-', 'client-']), ['work-', 'client-']);
+  assert.deepEqual(loadSessionFolderPrefixes(storage), ['work-', 'client-']);
+
+  let expanded = setSessionFolderExpanded([], 'work-', true);
+  assert.deepEqual(expanded, ['work-']);
+  expanded = setSessionFolderExpanded(expanded, 'client-', true);
+  expanded = setSessionFolderExpanded(expanded, 'work-', false);
+  assert.deepEqual(expanded, ['client-']);
+  assert.deepEqual(saveExpandedSessionFolders(storage, expanded), ['client-']);
+  assert.deepEqual(loadExpandedSessionFolders(storage), ['client-']);
+
+  saveSessionFolderPrefixes(storage, []);
+  saveExpandedSessionFolders(storage, []);
+  assert.equal(storage.getItem(SESSION_FOLDER_PREFIXES_STORAGE_KEY), null);
+  assert.equal(storage.getItem(SESSION_FOLDER_EXPANSION_STORAGE_KEY), null);
+});
+
+test('both sidebars expose accessible browser-local visibility and folder controls', () => {
   for (const html of [appHtml, remoteHtml]) {
     assert.match(html, /id="sessionVisibilityButton"[^>]*aria-haspopup="dialog"[^>]*aria-controls="sessionVisibilityDialog"/);
     assert.match(html, /id="sessionVisibilityDialog"[^>]*aria-labelledby="sessionVisibilityTitle"/);
+    assert.match(html, /<label for="folderSessionPrefixesInput">折叠为文件夹的 session 前缀<\/label>/);
+    assert.match(html, /id="folderSessionPrefixesInput"[^>]*autocomplete="off"/);
     assert.match(html, /<label for="hiddenSessionPrefixesInput">隐藏的 session 前缀<\/label>/);
     assert.match(html, /id="sessionVisibilitySummary"[^>]*role="status"[^>]*aria-live="polite"/);
     assert.match(html, /id="showAllSessionsButton"[^>]*type="button"/);
   }
   for (const source of [appJs, remoteJs]) {
     assert.match(source, /loadHiddenSessionPrefixes/);
+    assert.match(source, /loadSessionFolderPrefixes/);
+    assert.match(source, /loadExpandedSessionFolders/);
     assert.match(source, /partitionSessionsByPrefix/);
-    assert.match(source, /SESSION_VISIBILITY_STORAGE_KEY/);
+    assert.match(source, /groupSessionsByPrefix/);
+    assert.match(source, /setSessionFolderExpanded/);
+    assert.match(source, /SESSION_FOLDER_PREFIXES_STORAGE_KEY/);
+    assert.match(source, /SESSION_FOLDER_EXPANSION_STORAGE_KEY/);
   }
   for (const css of [appCss, remoteCss]) {
     assert.match(css, /\.sidebar-heading-actions\s*\{[^}]*display:\s*flex/s);
     assert.match(css, /\.session-visibility-button\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/s);
     assert.match(css, /\.session-prefix-input\s*\{[^}]*font-size:\s*16px/s);
+    assert.match(css, /\.session-folder-summary\s*\{[^}]*min-height:\s*44px/s);
+    assert.match(css, /\.session-folder-children\s*\{[^}]*border-left:/s);
   }
 });

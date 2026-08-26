@@ -6,12 +6,20 @@ import {
 } from './terminal-utils.js?v=6';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
 import {
+  SESSION_FOLDER_EXPANSION_STORAGE_KEY,
+  SESSION_FOLDER_PREFIXES_STORAGE_KEY,
   SESSION_VISIBILITY_STORAGE_KEY,
+  groupSessionsByPrefix,
+  loadExpandedSessionFolders,
   loadHiddenSessionPrefixes,
+  loadSessionFolderPrefixes,
   parseSessionPrefixInput,
   partitionSessionsByPrefix,
+  saveExpandedSessionFolders,
   saveHiddenSessionPrefixes,
-} from './session-visibility.js?v=1';
+  saveSessionFolderPrefixes,
+  setSessionFolderExpanded,
+} from './session-visibility.js?v=2';
 
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
@@ -48,6 +56,8 @@ const state = {
   token: sharedToken || storedShareToken || storedOwnerToken || '',
   sessions: [],
   hiddenSessionPrefixes: loadHiddenSessionPrefixes(localStorage),
+  folderSessionPrefixes: loadSessionFolderPrefixes(localStorage),
+  expandedSessionFolders: loadExpandedSessionFolders(localStorage),
   active: null,
   socket: null,
   terminal: null,
@@ -402,38 +412,60 @@ function sessionVisibilityPartition(prefixes = state.hiddenSessionPrefixes) {
   return partitionSessionsByPrefix(state.sessions, prefixes);
 }
 
-function updateSessionVisibilitySummary(prefixes = parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value)) {
-  const { visible, hidden } = sessionVisibilityPartition(prefixes);
+function updateSessionVisibilitySummary(
+  hiddenPrefixes = parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value),
+  folderPrefixes = parseSessionPrefixInput($('#folderSessionPrefixesInput').value),
+) {
+  const { visible, hidden } = sessionVisibilityPartition(hiddenPrefixes);
+  const folderCount = groupSessionsByPrefix(visible, folderPrefixes)
+    .filter((entry) => entry.type === 'folder').length;
   $('#sessionVisibilitySummary').textContent = state.sessions.length
-    ? `将显示 ${visible.length} 个会话，隐藏 ${hidden.length} 个。`
+    ? `将显示 ${visible.length} 个会话（${folderCount} 个文件夹），隐藏 ${hidden.length} 个。`
     : '当前没有运行中的 tmux 会话。';
 }
 
 function syncSessionVisibilityButton(hiddenCount = sessionVisibilityPartition().hidden.length) {
   const button = $('#sessionVisibilityButton');
   const count = $('#sessionVisibilityRuleCount');
-  const ruleCount = state.hiddenSessionPrefixes.length;
+  const hiddenRuleCount = state.hiddenSessionPrefixes.length;
+  const folderRuleCount = state.folderSessionPrefixes.length;
+  const ruleCount = hiddenRuleCount + folderRuleCount;
   count.hidden = !ruleCount;
   count.textContent = ruleCount > 99 ? '99+' : String(ruleCount);
   const label = ruleCount
-    ? `设置会话显示，已配置 ${ruleCount} 个隐藏前缀，当前隐藏 ${hiddenCount} 个会话`
+    ? `设置会话显示，${folderRuleCount} 个文件夹前缀，${hiddenRuleCount} 个隐藏前缀，当前隐藏 ${hiddenCount} 个会话`
     : '设置会话显示';
   button.setAttribute('aria-label', label);
   button.title = label;
 }
 
 function openSessionVisibilityDialog() {
-  const input = $('#hiddenSessionPrefixesInput');
-  input.value = state.hiddenSessionPrefixes.join('\n');
-  updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+  const folderInput = $('#folderSessionPrefixesInput');
+  const hiddenInput = $('#hiddenSessionPrefixesInput');
+  folderInput.value = state.folderSessionPrefixes.join('\n');
+  hiddenInput.value = state.hiddenSessionPrefixes.join('\n');
+  updateSessionVisibilitySummary(state.hiddenSessionPrefixes, state.folderSessionPrefixes);
   const dialog = $('#sessionVisibilityDialog');
   if (!dialog.open) dialog.showModal();
-  requestAnimationFrame(() => input.focus({ preventScroll: true }));
+  requestAnimationFrame(() => folderInput.focus({ preventScroll: true }));
 }
 
-function applySessionVisibility(prefixes) {
-  state.hiddenSessionPrefixes = saveHiddenSessionPrefixes(localStorage, prefixes);
+function applySessionVisibility(hiddenPrefixes, folderPrefixes) {
+  state.hiddenSessionPrefixes = saveHiddenSessionPrefixes(localStorage, hiddenPrefixes);
+  state.folderSessionPrefixes = saveSessionFolderPrefixes(localStorage, folderPrefixes);
+  state.expandedSessionFolders = saveExpandedSessionFolders(
+    localStorage,
+    state.expandedSessionFolders.filter((prefix) => state.folderSessionPrefixes.includes(prefix)),
+  );
   renderSessions();
+}
+
+function setSessionFolderOpen(prefix, open) {
+  if (state.expandedSessionFolders.includes(prefix) === open) return;
+  state.expandedSessionFolders = saveExpandedSessionFolders(
+    localStorage,
+    setSessionFolderExpanded(state.expandedSessionFolders, prefix, open),
+  );
 }
 
 function sessionListEmpty(hiddenCount) {
@@ -457,24 +489,13 @@ function sessionListEmpty(hiddenCount) {
   return empty;
 }
 
-function renderSessions() {
-  const list = $('#sessionList');
-  const scrollTop = list.scrollTop;
-  const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
-  const { visible, hidden } = sessionVisibilityPartition();
-  syncSessionVisibilityButton(hidden.length);
-  if ($('#sessionVisibilityDialog').open) updateSessionVisibilitySummary();
-  if (!visible.length) {
-    list.replaceChildren(sessionListEmpty(hidden.length));
-    return;
-  }
-  list.innerHTML = visible.map((session, index) => {
-    const status = resolveSessionStatus(session);
-    const statusText = status === 'working'
-      ? '正在干活'
-      : status === 'background' ? '后台运行' : '已就绪';
-    const meta = [statusText, timeAgo(session.activityAt)].filter(Boolean).join(' · ');
-    return `
+function sessionEntryHtml(session, index) {
+  const status = resolveSessionStatus(session);
+  const statusText = status === 'working'
+    ? '正在干活'
+    : status === 'background' ? '后台运行' : '已就绪';
+  const meta = [statusText, timeAgo(session.activityAt)].filter(Boolean).join(' · ');
+  return `
     <div class="session-entry">
       <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
         <span class="session-index">${index + 1}</span>
@@ -483,8 +504,45 @@ function renderSessions() {
         <span class="presence ${status}" title="${statusText}"></span>
       </button>
       ${state.canManage ? `<button type="button" class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
-    </div>`; 
-  }).join('');
+    </div>`;
+}
+
+function sessionFolderHtml(entry, indexByName) {
+  const expanded = state.expandedSessionFolders.includes(entry.prefix);
+  const containsActive = entry.items.some((session) => session.name === state.active);
+  const label = `${entry.prefix} 文件夹，${entry.items.length} 个会话`;
+  return `
+    <details class="session-folder${containsActive ? ' contains-active' : ''}" data-session-folder="${escapeHtml(entry.prefix)}"${expanded ? ' open' : ''}>
+      <summary class="session-folder-summary" aria-label="${escapeHtml(label)}">
+        <span class="session-folder-chevron" aria-hidden="true">›</span>
+        <svg class="session-folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l1.8 2H20.5v8.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7V7.5Z"/></svg>
+        <span class="session-folder-name" title="${escapeHtml(entry.prefix)}">${escapeHtml(entry.prefix)}</span>
+        <span class="session-folder-count">${entry.items.length}</span>
+      </summary>
+      <div class="session-folder-children">${entry.items.map((session) => sessionEntryHtml(session, indexByName.get(session.name))).join('')}</div>
+    </details>`;
+}
+
+function renderSessions() {
+  const list = $('#sessionList');
+  const scrollTop = list.scrollTop;
+  const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
+  const focusedFolder = document.activeElement?.closest?.('[data-session-folder]')?.dataset.sessionFolder;
+  const { visible, hidden } = sessionVisibilityPartition();
+  syncSessionVisibilityButton(hidden.length);
+  if ($('#sessionVisibilityDialog').open) updateSessionVisibilitySummary();
+  if (!visible.length) {
+    list.replaceChildren(sessionListEmpty(hidden.length));
+    return;
+  }
+  const indexByName = new Map(visible.map((session, index) => [session.name, index]));
+  const entries = groupSessionsByPrefix(visible, state.folderSessionPrefixes);
+  list.innerHTML = entries.map((entry) => entry.type === 'folder'
+    ? sessionFolderHtml(entry, indexByName)
+    : sessionEntryHtml(entry.item, indexByName.get(entry.item.name))).join('');
+  list.querySelectorAll('.session-folder').forEach((folder) => {
+    folder.addEventListener('toggle', () => setSessionFolderOpen(folder.dataset.sessionFolder, folder.open));
+  });
   list.querySelectorAll('.session-row').forEach((row) => {
     row.addEventListener('click', (event) => {
       event.preventDefault();
@@ -502,6 +560,10 @@ function renderSessions() {
   });
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
+  } else if (focusedFolder) {
+    [...list.querySelectorAll('[data-session-folder]')]
+      .find((folder) => folder.dataset.sessionFolder === focusedFolder)
+      ?.querySelector('.session-folder-summary')?.focus({ preventScroll: true });
   }
   list.scrollTop = scrollTop;
 }
@@ -795,6 +857,11 @@ function markActiveSession(session) {
   for (const row of $('#sessionList').querySelectorAll('[data-session]')) {
     row.classList.toggle('active', row.dataset.session === session);
   }
+  for (const folder of $('#sessionList').querySelectorAll('[data-session-folder]')) {
+    folder.classList.toggle('contains-active', Boolean(
+      [...folder.querySelectorAll('[data-session]')].find((row) => row.dataset.session === session),
+    ));
+  }
 }
 
 async function connect(session) {
@@ -899,16 +966,21 @@ async function renameSession(currentName) {
 }
 ['#newButton', '#newButtonBottom', '#emptyNewButton'].forEach((id) => $(id).addEventListener('click', openNewDialog));
 $('#sessionVisibilityButton').addEventListener('click', openSessionVisibilityDialog);
+$('#folderSessionPrefixesInput').addEventListener('input', () => updateSessionVisibilitySummary());
 $('#hiddenSessionPrefixesInput').addEventListener('input', () => updateSessionVisibilitySummary());
 $('#sessionVisibilityForm').addEventListener('submit', (event) => {
   if (event.submitter?.value === 'cancel') return;
   event.preventDefault();
-  applySessionVisibility(parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value));
+  applySessionVisibility(
+    parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value),
+    parseSessionPrefixInput($('#folderSessionPrefixesInput').value),
+  );
   $('#sessionVisibilityDialog').close();
 });
 $('#showAllSessionsButton').addEventListener('click', () => {
+  $('#folderSessionPrefixesInput').value = '';
   $('#hiddenSessionPrefixesInput').value = '';
-  applySessionVisibility([]);
+  applySessionVisibility([], []);
   $('#sessionVisibilityDialog').close();
 });
 $('#menuButton').addEventListener('click', () => {
@@ -1091,12 +1163,20 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => voiceInput.abort());
 window.addEventListener('storage', (event) => {
-  if (event.key !== null && event.key !== SESSION_VISIBILITY_STORAGE_KEY) return;
+  const displayKeys = new Set([
+    SESSION_VISIBILITY_STORAGE_KEY,
+    SESSION_FOLDER_PREFIXES_STORAGE_KEY,
+    SESSION_FOLDER_EXPANSION_STORAGE_KEY,
+  ]);
+  if (event.key !== null && !displayKeys.has(event.key)) return;
   state.hiddenSessionPrefixes = loadHiddenSessionPrefixes(localStorage);
+  state.folderSessionPrefixes = loadSessionFolderPrefixes(localStorage);
+  state.expandedSessionFolders = loadExpandedSessionFolders(localStorage);
   renderSessions();
   if ($('#sessionVisibilityDialog').open) {
+    $('#folderSessionPrefixesInput').value = state.folderSessionPrefixes.join('\n');
     $('#hiddenSessionPrefixesInput').value = state.hiddenSessionPrefixes.join('\n');
-    updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+    updateSessionVisibilitySummary(state.hiddenSessionPrefixes, state.folderSessionPrefixes);
   }
 });
 
@@ -1121,7 +1201,19 @@ $('#switchList').addEventListener('keydown', (event) => {
 });
 
 $('#sessionList').addEventListener('keydown', (event) => {
-  const rows = [...$('#sessionList').querySelectorAll('.session-row')];
+  const folder = event.target.closest('.session-folder');
+  if (event.target.matches('.session-folder-summary') && event.key === 'ArrowRight' && !folder.open) {
+    event.preventDefault();
+    folder.open = true;
+    return;
+  }
+  if (event.target.matches('.session-folder-summary') && event.key === 'ArrowLeft' && folder.open) {
+    event.preventDefault();
+    folder.open = false;
+    return;
+  }
+  const rows = [...$('#sessionList').querySelectorAll('.session-folder-summary, .session-row')]
+    .filter((row) => row.matches('.session-folder-summary') || !row.closest('.session-folder:not([open])'));
   const index = rows.indexOf(document.activeElement);
   if (event.key === 'Escape') {
     $('#sidebar').classList.remove('open');

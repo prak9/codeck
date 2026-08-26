@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/fonts/jetbrains-mono/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=51">
+    <link rel="stylesheet" href="/styles.css?v=52">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -98,12 +98,14 @@
   <dialog class="session-visibility-dialog" id="sessionVisibilityDialog" aria-labelledby="sessionVisibilityTitle">
     <form method="dialog" id="sessionVisibilityForm">
       <div class="dialog-head"><div><p class="eyebrow">SIDEBAR</p><h2 id="sessionVisibilityTitle">会话显示</h2></div><button class="icon-button" value="cancel" formnovalidate aria-label="关闭">×</button></div>
-      <p>隐藏名称以指定文字开头的 session。每行一个前缀，区分大小写。</p>
+      <p>按名称前缀把 session 收进文件夹，或从当前浏览器隐藏。每行一个前缀，区分大小写。</p>
+      <label for="folderSessionPrefixesInput">折叠为文件夹的 session 前缀</label>
+      <textarea class="session-prefix-input" id="folderSessionPrefixesInput" name="folderPrefixes" rows="4" maxlength="4096" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="project-&#10;client-"></textarea>
       <label for="hiddenSessionPrefixesInput">隐藏的 session 前缀</label>
-      <textarea class="session-prefix-input" id="hiddenSessionPrefixesInput" name="prefixes" rows="5" maxlength="4096" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="tmp-&#10;archive-"></textarea>
+      <textarea class="session-prefix-input" id="hiddenSessionPrefixesInput" name="hiddenPrefixes" rows="4" maxlength="4096" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="tmp-&#10;archive-"></textarea>
       <p class="session-visibility-summary" id="sessionVisibilitySummary" role="status" aria-live="polite"></p>
-      <p class="session-visibility-note">例如 <code>tmp-</code> 会隐藏 <code>tmp-debug</code>。配置只保存在当前浏览器，不会修改或结束服务器上的 tmux 会话。</p>
-      <div class="dialog-actions"><button class="secondary-button show-all-sessions-button" id="showAllSessionsButton" type="button">全部显示</button><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="saveSessionVisibilityButton" value="default">保存</button></div>
+      <p class="session-visibility-note">例如文件夹前缀 <code>project-</code> 会收纳 <code>project-api</code>；匹配多个规则时使用最长前缀。配置只保存在当前浏览器，不会修改或结束服务器上的 tmux 会话。</p>
+      <div class="dialog-actions"><button class="secondary-button show-all-sessions-button" id="showAllSessionsButton" type="button">清除规则</button><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="saveSessionVisibilityButton" value="default">保存</button></div>
     </form>
   </dialog>
 
@@ -115,6 +117,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-    <script type="module" src="/app.js?v=68"></script>
+    <script type="module" src="/app.js?v=69"></script>
 </body>
 </html>

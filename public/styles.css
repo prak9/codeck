@@ -59,6 +59,18 @@ h1 { margin-bottom: 0; font-size: 15px; line-height: 1.25; letter-spacing: -.01e
 .icon-button:hover { border-color: var(--line-strong); background: #ffffff10; }
 .icon-button:active { transform: scale(.96); }
 .session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 4px 9px; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
+.session-folder { margin: 2px 0; }
+.session-folder-summary { width: 100%; min-height: 44px; padding: 6px 10px; border-radius: 9px; list-style: none; display: grid; grid-template-columns: 12px 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; user-select: none; }
+.session-folder-summary::-webkit-details-marker { display: none; }
+.session-folder-summary:hover { background: var(--raised); color: var(--ink); }
+.session-folder-chevron { font-size: 17px; line-height: 1; text-align: center; transition: transform 140ms ease; }
+.session-folder[open] > .session-folder-summary .session-folder-chevron { transform: rotate(90deg); }
+.session-folder-icon { width: 21px; height: 21px; fill: #ffffff07; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.session-folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 680; }
+.session-folder-count { min-width: 23px; height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: #ffffff06; color: var(--subtle); display: grid; place-items: center; font-size: 9px; font-variant-numeric: tabular-nums; }
+.session-folder.contains-active > .session-folder-summary { color: #ff956f; }
+.session-folder-children { margin-left: 15px; padding-left: 4px; border-left: 1px solid var(--line); }
+.session-folder-children .session-row { min-height: 56px; }
 .session-entry { position: relative; }
 .session-row { width: 100%; min-height: 60px; padding: 9px 38px 9px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; display: grid; grid-template-columns: 22px 32px minmax(0, 1fr) 8px; align-items: center; gap: 9px; text-align: left; cursor: pointer; transition: background 140ms ease, border-color 140ms ease; }
 .session-entry:hover .session-row,
@@ -164,7 +176,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .dialog-actions .primary-button { margin-top: 0; }
 .form-error { min-height: 18px; margin: 9px 0 0; color: var(--danger); font-size: 11px; }
 .session-visibility-dialog { width: min(520px, calc(100vw - 30px)); }
-.session-prefix-input { width: 100%; min-height: 132px; padding: 11px 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: #11111499; color: var(--ink); font-size: 16px; line-height: 1.5; }
+.session-prefix-input { width: 100%; min-height: 104px; padding: 11px 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: #11111499; color: var(--ink); font-size: 16px; line-height: 1.5; }
 .session-visibility-summary { min-height: 18px; margin: 9px 0 0; color: #d7d7da; }
 .session-visibility-note code { color: #ff9a76; font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
 .show-all-sessions-button { margin-right: auto; }

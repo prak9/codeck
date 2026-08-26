@@ -32,12 +32,20 @@ import {
   suggestedRemoteSessionName,
 } from './remote-session.js?v=2';
 import {
+  SESSION_FOLDER_EXPANSION_STORAGE_KEY,
+  SESSION_FOLDER_PREFIXES_STORAGE_KEY,
   SESSION_VISIBILITY_STORAGE_KEY,
+  groupSessionsByPrefix,
+  loadExpandedSessionFolders,
   loadHiddenSessionPrefixes,
+  loadSessionFolderPrefixes,
   parseSessionPrefixInput,
   partitionSessionsByPrefix,
+  saveExpandedSessionFolders,
   saveHiddenSessionPrefixes,
-} from './session-visibility.js?v=1';
+  saveSessionFolderPrefixes,
+  setSessionFolderExpanded,
+} from './session-visibility.js?v=2';
 
 const $ = (selector) => document.querySelector(selector);
 const PROVIDERS = {
@@ -69,6 +77,8 @@ const state = {
   hostname: '',
   threads: [],
   hiddenSessionPrefixes: loadHiddenSessionPrefixes(localStorage),
+  folderSessionPrefixes: loadSessionFolderPrefixes(localStorage),
+  expandedSessionFolders: loadExpandedSessionFolders(localStorage),
   activeThreadId: null,
   thread: null,
   approvals: new Map(),
@@ -808,38 +818,60 @@ function sessionVisibilityPartition(prefixes = state.hiddenSessionPrefixes) {
   return partitionSessionsByPrefix(state.threads, prefixes, (thread) => thread.tmux?.name);
 }
 
-function updateSessionVisibilitySummary(prefixes = parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value)) {
-  const { visible, hidden } = sessionVisibilityPartition(prefixes);
+function updateSessionVisibilitySummary(
+  hiddenPrefixes = parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value),
+  folderPrefixes = parseSessionPrefixInput($('#folderSessionPrefixesInput').value),
+) {
+  const { visible, hidden } = sessionVisibilityPartition(hiddenPrefixes);
+  const folderCount = groupSessionsByPrefix(visible, folderPrefixes, (thread) => thread.tmux?.name)
+    .filter((entry) => entry.type === 'folder').length;
   $('#sessionVisibilitySummary').textContent = state.threads.length
-    ? `将显示 ${visible.length} 个会话，隐藏 ${hidden.length} 个。`
+    ? `将显示 ${visible.length} 个会话（${folderCount} 个文件夹），隐藏 ${hidden.length} 个。`
     : '当前没有运行中的 tmux 会话。';
 }
 
 function syncSessionVisibilityButton(hiddenCount = sessionVisibilityPartition().hidden.length) {
   const button = $('#sessionVisibilityButton');
   const count = $('#sessionVisibilityRuleCount');
-  const ruleCount = state.hiddenSessionPrefixes.length;
+  const hiddenRuleCount = state.hiddenSessionPrefixes.length;
+  const folderRuleCount = state.folderSessionPrefixes.length;
+  const ruleCount = hiddenRuleCount + folderRuleCount;
   count.hidden = !ruleCount;
   count.textContent = ruleCount > 99 ? '99+' : String(ruleCount);
   const label = ruleCount
-    ? `设置会话显示，已配置 ${ruleCount} 个隐藏前缀，当前隐藏 ${hiddenCount} 个会话`
+    ? `设置会话显示，${folderRuleCount} 个文件夹前缀，${hiddenRuleCount} 个隐藏前缀，当前隐藏 ${hiddenCount} 个会话`
     : '设置会话显示';
   button.setAttribute('aria-label', label);
   button.title = label;
 }
 
 function openSessionVisibilityDialog() {
-  const input = $('#hiddenSessionPrefixesInput');
-  input.value = state.hiddenSessionPrefixes.join('\n');
-  updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+  const folderInput = $('#folderSessionPrefixesInput');
+  const hiddenInput = $('#hiddenSessionPrefixesInput');
+  folderInput.value = state.folderSessionPrefixes.join('\n');
+  hiddenInput.value = state.hiddenSessionPrefixes.join('\n');
+  updateSessionVisibilitySummary(state.hiddenSessionPrefixes, state.folderSessionPrefixes);
   const dialog = $('#sessionVisibilityDialog');
   if (!dialog.open) dialog.showModal();
-  requestAnimationFrame(() => input.focus({ preventScroll: true }));
+  requestAnimationFrame(() => folderInput.focus({ preventScroll: true }));
 }
 
-function applySessionVisibility(prefixes) {
-  state.hiddenSessionPrefixes = saveHiddenSessionPrefixes(localStorage, prefixes);
+function applySessionVisibility(hiddenPrefixes, folderPrefixes) {
+  state.hiddenSessionPrefixes = saveHiddenSessionPrefixes(localStorage, hiddenPrefixes);
+  state.folderSessionPrefixes = saveSessionFolderPrefixes(localStorage, folderPrefixes);
+  state.expandedSessionFolders = saveExpandedSessionFolders(
+    localStorage,
+    state.expandedSessionFolders.filter((prefix) => state.folderSessionPrefixes.includes(prefix)),
+  );
   renderThreadList();
+}
+
+function setSessionFolderOpen(prefix, open) {
+  if (state.expandedSessionFolders.includes(prefix) === open) return;
+  state.expandedSessionFolders = saveExpandedSessionFolders(
+    localStorage,
+    setSessionFolderExpanded(state.expandedSessionFolders, prefix, open),
+  );
 }
 
 function threadListEmpty(hiddenCount) {
@@ -859,51 +891,109 @@ function threadListEmpty(hiddenCount) {
   return empty;
 }
 
+function isThreadActive(thread) {
+  return thread.id === state.activeThreadId
+    && findTmuxThreadTarget([thread], state.thread) === thread;
+}
+
+function threadRow(thread, index) {
+  const active = isThreadActive(thread);
+  const details = providerDetails(thread.provider);
+  const button = element('button', `thread-row${active ? ' active' : ''}`);
+  button.type = 'button';
+  button.disabled = state.sessionClosePending;
+  button.dataset.threadId = thread.id;
+  button.dataset.tmuxSession = thread.tmux?.name || '';
+  const copy = element('span', 'thread-copy');
+  const tmux = thread.tmux || {};
+  const title = tmux.name || thread.name || thread.preview || '未命名会话';
+  const status = tmux.status === 'working' || tmux.status === 'background'
+    ? tmux.status
+    : 'done';
+  const statusText = status === 'working'
+    ? '正在干活'
+    : status === 'background' ? '后台运行' : '已就绪';
+  const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
+  copy.append(
+    element('b', '', title),
+    element('small', '', meta),
+  );
+  const presence = element('span', `presence ${status}`);
+  presence.title = statusText;
+  button.append(
+    element('span', 'thread-index', index + 1),
+    element('span', 'thread-glyph', details.glyph),
+    copy,
+    presence,
+  );
+  if (tmux.available === false) button.title = '已连接终端，可直接参与';
+  button.addEventListener('click', () => {
+    openListedThread(thread).catch((error) => setLiveMessage(error.message));
+  });
+  return button;
+}
+
+function sessionFolderIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('session-folder-icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M3.5 7.5h6l1.8 2H20.5v8.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7V7.5Z');
+  svg.append(path);
+  return svg;
+}
+
+function threadFolder(entry, indexByThread) {
+  const folder = element('details', `session-folder${entry.items.some(isThreadActive) ? ' contains-active' : ''}`);
+  folder.dataset.sessionFolder = entry.prefix;
+  folder.open = state.expandedSessionFolders.includes(entry.prefix);
+  const summary = element('summary', 'session-folder-summary');
+  summary.setAttribute('aria-label', `${entry.prefix} 文件夹，${entry.items.length} 个会话`);
+  summary.append(
+    element('span', 'session-folder-chevron', '›'),
+    sessionFolderIcon(),
+    element('span', 'session-folder-name', entry.prefix),
+    element('span', 'session-folder-count', entry.items.length),
+  );
+  summary.querySelector('.session-folder-chevron').setAttribute('aria-hidden', 'true');
+  const children = element('div', 'session-folder-children');
+  children.append(...entry.items.map((thread) => threadRow(thread, indexByThread.get(thread))));
+  folder.append(summary, children);
+  folder.addEventListener('toggle', () => setSessionFolderOpen(entry.prefix, folder.open));
+  return folder;
+}
+
 function renderThreadList() {
+  const list = $('#threadList');
+  const scrollTop = list.scrollTop;
+  const focusedThread = document.activeElement?.closest?.('[data-thread-id]');
+  const focusedThreadId = focusedThread?.dataset.threadId;
+  const focusedTmuxSession = focusedThread?.dataset.tmuxSession;
+  const focusedFolder = document.activeElement?.closest?.('[data-session-folder]')?.dataset.sessionFolder;
   const { visible, hidden } = sessionVisibilityPartition();
   syncSessionVisibilityButton(hidden.length);
   if ($('#sessionVisibilityDialog').open) updateSessionVisibilitySummary();
   if (!visible.length) {
-    $('#threadList').replaceChildren(threadListEmpty(hidden.length));
+    list.replaceChildren(threadListEmpty(hidden.length));
     return;
   }
-  const rows = visible.map((thread, index) => {
-    const active = thread.id === state.activeThreadId
-      && findTmuxThreadTarget([thread], state.thread) === thread;
-    const details = providerDetails(thread.provider);
-    const button = element('button', `thread-row${active ? ' active' : ''}`);
-    button.type = 'button';
-    button.disabled = state.sessionClosePending;
-    button.dataset.threadId = thread.id;
-    const copy = element('span', 'thread-copy');
-    const tmux = thread.tmux || {};
-    const title = tmux.name || thread.name || thread.preview || '未命名会话';
-    const status = tmux.status === 'working' || tmux.status === 'background'
-      ? tmux.status
-      : 'done';
-    const statusText = status === 'working'
-      ? '正在干活'
-      : status === 'background' ? '后台运行' : '已就绪';
-    const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
-    copy.append(
-      element('b', '', title),
-      element('small', '', meta),
-    );
-    const presence = element('span', `presence ${status}`);
-    presence.title = statusText;
-    button.append(
-      element('span', 'thread-index', index + 1),
-      element('span', 'thread-glyph', details.glyph),
-      copy,
-      presence,
-    );
-    if (tmux.available === false) button.title = '已连接终端，可直接参与';
-    button.addEventListener('click', () => {
-      openListedThread(thread).catch((error) => setLiveMessage(error.message));
-    });
-    return button;
-  });
-  $('#threadList').replaceChildren(...rows);
+  const indexByThread = new Map(visible.map((thread, index) => [thread, index]));
+  const entries = groupSessionsByPrefix(visible, state.folderSessionPrefixes, (thread) => thread.tmux?.name);
+  const rows = entries.map((entry) => entry.type === 'folder'
+    ? threadFolder(entry, indexByThread)
+    : threadRow(entry.item, indexByThread.get(entry.item)));
+  list.replaceChildren(...rows);
+  if (focusedThreadId) {
+    [...list.querySelectorAll('[data-thread-id]')]
+      .find((row) => row.dataset.threadId === focusedThreadId && row.dataset.tmuxSession === focusedTmuxSession)
+      ?.focus({ preventScroll: true });
+  } else if (focusedFolder) {
+    [...list.querySelectorAll('[data-session-folder]')]
+      .find((folder) => folder.dataset.sessionFolder === focusedFolder)
+      ?.querySelector('.session-folder-summary')?.focus({ preventScroll: true });
+  }
+  list.scrollTop = scrollTop;
 }
 
 function renderHeader() {
@@ -1983,16 +2073,21 @@ $('#drawerButton').addEventListener('click', openDrawer);
 $('#drawerScrim').addEventListener('click', closeDrawer);
 $('#drawerNewButton').addEventListener('click', openNewSession);
 $('#sessionVisibilityButton').addEventListener('click', openSessionVisibilityDialog);
+$('#folderSessionPrefixesInput').addEventListener('input', () => updateSessionVisibilitySummary());
 $('#hiddenSessionPrefixesInput').addEventListener('input', () => updateSessionVisibilitySummary());
 $('#sessionVisibilityForm').addEventListener('submit', (event) => {
   if (event.submitter?.value === 'cancel') return;
   event.preventDefault();
-  applySessionVisibility(parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value));
+  applySessionVisibility(
+    parseSessionPrefixInput($('#hiddenSessionPrefixesInput').value),
+    parseSessionPrefixInput($('#folderSessionPrefixesInput').value),
+  );
   $('#sessionVisibilityDialog').close();
 });
 $('#showAllSessionsButton').addEventListener('click', () => {
+  $('#folderSessionPrefixesInput').value = '';
   $('#hiddenSessionPrefixesInput').value = '';
-  applySessionVisibility([]);
+  applySessionVisibility([], []);
   $('#sessionVisibilityDialog').close();
 });
 $('#newThreadButton').addEventListener('click', openNewSession);
@@ -2238,12 +2333,20 @@ window.visualViewport?.addEventListener('resize', syncViewportHeight);
 window.visualViewport?.addEventListener('scroll', syncViewportHeight);
 window.addEventListener('resize', syncViewportHeight);
 window.addEventListener('storage', (event) => {
-  if (event.key !== null && event.key !== SESSION_VISIBILITY_STORAGE_KEY) return;
+  const displayKeys = new Set([
+    SESSION_VISIBILITY_STORAGE_KEY,
+    SESSION_FOLDER_PREFIXES_STORAGE_KEY,
+    SESSION_FOLDER_EXPANSION_STORAGE_KEY,
+  ]);
+  if (event.key !== null && !displayKeys.has(event.key)) return;
   state.hiddenSessionPrefixes = loadHiddenSessionPrefixes(localStorage);
+  state.folderSessionPrefixes = loadSessionFolderPrefixes(localStorage);
+  state.expandedSessionFolders = loadExpandedSessionFolders(localStorage);
   renderThreadList();
   if ($('#sessionVisibilityDialog').open) {
+    $('#folderSessionPrefixesInput').value = state.folderSessionPrefixes.join('\n');
     $('#hiddenSessionPrefixesInput').value = state.hiddenSessionPrefixes.join('\n');
-    updateSessionVisibilitySummary(state.hiddenSessionPrefixes);
+    updateSessionVisibilitySummary(state.hiddenSessionPrefixes, state.folderSessionPrefixes);
   }
 });
 window.addEventListener('pagehide', () => {
