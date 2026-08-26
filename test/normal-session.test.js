@@ -27,3 +27,14 @@ test('normal session polling does not refit an unchanged desktop terminal', () =
   assert.match(refresh, /if \(state\.terminal && isMobileOverview\(\) && activeGridChanged\) fitTerminalView\(\);/);
   assert.doesNotMatch(refresh, /if \(state\.active && state\.terminal\) fitTerminalView\(\);/);
 });
+
+test('normal mode reuses an open owner socket when switching sessions', () => {
+  const start = appJs.indexOf('async function connect(session)');
+  const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
+  const connect = appJs.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'session connect function exists');
+  assert.match(connect, /const reuseSocket = state\.canSwitchSession && state\.socket\?\.readyState === WebSocket\.OPEN;/);
+  assert.match(connect, /type: 'switch', session, cols: terminal\.cols, rows: terminal\.rows/);
+  assert.match(connect, /if \(!reuseSocket\) state\.socket\?\.close\(\);/);
+});

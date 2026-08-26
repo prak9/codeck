@@ -138,6 +138,72 @@ test('a writable collaborator forwards input without detaching another tmux clie
   assert.deepEqual(terminalOptions, { readOnly: false, detachOtherClients: false });
 });
 
+test('an owner can switch the attached tmux session without replacing the socket', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  await handleTerminalConnection(ws, 'first', { width: 80, height: 24 }, dependencies({
+    canSwitchSession: true,
+    createTerminal: (session, size) => {
+      const terminal = fakeTerminal();
+      created.push({ session, size, terminal });
+      return terminal;
+    },
+  }));
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'switch', session: 'second', cols: 120, rows: 36 })), false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(created[0].terminal.killed, true);
+  assert.deepEqual(created.map(({ session, size }) => ({ session, size })), [
+    { session: 'first', size: { width: 80, height: 24 } },
+    { session: 'second', size: { width: 120, height: 36 } },
+  ]);
+  assert.deepEqual(ws.sent, ['\x1bc']);
+  created[0].terminal.dataCallback('stale output');
+  created[0].terminal.exitCallback({ exitCode: 0 });
+  created[1].terminal.dataCallback('current output');
+  assert.deepEqual(ws.sent, ['\x1bc', 'current output']);
+  assert.deepEqual(ws.closes, []);
+});
+
+test('a rapid owner switch discards pending input and setup from the superseded session', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  const links = new Map();
+  await handleTerminalConnection(ws, 'first', { width: 80, height: 24 }, dependencies({
+    canSwitchSession: true,
+    getLinkedWindowSessions: (session) => {
+      if (session === 'first') return Promise.resolve([]);
+      return new Promise((resolve) => links.set(session, resolve));
+    },
+    createTerminal: (session) => {
+      const terminal = fakeTerminal();
+      created.push({ session, terminal });
+      return terminal;
+    },
+  }));
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'switch', session: 'second', cols: 100, rows: 30 })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'wrong target' })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'switch', session: 'third', cols: 120, rows: 36 })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'right target' })), false);
+  links.get('second')([]);
+  links.get('third')([]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(created.map(({ session }) => session), ['first', 'third']);
+  assert.deepEqual(created[1].terminal.writes, ['right target']);
+});
+
+test('a session-scoped share socket cannot switch to another tmux session', async () => {
+  const ws = new FakeSocket();
+  await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies());
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'switch', session: 'private', cols: 120, rows: 36 })), false);
+
+  assert.equal(ws.closes[0]?.code, 1008);
+});
+
 test('a supplied browser viewport skips the redundant tmux size lookup', async () => {
   const ws = new FakeSocket();
   const terminal = fakeTerminal();

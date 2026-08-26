@@ -174,7 +174,15 @@ app.get('/api/sessions', async (req, res, next) => {
         status: resolveSessionStatus(session),
       };
     });
-    res.json({ sessions: enriched, capabilities: { flexibleSize, canManage: req.auth.owner, canWrite: req.auth.canWrite } });
+    res.json({
+      sessions: enriched,
+      capabilities: {
+        flexibleSize,
+        canManage: req.auth.owner,
+        canWrite: req.auth.canWrite,
+        canSwitchSession: req.auth.owner,
+      },
+    });
   } catch (error) { next(error); }
 });
 
@@ -302,7 +310,7 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const viewport = parseViewport(url.searchParams);
-  const terminalAccess = terminalAccessForAuth(auth);
+  const terminalAccess = { ...terminalAccessForAuth(auth), canSwitchSession: auth.owner };
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, terminalAccess));
 });
 

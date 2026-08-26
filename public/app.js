@@ -81,6 +81,7 @@ const state = {
   fitting: false,
   canManage: true,
   canWrite: true,
+  canSwitchSession: false,
   openedShareLink: Boolean(sharedToken || storedShareToken),
 };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
@@ -594,6 +595,7 @@ async function refreshSessions() {
   );
   state.canManage = data.capabilities?.canManage !== false;
   state.canWrite = data.capabilities?.canWrite ?? state.canManage;
+  state.canSwitchSession = data.capabilities?.canSwitchSession === true;
   syncTerminalAccess();
   // A sole tmux 2.7 client can still resize through the pty. The missing window-size
   // option only affects arbitration between clients, so it must not disable readable mode.
@@ -840,7 +842,7 @@ function isMobileOverview() {
   return state.overview && matchMedia('(max-width: 720px), (max-width: 932px) and (orientation: landscape)').matches;
 }
 
-function fitTerminalView() {
+function fitTerminalView({ suppressResize = false } = {}) {
   if (!state.terminal || state.fitting) return;
   state.fitting = true;
   const terminal = state.terminal;
@@ -858,7 +860,7 @@ function fitTerminalView() {
     $('#viewModeButton').setAttribute('aria-pressed', 'false');
   }
   state.fitting = false;
-  if (state.socket?.readyState === WebSocket.OPEN) {
+  if (!suppressResize && state.socket?.readyState === WebSocket.OPEN) {
     state.socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
   }
 }
@@ -885,10 +887,12 @@ async function connect(session) {
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
   const needsReset = Boolean(state.terminal);
+  const reuseSocket = state.canSwitchSession && state.socket?.readyState === WebSocket.OPEN;
+  const currentSocket = state.socket;
   state.cancelMobileScroll?.();
   stopKeyRepeat();
-  state.socket?.close();
-  state.socket = null;
+  if (!reuseSocket) state.socket?.close();
+  if (!reuseSocket) state.socket = null;
   state.active = session;
   markActiveSession(session);
   $('#emptyState').hidden = true;
@@ -901,42 +905,64 @@ async function connect(session) {
 
   const terminal = ensureTerminal();
   const terminalElement = $('#terminal');
-  terminalElement.style.visibility = needsReset ? 'hidden' : '';
-  const reset = needsReset ? resetTerminalInput(terminal) : Promise.resolve();
-  fitTerminalView();
+  terminalElement.style.visibility = needsReset && !reuseSocket ? 'hidden' : '';
+  const reset = needsReset && !reuseSocket ? resetTerminalInput(terminal) : Promise.resolve();
+  fitTerminalView({ suppressResize: reuseSocket });
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   // Report the viewport on the URL so the pty attaches at this size. Sending it only as
   // the first resize message races the attach, and a lost resize leaves the grid larger
   // than the visible area.
   const query = new URLSearchParams({ session, cols: String(terminal.cols), rows: String(terminal.rows) });
-  const socket = new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
+  const socket = reuseSocket
+    ? currentSocket
+    : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
   const pendingOutput = [];
-  let outputReady = !needsReset;
+  let outputReady = reuseSocket || !needsReset;
+  let waitingForSwitch = reuseSocket;
   state.socket = socket;
   syncTerminalAccess();
-  socket.addEventListener('open', () => {
+  const markConnected = () => {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = connectedStateLabel();
     syncTerminalAccess();
-    socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
     if (outputReady) terminal.focus();
-  });
-  socket.addEventListener('message', (event) => {
+  };
+  socket.onopen = reuseSocket ? null : () => {
+    markConnected();
+    socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+  };
+  socket.onmessage = (event) => {
     if (state.connectionId !== connectionId) return;
+    if (waitingForSwitch) {
+      waitingForSwitch = false;
+      markConnected();
+    }
     if (outputReady) terminal.write(event.data);
     else pendingOutput.push(event.data);
-  });
-  socket.addEventListener('close', (event) => {
+  };
+  socket.onclose = (event) => {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = event.reason || '连接已断开';
     syncTerminalAccess();
-  });
-  socket.addEventListener('error', () => {
+  };
+  socket.onerror = () => {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = '连接失败';
     syncTerminalAccess();
-  });
+  };
+
+  if (reuseSocket) {
+    try {
+      socket.send(JSON.stringify({ type: 'switch', session, cols: terminal.cols, rows: terminal.rows }));
+      terminal.focus();
+      return;
+    } catch {
+      state.socket = null;
+      socket.close();
+      return connect(session);
+    }
+  }
 
   await reset;
   if (state.connectionId !== connectionId || state.active !== session || state.socket !== socket) return;
