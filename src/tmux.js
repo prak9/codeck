@@ -95,6 +95,10 @@ export function validateClient(client) {
   return CLIENTS.includes(client);
 }
 
+export function resolveSessionClientCommand(client) {
+  return client === 'codex' ? 'codex -c check_for_update_on_startup=false' : client;
+}
+
 export function supportsWindowSizeOption(version) {
   const match = /tmux\s+(\d+)\.(\d+)/.exec(version);
   return Boolean(match && (Number(match[1]) > 2 || Number(match[1]) === 2 && Number(match[2]) >= 9));
@@ -729,14 +733,18 @@ export async function interruptSession({ provider, sessionName, threadId }, over
   });
 }
 
-export async function createSession({ name, client = 'shell', cwd }) {
+export async function createSession({ name, client = 'shell', cwd }, execCommand = exec) {
   if (!validateSessionName(name)) throw new Error('会话名只能包含字母、数字、点、短横线或下划线，最长 64 个字符');
   if (!validateClient(client)) throw new Error('未知的终端类型');
 
   const args = ['new-session', '-d', '-s', name];
   if (cwd) args.push('-c', cwd);
-  await exec('tmux', args);
-  if (client !== 'shell') await exec('tmux', ['send-keys', '-t', `${name}:0.0`, client, 'Enter']);
+  await execCommand('tmux', args);
+  if (client !== 'shell') {
+    const target = `${name}:0.0`;
+    await execCommand('tmux', ['send-keys', '-l', '-t', target, resolveSessionClientCommand(client)]);
+    await execCommand('tmux', ['send-keys', '-t', target, 'Enter']);
+  }
 }
 
 export async function killSession(name) {

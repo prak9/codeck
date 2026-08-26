@@ -1125,8 +1125,8 @@ $('#newForm').addEventListener('submit', async (event) => {
   try {
     await api('/api/sessions', { method: 'POST', body: JSON.stringify(payload) });
     $('#newDialog').close();
-    await refreshSessions();
     connect(payload.name);
+    await refreshSessions();
   } catch (error) { $('#newError').textContent = error.message; }
   finally { $('#createButton').disabled = false; $('#createButton').textContent = '创建会话'; }
 });

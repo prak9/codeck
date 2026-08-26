@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, capturePanes, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, capturePanes, createSession, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -410,6 +410,22 @@ test('finds every other session linked to the active window', () => {
 
 test('removes nested tmux markers from web terminal environments', () => {
   assert.deepEqual(withoutTmuxEnvironment({ PATH: '/bin', TMUX: '/tmp/tmux,1,0', TMUX_PANE: '%1' }), { PATH: '/bin' });
+});
+
+test('starts Codeck-managed Codex sessions without the interactive update check', async () => {
+  assert.equal(resolveSessionClientCommand('codex'), 'codex -c check_for_update_on_startup=false');
+  assert.equal(resolveSessionClientCommand('claude'), 'claude');
+
+  const calls = [];
+  await createSession({ name: 'ainfra', client: 'codex', cwd: '/data/code/codeck' }, async (command, args) => {
+    calls.push([command, args]);
+  });
+
+  assert.deepEqual(calls, [
+    ['tmux', ['new-session', '-d', '-s', 'ainfra', '-c', '/data/code/codeck']],
+    ['tmux', ['send-keys', '-l', '-t', 'ainfra:0.0', 'codex -c check_for_update_on_startup=false']],
+    ['tmux', ['send-keys', '-t', 'ainfra:0.0', 'Enter']],
+  ]);
 });
 
 test('accepts safe session names and known clients', () => {
