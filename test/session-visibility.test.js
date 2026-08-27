@@ -96,6 +96,22 @@ test('sessions use the longest matching folder prefix and preserve first-folder 
   ]);
 });
 
+test('session folders are listed before ungrouped sessions', () => {
+  const sessions = [
+    { name: 'skills' },
+    { name: 'work-ui' },
+    { name: 'research' },
+    { name: 'client-web' },
+  ];
+
+  assert.deepEqual(groupSessionsByPrefix(sessions, ['work-', 'client-']), [
+    { type: 'folder', prefix: 'work-', items: [sessions[1]] },
+    { type: 'folder', prefix: 'client-', items: [sessions[3]] },
+    { type: 'session', item: sessions[0] },
+    { type: 'session', item: sessions[2] },
+  ]);
+});
+
 test('folder prefixes and expanded folders persist only in browser storage', () => {
   const storage = memoryStorage();
   assert.deepEqual(saveSessionFolderPrefixes(storage, ['work-', 'client-']), ['work-', 'client-']);

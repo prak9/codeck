@@ -41,24 +41,23 @@ export function partitionSessionsByPrefix(items, hiddenPrefixes, getName = (item
 export function groupSessionsByPrefix(items, folderPrefixes, getName = (item) => item?.name) {
   const prefixes = normalizeSessionPrefixes(folderPrefixes)
     .sort((left, right) => right.length - left.length);
-  const entries = [];
   const folders = new Map();
+  const sessions = [];
   for (const item of items || []) {
     const name = String(getName(item) || '');
     const prefix = prefixes.find((candidate) => name.startsWith(candidate));
     if (!prefix) {
-      entries.push({ type: 'session', item });
+      sessions.push({ type: 'session', item });
       continue;
     }
     let folder = folders.get(prefix);
     if (!folder) {
       folder = { type: 'folder', prefix, items: [] };
       folders.set(prefix, folder);
-      entries.push(folder);
     }
     folder.items.push(item);
   }
-  return entries;
+  return [...folders.values(), ...sessions];
 }
 
 export function setSessionFolderExpanded(expandedPrefixes, prefix, expanded) {
