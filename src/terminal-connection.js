@@ -46,6 +46,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   let terminal = null;
   let closed = ws.readyState !== ws.OPEN;
   let attachSequence = 0;
+  let awaitingSessionActivity = false;
   const pending = [];
   const isOpen = () => !closed && ws.readyState === ws.OPEN;
   const killTerminal = () => {
@@ -77,6 +78,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
           return;
         }
         pending.length = 0;
+        awaitingSessionActivity = false;
         const [width, height] = dependencies.clampViewport(message.cols, message.rows);
         attachTerminal(message.session, { width, height }, true).catch((error) => {
           if (isOpen()) ws.close(1011, error.message || 'tmux session switch failed');
@@ -87,7 +89,10 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         pending.push(raw);
         return;
       }
-      if (!readOnly && message.type === 'input' && typeof message.data === 'string') terminal.write(message.data);
+      if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
+        terminal.write(message.data);
+        if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
+      }
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
         terminal.resize(...dependencies.clampViewport(message.cols, message.rows));
       }
@@ -144,7 +149,14 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
 
     terminal = attached;
     if (resetScreen) ws.send('\x1bc');
-    attached.onData((data) => terminal === attached && isOpen() && ws.send(data));
+    attached.onData((data) => {
+      if (terminal !== attached || !isOpen()) return;
+      ws.send(data);
+      if (!awaitingSessionActivity) return;
+      awaitingSessionActivity = false;
+      try { dependencies.onSessionActivity?.(activeSession); }
+      catch { /* Session snapshots retain their periodic fallback. */ }
+    });
     attached.onExit(({ exitCode }) => {
       if (terminal !== attached) return;
       terminal = null;

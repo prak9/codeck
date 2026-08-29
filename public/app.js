@@ -5,6 +5,8 @@ import {
   resetTerminalInput,
 } from './terminal-utils.js?v=6';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
+import { acceptStreamCursor } from './stream-state.js?v=1';
+import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
   SESSION_FOLDER_PREFIXES_STORAGE_KEY,
@@ -42,7 +44,7 @@ const storedShareToken = sessionStorage.getItem('codeck-share-token');
 const legacyOwnerToken = sessionStorage.getItem('codeck-token');
 if (legacyOwnerToken && !localStorage.getItem('codeck-token')) localStorage.setItem('codeck-token', legacyOwnerToken);
 const storedOwnerToken = localStorage.getItem('codeck-token');
-const SESSION_LIST_POLL_MS = 3_000;
+const SESSION_LIST_FALLBACK_MS = 30_000;
 const FONT_SIZE_MIN = 8;
 const FONT_SIZE_MAX = 32;
 
@@ -60,6 +62,11 @@ const state = {
   expandedSessionFolders: loadExpandedSessionFolders(localStorage),
   active: null,
   socket: null,
+  sessionFeedSocket: null,
+  sessionFeedGeneration: 0,
+  sessionFeedReconnectTimer: null,
+  sessionStreamCursor: null,
+  sessionStreamHealthy: false,
   terminal: null,
   fit: null,
   sessionsRefreshSeq: 0,
@@ -587,6 +594,12 @@ async function refreshSessions() {
   const previousActiveSession = state.sessions.find((item) => item.name === state.active);
   const data = await api('/api/sessions');
   if (requestId !== state.sessionsRefreshSeq) return;
+  const activeGridChanged = applySessionSnapshot(data, previousActiveSession);
+  if (state.terminal && isMobileOverview() && activeGridChanged) fitTerminalView();
+  if (state.canManage) connectSessionFeed();
+}
+
+function applySessionSnapshot(data, previousActiveSession = state.sessions.find((item) => item.name === state.active)) {
   state.sessions = data.sessions;
   const activeSession = state.sessions.find((item) => item.name === state.active);
   const activeGridChanged = Boolean(activeSession) && (
@@ -604,7 +617,55 @@ async function refreshSessions() {
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
-  if (state.terminal && isMobileOverview() && activeGridChanged) fitTerminalView();
+  return activeGridChanged;
+}
+
+function scheduleSessionFeedReconnect() {
+  if (!state.token || !state.canManage || state.sessionFeedReconnectTimer || document.hidden) return;
+  state.sessionFeedReconnectTimer = setTimeout(() => {
+    state.sessionFeedReconnectTimer = null;
+    connectSessionFeed();
+  }, 2_000);
+}
+
+function connectSessionFeed() {
+  if (!state.token || !state.canManage || state.sessionFeedSocket?.readyState <= WebSocket.OPEN) return;
+  clearTimeout(state.sessionFeedReconnectTimer);
+  state.sessionFeedReconnectTimer = null;
+  const generation = ++state.sessionFeedGeneration;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${protocol}//${location.host}/agent`, `codeck.${websocketProtocolToken(state.token)}`);
+  state.sessionFeedSocket = socket;
+  socket.addEventListener('message', (event) => {
+    if (generation !== state.sessionFeedGeneration) return;
+    let message;
+    try { message = JSON.parse(event.data); }
+    catch { return; }
+    if (message.type === 'ready') {
+      if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) state.sessionStreamCursor = null;
+      return;
+    }
+    if (message.type === 'sessionsSnapshot') {
+      const accepted = acceptStreamCursor(state.sessionStreamCursor, message.stream);
+      state.sessionStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
+      if (!accepted.accepted || !message.snapshot) return;
+      state.sessionStreamCursor = accepted.cursor;
+      state.sessionsRefreshSeq += 1;
+      const activeGridChanged = applySessionSnapshot(message.snapshot);
+      if (state.terminal && isMobileOverview() && activeGridChanged) fitTerminalView();
+      return;
+    }
+    if (message.type === 'sessionsStreamError') state.sessionStreamHealthy = false;
+  });
+  socket.addEventListener('close', () => {
+    if (generation !== state.sessionFeedGeneration) return;
+    state.sessionFeedSocket = null;
+    state.sessionStreamHealthy = false;
+    scheduleSessionFeedReconnect();
+  });
+  socket.addEventListener('error', () => {
+    if (generation === state.sessionFeedGeneration) state.sessionStreamHealthy = false;
+  });
 }
 
 function connectedStateLabel() {
@@ -617,6 +678,11 @@ function syncTerminalAccess() {
     control.disabled = !state.canWrite;
   }
   syncTerminalVoiceControls();
+}
+
+function terminalOutputForSession(output, sessionName) {
+  const session = state.sessions.find((item) => item.name === sessionName);
+  return session?.agent?.kind === 'codex' ? hideSharedCodexBackgroundFooter(output) : output;
 }
 
 function isQuickSwitchKey(event) {
@@ -938,7 +1004,7 @@ async function connect(session) {
       waitingForSwitch = false;
       markConnected();
     }
-    if (outputReady) terminal.write(event.data);
+    if (outputReady) terminal.write(terminalOutputForSession(event.data, session));
     else pendingOutput.push(event.data);
   };
   socket.onclose = (event) => {
@@ -969,7 +1035,7 @@ async function connect(session) {
   if (needsReset) terminal.clear();
   outputReady = true;
   terminalElement.style.visibility = '';
-  if (pendingOutput.length) terminal.write(pendingOutput.join(''));
+  if (pendingOutput.length) terminal.write(terminalOutputForSession(pendingOutput.join(''), session));
   if (socket.readyState === WebSocket.OPEN) terminal.focus();
 }
 
@@ -1196,6 +1262,7 @@ document.addEventListener('keydown', (event) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && voiceInput.abort()) setTerminalVoiceState(false, '语音输入已暂停，草稿仍保留在这里。');
+  if (!document.hidden && state.canManage) connectSessionFeed();
 });
 window.addEventListener('pagehide', () => voiceInput.abort());
 window.addEventListener('storage', (event) => {
@@ -1277,7 +1344,9 @@ if (state.token) refreshSessions().then(() => {
   $('#tokenDialog').showModal();
 });
 else $('#tokenDialog').showModal();
-setInterval(() => state.token && refreshSessions().catch(() => {}), SESSION_LIST_POLL_MS);
+setInterval(() => {
+  if (state.token && (!state.canManage || !state.sessionStreamHealthy)) refreshSessions().catch(() => {});
+}, SESSION_LIST_FALLBACK_MS);
 document.fonts?.ready.then(() => {
   if (!state.terminal) return;
   state.terminal.refresh(0, state.terminal.rows - 1);

@@ -15,10 +15,12 @@ import {
 } from './agent-model.js?v=24';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
+import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=2';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=3';
+import { acceptStreamCursor, matchesThreadStreamTarget } from './stream-state.js?v=1';
 import {
   completeSlashCommand,
   slashCommandKeyAction,
@@ -55,8 +57,8 @@ const PROVIDERS = {
 };
 const SHELL_PROVIDER = { name: 'Shell', sessionLabel: 'Shell', glyph: '$_', short: 'Shell', description: 'tmux shell session' };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
-const SESSION_LIST_POLL_MS = 1_500;
-const THREAD_REFRESH_POLL_MS = 1_000;
+const SESSION_LIST_FALLBACK_MS = 30_000;
+const THREAD_REFRESH_FALLBACK_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_MS = 10_000;
 let viewportFrame = 0;
 
@@ -65,6 +67,13 @@ const state = {
   theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   provider: localStorage.getItem('codeck-remote-provider') || 'codex',
   providers: Object.keys(PROVIDERS),
+  providerCapabilities: new Map(),
+  protocolEpoch: '',
+  commandReceiptTtlMs: 10 * 60_000,
+  sessionStreamCursor: null,
+  sessionStreamHealthy: false,
+  threadStreamCursor: null,
+  threadStreamHealthy: false,
   socket: null,
   socketGeneration: 0,
   reconnectTimer: null,
@@ -100,6 +109,7 @@ const state = {
   sessionCreationPending: false,
   sessionClosePending: false,
   sessionCloseTarget: null,
+  pendingDeliveries: new Map(),
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -159,6 +169,11 @@ function providerDetails(provider = state.provider) {
   return PROVIDERS[provider] || { name: provider, sessionLabel: provider, glyph: '›_', short: provider, description: 'Agent CLI' };
 }
 
+function providerSupports(capability, provider = state.provider) {
+  if (provider === 'shell') return capability === 'attachments' || capability === 'directTmuxInput';
+  return state.providerCapabilities.get(provider)?.[capability] !== false;
+}
+
 function preferredAgentProvider() {
   const saved = localStorage.getItem('codeck-remote-provider');
   if (state.providers.includes(state.provider)) return state.provider;
@@ -192,6 +207,23 @@ function setConnectionStatus(status, message) {
 function setLiveMessage(message) {
   state.liveMessage = message || '';
   $('#liveStatus').textContent = state.liveMessage;
+}
+
+function resetThreadStream() {
+  state.threadStreamCursor = null;
+  state.threadStreamHealthy = false;
+}
+
+function releaseThreadStream() {
+  resetThreadStream();
+  if (state.connected && state.socket?.readyState === WebSocket.OPEN) {
+    state.socket.send(JSON.stringify({ type: 'unsubscribeThread' }));
+  }
+}
+
+function messageTargetsCurrentThread(message) {
+  if (message.provider !== state.provider || message.params?.threadId !== state.thread?.id) return false;
+  return message.tmuxSession == null || (message.tmuxSession || '') === (state.thread?.tmux?.name || '');
 }
 
 function attachmentSize(size) {
@@ -266,6 +298,10 @@ function clearAttachments(attachments) {
 }
 
 function addAttachmentFiles(files) {
+  if (!providerSupports('attachments')) {
+    setLiveMessage(`${providerDetails().name} 当前不支持附件。`);
+    return;
+  }
   const { accepted, rejected } = validateAttachmentSelection(files, state.attachments.length);
   for (const file of accepted) {
     state.attachments.push({
@@ -395,6 +431,8 @@ function connectSocket() {
   socket.addEventListener('close', () => {
     if (generation !== state.socketGeneration) return;
     state.socket = null;
+    state.sessionStreamHealthy = false;
+    state.threadStreamHealthy = false;
     rejectPendingRequests('Agent 连接已断开');
     setConnectionStatus('problem', '连接已断开');
     scheduleReconnect();
@@ -413,7 +451,25 @@ function scheduleReconnect() {
 
 async function handleReady(message) {
   const shellActive = state.provider === 'shell' && Boolean(state.thread?.tmux?.name);
+  const nextEpoch = typeof message.protocol?.epoch === 'string' ? message.protocol.epoch : '';
+  if (nextEpoch !== state.protocolEpoch) {
+    state.sessionStreamCursor = null;
+    resetThreadStream();
+    for (const [key, delivery] of state.pendingDeliveries) {
+      if (delivery.serverEpoch !== nextEpoch) {
+        state.pendingDeliveries.set(key, { ...delivery, blocked: true, blockReason: 'serverRestart' });
+      }
+    }
+  }
+  state.protocolEpoch = nextEpoch;
+  if (Number.isFinite(message.protocol?.commandReceiptTtlMs) && message.protocol.commandReceiptTtlMs > 0) {
+    state.commandReceiptTtlMs = message.protocol.commandReceiptTtlMs;
+  }
+  state.sessionStreamHealthy = false;
   state.providers = (message.providers || []).map((provider) => provider.id).filter((provider) => PROVIDERS[provider]);
+  state.providerCapabilities = new Map((message.providers || []).map((provider) => (
+    [provider.id, provider.capabilities || {}]
+  )));
   if (!state.providers.length) state.providers = Object.keys(PROVIDERS);
   if (!shellActive && !state.providers.includes(state.provider)) state.provider = state.providers[0];
   state.defaultCwd = message.defaultCwd || state.defaultCwd || '/';
@@ -425,7 +481,8 @@ async function handleReady(message) {
   setConnectionStatus('online', '已连接');
   renderProviderControls();
   renderHeader();
-  await loadThreads();
+  if (!state.threads.length || state.sessionSnapshot) await loadThreads();
+  else renderThreadList();
   if (state.activeThreadId) {
     const listedThread = findTmuxThreadTarget(state.threads, {
       id: state.activeThreadId,
@@ -456,6 +513,41 @@ function handleSocketMessage(message) {
     handleReady(message).catch((error) => setLiveMessage(error.message));
     return;
   }
+  if (message.type === 'sessionsSnapshot') {
+    const accepted = acceptStreamCursor(state.sessionStreamCursor, message.stream);
+    state.sessionStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
+    if (!accepted.accepted || !message.snapshot) return;
+    state.sessionStreamCursor = accepted.cursor;
+    state.sessionSnapshot = message.snapshot;
+    loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message));
+    return;
+  }
+  if (message.type === 'sessionsStreamError') {
+    const wasHealthy = state.sessionStreamHealthy;
+    state.sessionStreamHealthy = false;
+    if (wasHealthy) loadThreads({ quiet: true }).catch(() => {});
+    return;
+  }
+  if (message.type === 'threadSnapshot') {
+    if (!matchesThreadStreamTarget(state.thread, message.target)) return;
+    const accepted = acceptStreamCursor(state.threadStreamCursor, message.stream);
+    state.threadStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
+    if (!accepted.accepted || !message.thread) return;
+    state.threadStreamCursor = accepted.cursor;
+    const refreshed = normalizeAgentThread(message.target.provider, message.thread);
+    const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
+    if (reconciled === state.thread) return;
+    state.thread = reconciled;
+    scheduleThreadRender(false);
+    return;
+  }
+  if (message.type === 'threadStreamError') {
+    if (!matchesThreadStreamTarget(state.thread, message.target)) return;
+    const wasHealthy = state.threadStreamHealthy;
+    state.threadStreamHealthy = false;
+    if (wasHealthy) refreshActiveThread({ force: true }).catch(() => {});
+    return;
+  }
   if (message.id != null) {
     const pending = state.requests.get(message.id);
     if (!pending) return;
@@ -466,18 +558,19 @@ function handleSocketMessage(message) {
     return;
   }
   if (message.type === 'event') {
+    if (!messageTargetsCurrentThread(message)) return;
     if (message.method === 'turn/started' || message.method === 'item/started') {
       updateThreadActivity(message.provider, message.params?.threadId, 'working');
     }
     // A completed turn may leave Agent-owned work behind. The tmux snapshot loaded
     // below decides between background and done instead of flashing a false ready state.
-    if (message.provider === state.provider && state.thread?.id === message.params?.threadId) {
+    if (messageTargetsCurrentThread(message)) {
       if (message.method === 'turn/started' && state.thread.tmux?.commandOutput) {
         delete state.thread.tmux.commandOutput;
       }
       state.thread = applyAgentEvent(state.thread, message.method, message.params);
       if (message.method === 'turn/completed') {
-        clearPendingForTurn(message.provider, message.params?.threadId, message.params?.turn?.id);
+        clearPendingForTurn(message.provider, message.params?.threadId, message.params?.turn?.id, message.tmuxSession);
         setLiveMessage('');
         loadThreads({ quiet: true }).catch(() => {});
       }
@@ -486,14 +579,24 @@ function handleSocketMessage(message) {
     return;
   }
   if (message.type === 'approval') {
+    if (!messageTargetsCurrentThread({ ...message, params: message.request?.params })) return;
     const key = `${message.provider}:${message.request.id}`;
-    state.approvals.set(key, { provider: message.provider, request: message.request });
+    state.approvals.set(key, {
+      provider: message.provider,
+      request: message.request,
+      tmuxSession: message.tmuxSession == null ? null : message.tmuxSession,
+    });
     scheduleThreadRender(true);
     return;
   }
   if (message.type === 'interaction') {
+    if (!messageTargetsCurrentThread({ ...message, params: message.request?.params })) return;
     const key = `${message.provider}:${message.request.id}`;
-    state.interactions.set(key, { provider: message.provider, request: message.request });
+    state.interactions.set(key, {
+      provider: message.provider,
+      request: message.request,
+      tmuxSession: message.tmuxSession == null ? null : message.tmuxSession,
+    });
     scheduleThreadRender(true);
   }
 }
@@ -512,11 +615,13 @@ function updateThreadActivity(provider, threadId, status) {
   if (thread) renderThreadList();
 }
 
-function clearPendingForTurn(provider, threadId, turnId) {
+function clearPendingForTurn(provider, threadId, turnId, tmuxSession = '') {
   for (const pending of [state.approvals, state.interactions]) {
     for (const [key, entry] of pending) {
       const params = entry.request.params || {};
-      if (entry.provider === provider && params.threadId === threadId && (!turnId || params.turnId === turnId)) {
+      if (entry.provider === provider && params.threadId === threadId
+        && (entry.tmuxSession == null || entry.tmuxSession === (tmuxSession || ''))
+        && (!turnId || params.turnId === turnId)) {
         pending.delete(key);
       }
     }
@@ -554,6 +659,7 @@ function openPendingThread(thread, { quiet = false, refresh = true } = {}) {
   if (!thread?.tmux?.name || thread.tmux.available !== false) return;
   state.threadHandoff = null;
   state.threadOpening = null;
+  releaseThreadStream();
   if (thread.provider !== state.provider) {
     state.provider = thread.provider;
     localStorage.setItem('codeck-remote-provider', thread.provider);
@@ -579,6 +685,7 @@ function openShellThread(thread, { quiet = false } = {}) {
   if (thread?.provider !== 'shell' || !thread.tmux?.name) return;
   state.threadHandoff = null;
   state.threadOpening = null;
+  releaseThreadStream();
   state.provider = 'shell';
   state.activeThreadId = thread.id;
   state.thread = normalizeAgentThread('shell', {
@@ -600,12 +707,14 @@ function handoffTmuxThread(thread) {
   const previousThreadId = state.thread?.id;
   const provider = thread.provider;
   const sessionName = thread.tmux.name;
+  resetThreadStream();
   const handoff = { promise: null };
   const load = (async () => {
     const result = await agentRequest('openThread', {
       provider,
       threadId: thread.id,
       readOnly: true,
+      tmuxSession: sessionName,
     });
     if (
       state.threadHandoff !== handoff
@@ -617,6 +726,7 @@ function handoffTmuxThread(thread) {
     state.activeThreadId = thread.id;
     state.thread = normalizeAgentThread(provider, result.thread);
     state.thread.tmux = { ...thread.tmux };
+    state.threadStreamHealthy = Boolean(state.protocolEpoch);
     state.threadRefreshUntil = Date.now() + 2_500;
     setLiveMessage('已同步对话记录，可直接参与。');
     renderThreadList();
@@ -636,8 +746,9 @@ async function loadThreads({ quiet = false } = {}) {
     if (!quiet) {
       $('#threadList').replaceChildren(element('div', 'thread-empty', '正在读取会话…'));
     }
-    const snapshot = state.sessionSnapshot || await validateOwnerToken(state.token);
-    state.sessionSnapshot = null;
+    const queuedSnapshot = state.sessionSnapshot;
+    if (queuedSnapshot) state.sessionSnapshot = null;
+    const snapshot = queuedSnapshot || await validateOwnerToken(state.token);
     if (generation !== state.threadListGeneration) return;
     state.threads = tmuxSessionsToThreads(snapshot.sessions)
       .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
@@ -645,7 +756,7 @@ async function loadThreads({ quiet = false } = {}) {
     if (activeThread?.tmux && state.thread) {
       if (applyTmuxSnapshot(state.thread, activeThread.tmux)) {
         state.threadRefreshUntil = Date.now() + THREAD_COMPLETION_REFRESH_MS;
-        refreshActiveThread({ force: true }).catch(() => {});
+        if (!state.threadStreamHealthy) refreshActiveThread({ force: true }).catch(() => {});
       }
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
@@ -663,6 +774,9 @@ async function loadThreads({ quiet = false } = {}) {
     await load;
   } finally {
     if (state.threadLoad === load) state.threadLoad = null;
+    if (state.sessionSnapshot && state.connected) {
+      queueMicrotask(() => loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message)));
+    }
   }
 }
 
@@ -686,11 +800,18 @@ async function openThread(threadId, {
   renderComposerState();
   const directSession = Boolean(listedThread?.tmux?.name);
   try {
-    const result = await agentRequest('openThread', { provider, threadId, readOnly: directSession || readOnly });
+    resetThreadStream();
+    const result = await agentRequest('openThread', {
+      provider,
+      threadId,
+      readOnly: directSession || readOnly,
+      tmuxSession: listedThread?.tmux?.name || tmuxSession || '',
+    });
     if (state.threadOpening !== opening) return;
     state.activeThreadId = threadId;
     state.thread = normalizeAgentThread(provider, result.thread);
     if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
+    state.threadStreamHealthy = Boolean(state.protocolEpoch);
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
     setLiveMessage(directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : '');
     renderThreadList();
@@ -714,12 +835,15 @@ async function refreshActiveThread({ force = false } = {}) {
   })) return;
   const provider = state.provider;
   const threadId = current.id;
-  const load = agentRequest('openThread', { provider, threadId, readOnly: true });
+  const load = agentRequest('openThread', {
+    provider, threadId, readOnly: true, tmuxSession: sessionName || '',
+  });
   state.threadRefresh = load;
   try {
     const result = await load;
     if (state.provider !== provider || state.thread?.id !== threadId || state.thread?.tmux?.name !== sessionName) return;
     const refreshed = normalizeAgentThread(provider, result.thread);
+    state.threadStreamHealthy = Boolean(state.protocolEpoch);
     const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
     if (reconciled === state.thread) return;
     state.thread = reconciled;
@@ -732,6 +856,7 @@ async function refreshActiveThread({ force = false } = {}) {
 function startNewThread({ focus = true } = {}) {
   state.threadHandoff = null;
   state.threadOpening = null;
+  releaseThreadStream();
   if (!state.providers.includes(state.provider)) {
     state.provider = preferredAgentProvider();
     localStorage.setItem('codeck-remote-provider', state.provider);
@@ -751,6 +876,7 @@ async function switchProvider(provider) {
   if (!state.providers.includes(provider)) return;
   state.threadHandoff = null;
   state.threadOpening = null;
+  releaseThreadStream();
   state.provider = provider;
   localStorage.setItem('codeck-remote-provider', provider);
   state.activeThreadId = null;
@@ -1553,9 +1679,11 @@ function renderThread() {
   }
   const approvals = [...state.approvals.entries()].filter(([, entry]) => (
     entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
+    && (entry.tmuxSession == null || entry.tmuxSession === (state.thread?.tmux?.name || ''))
   ));
   const interactions = [...state.interactions.entries()].filter(([, entry]) => (
     entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
+    && (entry.tmuxSession == null || entry.tmuxSession === (state.thread?.tmux?.name || ''))
   ));
   const existingRequests = new Map([...$('#approvalStack').children]
     .filter((node) => node.dataset.requestKey)
@@ -1581,7 +1709,8 @@ function renderComposerState() {
   const background = state.thread?.tmux?.status === 'background';
   const readOnly = Boolean(state.thread?.readOnly && !sessionName);
   const hasText = Boolean(input.value.trim());
-  const hasContent = hasText || Boolean(state.attachments.length && state.provider !== 'shell');
+  const attachmentsSupported = providerSupports('attachments');
+  const hasContent = hasText || Boolean(state.attachments.length && state.provider !== 'shell' && attachmentsSupported);
   const shellAttachmentOnly = state.provider === 'shell' && state.attachments.length && !hasText;
   const pending = composerRequestGate.pending;
   const opening = Boolean(state.threadOpening);
@@ -1595,7 +1724,7 @@ function renderComposerState() {
   $('.composer').setAttribute('aria-busy', String(pending || opening || closing));
   sendButton.disabled = controls.disabled || Boolean(shellAttachmentOnly);
   sendButton.setAttribute('aria-label', shellAttachmentOnly ? '请先输入 Shell 命令' : controls.ariaLabel);
-  $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected;
+  $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected || !attachmentsSupported;
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
@@ -1636,6 +1765,7 @@ function currentSlashCommandSuggestions() {
     || state.threadOpening
     || composerRequestGate.pending
     || state.attachments.length
+    || !providerSupports('slashCommands')
     || state.slashCommandDismissedValue === input.value
     || !slashCommandMenuAvailable({
       provider: state.provider,
@@ -1760,10 +1890,34 @@ async function submitComposer() {
   await composerRequestGate.run(async () => {
     setLiveMessage(attachments.length ? `正在上传 ${attachments.length} 个附件…` : commandPendingMessage(text));
     let sentPendingSession = false;
+    let deliveryKey = '';
+    let delivery = null;
     try {
       const targetProvider = state.provider;
       const targetThreadId = state.thread?.id || null;
       const targetSessionName = sessionName || null;
+      const deliveryInput = {
+        provider: targetProvider,
+        threadId: targetThreadId,
+        tmuxSession: targetSessionName,
+        draft,
+        attachmentIds: attachments.map((attachment) => attachment.id),
+        mode: running ? 'steer' : 'followUp',
+        turnId: running?.id || null,
+      };
+      deliveryKey = deliveryAttemptKey(deliveryInput);
+      delivery = prepareDeliveryAttempt(state.pendingDeliveries.get(deliveryKey), deliveryInput, {
+        serverEpoch: state.protocolEpoch,
+        receiptTtlMs: state.commandReceiptTtlMs,
+      });
+      state.pendingDeliveries.set(deliveryKey, delivery);
+      if (delivery.blocked) {
+        const reason = delivery.blockReason === 'receiptExpired'
+          ? '安全重试时限已过'
+          : delivery.blockReason === 'unsupported' ? '当前服务不支持安全重试' : '服务器已重启';
+        setLiveMessage(`${reason}，上一条消息发送状态未知；请先确认终端输出，再修改内容后发送。`);
+        return;
+      }
       const paths = await uploadAttachments(attachments);
       if (
         state.provider !== targetProvider
@@ -1781,6 +1935,7 @@ async function submitComposer() {
           threadId: targetThreadId,
           tmuxSession: sessionName,
           text: message,
+          commandId: delivery.commandId,
         });
         const nextStatus = sessionStatusAfterSend({ previousStatus, result });
         const workingAfterSend = nextStatus === 'working';
@@ -1821,18 +1976,28 @@ async function submitComposer() {
         await agentRequest('sendMessage', {
           provider: targetProvider,
           threadId: state.thread.id,
-          turnId: running?.id,
-          mode: running ? 'steer' : 'followUp',
+          turnId: delivery.turnId || undefined,
+          mode: delivery.mode,
           text: message,
+          commandId: delivery.commandId,
         });
         scheduleThreadRender(true);
       }
+      if (state.pendingDeliveries.get(deliveryKey) === delivery) state.pendingDeliveries.delete(deliveryKey);
       input.value = draftAfterSuccessfulSend(input.value, draft);
       clearAttachments(attachments);
       resizeComposer();
       setLiveMessage(sentPendingSession ? '消息已发送，正在同步对话…' : '');
     } catch (error) {
-      setLiveMessage(error.message);
+      const uncertain = shouldKeepDeliveryAttempt(error);
+      if (!uncertain && deliveryKey) state.pendingDeliveries.delete(deliveryKey);
+      else if (!state.protocolEpoch && delivery && state.pendingDeliveries.get(deliveryKey) === delivery) {
+        state.pendingDeliveries.set(deliveryKey, { ...delivery, blocked: true, blockReason: 'unsupported' });
+      }
+      const retryHint = state.protocolEpoch
+        ? '再次点击将使用同一命令安全确认。'
+        : '当前服务不支持安全重试，请先确认终端输出。';
+      setLiveMessage(uncertain ? `${error.message}；发送状态未知，${retryHint}` : error.message);
     }
   });
 }
@@ -2356,11 +2521,13 @@ window.addEventListener('pagehide', () => {
   }
 });
 setInterval(() => {
-  if (state.connected && document.visibilityState === 'visible') loadThreads({ quiet: true }).catch(() => {});
-}, SESSION_LIST_POLL_MS);
+  if (state.connected && !state.sessionStreamHealthy && document.visibilityState === 'visible') {
+    loadThreads({ quiet: true }).catch(() => {});
+  }
+}, SESSION_LIST_FALLBACK_MS);
 setInterval(() => {
-  refreshActiveThread().catch(() => {});
-}, THREAD_REFRESH_POLL_MS);
+  if (!state.threadStreamHealthy) refreshActiveThread().catch(() => {});
+}, THREAD_REFRESH_FALLBACK_MS);
 
 applyTheme(state.theme);
 syncViewportHeight();

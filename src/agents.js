@@ -9,6 +9,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'QODER_SESSION_ID']);
 const CODEX_HISTORY_READ_LIMIT = 2 * 1024 * 1024;
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
+const AGENT_IDENTITY_CACHE_TTL_MS = 5_000;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', cwds: new Map(), previews: new Map() };
 const codexPaneSessions = new Map();
 let clockTicksPromise;
@@ -138,6 +139,10 @@ function codexPromptBlocks(output) {
     if (text) prompts.push({ position: index, text });
   }
   return prompts;
+}
+
+function latestCodexPrompt(output) {
+  return codexPromptBlocks(output).at(-1)?.text || null;
 }
 
 function matchCodexHistorySession(output, history, acceptId = () => true) {
@@ -292,8 +297,7 @@ export function paneProcessTree(rootPid, processes) {
   return result;
 }
 
-function isDetachedProcessLeader(process, procRoot) {
-  if (process.ppid !== 1) return false;
+function isIndependentProcessLeader(process, procRoot) {
   try {
     const stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(process.pid), 'stat'), 'utf8'));
     return stat?.pgrp === process.pid && stat.session === process.pid;
@@ -323,6 +327,21 @@ function readProcChildren(procRoot, pid) {
   catch { return []; }
 }
 
+function readProcThreadChildren(procRoot, pid) {
+  const taskRoot = path.join(procRoot, String(pid), 'task');
+  let threads;
+  try { threads = fs.readdirSync(taskRoot).filter((entry) => /^\d+$/.test(entry)); }
+  catch { return []; }
+  const children = new Set();
+  for (const thread of threads) {
+    let content;
+    try { content = fs.readFileSync(path.join(taskRoot, thread, 'children'), 'utf8'); }
+    catch { continue; }
+    for (const child of procPidList(content)) children.add(child);
+  }
+  return [...children];
+}
+
 function readProcProcess(procRoot, pid, { clockTicks, now, uptimeMs }) {
   let stat;
   try { stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')); }
@@ -336,6 +355,7 @@ function readProcProcess(procRoot, pid, { clockTicks, now, uptimeMs }) {
   return {
     pid: stat.pid,
     ppid: stat.ppid,
+    startTicks: stat.startTicks,
     startedAt: now - Math.max(0, uptimeMs - stat.startTicks / clockTicks * 1000),
     command: command || stat.name,
   };
@@ -371,7 +391,26 @@ export function readPaneProcessTrees(panes, {
 }
 
 export function findDetachedAgentSessionIdsFromProc(attachedPids, { procRoot = '/proc' } = {}) {
-  const processes = readProcChildren(procRoot, 1).flatMap((pid) => {
+  const candidatePids = new Set(readProcChildren(procRoot, 1));
+  const queue = [...candidatePids];
+  while (queue.length) {
+    const pid = queue.shift();
+    let command;
+    try {
+      command = fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'), 'utf8')
+        .split('\0').filter(Boolean).join(' ');
+    } catch { continue; }
+    if (!/(?:^|[ /])codex(?:\s|$)/i.test(command)
+      || !/(?:^|\s)app-server(?:\s|$)/i.test(command)) continue;
+    // app-server may spawn unified-exec from any worker thread. Linux exposes those
+    // children only below that thread's task directory, not the process leader's.
+    for (const child of readProcThreadChildren(procRoot, pid)) {
+      if (candidatePids.has(child)) continue;
+      candidatePids.add(child);
+      queue.push(child);
+    }
+  }
+  const processes = [...candidatePids].flatMap((pid) => {
     try {
       const stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8'));
       return stat ? [{ pid: stat.pid, ppid: stat.ppid }] : [];
@@ -396,10 +435,10 @@ export function findDetachedAgentSessionIds(processes, attachedPids, { procRoot 
   const ids = new Set();
   const sessionId = new RegExp(`^${UUID}$`, 'i');
   for (const process of processes || []) {
-    // Every tool subprocess inherits the Agent session id. Count only independently
-    // detached task leaders: direct app-server children can be abandoned utilities,
-    // while reparented crash/helper children are not tasks in their own right.
-    if (attachedPids?.has(process.pid) || !isDetachedProcessLeader(process, procRoot)) continue;
+    // Every tool subprocess inherits the Agent session id. Count only independent
+    // terminal session leaders. Unified-exec leaders remain below the app-server
+    // parent, while helpers stay in their parent's terminal session.
+    if (attachedPids?.has(process.pid) || !isIndependentProcessLeader(process, procRoot)) continue;
     let entries;
     try { entries = fs.readFileSync(path.join(procRoot, String(process.pid), 'environ'), 'utf8').split('\0'); }
     catch { continue; }
@@ -563,41 +602,119 @@ function readRuntimeSession(processes, configHome) {
   return null;
 }
 
+function agentIdentityFingerprint(pane, process, cwd, configSignature, providerIdentity) {
+  return JSON.stringify([
+    configSignature,
+    pane.paneId,
+    pane.pid,
+    process.pid,
+    process.startTicks,
+    process.command,
+    cwd,
+    providerIdentity,
+  ]);
+}
+
 export async function detectPaneAgents(panes, env = process.env, options = {}) {
-  if (!panes.length) return new Map();
+  const identityCache = options.identityCache instanceof Map ? options.identityCache : null;
+  if (!panes.length) {
+    identityCache?.clear();
+    return new Map();
+  }
   const procRoot = options.procRoot || '/proc';
   const clockTicks = options.clockTicks || await processClockTicks();
-  const now = options.now || Date.now();
+  const now = options.now ?? Date.now();
   const uptimeMs = options.uptimeMs ?? readProcUptimeMs(procRoot);
   const codexHome = env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const qoderHome = env.QODER_CONFIG_DIR || path.join(os.homedir(), env.QODER_CONFIG_DIR_NAME || '.qoder');
-  const codex = loadCodexSessions(codexHome);
+  const identityCacheTtlMs = Number.isFinite(options.identityCacheTtlMs)
+    ? Math.max(0, options.identityCacheTtlMs)
+    : AGENT_IDENTITY_CACHE_TTL_MS;
+  const configSignature = [procRoot, codexHome, claudeHome, qoderHome].join('\0');
   const agents = new Map();
   const trees = readPaneProcessTrees(panes, { procRoot, clockTicks, now, uptimeMs });
+  const suppliedPaneOutputs = await Promise.resolve(options.paneOutputs || null);
+  const paneOutputs = suppliedPaneOutputs instanceof Map
+    ? suppliedPaneOutputs
+    : Array.isArray(suppliedPaneOutputs) ? new Map(suppliedPaneOutputs) : null;
+  const detections = new Map();
+
+  if (identityCache) {
+    const activeSessions = new Set(panes.map((pane) => pane.session));
+    for (const session of identityCache.keys()) {
+      if (!activeSessions.has(session)) identityCache.delete(session);
+    }
+  }
+
+  for (const pane of panes) {
+    const tree = trees.get(pane.session) || [];
+    const agentProcess = tree.find((item) => agentKindFromCommand(item.command));
+    if (!agentProcess) {
+      identityCache?.delete(pane.session);
+      continue;
+    }
+    const kind = agentKindFromCommand(agentProcess.command);
+    const cwd = processCwd(agentProcess.pid, procRoot);
+    const registered = kind === 'claude'
+      ? readRuntimeSession(tree, claudeHome)
+      : kind === 'qodercli' ? readRuntimeSession(tree, qoderHome) : null;
+    const explicitId = kind === 'claude' || kind === 'qodercli'
+      ? parseResumedSessionId(agentProcess.command)
+      : null;
+    const openSessionId = kind === 'qodercli' && !registered?.id && !explicitId
+      ? findQoderOpenSessionId(tree, qoderHome, registered?.cwd || cwd, { procRoot })
+      : null;
+    const providerIdentity = registered
+      ? ['registry', registered.pid, registered.id, registered.cwd]
+      : explicitId
+        ? ['command', explicitId]
+        : openSessionId ? ['qoder-fd', openSessionId] : null;
+    const fingerprint = agentIdentityFingerprint(
+      pane, agentProcess, cwd, configSignature, providerIdentity,
+    );
+    const cached = identityCache?.get(pane.session);
+    const visiblePrompt = kind === 'codex' ? latestCodexPrompt(paneOutputs?.get(pane.session)) : null;
+    const promptChanged = Boolean(cached && visiblePrompt && visiblePrompt !== cached.prompt);
+    if (!options.refreshIdentityCache
+      && !promptChanged
+      && cached?.fingerprint === fingerprint
+      && cached.expiresAt > now) {
+      agents.set(pane.session, { ...cached.agent });
+      continue;
+    }
+    identityCache?.delete(pane.session);
+    detections.set(pane.session, {
+      pane, tree, process: agentProcess, kind, cwd, fingerprint, visiblePrompt, promptChanged,
+      registered, explicitId, openSessionId,
+    });
+  }
+
+  const needsCodexMetadata = [...detections.values()].some((item) => item.kind === 'codex');
+  const codex = needsCodexMetadata ? loadCodexSessions(codexHome) : null;
   const readPaneOutput = options.readCodexPaneOutput || readCodexPaneOutput;
-  const codexPaneOutputs = new Map(await Promise.all(panes.flatMap((pane) => (
-    trees.get(pane.session)?.some((item) => agentKindFromCommand(item.command) === 'codex')
+  const codexPaneOutputs = new Map(await Promise.all([...detections.values()].flatMap(({ pane, kind }) => (
+    kind === 'codex'
       ? [Promise.resolve().then(() => readPaneOutput(pane.session)).then((output) => [pane.session, output]).catch(() => [pane.session, ''])]
       : []
   ))));
 
-  for (const pane of panes) {
-    const tree = trees.get(pane.session);
-    const process = tree.find((item) => agentKindFromCommand(item.command));
-    if (!process) continue;
-    const kind = agentKindFromCommand(process.command);
-    const registered = kind === 'claude'
-      ? readRuntimeSession(tree, claudeHome)
-      : kind === 'qodercli' ? readRuntimeSession(tree, qoderHome) : null;
+  for (const {
+    pane, process, kind, cwd, fingerprint, visiblePrompt, promptChanged,
+    registered, explicitId: providerExplicitId, openSessionId,
+  } of detections.values()) {
     const runtime = {
       startedAt: registered?.startedAt || process.startedAt,
-      cwd: registered?.cwd || processCwd(registered?.pid || process.pid, procRoot),
+      cwd: registered?.cwd || cwd,
       paneId: pane.paneId,
     };
 
+    let agent;
+    let cacheable = true;
+    let cachePrompt = null;
     if (kind === 'codex') {
       const paneOutput = codexPaneOutputs.get(pane.session) || '';
+      cachePrompt = visiblePrompt || latestCodexPrompt(paneOutput);
       const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
       const paneCwd = normalizedPath(runtime.cwd);
       const cwdMatches = new Map();
@@ -608,6 +725,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       });
       const visibleId = visibleMatch.id;
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
+      if (promptChanged && !explicitId && !visibleMatch.matched) cacheable = false;
       const remembered = codexPaneSessions.get(pane.session);
       const rememberedId = remembered?.pid === process.pid
         && remembered.startedAt === process.startedAt
@@ -624,24 +742,31 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
           name = paneIdentity.name || codex.names.get(id) || codexPreview(id, codex);
         }
       }
-      agents.set(pane.session, { kind: 'codex', id, name, ...runtime });
+      agent = { kind: 'codex', id, name, ...runtime };
     } else if (kind === 'claude') {
-      const id = registered?.id || parseResumedSessionId(process.command);
+      const id = registered?.id || providerExplicitId;
       const name = findClaudeSlug(id, claudeHome) || pane.session;
-      agents.set(pane.session, { kind: 'claude', id, name, ...runtime });
+      agent = { kind: 'claude', id, name, ...runtime };
     } else {
       // A bare --resume selects a transcript inside Qoder's TUI, so its start time is
       // not an identity. Prefer the runtime registry and explicit UUID, then the main
       // transcript the live process has actually opened.
-      const explicitId = parseResumedSessionId(process.command);
-      const id = registered?.id || explicitId
-        || findQoderOpenSessionId(tree, qoderHome, runtime.cwd, { procRoot });
-      agents.set(pane.session, {
+      const id = registered?.id || providerExplicitId || openSessionId;
+      agent = {
         kind: 'qodercli',
         id,
         name: pane.session,
         matchByStart: !isQoderResumeCommand(process.command),
         ...runtime,
+      };
+    }
+    agents.set(pane.session, agent);
+    if (identityCache && identityCacheTtlMs > 0 && agent.id && cacheable) {
+      identityCache.set(pane.session, {
+        fingerprint,
+        expiresAt: now + identityCacheTtlMs,
+        agent: { ...agent },
+        prompt: cachePrompt,
       });
     }
   }

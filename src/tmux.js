@@ -34,8 +34,9 @@ const SHELL_COMMANDS = new Set([
 // randomised verb cannot. "esc to interrupt" is a weaker second source: the footer swaps
 // it out whenever messages are queued.
 //
-// Background tasks are matched on the footer alone. Widening that window would let a
-// transcript line like "Ran 1 shell command" pin the indicator on for good.
+// Background footer markers are kept narrow so a transcript line like "Ran 1 shell
+// command" cannot pin the indicator on. Codex can retain a completed terminal count in
+// its footer, so resolveAgentBackgroundState verifies it against a live owned process.
 export const AGENT_SCREEN_MARKERS = {
   claude: {
     busy: { lines: 12, patterns: [/^[^\p{L}\n]{0,4}\p{L}+…\s*\(\d/u, /esc to interrupt/i] },
@@ -85,6 +86,7 @@ export function resolvePaneAgent(detectedAgent, output, pane) {
 // A working pane repaints at least once a second; allow a missed poll before going idle.
 const SCREEN_ACTIVITY_WINDOW_MS = 6_000;
 const screenActivity = new Map();
+const agentIdentityCache = new Map();
 let supportsWindowSizePromise;
 
 export function validateSessionName(name) {
@@ -507,10 +509,12 @@ export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) 
 }
 
 export function resolveAgentBackgroundState({ agent, screenSignals }) {
-  return Boolean(agent && (agent.hasBackgroundProcess || screenSignals?.background));
+  if (!agent) return false;
+  if (agent.hasBackgroundProcess) return true;
+  return agent.kind === 'claude' && Boolean(screenSignals?.background);
 }
 
-export async function listSessions() {
+export async function listSessions({ refreshAgentIdentities = false } = {}) {
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
@@ -534,10 +538,13 @@ export async function listSessions() {
     }
 
     const now = Date.now();
-    const [agents, screens] = await Promise.all([
-      detectPaneAgents(panes),
-      capturePanes(panes),
-    ]);
+    const screensPromise = capturePanes(panes);
+    const agentsPromise = detectPaneAgents(panes, process.env, {
+      identityCache: agentIdentityCache,
+      refreshIdentityCache: refreshAgentIdentities,
+      paneOutputs: screensPromise.then((screens) => new Map(screens)),
+    });
+    const [agents, screens] = await Promise.all([agentsPromise, screensPromise]);
     const screenBySession = new Map(screens);
 
     // The process tree wins; the screen supplies a pending Agent when ssh hides it.
@@ -619,7 +626,7 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
   if (!validateClient(provider) || !validateSessionName(sessionName) || !THREAD_ID.test(threadId || '')) {
     throw new Error('会话信息无效，请刷新后重试');
   }
-  const sessions = await listTmuxSessions();
+  const sessions = await listTmuxSessions({ refreshAgentIdentities: true });
   const session = sessions.find((candidate) => candidate.name === sessionName);
   if (!session) throw new Error('tmux 会话已不存在，请刷新后重试');
 

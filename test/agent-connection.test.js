@@ -19,6 +19,13 @@ class FakeBackend extends EventEmitter {
     this.label = provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude Code' : 'QoderCLI';
     this.calls = [];
     this.responses = [];
+    this.capabilities = {
+      structuredTranscript: true,
+      liveEvents: true,
+      directTmuxInput: true,
+      slashCommands: true,
+      attachments: true,
+    };
   }
 
   async listThreads() {
@@ -49,6 +56,42 @@ class FakeBackend extends EventEmitter {
   async respond(id, result) { this.responses.push({ id, result }); }
 }
 
+class FakeSnapshotFeed {
+  subscriptions = new Set();
+  invalidations = [];
+  refreshes = [];
+
+  subscribe(resource, listener, onError = () => {}) {
+    const subscription = { resource, listener, onError };
+    this.subscriptions.add(subscription);
+    return () => this.subscriptions.delete(subscription);
+  }
+
+  publish(resource, event) {
+    for (const subscription of this.subscriptions) {
+      if (JSON.stringify(subscription.resource) === JSON.stringify(resource)) subscription.listener(event);
+    }
+  }
+
+  fail(resource, error) {
+    for (const subscription of this.subscriptions) {
+      if (JSON.stringify(subscription.resource) === JSON.stringify(resource)) subscription.onError(error);
+    }
+  }
+
+  invalidate(resource) {
+    this.invalidations.push(resource);
+    return Promise.resolve();
+  }
+
+  refreshSubscribed(matches = () => true) {
+    for (const subscription of this.subscriptions) {
+      if (matches(subscription.resource)) this.refreshes.push(subscription.resource);
+    }
+    return Promise.resolve();
+  }
+}
+
 async function waitFor(check) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (check()) return;
@@ -61,10 +104,15 @@ function send(socket, message) {
   socket.emit('message', Buffer.from(JSON.stringify(message)), false);
 }
 
-function setup({ listTmuxSessions, sendTmuxMessage, interruptTmuxSession } = {}) {
+function setup({
+  listTmuxSessions, sendTmuxMessage, interruptTmuxSession,
+  sessionFeed, threadFeed, protocolEpoch = 'test-epoch',
+} = {}) {
   const backends = Object.fromEntries(['codex', 'claude', 'qodercli'].map((provider) => [provider, new FakeBackend(provider)]));
   const registry = new AgentRegistry(backends, { listTmuxSessions, sendTmuxMessage, interruptTmuxSession });
-  const hub = new AgentHub(registry, { defaultCwd: '/srv/codeck', hostname: 'devbox' });
+  const hub = new AgentHub(registry, {
+    defaultCwd: '/srv/codeck', hostname: 'devbox', sessionFeed, threadFeed, protocolEpoch,
+  });
   return { backends, registry, hub };
 }
 
@@ -157,10 +205,11 @@ test('advertises and routes all three providers through one owner-scoped socket'
     type: 'ready',
     defaultCwd: '/srv/codeck',
     hostname: 'devbox',
+    protocol: { version: 1, epoch: 'test-epoch', commandReceiptTtlMs: 600_000 },
     providers: [
-      { id: 'codex', label: 'Codex' },
-      { id: 'claude', label: 'Claude Code' },
-      { id: 'qodercli', label: 'QoderCLI' },
+      { id: 'codex', label: 'Codex', capabilities: backends.codex.capabilities },
+      { id: 'claude', label: 'Claude Code', capabilities: backends.claude.capabilities },
+      { id: 'qodercli', label: 'QoderCLI', capabilities: backends.qodercli.capabilities },
     ],
   });
 
@@ -172,6 +221,153 @@ test('advertises and routes all three providers through one owner-scoped socket'
   assert.equal(backends.claude.calls[0].method, 'listThreads');
   assert.equal(backends.qodercli.calls[0].method, 'listThreads');
   assert.equal(socket.sent.find((message) => message.id === 3).result.data[0].id, 'qodercli-thread');
+});
+
+test('streams shared session snapshots with an epoch and sequence', () => {
+  const sessionFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ sessionFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+
+  const snapshot = { sessions: [{ name: 'skills', status: 'working' }], capabilities: { canManage: true } };
+  sessionFeed.publish('sessions', { epoch: 'test-epoch', sequence: 7, snapshot });
+
+  assert.deepEqual(socket.sent.at(-1), {
+    type: 'sessionsSnapshot', version: 1,
+    stream: { epoch: 'test-epoch', sequence: 7 },
+    snapshot,
+  });
+  socket.close();
+  assert.equal(sessionFeed.subscriptions.size, 0);
+});
+
+test('thread snapshot streams stay bound to provider, thread and tmux session', async () => {
+  const threadFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+
+  send(socket, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'shared-thread',
+    tmuxSession: 'skills', readOnly: true,
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  const target = { provider: 'codex', threadId: 'shared-thread', tmuxSession: 'skills' };
+  threadFeed.publish(target, {
+    epoch: 'test-epoch', sequence: 2,
+    snapshot: { thread: { id: 'shared-thread', turns: [{ id: 'turn-1', items: [] }] } },
+  });
+
+  assert.deepEqual(socket.sent.at(-1), {
+    type: 'threadSnapshot', version: 1, target,
+    stream: { epoch: 'test-epoch', sequence: 2 },
+    thread: { id: 'shared-thread', turns: [{ id: 'turn-1', items: [] }] },
+  });
+
+  send(socket, {
+    type: 'openThread', id: 2, provider: 'codex', threadId: 'shared-thread',
+    tmuxSession: 'codeck', readOnly: true,
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 2));
+  const count = socket.sent.length;
+  threadFeed.publish(target, {
+    epoch: 'test-epoch', sequence: 3,
+    snapshot: { thread: { id: 'shared-thread', turns: [] } },
+  });
+  assert.equal(socket.sent.length, count);
+});
+
+test('a tmux session becoming active wakes its sleeping transcript subscription', async () => {
+  const sessionFeed = new FakeSnapshotFeed();
+  const threadFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ sessionFeed, threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  const target = { provider: 'qodercli', threadId: 'thread-1', tmuxSession: 'research' };
+  send(socket, { type: 'openThread', id: 1, ...target, readOnly: true });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+
+  sessionFeed.publish('sessions', {
+    epoch: 'test-epoch', sequence: 1,
+    snapshot: { sessions: [{ name: 'research', status: 'done' }] },
+  });
+  sessionFeed.publish('sessions', {
+    epoch: 'test-epoch', sequence: 2,
+    snapshot: { sessions: [{ name: 'research', status: 'working' }] },
+  });
+
+  assert.deepEqual(threadFeed.refreshes, [target]);
+});
+
+test('a completed provider turn immediately reconciles its subscribed transcript', async () => {
+  const threadFeed = new FakeSnapshotFeed();
+  const { backends, hub } = setup({ threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'skills' };
+
+  send(socket, { type: 'openThread', id: 1, ...target, readOnly: true });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  backends.codex.emit('notification', {
+    method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1' } },
+  });
+  await waitFor(() => threadFeed.invalidations.length === 1);
+
+  assert.deepEqual(threadFeed.invalidations, [target]);
+});
+
+test('a client can release an active transcript subscription', async () => {
+  const threadFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  send(socket, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'skills', readOnly: true,
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  assert.equal(threadFeed.subscriptions.size, 1);
+
+  send(socket, { type: 'unsubscribeThread', id: 2 });
+  await waitFor(() => socket.sent.some((message) => message.id === 2));
+
+  assert.equal(threadFeed.subscriptions.size, 0);
+});
+
+test('deduplicates a retried tmux send by command id', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const messages = [];
+  const { hub } = setup({
+    sendTmuxMessage: async (params) => {
+      messages.push(params);
+      await gate;
+      return { terminalWorking: true };
+    },
+  });
+  const first = new FakeSocket();
+  const retry = new FakeSocket();
+  hub.handleConnection(first);
+  hub.handleConnection(retry);
+  const request = {
+    type: 'sendSessionMessage', provider: 'claude', threadId: 'thread-1',
+    tmuxSession: 'work', text: 'Review mobile', commandId: 'command-12345678',
+  };
+
+  send(first, { ...request, id: 1 });
+  send(retry, { ...request, id: 2 });
+  await waitFor(() => messages.length === 1);
+  release();
+  await waitFor(() => first.sent.some((message) => message.id === 1)
+    && retry.sent.some((message) => message.id === 2));
+
+  assert.equal(messages.length, 1);
+  assert.deepEqual(first.sent.find((message) => message.id === 1).result, {
+    terminalWorking: true,
+    command: { id: 'command-12345678', status: 'accepted' },
+  });
+  assert.deepEqual(retry.sent.find((message) => message.id === 2).result,
+    first.sent.find((message) => message.id === 1).result);
 });
 
 test('opens, starts, follows up, steers and interrupts the selected provider', async () => {
@@ -201,8 +397,10 @@ test('opens, starts, follows up, steers and interrupts the selected provider', a
 
 test('routes direct participation to the selected tmux session without trusting client pane data', async () => {
   const messages = [];
+  const sessionFeed = new FakeSnapshotFeed();
   const { backends, hub } = setup({
     sendTmuxMessage: async (params) => { messages.push(params); return {}; },
+    sessionFeed,
   });
   const socket = new FakeSocket();
   hub.handleConnection(socket);
@@ -218,6 +416,7 @@ test('routes direct participation to the selected tmux session without trusting 
   }]);
   assert.deepEqual(backends.claude.calls, []);
   assert.equal(socket.sent.find((message) => message.id === 7).ok, true);
+  assert.deepEqual(sessionFeed.invalidations, ['sessions']);
 });
 
 test('routes a direct tmux interruption without requiring a backend turn id', async () => {
@@ -243,9 +442,11 @@ test('routes a direct tmux interruption without requiring a backend turn id', as
 test('routes shell participation without advertising or requiring an Agent backend', async () => {
   const messages = [];
   const interruptions = [];
+  const threadFeed = new FakeSnapshotFeed();
   const { backends, hub } = setup({
     sendTmuxMessage: async (params) => { messages.push(params); return {}; },
     interruptTmuxSession: async (params) => { interruptions.push(params); return {}; },
+    threadFeed,
   });
   const socket = new FakeSocket();
   hub.handleConnection(socket);
@@ -268,6 +469,7 @@ test('routes shell participation without advertising or requiring an Agent backe
     provider: 'shell', threadId: 'tmux:shell:work', sessionName: 'work',
   }]);
   assert.equal(Object.values(backends).every((backend) => backend.calls.length === 0), true);
+  assert.equal(threadFeed.subscriptions.size, 0);
   assert.equal(socket.sent.find((message) => message.id === 9).ok, true);
   assert.equal(socket.sent.find((message) => message.id === 10).ok, true);
 });

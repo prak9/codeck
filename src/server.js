@@ -14,7 +14,12 @@ import { createSession, detectWindowSizeSupport, interruptSession, killSession, 
 import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
 import { createSessionSnapshotLoader } from './session-snapshot.js';
-import { resolveSessionStatus } from './session-status.js';
+import { createSnapshotFeed } from './snapshot-feed.js';
+import {
+  resolveSessionStatus,
+  sessionSnapshotRefreshInterval,
+  threadSnapshotRefreshInterval,
+} from './session-status.js';
 import { AGENT_WEBSOCKET_OPTIONS } from './websocket-options.js';
 import {
   WEB_SESSION_TTL_SECONDS,
@@ -41,6 +46,9 @@ const webAuthEnabled = process.env.CODECK_WEB_AUTH === '1';
 const publicDir = path.join(dirname, '../public');
 const app = express();
 const sessionSnapshots = createSessionSnapshotLoader(listSessions);
+const protocolEpoch = crypto.randomUUID();
+const sessionStatusByName = new Map();
+let flexibleSizePromise = null;
 const authRateLimiter = createAuthRateLimiter();
 app.disable('x-powered-by');
 app.use(setSecurityHeaders);
@@ -155,41 +163,60 @@ app.use('/api', authenticateApiRequest);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+function flexibleSizeSupport() {
+  if (!flexibleSizePromise) {
+    flexibleSizePromise = Promise.resolve().then(() => detectWindowSizeSupport()).catch((error) => {
+      flexibleSizePromise = null;
+      throw error;
+    });
+  }
+  return flexibleSizePromise;
+}
+
+async function sessionSnapshotForAuth(auth) {
+  let [sessions, flexibleSize] = await Promise.all([sessionSnapshots.get(), flexibleSizeSupport()]);
+  if (!auth.owner) sessions = sessions.filter((session) => session.name === auth.session);
+  const enriched = sessions.map((session) => {
+    const { paneId: _paneId, liveOutput, ...publicSession } = session;
+    return {
+      ...publicSession,
+      ...(auth.owner && liveOutput ? { liveOutput } : {}),
+      agent: session.agent ? {
+        kind: session.agent.kind,
+        id: session.agent.id,
+        name: session.agent.name,
+        activity: session.agent.activity,
+        ...(auth.owner && session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
+      } : null,
+      status: resolveSessionStatus(session),
+    };
+  });
+  return {
+    sessions: enriched,
+    capabilities: {
+      flexibleSize,
+      canManage: auth.owner,
+      canWrite: auth.canWrite,
+      canSwitchSession: auth.owner,
+    },
+  };
+}
+
+function invalidateSessionSnapshots() {
+  sessionSnapshots.invalidate();
+  return sessionFeed.invalidate('sessions');
+}
+
 app.get('/api/sessions', async (req, res, next) => {
   try {
-    let [sessions, flexibleSize] = await Promise.all([sessionSnapshots.get(), detectWindowSizeSupport()]);
-    if (!req.auth.owner) sessions = sessions.filter((session) => session.name === req.auth.session);
-    const enriched = sessions.map((session) => {
-      const { paneId: _paneId, liveOutput, ...publicSession } = session;
-      return {
-        ...publicSession,
-        ...(req.auth.owner && liveOutput ? { liveOutput } : {}),
-        agent: session.agent ? {
-          kind: session.agent.kind,
-          id: session.agent.id,
-          name: session.agent.name,
-          activity: session.agent.activity,
-          ...(req.auth.owner && session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
-        } : null,
-        status: resolveSessionStatus(session),
-      };
-    });
-    res.json({
-      sessions: enriched,
-      capabilities: {
-        flexibleSize,
-        canManage: req.auth.owner,
-        canWrite: req.auth.canWrite,
-        canSwitchSession: req.auth.owner,
-      },
-    });
+    res.json(await sessionSnapshotForAuth(req.auth));
   } catch (error) { next(error); }
 });
 
 app.post('/api/sessions', ownerOnly, async (req, res, next) => {
   try {
     await createSession(req.body || {});
-    sessionSnapshots.invalidate();
+    invalidateSessionSnapshots().catch(() => {});
     res.status(201).json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -197,7 +224,7 @@ app.post('/api/sessions', ownerOnly, async (req, res, next) => {
 app.patch('/api/sessions/:name', ownerOnly, async (req, res, next) => {
   try {
     await renameSession(req.params.name, req.body?.name);
-    sessionSnapshots.invalidate();
+    invalidateSessionSnapshots().catch(() => {});
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -205,7 +232,7 @@ app.patch('/api/sessions/:name', ownerOnly, async (req, res, next) => {
 app.delete('/api/sessions/:name', ownerOnly, async (req, res, next) => {
   try {
     await killSession(req.params.name);
-    sessionSnapshots.invalidate();
+    invalidateSessionSnapshots().catch(() => {});
     res.status(204).end();
   } catch (error) { next(error); }
 });
@@ -272,7 +299,33 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
   sendTmuxMessage: sendSessionMessage,
   interruptTmuxSession: interruptSession,
 });
-const agentHub = new AgentHub(agentRegistry, { defaultCwd: process.cwd(), hostname: os.hostname() });
+const sessionFeed = createSnapshotFeed(
+  async () => {
+    const snapshot = await sessionSnapshotForAuth({ owner: true, session: null, canWrite: true });
+    sessionStatusByName.clear();
+    for (const session of snapshot.sessions) sessionStatusByName.set(session.name, session.status);
+    return snapshot;
+  },
+  { epoch: protocolEpoch, intervalMs: sessionSnapshotRefreshInterval },
+);
+const threadFeed = createSnapshotFeed(
+  ({ provider, threadId }) => agentRegistry.openThread(provider, threadId, { readOnly: true }),
+  {
+    epoch: protocolEpoch,
+    intervalMs: (snapshot, target) => threadSnapshotRefreshInterval(
+      snapshot, sessionStatusByName.get(target.tmuxSession),
+    ),
+    resourceKey: ({ provider, threadId, tmuxSession }) => `${provider}:${threadId}:${tmuxSession || ''}`,
+  },
+);
+const agentHub = new AgentHub(agentRegistry, {
+  defaultCwd: process.cwd(),
+  hostname: os.hostname(),
+  protocolEpoch,
+  sessionFeed,
+  threadFeed,
+  invalidateSessions: invalidateSessionSnapshots,
+});
 
 server.on('upgrade', (req, socket, head) => {
   const address = requestClientAddress(req);
@@ -310,13 +363,21 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const viewport = parseViewport(url.searchParams);
-  const terminalAccess = { ...terminalAccessForAuth(auth), canSwitchSession: auth.owner };
+  const terminalAccess = {
+    ...terminalAccessForAuth(auth),
+    canSwitchSession: auth.owner,
+    onSessionActivity: () => invalidateSessionSnapshots().catch(() => {}),
+  };
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, terminalAccess));
 });
 
 wss.on('connection', (ws, session, viewport, terminalAccess) => handleTerminalConnection(ws, session, viewport, terminalAccess));
 agentWss.on('connection', (ws) => agentHub.handleConnection(ws));
-server.on('close', () => agentRegistry.close());
+server.on('close', () => {
+  sessionFeed.close();
+  threadFeed.close();
+  agentRegistry.close();
+});
 
 server.listen(port, host, () => {
   console.log(`Codeck is running at https://${host}:${port}`);

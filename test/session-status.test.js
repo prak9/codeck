@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveSessionStatus, isSessionActive } from '../src/session-status.js';
+import {
+  isSessionActive,
+  resolveSessionStatus,
+  sessionSnapshotRefreshInterval,
+  threadSnapshotRefreshInterval,
+} from '../src/session-status.js';
 
 test('session is done when no session file mtime', () => {
   const session = {};
@@ -35,4 +40,31 @@ test('session is done even if only file activity exists', () => {
   };
   assert.equal(isSessionActive(session), false);
   assert.equal(resolveSessionStatus(session), 'done');
+});
+
+test('session snapshots stay fast while work exists and back off when every session is ready', () => {
+  assert.equal(sessionSnapshotRefreshInterval({
+    sessions: [{ status: 'done' }, { status: 'done' }],
+  }), 5_000);
+  assert.equal(sessionSnapshotRefreshInterval({
+    sessions: [{ status: 'done' }, { status: 'working' }],
+  }), 750);
+  assert.equal(sessionSnapshotRefreshInterval({
+    sessions: [{ status: 'background' }],
+  }), 2_000);
+});
+
+test('thread snapshots back off only when both tmux and the structured thread are idle', () => {
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: { status: { type: 'idle' } },
+  }, 'done'), 10_000);
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: { status: { type: 'active' } },
+  }, 'done'), 1_000);
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: { status: { type: 'idle' } },
+  }, 'working'), 1_000);
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: { status: { type: 'idle' } },
+  }, 'background'), 10_000);
 });

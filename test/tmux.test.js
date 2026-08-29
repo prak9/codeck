@@ -282,12 +282,17 @@ test('refuses stale or unsafe Agent pane mappings before sending anything', asyn
 
 test('interrupts the exact verified Agent pane with Escape', async () => {
   const calls = [];
+  let listOptions;
   await interruptSession({ provider: 'qodercli', sessionName: 'work', threadId: 'thread-1' }, {
-    listTmuxSessions: async () => [{
-      name: 'work', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%42' },
-    }],
+    listTmuxSessions: async (options) => {
+      listOptions = options;
+      return [{
+        name: 'work', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%42' },
+      }];
+    },
     execTmux: async (args) => calls.push(args),
   });
+  assert.deepEqual(listOptions, { refreshAgentIdentities: true });
   assert.deepEqual(calls, [['send-keys', '-t', '%42', 'Escape']]);
 });
 
@@ -776,11 +781,15 @@ test('agent sessions are working only while the current turn is active', () => {
   assert.equal(working(undefined), false);
 });
 
-test('only Agent-owned processes or Agent footer markers count as background work', () => {
+test('Codex background work requires a live Agent-owned process', () => {
   assert.equal(resolveAgentBackgroundState({
     agent: { kind: 'codex', hasBackgroundProcess: true },
     screenSignals: { background: false },
   }), true);
+  assert.equal(resolveAgentBackgroundState({
+    agent: { kind: 'codex' },
+    screenSignals: { background: true },
+  }), false);
   assert.equal(resolveAgentBackgroundState({
     agent: { kind: 'claude' },
     screenSignals: { background: true },

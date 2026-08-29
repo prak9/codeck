@@ -267,6 +267,314 @@ test('detects the current Codex thread after a long-lived tmux process switches 
   }
 });
 
+test('reuses a resolved Agent identity until its process signature changes or the cache expires', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-identity-cache-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const cwd = path.join(root, 'workspace');
+  const sessionId = '01a04100-1111-7111-8111-111111111111';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo', cwd,
+    });
+    const sessions = path.join(codexHome, 'sessions', '2026', '08', '29');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-29T10-00-00-${sessionId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: sessionId, cwd } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '优化会话扫描' }] },
+      }),
+    ].join('\n'));
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), JSON.stringify({
+      session_id: sessionId, ts: 100, text: '优化会话扫描',
+    }));
+
+    const pane = [{ session: 'performance', pid: 10, paneId: '%1' }];
+    const identityCache = new Map();
+    let paneReads = 0;
+    const detect = (now) => detectPaneAgents(pane, { CODEX_HOME: codexHome }, {
+      procRoot,
+      clockTicks: 100,
+      now,
+      uptimeMs: 100_000,
+      identityCache,
+      identityCacheTtlMs: 5_000,
+      readCodexPaneOutput: async () => {
+        paneReads += 1;
+        return '› 优化会话扫描\n• 正在分析';
+      },
+    });
+
+    assert.equal((await detect(1_000_000)).get('performance')?.id, sessionId);
+    assert.equal((await detect(1_001_000)).get('performance')?.id, sessionId);
+    assert.equal(paneReads, 1, 'an unchanged process should reuse its resolved identity');
+
+    fs.writeFileSync(path.join(procRoot, '11', 'cmdline'), 'node\0/usr/bin/codex\0--yolo\0--search\0');
+    assert.equal((await detect(1_002_000)).get('performance')?.id, sessionId);
+    assert.equal(paneReads, 2, 'a command change must invalidate the cached identity');
+
+    assert.equal((await detect(1_006_000)).get('performance')?.id, sessionId);
+    assert.equal(paneReads, 2);
+    assert.equal((await detect(1_008_000)).get('performance')?.id, sessionId);
+    assert.equal(paneReads, 3, 'stable processes are periodically revalidated for renames and thread switches');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a new visible Codex prompt invalidates a cached identity before its TTL', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-prompt-cache-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const cwd = path.join(root, 'workspace');
+  const firstId = '01a04110-1111-7111-8111-111111111111';
+  const secondId = '01a04111-2222-7222-8222-222222222222';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo', cwd,
+    });
+    const sessions = path.join(codexHome, 'sessions', '2026', '08', '29');
+    fs.mkdirSync(sessions, { recursive: true });
+    const transcript = (id, text) => [
+      JSON.stringify({ type: 'session_meta', payload: { id, cwd } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+      }),
+    ].join('\n');
+    fs.writeFileSync(
+      path.join(sessions, `rollout-2026-08-29T10-00-00-${firstId}.jsonl`),
+      transcript(firstId, '第一个会话'),
+    );
+    fs.writeFileSync(
+      path.join(sessions, `rollout-2026-08-29T10-01-00-${secondId}.jsonl`),
+      transcript(secondId, '第二个会话'),
+    );
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [
+      JSON.stringify({ session_id: firstId, ts: 100, text: '第一个会话' }),
+      JSON.stringify({ session_id: secondId, ts: 200, text: '第二个会话' }),
+    ].join('\n'));
+
+    const pane = [{ session: 'switching', pid: 10, paneId: '%1' }];
+    const identityCache = new Map();
+    const paneOutputs = new Map([['switching', '› 第一个会话\n• 已完成']]);
+    let deepOutput = paneOutputs.get('switching');
+    let paneReads = 0;
+    const detect = (now) => detectPaneAgents(pane, { CODEX_HOME: codexHome }, {
+      procRoot,
+      clockTicks: 100,
+      now,
+      uptimeMs: 100_000,
+      identityCache,
+      identityCacheTtlMs: 5_000,
+      paneOutputs,
+      readCodexPaneOutput: async () => {
+        paneReads += 1;
+        return deepOutput;
+      },
+    });
+
+    assert.equal((await detect(1_000_000)).get('switching')?.id, firstId);
+    paneOutputs.set('switching', '› 第二个会话\n• 正在分析');
+    deepOutput = paneOutputs.get('switching');
+    assert.equal((await detect(1_001_000)).get('switching')?.id, secondId);
+    assert.equal(paneReads, 2, 'a thread switch must not wait for the cache TTL');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('does not cache an unresolved Agent identity while its transcript is still starting', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-pending-cache-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const cwd = path.join(root, 'workspace');
+  const sessionId = '01a04101-2222-7222-8222-222222222222';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(codexHome, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo', cwd,
+    });
+    const pane = [{ session: 'starting', pid: 10, paneId: '%1' }];
+    const identityCache = new Map();
+    let paneOutput = '';
+    let paneReads = 0;
+    const detect = (now) => detectPaneAgents(pane, { CODEX_HOME: codexHome }, {
+      procRoot,
+      clockTicks: 100,
+      now,
+      uptimeMs: 100_000,
+      identityCache,
+      identityCacheTtlMs: 5_000,
+      readCodexPaneOutput: async () => {
+        paneReads += 1;
+        return paneOutput;
+      },
+    });
+
+    assert.equal((await detect(1_000_000)).get('starting')?.id, null);
+
+    const sessions = path.join(codexHome, 'sessions', '2026', '08', '29');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, `rollout-2026-08-29T10-00-00-${sessionId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: sessionId, cwd } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '刚建立的会话' }] },
+      }),
+    ].join('\n'));
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), JSON.stringify({
+      session_id: sessionId, ts: 100, text: '刚建立的会话',
+    }));
+    paneOutput = '› 刚建立的会话\n• 正在分析';
+
+    assert.equal((await detect(1_001_000)).get('starting')?.id, sessionId);
+    assert.equal(paneReads, 2, 'a pending process must be retried before the normal cache TTL');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a runtime registry session switch invalidates a cached Agent identity before its TTL', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-registry-switch-'));
+  const procRoot = path.join(root, 'proc');
+  const qoderHome = path.join(root, 'qoder');
+  const cwd = path.join(root, 'workspace');
+  const firstId = '01a04120-1111-7111-8111-111111111111';
+  const secondId = '01a04121-2222-7222-8222-222222222222';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(path.join(qoderHome, 'sessions'), { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/qodercli --resume --yolo', cwd,
+    });
+    const registry = path.join(qoderHome, 'sessions', '11.json');
+    const identityCache = new Map();
+    const detect = (now) => detectPaneAgents(
+      [{ session: 'switching', pid: 10, paneId: '%1' }],
+      { QODER_CONFIG_DIR: qoderHome },
+      {
+        procRoot, clockTicks: 100, now, uptimeMs: 100_000,
+        identityCache, identityCacheTtlMs: 5_000,
+      },
+    );
+
+    fs.writeFileSync(registry, JSON.stringify({ sessionId: firstId, cwd }));
+    assert.equal((await detect(1_000_000)).get('switching')?.id, firstId);
+
+    fs.writeFileSync(registry, JSON.stringify({ sessionId: secondId, cwd }));
+    assert.equal(
+      (await detect(1_001_000)).get('switching')?.id,
+      secondId,
+      'a same-process /new or /resume must switch identities without waiting for the cache TTL',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a Claude registry session switch invalidates its cached identity before the TTL', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-claude-registry-switch-'));
+  const procRoot = path.join(root, 'proc');
+  const claudeHome = path.join(root, 'claude');
+  const cwd = path.join(root, 'workspace');
+  const firstId = '01a04122-1111-7111-8111-111111111111';
+  const secondId = '01a04123-2222-7222-8222-222222222222';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(path.join(claudeHome, 'sessions'), { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/claude --resume', cwd,
+    });
+    const registry = path.join(claudeHome, 'sessions', '11.json');
+    const identityCache = new Map();
+    const detect = (now) => detectPaneAgents(
+      [{ session: 'switching', pid: 10, paneId: '%1' }],
+      { CLAUDE_CONFIG_DIR: claudeHome },
+      {
+        procRoot, clockTicks: 100, now, uptimeMs: 100_000,
+        identityCache, identityCacheTtlMs: 5_000,
+      },
+    );
+
+    fs.writeFileSync(registry, JSON.stringify({ sessionId: firstId, cwd }));
+    assert.equal((await detect(1_000_000)).get('switching')?.id, firstId);
+    fs.writeFileSync(registry, JSON.stringify({ sessionId: secondId, cwd }));
+    assert.equal((await detect(1_001_000)).get('switching')?.id, secondId);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a Qoder segment FD switch invalidates a cached bare-resume identity before its TTL', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-qoder-fd-switch-'));
+  const procRoot = path.join(root, 'proc');
+  const qoderHome = path.join(root, 'qoder');
+  const cwd = path.join(root, 'workspace');
+  const projectName = '-workspace';
+  const firstId = '01a04130-1111-7111-8111-111111111111';
+  const secondId = '01a04131-2222-7222-8222-222222222222';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/qodercli --resume --yolo', cwd,
+    });
+    const fdRoot = path.join(procRoot, '11', 'fd');
+    const projectRoot = path.join(qoderHome, 'projects', projectName);
+    fs.mkdirSync(fdRoot, { recursive: true });
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const segmentFor = (id) => path.join(
+      qoderHome, 'logs', 'sessions', projectName, id, 'segments', 'current.jsonl',
+    );
+    for (const id of [firstId, secondId]) {
+      const segment = segmentFor(id);
+      fs.mkdirSync(path.dirname(segment), { recursive: true });
+      fs.writeFileSync(segment, '{"level":"info"}\n');
+      fs.writeFileSync(path.join(projectRoot, `${id}.jsonl`), JSON.stringify({
+        type: 'workspace-directories', sessionId: id, directories: [cwd],
+      }));
+    }
+    const descriptor = path.join(fdRoot, '39');
+    fs.symlinkSync(segmentFor(firstId), descriptor);
+    const identityCache = new Map();
+    const detect = (now) => detectPaneAgents(
+      [{ session: 'switching', pid: 10, paneId: '%1' }],
+      { QODER_CONFIG_DIR: qoderHome },
+      {
+        procRoot, clockTicks: 100, now, uptimeMs: 100_000,
+        identityCache, identityCacheTtlMs: 5_000,
+      },
+    );
+
+    assert.equal((await detect(1_000_000)).get('switching')?.id, firstId);
+    fs.rmSync(descriptor);
+    fs.symlinkSync(segmentFor(secondId), descriptor);
+    assert.equal(
+      (await detect(1_001_000)).get('switching')?.id,
+      secondId,
+      'QoderCLI 1.1.28 exposes the active bare-resume session through its segment FD',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('recognizes supported agent CLI processes', () => {
   assert.equal(agentKindFromCommand('node /usr/bin/codex resume abc'), 'codex');
   assert.equal(agentKindFromCommand('/home/x/.local/bin/codex --remote unix:///data/.codex/app-server-control/app-server-control.sock resume 01a02936-cfd6-7eb1-8a66-d18af33402c5'), 'codex');
@@ -398,16 +706,16 @@ test('reads only each pane process tree from procfs', () => {
       procRoot: root, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
     });
     assert.deepEqual(trees.get('work'), [
-      { pid: 10, ppid: 1, startedAt: 980_000, command: '/bin/bash' },
-      { pid: 11, ppid: 10, startedAt: 990_000, command: 'node /usr/bin/codex --yolo' },
-      { pid: 12, ppid: 11, startedAt: 995_000, command: '/bin/bash -lc npm test' },
+      { pid: 10, ppid: 1, startTicks: 8_000, startedAt: 980_000, command: '/bin/bash' },
+      { pid: 11, ppid: 10, startTicks: 9_000, startedAt: 990_000, command: 'node /usr/bin/codex --yolo' },
+      { pid: 12, ppid: 11, startTicks: 9_500, startedAt: 995_000, command: '/bin/bash -lc npm test' },
     ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('discovers detached Agent task leaders from PID 1 children only', () => {
+test('discovers detached Agent task leaders without scanning unrelated process trees', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-proc-'));
   const codexId = '01a028e3-8058-73e0-bfc7-e7643f298b0f';
   const attachedId = '81207e37-ab34-4c76-973a-0ebabb4a6560';
@@ -429,6 +737,31 @@ test('discovers detached Agent task leaders from PID 1 children only', () => {
     });
 
     assert.deepEqual(findDetachedAgentSessionIdsFromProc(new Set([30]), { procRoot: root }), new Set([codexId]));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('discovers a live unified-exec leader below its app-server parent', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-unified-exec-proc-'));
+  const codexId = '01a01f67-bd04-7ca0-afdd-e9f2b59d27d5';
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [80] });
+    writeProcProcess(root, {
+      pid: 80, ppid: 1, pgrp: 70, session: 70, children: [81],
+      command: 'node /usr/local/bin/codex app-server --listen unix://',
+    });
+    writeProcProcess(root, {
+      pid: 81, ppid: 80, pgrp: 70, session: 70,
+      command: '/usr/local/lib/codex app-server --listen unix://',
+    });
+    fs.mkdirSync(path.join(root, '81', 'task', '83'), { recursive: true });
+    fs.writeFileSync(path.join(root, '81', 'task', '83', 'children'), '82');
+    writeProcProcess(root, {
+      pid: 82, ppid: 81, environment: `CODEX_THREAD_ID=${codexId}\0`,
+    });
+
+    assert.deepEqual(findDetachedAgentSessionIdsFromProc(new Set(), { procRoot: root }), new Set([codexId]));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -463,7 +796,7 @@ test('finds detached tasks by Agent session id without counting the Agent proces
     for (const pid of [20, 30, 40]) {
       fs.writeFileSync(path.join(root, String(pid), 'stat'), `${pid} (worker) S 1 ${pid} ${pid} 0 0 0\n`);
     }
-    fs.writeFileSync(path.join(root, '60', 'stat'), '60 (firefox) S 999 60 60 0 0 0\n');
+    fs.writeFileSync(path.join(root, '60', 'stat'), '60 (firefox) S 999 60 999 0 0 0\n');
     fs.writeFileSync(path.join(root, '70', 'stat'), '70 (crashhelper) S 1 60 60 0 0 0\n');
 
     assert.deepEqual(findDetachedAgentSessionIds(

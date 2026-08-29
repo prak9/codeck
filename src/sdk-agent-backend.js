@@ -196,6 +196,13 @@ export class SdkAgentBackend extends EventEmitter {
     super();
     this.provider = provider;
     this.label = label;
+    this.capabilities = {
+      structuredTranscript: true,
+      liveEvents: true,
+      directTmuxInput: true,
+      slashCommands: true,
+      attachments: true,
+    };
     this.query = query;
     this.queryOptions = queryOptions;
     this.listSessions = listSessions;

@@ -53,7 +53,9 @@ CODECK_TOKEN='replace-with-a-long-secret' PORT=4310 HOST=0.0.0.0 npm start
 
 手机页左栏统一列出当前仍存在于 tmux 的 Agent 会话，不按 Codex、Claude Code 或 QoderCLI 分栏；主标题显示 Coding CLI 自己的 session 名，副标题显示 tmux 名和即时的工作/完成状态。已经退出 tmux 的历史会话不会显示。打开会话后，输入区上方会显示“正在思考”“正在运行命令”“正在修改文件”或“正在回复”等活动，并在 owner 模式下实时显示 tmux pane 中当前可见的 Agent 动作块。该摘录会清除 ANSI 控制符并限制行数，单会话分享令牌不会获得 pane 内容。
 
-打开已有 tmux Agent 会话后无需“接管”：原来的 Coding CLI 会继续运行，手机输入会经服务端重新校验 provider、thread ID 和 tmux session，再只发送到该 CLI 的精确 pane。桌面终端和手机因此可以直接参与同一个 Codex、Claude Code 或 QoderCLI 会话；停止按钮会向同一 pane 发送 Escape，不会结束 CLI 或 tmux 会话。CLI 刚启动、尚未暴露持久化 thread ID 时，左栏会话仍可点击并发送首条消息；检测到真实 ID 后，Remote 会自动切换到结构化历史。Remote 仍使用结构化接口显示消息、工具活动和状态，并只在会话工作中或手机刚发送消息后短时刷新历史，避免空闲时反复读取造成卡顿。会话若已退出、切换到其他 Agent，或身份无法精确确认，发送会被拒绝并提示刷新。
+打开已有 tmux Agent 会话后无需“接管”：原来的 Coding CLI 会继续运行，手机输入会经服务端重新校验 provider、thread ID 和 tmux session，再只发送到该 CLI 的精确 pane。桌面终端和手机因此可以直接参与同一个 Codex、Claude Code 或 QoderCLI 会话；停止按钮会向同一 pane 发送 Escape，不会结束 CLI 或 tmux 会话。CLI 刚启动、尚未暴露持久化 thread ID 时，左栏会话仍可点击并发送首条消息；检测到真实 ID 后，Remote 会自动切换到结构化历史。会话若已退出、切换到其他 Agent，或身份无法精确确认，发送会被拒绝并提示刷新。
+
+普通模式与 Remote 共用带进程 epoch 和递增 sequence 的会话快照流；同一份 tmux 扫描会分发给所有已连接客户端，浏览器只在推送异常时低频轮询兜底。Remote 打开会话后还会订阅精确绑定到 provider、thread ID 和 tmux session 的结构化 transcript 流，因此 Agent 最终输出不需要下一条消息触发。每次发送都带稳定的 `commandId`：断线后在同一服务进程内重试不会重复写入 tmux；若服务已重启、无法确认上次是否送达，界面会保留草稿并要求先检查终端，而不会盲目重发。
 
 Remote 输入框左侧的 `＋` 支持从相册、相机或文件选择器添加附件，也可以直接粘贴图片或在桌面拖入文件。每次最多添加 10 个附件，单个文件最大 100 MB；发送时文件会先上传到 `~/.codeck/uploads/remote`，再把服务器路径交给 Codex、Claude Code 或 QoderCLI 读取。Shell 会话不会单独执行附件路径，必须先输入要运行的命令，Codeck 再把安全引用的路径追加到命令末尾。
 

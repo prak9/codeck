@@ -38,3 +38,17 @@ test('normal mode reuses an open owner socket when switching sessions', () => {
   assert.match(connect, /type: 'switch', session, cols: terminal\.cols, rows: terminal\.rows/);
   assert.match(connect, /if \(!reuseSocket\) state\.socket\?\.close\(\);/);
 });
+
+test('normal mode shares the sequenced owner session feed with remote mode', () => {
+  assert.match(appJs, /acceptStreamCursor/);
+  assert.match(appJs, /message\.type === 'sessionsSnapshot'/);
+  assert.match(appJs, /SESSION_LIST_FALLBACK_MS\s*=\s*30_000/);
+  assert.match(appJs, /!state\.sessionStreamHealthy/);
+  assert.doesNotMatch(appJs, /SESSION_LIST_POLL_MS\s*=\s*3_000/);
+});
+
+test('normal mode suppresses Codex shared-daemon background counts', () => {
+  assert.match(appJs, /hideSharedCodexBackgroundFooter/);
+  assert.match(appJs, /terminal\.write\(terminalOutputForSession\(event\.data, session\)\)/);
+  assert.match(appJs, /terminal\.write\(terminalOutputForSession\(pendingOutput\.join\(''\), session\)\)/);
+});

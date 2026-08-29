@@ -58,9 +58,9 @@ test('optional web login runs before API auth and gates every static resource', 
 
 test('share credentials can write only their signed terminal while management stays owner-only', () => {
   assert.match(serverSource, /flexibleSize,/);
-  assert.match(serverSource, /canManage: req\.auth\.owner/);
-  assert.match(serverSource, /canWrite: req\.auth\.canWrite/);
-  assert.match(serverSource, /canSwitchSession: req\.auth\.owner/);
+  assert.match(serverSource, /canManage: auth\.owner/);
+  assert.match(serverSource, /canWrite: auth\.canWrite/);
+  assert.match(serverSource, /canSwitchSession: auth\.owner/);
   assert.match(serverSource, /app\.post\('\/api\/uploads\/images', ownerOnly,/);
   assert.match(serverSource, /app\.post\('\/api\/uploads\/files', ownerOnly,/);
   assert.match(serverSource, /app\.get\('\/api\/download', ownerOnly,/);

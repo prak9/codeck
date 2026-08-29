@@ -38,6 +38,13 @@ export class CodexAgentBackend extends EventEmitter {
     super();
     this.provider = 'codex';
     this.label = 'Codex';
+    this.capabilities = {
+      structuredTranscript: true,
+      liveEvents: true,
+      directTmuxInput: true,
+      slashCommands: true,
+      attachments: true,
+    };
     this.appServer = appServer;
     this.pendingRequests = new Map();
     appServer.on('notification', (message) => this.emit('notification', message));

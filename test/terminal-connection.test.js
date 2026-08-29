@@ -138,6 +138,25 @@ test('a writable collaborator forwards input without detaching another tmux clie
   assert.deepEqual(terminalOptions, { readOnly: false, detachOtherClients: false });
 });
 
+test('a submitted terminal prompt wakes session detection once when output begins', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  const activity = [];
+  await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    onSessionActivity: (session) => activity.push(session),
+  }));
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: '继续\r' })), false);
+  terminal.dataCallback('spinner');
+  terminal.dataCallback('more output');
+  assert.deepEqual(activity, ['shared']);
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: '再检查\r' })), false);
+  terminal.dataCallback('next spinner');
+  assert.deepEqual(activity, ['shared', 'shared']);
+});
+
 test('an owner can switch the attached tmux session without replacing the socket', async () => {
   const ws = new FakeSocket();
   const created = [];

@@ -187,6 +187,24 @@ test('unchanged Agent transcript refreshes are reconciled without a full redraw'
   assert.match(remoteJs, /if \(reconciled === state\.thread\) return/);
 });
 
+test('remote consumes sequenced session and thread snapshots before using slow polling fallbacks', () => {
+  assert.match(remoteJs, /message\.type === 'sessionsSnapshot'/);
+  assert.match(remoteJs, /message\.type === 'threadSnapshot'/);
+  assert.match(remoteJs, /acceptStreamCursor/);
+  assert.match(remoteJs, /matchesThreadStreamTarget/);
+  assert.match(remoteJs, /SESSION_LIST_FALLBACK_MS\s*=\s*30_000/);
+  assert.match(remoteJs, /THREAD_REFRESH_FALLBACK_MS\s*=\s*10_000/);
+  assert.doesNotMatch(remoteJs, /SESSION_LIST_POLL_MS\s*=\s*1_500/);
+  assert.doesNotMatch(remoteJs, /THREAD_REFRESH_POLL_MS\s*=\s*1_000/);
+});
+
+test('remote sends stable command ids and preserves an uncertain draft for safe retry', () => {
+  assert.match(remoteJs, /prepareDeliveryAttempt/);
+  assert.match(remoteJs, /commandId:\s*delivery\.commandId/);
+  assert.match(remoteJs, /shouldKeepDeliveryAttempt/);
+  assert.match(remoteJs, /发送状态未知/);
+});
+
 test('a completed tmux turn waits for the authoritative session status', () => {
   assert.doesNotMatch(
     remoteJs,

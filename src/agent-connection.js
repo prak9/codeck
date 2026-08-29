@@ -1,5 +1,7 @@
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-receipts.js';
 import { resolveSessionStatus } from './session-status.js';
 
 const SESSION_START_MATCH_MS = 120_000;
@@ -10,6 +12,12 @@ function approvalKey(provider, id) {
 
 function subscriptionKey(provider, threadId) {
   return `${provider}:${threadId}`;
+}
+
+const AFTER_REPLY = Symbol('afterReply');
+
+function afterReply(result, activate) {
+  return { [AFTER_REPLY]: true, result, activate };
 }
 
 function send(socket, message) {
@@ -127,7 +135,11 @@ export class AgentRegistry extends EventEmitter {
   }
 
   providerInfo() {
-    return [...this.backends.entries()].map(([id, backend]) => ({ id, label: backend.label || id }));
+    return [...this.backends.entries()].map(([id, backend]) => ({
+      id,
+      label: backend.label || id,
+      ...(backend.capabilities ? { capabilities: { ...backend.capabilities } } : {}),
+    }));
   }
 
   backend(provider) {
@@ -164,11 +176,23 @@ export class AgentRegistry extends EventEmitter {
 }
 
 export class AgentHub {
-  constructor(registry, { defaultCwd = process.cwd(), hostname = '' } = {}) {
+  constructor(registry, {
+    defaultCwd = process.cwd(),
+    hostname = '',
+    protocolEpoch = crypto.randomUUID(),
+    sessionFeed = null,
+    threadFeed = null,
+    invalidateSessions = null,
+  } = {}) {
     this.registry = registry;
     this.defaultCwd = defaultCwd;
     this.hostname = hostname;
+    this.protocolEpoch = protocolEpoch;
+    this.sessionFeed = sessionFeed;
+    this.threadFeed = threadFeed;
+    this.invalidateSessions = invalidateSessions;
     this.clients = new Map();
+    this.commandReceipts = createCommandReceiptCache();
     this.pendingRequests = new Map();
     this.resolvedRequests = new Set();
     registry.on('notification', (message) => this.#broadcastNotification(message));
@@ -177,17 +201,65 @@ export class AgentHub {
   }
 
   handleConnection(socket) {
-    const client = { subscriptions: new Set(), deliveredRequests: new Set() };
+    const client = {
+      deliveredRequests: new Set(),
+      threadSubscription: null,
+      unsubscribeSessions: null,
+      sessionStatuses: new Map(),
+    };
     this.clients.set(socket, client);
     send(socket, {
       type: 'ready',
       defaultCwd: this.defaultCwd,
       hostname: this.hostname,
+      protocol: {
+        version: 1,
+        epoch: this.protocolEpoch,
+        commandReceiptTtlMs: COMMAND_RECEIPT_TTL_MS,
+      },
       providers: this.registry.providerInfo(),
     });
+    if (this.sessionFeed) {
+      client.unsubscribeSessions = this.sessionFeed.subscribe(
+        'sessions',
+        ({ epoch, sequence, snapshot }) => {
+          const subscription = client.threadSubscription;
+          const previousStatus = subscription?.target.tmuxSession
+            ? client.sessionStatuses.get(subscription.target.tmuxSession)
+            : null;
+          client.sessionStatuses = new Map((snapshot?.sessions || []).map((session) => [session.name, session.status]));
+          send(socket, {
+            type: 'sessionsSnapshot',
+            version: 1,
+            stream: { epoch, sequence },
+            snapshot,
+          });
+          const currentStatus = subscription?.target.tmuxSession
+            ? client.sessionStatuses.get(subscription.target.tmuxSession)
+            : null;
+          if (currentStatus === 'working' && previousStatus !== 'working') {
+            this.#refreshThreadSubscription(subscription.target);
+          }
+        },
+        (error) => send(socket, {
+          type: 'sessionsStreamError',
+          version: 1,
+          error: error.message || 'Session stream failed',
+        }),
+      );
+    }
     socket.on('message', (data) => this.#handleMessage(socket, data));
-    socket.once('close', () => this.clients.delete(socket));
-    socket.once('error', () => this.clients.delete(socket));
+    const cleanup = () => this.#removeClient(socket);
+    socket.once('close', cleanup);
+    socket.once('error', cleanup);
+  }
+
+  #removeClient(socket) {
+    const client = this.clients.get(socket);
+    if (!client) return;
+    client.unsubscribeSessions?.();
+    client.threadSubscription?.unsubscribe?.();
+    this.clients.delete(socket);
   }
 
   async #handleMessage(socket, data) {
@@ -195,8 +267,11 @@ export class AgentHub {
     try {
       message = JSON.parse(String(data));
       if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid message');
-      const result = await this.#dispatch(socket, message);
+      const dispatched = await this.#dispatch(socket, message);
+      const wrapped = dispatched?.[AFTER_REPLY] === true;
+      const result = wrapped ? dispatched.result : dispatched;
       if (message.id != null) send(socket, { id: message.id, ok: true, result });
+      if (wrapped) dispatched.activate();
     } catch (error) {
       const id = message?.id;
       send(socket, { id, ok: false, error: error.message || 'Agent request failed' });
@@ -205,18 +280,26 @@ export class AgentHub {
 
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
+    if (message.type === 'unsubscribeThread') {
+      this.#clearThreadSubscription(socket, this.clients.get(socket)?.threadSubscription);
+      return {};
+    }
     if (message.type === 'listThreads') return this.registry.listThreads(provider);
     if (message.type === 'openThread') {
       const threadId = cleanId(message.threadId, 'Thread');
       this.registry.backend(provider);
-      this.clients.get(socket)?.subscriptions.add(subscriptionKey(provider, threadId));
+      const target = {
+        provider,
+        threadId,
+        tmuxSession: typeof message.tmuxSession === 'string' ? message.tmuxSession.trim() : '',
+      };
+      const subscription = this.#beginThreadSubscription(socket, target);
       try {
         const options = message.readOnly === true ? { readOnly: true } : undefined;
         const result = await this.registry.openThread(provider, threadId, options);
-        this.#sendPending(socket, provider, threadId);
-        return result;
+        return afterReply(result, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {
-        this.clients.get(socket)?.subscriptions.delete(subscriptionKey(provider, threadId));
+        this.#clearThreadSubscription(socket, subscription);
         throw error;
       }
     }
@@ -224,34 +307,51 @@ export class AgentHub {
       const threadId = cleanId(message.threadId, 'Thread');
       const sessionName = cleanId(message.tmuxSession, 'tmux session');
       const text = cleanMessage(message.text);
-      this.clients.get(socket)?.subscriptions.add(subscriptionKey(provider, threadId));
-      return this.registry.sendSessionMessage(provider, { threadId, sessionName, text });
+      if (provider !== 'shell') this.registry.backend(provider);
+      this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
+      const payload = { threadId, sessionName, text };
+      return this.#runCommand(message, provider, payload, async () => {
+        const result = await this.registry.sendSessionMessage(provider, payload);
+        this.#invalidateSessionFeed();
+        this.#refreshThreadSubscription({ provider, threadId, tmuxSession: sessionName });
+        return result;
+      });
     }
     if (message.type === 'interruptSession') {
-      return this.registry.interruptSession(provider, {
+      const target = {
         threadId: cleanId(message.threadId, 'Thread'),
-        sessionName: cleanId(message.tmuxSession, 'tmux session'),
+        tmuxSession: cleanId(message.tmuxSession, 'tmux session'),
+      };
+      const result = await this.registry.interruptSession(provider, {
+        threadId: target.threadId,
+        sessionName: target.tmuxSession,
       });
+      this.#invalidateSessionFeed();
+      this.#refreshThreadSubscription({ provider, ...target });
+      return result;
     }
     if (message.type === 'newThread') {
       const text = cleanMessage(message.text);
       const cwd = typeof message.cwd === 'string' && message.cwd.trim() ? message.cwd.trim() : this.defaultCwd;
       if (!path.isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
       const result = await this.registry.newThread(provider, { cwd, text });
-      this.clients.get(socket)?.subscriptions.add(subscriptionKey(provider, result.thread.id));
-      this.#sendPending(socket, provider, result.thread.id);
-      return result;
+      const subscription = this.#beginThreadSubscription(socket, {
+        provider, threadId: result.thread.id, tmuxSession: '',
+      });
+      return afterReply(result, () => this.#activateThreadSubscription(socket, subscription));
     }
     if (message.type === 'sendMessage') {
       const threadId = cleanId(message.threadId, 'Thread');
       const text = cleanMessage(message.text);
-      this.clients.get(socket)?.subscriptions.add(subscriptionKey(provider, threadId));
-      return this.registry.sendMessage(provider, {
+      this.registry.backend(provider);
+      this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: '' });
+      const payload = {
         threadId,
         turnId: typeof message.turnId === 'string' ? message.turnId : undefined,
         mode: message.mode === 'steer' ? 'steer' : 'followUp',
         text,
-      });
+      };
+      return this.#runCommand(message, provider, payload, () => this.registry.sendMessage(provider, payload));
     }
     if (message.type === 'interruptTurn') {
       return this.registry.interruptTurn(provider, {
@@ -273,8 +373,110 @@ export class AgentHub {
     throw new Error(`Unknown agent message type: ${message.type || '(empty)'}`);
   }
 
+  #runCommand(message, provider, payload, operation) {
+    if (message.commandId == null) return operation();
+    const commandId = String(message.commandId).trim();
+    const fingerprint = JSON.stringify({ type: message.type, provider, ...payload });
+    return this.commandReceipts.run(commandId, fingerprint, async () => {
+      const result = await operation();
+      return {
+        ...(result && typeof result === 'object' && !Array.isArray(result) ? result : {}),
+        command: { id: commandId, status: 'accepted' },
+      };
+    });
+  }
+
+  #invalidateSessionFeed() {
+    try {
+      const refresh = this.invalidateSessions
+        ? this.invalidateSessions()
+        : this.sessionFeed?.invalidate('sessions');
+      Promise.resolve(refresh).catch(() => {});
+    } catch { /* The session stream reports its own recoverable loader errors. */ }
+  }
+
+  #refreshThreadSubscription(target) {
+    if (!this.threadFeed || !target) return;
+    this.threadFeed.refreshSubscribed((resource) => (
+      resource.provider === target.provider
+      && resource.threadId === target.threadId
+      && resource.tmuxSession === target.tmuxSession
+    )).catch(() => {});
+  }
+
+  #beginThreadSubscription(socket, target) {
+    const client = this.clients.get(socket);
+    if (!client) return null;
+    client.threadSubscription?.unsubscribe?.();
+    const subscription = {
+      target,
+      ready: false,
+      pending: [],
+      unsubscribe: null,
+    };
+    client.threadSubscription = subscription;
+    return subscription;
+  }
+
+  #activateThreadSubscription(socket, subscription) {
+    const client = this.clients.get(socket);
+    if (!client || !subscription || client.threadSubscription !== subscription) return;
+    subscription.ready = true;
+    if (this.threadFeed && subscription.target.provider !== 'shell') {
+      subscription.unsubscribe = this.threadFeed.subscribe(
+        subscription.target,
+        ({ epoch, sequence, snapshot }) => this.#deliverThreadMessage(socket, subscription, {
+          type: 'threadSnapshot',
+          version: 1,
+          target: subscription.target,
+          stream: { epoch, sequence },
+          thread: snapshot?.thread,
+        }),
+        (error) => this.#deliverThreadMessage(socket, subscription, {
+          type: 'threadStreamError',
+          version: 1,
+          target: subscription.target,
+          error: error.message || 'Thread stream failed',
+        }),
+      );
+    }
+    for (const message of subscription.pending.splice(0)) send(socket, message);
+    this.#sendPending(socket, subscription);
+  }
+
+  #ensureThreadSubscription(socket, target) {
+    const current = this.clients.get(socket)?.threadSubscription;
+    if (current && subscriptionKey(current.target.provider, current.target.threadId) === subscriptionKey(target.provider, target.threadId)
+      && current.target.tmuxSession === target.tmuxSession) return current;
+    const subscription = this.#beginThreadSubscription(socket, target);
+    this.#activateThreadSubscription(socket, subscription);
+    return subscription;
+  }
+
+  #clearThreadSubscription(socket, subscription) {
+    const client = this.clients.get(socket);
+    if (!client || client.threadSubscription !== subscription) return;
+    subscription.unsubscribe?.();
+    client.threadSubscription = null;
+  }
+
+  #deliverThreadMessage(socket, subscription, message) {
+    const client = this.clients.get(socket);
+    if (!client || client.threadSubscription !== subscription) return;
+    if (subscription.ready) {
+      send(socket, message);
+      return;
+    }
+    if (message.type === 'threadSnapshot') {
+      subscription.pending = subscription.pending.filter((pending) => pending.type !== 'threadSnapshot');
+    }
+    if (subscription.pending.length >= 512) subscription.pending.shift();
+    subscription.pending.push(message);
+  }
+
   #broadcastNotification(message) {
     const { provider, method, params } = message;
+    if (method === 'turn/started' || method === 'turn/completed') this.#invalidateSessionFeed();
     if (method === 'turn/completed') {
       const turnId = params?.turn?.id || params?.turnId;
       for (const [key, entry] of this.pendingRequests) {
@@ -285,9 +487,21 @@ export class AgentHub {
         }
       }
     }
-    const key = subscriptionKey(provider, params?.threadId);
+    const refreshTargets = new Map();
     for (const [socket, client] of this.clients) {
-      if (client.subscriptions.has(key)) send(socket, { type: 'event', provider, method, params });
+      const subscription = client.threadSubscription;
+      if (!subscription || subscription.target.provider !== provider
+        || subscription.target.threadId !== params?.threadId) continue;
+      this.#deliverThreadMessage(socket, subscription, {
+        type: 'event', provider, method, params,
+        tmuxSession: subscription.target.tmuxSession,
+      });
+      if (method === 'turn/completed') {
+        refreshTargets.set(JSON.stringify(subscription.target), subscription.target);
+      }
+    }
+    if (this.threadFeed) {
+      for (const target of refreshTargets.values()) this.threadFeed.invalidate(target).catch(() => {});
     }
   }
 
@@ -297,9 +511,12 @@ export class AgentHub {
     this.resolvedRequests.delete(requestKey);
     for (const client of this.clients.values()) client.deliveredRequests.delete(requestKey);
     this.pendingRequests.set(requestKey, { provider, request });
-    const key = subscriptionKey(provider, request.params?.threadId);
     for (const [socket, client] of this.clients) {
-      if (client.subscriptions.has(key)) this.#sendServerRequest(socket, provider, request);
+      const subscription = client.threadSubscription;
+      if (subscription?.target.provider === provider
+        && subscription.target.threadId === request.params?.threadId) {
+        this.#sendServerRequest(socket, provider, request, subscription);
+      }
     }
   }
 
@@ -318,21 +535,24 @@ export class AgentHub {
     }
   }
 
-  #sendPending(socket, provider, threadId) {
+  #sendPending(socket, subscription) {
+    const { provider, threadId } = subscription.target;
     for (const entry of this.pendingRequests.values()) {
       if (entry.provider === provider && entry.request.params?.threadId === threadId) {
-        this.#sendServerRequest(socket, provider, entry.request);
+        this.#sendServerRequest(socket, provider, entry.request, subscription);
       }
     }
   }
 
-  #sendServerRequest(socket, provider, request) {
+  #sendServerRequest(socket, provider, request, subscription = this.clients.get(socket)?.threadSubscription) {
     const client = this.clients.get(socket);
     const key = approvalKey(provider, request.id);
     if (!client || client.deliveredRequests.has(key)) return;
     client.deliveredRequests.add(key);
     const type = request.method === 'item/tool/requestUserInput' ? 'interaction' : 'approval';
-    send(socket, { type, provider, request });
+    this.#deliverThreadMessage(socket, subscription, {
+      type, provider, request, tmuxSession: subscription?.target.tmuxSession || '',
+    });
   }
 
   #clearProviderRequests(provider) {
