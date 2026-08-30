@@ -187,6 +187,17 @@ test('unchanged Agent transcript refreshes are reconciled without a full redraw'
   assert.match(remoteJs, /if \(reconciled === state\.thread\) return/);
 });
 
+test('remote streaming reuses unchanged turn nodes instead of rebuilding the whole transcript', () => {
+  assert.match(remoteJs, /reconcileChildOrder/);
+  assert.match(remoteJs, /existingTurnNodes/);
+  assert.match(remoteJs, /node\?\._codeckTurn === turn/);
+  assert.doesNotMatch(remoteJs, /\$\('#turns'\)\.replaceChildren\(\.\.\.nodes\)/);
+});
+
+test('default terminal activity updates in place without scheduling a replacement render', () => {
+  assert.match(remoteJs, /const shell = state\.thread\?\.provider === 'shell';[\s\S]*?return \{\s*kind: 'text',\s*status: working \? 'working' : 'done'/);
+});
+
 test('remote consumes sequenced session and thread snapshots before using slow polling fallbacks', () => {
   assert.match(remoteJs, /message\.type === 'sessionsSnapshot'/);
   assert.match(remoteJs, /message\.type === 'threadSnapshot'/);

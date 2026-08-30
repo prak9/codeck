@@ -329,6 +329,61 @@ test('applies streamed events without losing content on completion', () => {
   assert.equal(latestRunningTurn(thread), null);
 });
 
+test('streamed deltas preserve unchanged turn and item references without mutating prior state', () => {
+  const thread = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      {
+        id: 'turn-1', status: 'completed',
+        items: [{ id: 'answer-1', type: 'agentMessage', text: 'Earlier answer' }],
+      },
+      {
+        id: 'turn-2', status: 'inProgress',
+        items: [
+          { id: 'reasoning-2', type: 'reasoning', summary: ['Thinking'], status: 'completed' },
+          { id: 'answer-2', type: 'agentMessage', text: 'Live' },
+        ],
+      },
+    ],
+  });
+
+  const updated = applyAgentEvent(thread, 'item/agentMessage/delta', {
+    threadId: 'thread-1', turnId: 'turn-2', itemId: 'answer-2', delta: ' output',
+  });
+
+  assert.notEqual(updated, thread);
+  assert.equal(updated.turns[0], thread.turns[0]);
+  assert.notEqual(updated.turns[1], thread.turns[1]);
+  assert.equal(updated.turns[1].items[0], thread.turns[1].items[0]);
+  assert.notEqual(updated.turns[1].items[1], thread.turns[1].items[1]);
+  assert.equal(thread.turns[1].items[1].text, 'Live');
+  assert.equal(updated.turns[1].items[1].text, 'Live output');
+});
+
+test('a changed transcript snapshot preserves unchanged turns for keyed rendering', () => {
+  const current = normalizeAgentThread('qodercli', {
+    id: 'thread-1',
+    turns: [
+      { id: 'turn-1', status: 'completed', items: [{ id: 'one', type: 'agentMessage', text: 'One' }] },
+      { id: 'turn-2', status: 'completed', items: [{ id: 'two', type: 'agentMessage', text: 'Two' }] },
+    ],
+  });
+  current.tmux = { name: 'qoder-work', status: 'working', available: true };
+  const refreshed = normalizeAgentThread('qodercli', {
+    id: 'thread-1',
+    turns: [
+      { id: 'turn-1', status: 'completed', items: [{ id: 'one', type: 'agentMessage', text: 'One' }] },
+      { id: 'turn-2', status: 'completed', items: [{ id: 'two', type: 'agentMessage', text: 'Two final' }] },
+    ],
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, refreshed);
+  assert.equal(reconciled.turns[0], current.turns[0]);
+  assert.notEqual(reconciled.turns[1], current.turns[1]);
+  assert.equal(reconciled.turns[1].items[0].text, 'Two final');
+  assert.deepEqual(reconciled.tmux, current.tmux);
+});
+
 test('adds provider-neutral user and command content safely', () => {
   let thread = normalizeAgentThread('claude', { id: 'thread-1', turns: [] });
   thread = applyAgentEvent(thread, 'item/started', {

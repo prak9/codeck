@@ -82,7 +82,7 @@ export function normalizeAgentThread(provider, thread) {
   };
 }
 
-function renderedThreadContent(thread) {
+function renderedThreadMetadata(thread) {
   return JSON.stringify([
     thread?.id,
     thread?.name,
@@ -90,14 +90,23 @@ function renderedThreadContent(thread) {
     thread?.cwd,
     thread?.readOnly,
     thread?.status,
-    thread?.turns,
   ]);
 }
 
 export function reconcileAgentThreadRefresh(current, refreshed) {
-  if (current && renderedThreadContent(current) === renderedThreadContent(refreshed)) return current;
+  if (!current) return refreshed;
+  const currentTurns = asArray(current.turns);
+  const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
+  const turns = asArray(refreshed.turns).map((turn) => {
+    const existing = currentById.get(turn.id);
+    return existing && JSON.stringify(existing) === JSON.stringify(turn) ? existing : turn;
+  });
+  const sameTurns = turns.length === currentTurns.length
+    && turns.every((turn, index) => turn === currentTurns[index]);
+  if (sameTurns && renderedThreadMetadata(current) === renderedThreadMetadata(refreshed)) return current;
   return {
     ...refreshed,
+    turns,
     ...(current?.tmux ? { tmux: { ...current.tmux } } : {}),
   };
 }
@@ -118,15 +127,6 @@ export function normalizeInteractionQuestions(params) {
   }));
 }
 
-function ensureTurn(thread, turnId) {
-  let turn = thread.turns.find((candidate) => candidate.id === turnId);
-  if (!turn) {
-    turn = { id: turnId || crypto.randomUUID(), status: 'inProgress', items: [] };
-    thread.turns.push(turn);
-  }
-  return turn;
-}
-
 function mergeTurn(current, incoming) {
   if (!current) return copyTurn(incoming);
   const incomingItems = asArray(incoming?.items);
@@ -137,55 +137,81 @@ function mergeTurn(current, incoming) {
   };
 }
 
+function updateTurn(thread, turnId, update) {
+  const turns = asArray(thread.turns);
+  const index = turns.findIndex((candidate) => candidate.id === turnId);
+  const current = index < 0
+    ? { id: turnId || crypto.randomUUID(), status: 'inProgress', items: [] }
+    : turns[index];
+  const next = update(current, index >= 0);
+  if (next === current && index >= 0) return thread;
+  const updated = [...turns];
+  if (index < 0) updated.push(next);
+  else updated[index] = next;
+  return { ...thread, turns: updated };
+}
+
 export function applyAgentEvent(currentThread, method, params = {}) {
   if (!currentThread || params.threadId !== currentThread.id) return currentThread;
-  const thread = normalizeAgentThread(currentThread.provider, currentThread);
   if (method === 'turn/started' || method === 'turn/completed') {
     const incoming = params.turn || { id: params.turnId };
-    const index = thread.turns.findIndex((turn) => turn.id === incoming.id);
-    if (index < 0) thread.turns.push(copyTurn(incoming));
-    else thread.turns[index] = mergeTurn(thread.turns[index], incoming);
-    return thread;
+    const turnId = incoming.id || params.turnId;
+    return updateTurn(currentThread, turnId, (turn, exists) => (
+      exists ? mergeTurn(turn, incoming) : copyTurn({ ...incoming, id: turnId })
+    ));
   }
   if (method === 'item/started' || method === 'item/completed') {
-    const turn = ensureTurn(thread, params.turnId);
     const item = copyItem(params.item);
-    const index = turn.items.findIndex((candidate) => candidate.id === item.id);
-    if (index < 0) turn.items.push(item);
-    else turn.items[index] = { ...turn.items[index], ...item };
-    return thread;
+    return updateTurn(currentThread, params.turnId, (turn) => {
+      const items = asArray(turn.items);
+      const index = items.findIndex((candidate) => candidate.id === item.id);
+      const updated = [...items];
+      if (index < 0) updated.push(item);
+      else updated[index] = { ...items[index], ...item };
+      return { ...turn, items: updated };
+    });
   }
   if (method === 'item/agentMessage/delta') {
-    const turn = ensureTurn(thread, params.turnId);
-    let item = turn.items.find((candidate) => candidate.id === params.itemId);
-    if (!item) {
-      item = { id: params.itemId, type: 'agentMessage', text: '' };
-      turn.items.push(item);
-    }
-    item.text = `${item.text || ''}${params.delta || ''}`;
-    return thread;
+    return updateTurn(currentThread, params.turnId, (turn) => {
+      const items = asArray(turn.items);
+      const index = items.findIndex((candidate) => candidate.id === params.itemId);
+      const item = index < 0
+        ? { id: params.itemId, type: 'agentMessage', text: params.delta || '' }
+        : { ...items[index], text: `${items[index].text || ''}${params.delta || ''}` };
+      const updated = [...items];
+      if (index < 0) updated.push(item);
+      else updated[index] = item;
+      return { ...turn, items: updated };
+    });
   }
   if (method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta') {
-    const turn = ensureTurn(thread, params.turnId);
-    let item = turn.items.find((candidate) => candidate.id === params.itemId);
-    if (!item) {
-      item = { id: params.itemId, type: 'commandExecution', command: '', status: 'inProgress' };
-      turn.items.push(item);
-    }
-    item.aggregatedOutput = `${item.aggregatedOutput || ''}${params.delta || ''}`;
-    return thread;
+    return updateTurn(currentThread, params.turnId, (turn) => {
+      const items = asArray(turn.items);
+      const index = items.findIndex((candidate) => candidate.id === params.itemId);
+      const existing = index < 0
+        ? { id: params.itemId, type: 'commandExecution', command: '', status: 'inProgress' }
+        : items[index];
+      const item = {
+        ...existing,
+        aggregatedOutput: `${existing.aggregatedOutput || ''}${params.delta || ''}`,
+      };
+      const updated = [...items];
+      if (index < 0) updated.push(item);
+      else updated[index] = item;
+      return { ...turn, items: updated };
+    });
   }
   if (method === 'thread/status/changed') {
-    thread.status = params.status;
-    return thread;
+    return { ...currentThread, status: params.status };
   }
   if (method === 'error') {
-    const turn = ensureTurn(thread, params.turnId || `error-${Date.now()}`);
-    turn.status = 'failed';
-    turn.error = params.message || 'Agent request failed';
-    return thread;
+    return updateTurn(currentThread, params.turnId || `error-${Date.now()}`, (turn) => ({
+      ...turn,
+      status: 'failed',
+      error: params.message || 'Agent request failed',
+    }));
   }
-  return thread;
+  return currentThread;
 }
 
 export function latestRunningTurn(thread) {

@@ -12,7 +12,8 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=24';
+} from './agent-model.js?v=25';
+import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=1';
@@ -1402,6 +1403,7 @@ function agentOutputActions(text) {
 function renderTurn(turn) {
   const section = element('section', 'turn');
   section.dataset.turnId = turn.id;
+  section._codeckTurn = turn;
   for (const item of turn.items || []) section.append(itemNode(item, turn));
   if (turn.error) section.append(element('div', 'turn-error', turn.error));
   const output = agentOutputText(turn);
@@ -1418,11 +1420,17 @@ function renderTurn(turn) {
   return section;
 }
 
-function terminalActivityNode() {
-  const content = terminalActivityContent();
+function terminalActivityKey(content) {
+  return JSON.stringify([
+    content.kind, content.status, content.working, content.label, content.output, content.ariaLabel,
+  ]);
+}
+
+function terminalActivityNode(content = terminalActivityContent()) {
   const section = element('section', 'turn terminal-activity');
   section.dataset.activityStatus = content.status;
   section.dataset.activityKind = 'text';
+  section._codeckActivityKey = terminalActivityKey(content);
   const foot = element('div', 'turn-foot');
   foot.setAttribute('role', 'status');
   foot.setAttribute('aria-live', 'polite');
@@ -1461,6 +1469,7 @@ function terminalActivityContent() {
   const shell = state.thread?.provider === 'shell';
   const working = state.thread?.tmux?.status === 'working';
   return {
+    kind: 'text',
     status: working ? 'working' : 'done',
     working,
     label: shell
@@ -1506,6 +1515,7 @@ function updateTerminalActivity() {
   if (output.textContent !== content.output) output.textContent = content.output;
   output.hidden = !content.output;
   output.setAttribute('aria-label', content.ariaLabel);
+  section._codeckActivityKey = terminalActivityKey(content);
   if (changed) requestAnimationFrame(() => {
     if (outputNearBottom) output.scrollTop = output.scrollHeight;
     if (nearBottom) transcript.scrollTop = transcript.scrollHeight;
@@ -1668,13 +1678,23 @@ function renderThread() {
   const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
-  const nodes = (state.thread?.turns || []).map(renderTurn);
+  const turnContainer = $('#turns');
+  const existingTurnNodes = new Map([...turnContainer.children]
+    .filter((node) => node.dataset.turnId)
+    .map((node) => [node.dataset.turnId, node]));
+  const nodes = (state.thread?.turns || []).map((turn) => {
+    const node = existingTurnNodes.get(turn.id);
+    return node?._codeckTurn === turn ? node : renderTurn(turn);
+  });
   const terminalContent = terminalActivityContent();
   if (shouldShowTerminalActivity(state.thread) && terminalContent.kind !== 'command') {
-    nodes.push(terminalActivityNode());
+    const existing = [...turnContainer.children].find((node) => node.classList.contains('terminal-activity'));
+    nodes.push(existing?._codeckActivityKey === terminalActivityKey(terminalContent)
+      ? existing
+      : terminalActivityNode(terminalContent));
   }
-  $('#turns').replaceChildren(...nodes);
-  for (const details of $('#turns').querySelectorAll('details')) {
+  reconcileChildOrder(turnContainer, nodes);
+  for (const details of turnContainer.querySelectorAll('details')) {
     if (openItems.has(details.dataset.itemId)) details.open = true;
   }
   const approvals = [...state.approvals.entries()].filter(([, entry]) => (

@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
+const MAX_TRANSCRIPT_CACHE_ENTRIES = 16;
+
 class AsyncInputQueue {
   constructor() {
     this.values = [];
@@ -59,6 +61,25 @@ function sessionToThread(info, turns = []) {
     status: turns.some((turn) => turn.status === 'inProgress') ? { type: 'active' } : { type: 'idle' },
     turns,
   };
+}
+
+function transcriptRevision(info) {
+  const modified = typeof info?.lastModified === 'number'
+    ? info.lastModified
+    : Date.parse(info?.lastModified);
+  const rawSize = info?.fileSize;
+  const size = typeof rawSize === 'number'
+    ? rawSize
+    : typeof rawSize === 'string' && rawSize.trim() ? Number(rawSize) : Number.NaN;
+  if (!Number.isFinite(modified) || !Number.isFinite(size) || size < 0) return null;
+  return JSON.stringify([
+    modified,
+    size,
+    info.cwd || '',
+    info.customTitle || '',
+    info.summary || '',
+    info.firstPrompt || '',
+  ]);
 }
 
 function transcriptToTurns(messages) {
@@ -210,6 +231,8 @@ export class SdkAgentBackend extends EventEmitter {
     this.getSessionMessages = getSessionMessages;
     this.idleTimeoutMs = idleTimeoutMs;
     this.runtimes = new Map();
+    this.transcriptCache = new Map();
+    this.transcriptLoads = new Map();
     this.approvals = new Map();
     this.approvalSequence = 0;
     this.closed = false;
@@ -241,8 +264,8 @@ export class SdkAgentBackend extends EventEmitter {
   async openThread(threadId) {
     const info = await this.getSessionInfo(threadId);
     if (!info) throw new Error(`${this.label} session not found`);
-    const messages = await this.getSessionMessages(threadId, { dir: info.cwd });
-    const thread = sessionToThread(info, transcriptToTurns(messages));
+    const persistedTurns = await this.#persistedTurns(threadId, info);
+    const thread = sessionToThread(info, [...persistedTurns]);
     const runtime = this.runtimes.get(threadId);
     if (runtime?.activeTurn) {
       thread.turns.push(runtime.activeTurn, ...runtime.pendingTurns);
@@ -304,11 +327,45 @@ export class SdkAgentBackend extends EventEmitter {
       runtime.query?.close?.();
     }
     this.runtimes.clear();
+    this.transcriptCache.clear();
+    this.transcriptLoads.clear();
     for (const approval of this.approvals.values()) {
       approval.cleanup();
       approval.resolve(withToolUseId({ behavior: 'deny', message: '远程会话已关闭', interrupt: true }, approval.options));
     }
     this.approvals.clear();
+  }
+
+  async #persistedTurns(threadId, info) {
+    const revision = transcriptRevision(info);
+    const cached = revision ? this.transcriptCache.get(threadId) : null;
+    if (cached?.revision === revision) {
+      this.transcriptCache.delete(threadId);
+      this.transcriptCache.set(threadId, cached);
+      return cached.turns;
+    }
+
+    const loadKey = revision ? `${threadId}\0${revision}` : null;
+    let load = loadKey ? this.transcriptLoads.get(loadKey) : null;
+    if (!load) {
+      load = Promise.resolve(this.getSessionMessages(threadId, { dir: info.cwd }))
+        .then(transcriptToTurns);
+      if (loadKey) {
+        this.transcriptLoads.set(loadKey, load);
+        load.finally(() => {
+          if (this.transcriptLoads.get(loadKey) === load) this.transcriptLoads.delete(loadKey);
+        }).catch(() => {});
+      }
+    }
+    const turns = await load;
+    if (revision) {
+      this.transcriptCache.delete(threadId);
+      this.transcriptCache.set(threadId, { revision, turns });
+      while (this.transcriptCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
+        this.transcriptCache.delete(this.transcriptCache.keys().next().value);
+      }
+    }
+    return turns;
   }
 
   #assertOpen() {

@@ -91,6 +91,99 @@ test('lists and reconstructs persisted Claude and Qoder SDK sessions', async () 
   }
 });
 
+test('reuses an unchanged persisted transcript and reloads as soon as its file metadata changes', async () => {
+  let fileSize = 128;
+  let messageLoads = 0;
+  const { backend } = setup('qodercli', {
+    getSessionInfo: async (sessionId) => ({
+      sessionId,
+      summary: 'Fix the mobile layout',
+      cwd: '/srv/project',
+      lastModified: 1_700_000_020_000,
+      fileSize,
+    }),
+    getSessionMessages: async () => {
+      messageLoads += 1;
+      return [
+        { type: 'user', uuid: 'user-1', message: { role: 'user', content: 'Check the layout' } },
+        {
+          type: 'assistant', uuid: 'assistant-1',
+          message: { role: 'assistant', content: [{ type: 'text', text: fileSize === 128 ? 'First answer.' : 'Final answer.' }] },
+        },
+      ];
+    },
+  });
+
+  const first = await backend.openThread('11111111-1111-4111-8111-111111111111');
+  const unchanged = await backend.openThread('11111111-1111-4111-8111-111111111111');
+  assert.equal(messageLoads, 1);
+  assert.equal(unchanged.thread.turns[0].items[1].text, 'First answer.');
+  assert.notEqual(unchanged.thread.turns, first.thread.turns);
+
+  fileSize = 160;
+  const changed = await backend.openThread('11111111-1111-4111-8111-111111111111');
+  assert.equal(messageLoads, 2);
+  assert.equal(changed.thread.turns[0].items[1].text, 'Final answer.');
+  backend.close();
+});
+
+test('reloads persisted transcripts when the SDK does not expose reliable file metadata', async () => {
+  let messageLoads = 0;
+  const { backend } = setup('claude', {
+    getSessionInfo: async (sessionId) => ({
+      sessionId,
+      summary: 'Fix the mobile layout',
+      cwd: '/srv/project',
+      lastModified: 1_700_000_020_000,
+      fileSize: null,
+    }),
+    getSessionMessages: async () => {
+      messageLoads += 1;
+      return [{
+        type: 'assistant',
+        uuid: `assistant-${messageLoads}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: `Answer ${messageLoads}` }] },
+      }];
+    },
+  });
+
+  const first = await backend.openThread('11111111-1111-4111-8111-111111111111');
+  const second = await backend.openThread('11111111-1111-4111-8111-111111111111');
+  assert.equal(messageLoads, 2);
+  assert.equal(first.thread.turns[0].items[0].text, 'Answer 1');
+  assert.equal(second.thread.turns[0].items[0].text, 'Answer 2');
+  backend.close();
+});
+
+test('coalesces concurrent transcript loads for the same file revision', async () => {
+  let messageLoads = 0;
+  let finishLoad;
+  const messages = new Promise((resolve) => { finishLoad = resolve; });
+  const { backend } = setup('qodercli', {
+    getSessionInfo: async (sessionId) => ({
+      sessionId,
+      summary: 'Fix the mobile layout',
+      cwd: '/srv/project',
+      lastModified: 1_700_000_020_000,
+      fileSize: 128,
+    }),
+    getSessionMessages: async () => {
+      messageLoads += 1;
+      return messages;
+    },
+  });
+
+  const first = backend.openThread('11111111-1111-4111-8111-111111111111');
+  const second = backend.openThread('11111111-1111-4111-8111-111111111111');
+  await waitFor(() => messageLoads === 1);
+  finishLoad([{ type: 'assistant', uuid: 'assistant-1', message: { role: 'assistant', content: 'Done' } }]);
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(messageLoads, 1);
+  assert.equal(firstResult.thread.turns[0].items[0].text, 'Done');
+  assert.equal(secondResult.thread.turns[0].items[0].text, 'Done');
+  backend.close();
+});
+
 test('starts a persistent interactive session and streams Codex-shaped events', async () => {
   const { backend, queries } = setup('claude');
   const notifications = [];
