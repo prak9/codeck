@@ -160,6 +160,10 @@ export class AgentRegistry extends EventEmitter {
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
     return this.sendTmuxMessage({ provider, ...params });
   }
+  recordSessionMessage(provider, params) {
+    if (cleanProvider(provider) === 'shell') return;
+    this.backend(provider).recordSessionMessage?.(params);
+  }
   interruptSession(provider, params) {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.interruptTmuxSession) throw new Error('当前服务不支持中断 tmux 会话');
@@ -307,11 +311,21 @@ export class AgentHub {
       const threadId = cleanId(message.threadId, 'Thread');
       const sessionName = cleanId(message.tmuxSession, 'tmux session');
       const text = cleanMessage(message.text);
+      const turnId = typeof message.turnId === 'string' && message.turnId.trim()
+        ? message.turnId.trim()
+        : null;
       if (provider !== 'shell') this.registry.backend(provider);
       this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
-      const payload = { threadId, sessionName, text };
+      const payload = {
+        threadId, sessionName, text,
+        ...(turnId ? { turnId, mode: message.mode === 'steer' ? 'steer' : 'followUp' } : {}),
+      };
       return this.#runCommand(message, provider, payload, async () => {
-        const result = await this.registry.sendSessionMessage(provider, payload);
+        const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text });
+        this.registry.recordSessionMessage(provider, {
+          threadId, turnId, text,
+          commandId: message.commandId == null ? '' : String(message.commandId).trim(),
+        });
         this.#invalidateSessionFeed();
         this.#refreshThreadSubscription({ provider, threadId, tmuxSession: sessionName });
         return result;

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   getSessionInfo as getClaudeSessionInfo,
@@ -22,6 +23,56 @@ const CODEX_APPROVAL_METHODS = new Set([
   'applyPatchApproval',
   'execCommandApproval',
 ]);
+const CODEX_RECENT_USER_TURN_LIMIT = 10;
+
+function codexUserItems(turn) {
+  return (Array.isArray(turn?.items) ? turn.items : [])
+    .filter((item) => item?.type === 'userMessage');
+}
+
+function codexUserItemText(item) {
+  if (typeof item?.content === 'string') return item.content;
+  return (Array.isArray(item?.content) ? item.content : [])
+    .filter((part) => typeof part?.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+function mergeCodexUserItems(current, incoming) {
+  const used = new Set();
+  const users = (Array.isArray(current) ? current : []).map((currentItem) => {
+    let index = incoming.findIndex((item, candidateIndex) => (
+      !used.has(candidateIndex) && currentItem.id && item.id === currentItem.id
+    ));
+    if (index < 0 && currentItem.delivery) {
+      const text = codexUserItemText(currentItem);
+      index = incoming.findIndex((item, candidateIndex) => (
+        !used.has(candidateIndex) && codexUserItemText(item) === text
+      ));
+    }
+    if (index < 0) return currentItem;
+    used.add(index);
+    return incoming[index];
+  });
+  incoming.forEach((item, index) => {
+    if (!used.has(index)) users.push(item);
+  });
+  return users;
+}
+
+function mergeCodexSummaryUsers(turn, cachedUsers) {
+  if (!Array.isArray(cachedUsers) || !cachedUsers.length) return turn;
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const users = [...cachedUsers];
+  const ids = new Set(users.map((item) => item?.id).filter(Boolean));
+  for (const item of codexUserItems(turn)) {
+    if (!item.id || !ids.has(item.id)) users.push(item);
+  }
+  return {
+    ...turn,
+    items: [...users, ...items.filter((item) => item?.type !== 'userMessage')],
+  };
+}
 
 function isActiveWriterError(error) {
   return /already has an active writer/i.test(error?.message || '');
@@ -47,7 +98,13 @@ export class CodexAgentBackend extends EventEmitter {
     };
     this.appServer = appServer;
     this.pendingRequests = new Map();
-    appServer.on('notification', (message) => this.emit('notification', message));
+    this.userMessages = new Map();
+    this.userMessageLoads = new Map();
+    this.hydratedUserMessages = new Set();
+    appServer.on('notification', (message) => {
+      this.#observeNotification(message);
+      this.emit('notification', message);
+    });
     appServer.on('serverRequest', (message) => this.#handleServerRequest(message));
     appServer.on('exit', (error) => {
       this.pendingRequests.clear();
@@ -81,7 +138,10 @@ export class CodexAgentBackend extends EventEmitter {
         itemsView: 'summary',
       }),
     ]);
-    const turns = Array.isArray(turnPage?.data) ? [...turnPage.data].reverse() : [];
+    const summaryTurns = Array.isArray(turnPage?.data) ? [...turnPage.data].reverse() : [];
+    if (summaryTurns.length) await this.#hydrateUserMessages(threadId);
+    const cachedUsers = this.userMessages.get(threadId);
+    const turns = summaryTurns.map((turn) => mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id)));
     return {
       ...result,
       thread: {
@@ -116,6 +176,16 @@ export class CodexAgentBackend extends EventEmitter {
     return this.appServer.request('turn/start', { threadId, input });
   }
 
+  recordSessionMessage({ threadId, turnId, text, commandId }) {
+    if (!threadId || !turnId || typeof text !== 'string' || !text.trim()) return;
+    this.#cacheUserItem(threadId, turnId, {
+      id: `delivery:${commandId || crypto.randomUUID()}`,
+      type: 'userMessage',
+      content: [{ type: 'text', text }],
+      delivery: { status: 'accepted' },
+    });
+  }
+
   interruptTurn({ threadId, turnId }) {
     return this.appServer.request('turn/interrupt', { threadId, turnId });
   }
@@ -140,7 +210,84 @@ export class CodexAgentBackend extends EventEmitter {
 
   close() {
     this.pendingRequests.clear();
+    this.userMessages.clear();
+    this.userMessageLoads.clear();
+    this.hydratedUserMessages.clear();
     this.appServer.close();
+  }
+
+  #threadUserMessages(threadId) {
+    let turns = this.userMessages.get(threadId);
+    if (!turns) {
+      turns = new Map();
+      this.userMessages.set(threadId, turns);
+    }
+    return turns;
+  }
+
+  #cacheUserItem(threadId, turnId, item) {
+    if (!threadId || !turnId || item?.type !== 'userMessage') return;
+    const turns = this.#threadUserMessages(threadId);
+    const users = [...(turns.get(turnId) || [])];
+    let index = users.findIndex((candidate) => candidate.id === item.id);
+    if (index < 0 && !item.delivery) {
+      const text = codexUserItemText(item);
+      index = users.findIndex((candidate) => (
+        candidate.delivery && codexUserItemText(candidate) === text
+      ));
+    }
+    if (index < 0) users.push(item);
+    else users[index] = item;
+    turns.set(turnId, users);
+  }
+
+  #cacheTurnUsers(threadId, turn, { replace = false } = {}) {
+    if (!threadId || !turn?.id) return;
+    const incoming = codexUserItems(turn);
+    if (!incoming.length) return;
+    const turns = this.#threadUserMessages(threadId);
+    if (replace) {
+      turns.set(turn.id, mergeCodexUserItems(turns.get(turn.id), incoming));
+      return;
+    }
+    for (const item of incoming) this.#cacheUserItem(threadId, turn.id, item);
+  }
+
+  #hydrateUserMessages(threadId, { force = false, limit = CODEX_RECENT_USER_TURN_LIMIT } = {}) {
+    const inFlight = this.userMessageLoads.get(threadId);
+    if (inFlight) return inFlight;
+    if (!force && this.hydratedUserMessages.has(threadId)) return Promise.resolve();
+    const load = this.appServer.request('thread/turns/list', {
+      threadId,
+      limit,
+      sortDirection: 'desc',
+      itemsView: 'full',
+    }).then((page) => {
+      for (const turn of Array.isArray(page?.data) ? page.data : []) {
+        this.#cacheTurnUsers(threadId, turn, { replace: true });
+      }
+    }).catch(() => {
+      // Full user-message hydration is an enhancement over the summary transcript.
+      // Keep the thread readable if the optional view is unavailable.
+    }).finally(() => {
+      this.hydratedUserMessages.add(threadId);
+      if (this.userMessageLoads.get(threadId) === load) this.userMessageLoads.delete(threadId);
+    });
+    this.userMessageLoads.set(threadId, load);
+    return load;
+  }
+
+  #observeNotification(message) {
+    const params = message?.params || {};
+    const threadId = params.threadId;
+    if (!threadId) return;
+    if (params.item?.type === 'userMessage' && params.turnId) {
+      this.#cacheUserItem(threadId, params.turnId, params.item);
+    }
+    if (params.turn) this.#cacheTurnUsers(threadId, params.turn);
+    if (message.method === 'turn/completed') {
+      this.#hydrateUserMessages(threadId, { force: true, limit: 1 });
+    }
   }
 
   #handleServerRequest(message) {

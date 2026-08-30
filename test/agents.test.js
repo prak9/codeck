@@ -526,6 +526,61 @@ test('a Claude registry session switch invalidates its cached identity before th
   }
 });
 
+test('indexes Claude transcripts once and reuses known session paths for later audits', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-claude-transcript-index-'));
+  const procRoot = path.join(root, 'proc');
+  const claudeHome = path.join(root, 'claude');
+  const projectsRoot = path.join(claudeHome, 'projects', 'workspace');
+  const identityCache = new Map();
+  const processTreeCache = new Map();
+  const ids = [
+    '01a04124-1111-7111-8111-111111111111',
+    '01a04125-2222-7222-8222-222222222222',
+  ];
+  const originalReaddirSync = fs.readdirSync;
+  let projectDirectoryReads = 0;
+  try {
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    writeProcProcess(procRoot, { pid: 1, ppid: 0, children: [10, 20] });
+    const panes = ids.map((id, index) => {
+      const pid = (index + 1) * 10;
+      writeProcProcess(procRoot, {
+        pid, ppid: 1, startTicks: 8_000 + index,
+        command: '/bin/bash', children: [pid + 1],
+      });
+      writeProcProcess(procRoot, {
+        pid: pid + 1, ppid: pid, startTicks: 9_000 + index,
+        command: `node /usr/bin/claude --resume ${id}`,
+      });
+      fs.writeFileSync(path.join(projectsRoot, `${id}.jsonl`), JSON.stringify({
+        sessionId: id, slug: `claude-session-${index}`,
+      }));
+      return { session: `claude-${index}`, pid, paneId: `%${index + 1}`, currentCommand: 'node' };
+    });
+    fs.readdirSync = function countedRead(directory, ...args) {
+      if (String(directory).startsWith(path.join(claudeHome, 'projects'))) projectDirectoryReads += 1;
+      return originalReaddirSync.call(this, directory, ...args);
+    };
+    const detect = (now) => detectPaneAgents(panes, { CLAUDE_CONFIG_DIR: claudeHome }, {
+      procRoot, clockTicks: 100, now, uptimeMs: 100_000,
+      identityCache, identityCacheTtlMs: 5_000, processTreeCache,
+    });
+
+    const first = await detect(1_000_000);
+    assert.deepEqual([...first.values()].map((agent) => agent.name), [
+      'claude-session-0', 'claude-session-1',
+    ]);
+    assert.equal(projectDirectoryReads, 2, 'one recursive index should serve both Claude sessions');
+
+    projectDirectoryReads = 0;
+    await detect(1_006_000);
+    assert.equal(projectDirectoryReads, 0, 'known transcript paths should survive identity cache audits');
+  } finally {
+    fs.readdirSync = originalReaddirSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a Qoder segment FD switch invalidates a cached bare-resume identity before its TTL', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-qoder-fd-switch-'));
   const procRoot = path.join(root, 'proc');
@@ -758,6 +813,31 @@ test('reuses an unchanged pane process tree without rereading process details', 
   }
 });
 
+test('staggers cold pane process tree audits within the safety window', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-pane-proc-cache-stagger-'));
+  const processTreeCache = new Map();
+  const now = 1_000_000;
+  const ttl = 5_000;
+  try {
+    const panes = ['one', 'two', 'three'].map((session, index) => {
+      const pid = 10 + index;
+      writeProcProcess(root, { pid, ppid: 1, startTicks: 8_000 + index, command: '/bin/bash' });
+      return { session, pid, paneId: `%${index + 1}`, currentCommand: 'bash' };
+    });
+
+    readPaneProcessTrees(panes, {
+      procRoot: root, clockTicks: 100, now, uptimeMs: 100_000,
+      processTreeCache, processTreeCacheTtlMs: ttl,
+    });
+
+    const deadlines = [...processTreeCache.values()].map((entry) => entry.expiresAt);
+    assert.ok(new Set(deadlines).size > 1);
+    assert.ok(deadlines.every((deadline) => deadline > now && deadline <= now + ttl));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('pane process tree observations invalidate on topology changes and expire for command audits', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-pane-proc-cache-invalidation-'));
   const processTreeCache = new Map();
@@ -865,6 +945,32 @@ test('reuses unchanged detached process observations without rereading commands 
   }
 });
 
+test('staggers cold detached process audits within the safety window', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-cache-stagger-'));
+  const observationCache = new Map();
+  const now = 1_000_000;
+  const ttl = 5_000;
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20, 21, 22] });
+    for (const pid of [20, 21, 22]) {
+      writeProcProcess(root, {
+        pid, ppid: 1, startTicks: 2_000 + pid,
+        command: `/bin/bash -lc worker-${pid}`,
+      });
+    }
+
+    findDetachedAgentSessionIdsFromProc(new Set(), {
+      procRoot: root, observationCache, observationCacheTtlMs: ttl, now,
+    });
+
+    const deadlines = [...observationCache.values()].map((entry) => entry.expiresAt);
+    assert.ok(new Set(deadlines).size > 1);
+    assert.ok(deadlines.every((deadline) => deadline > now && deadline <= now + ttl));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('detached process observations invalidate immediately for new and reused PIDs', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-cache-invalidation-'));
   const firstId = '01a04141-1111-7111-8111-111111111111';
@@ -943,6 +1049,47 @@ test('Agent detection shares detached process observations across session refres
     assert.equal(detachedEnvironmentReads, 0);
   } finally {
     fs.readFileSync = originalReadFileSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('staggers cold Agent identity audits within the safety window', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-identity-stagger-'));
+  const procRoot = path.join(root, 'proc');
+  const identityCache = new Map();
+  const processTreeCache = new Map();
+  const now = 1_000_000;
+  const ttl = 5_000;
+  const ids = [
+    '01a04150-1111-7111-8111-111111111111',
+    '01a04151-2222-7222-8222-222222222222',
+    '01a04152-3333-7333-8333-333333333333',
+  ];
+  try {
+    writeProcProcess(procRoot, { pid: 1, ppid: 0, children: [10, 20, 30] });
+    const panes = ids.map((id, index) => {
+      const pid = (index + 1) * 10;
+      writeProcProcess(procRoot, {
+        pid, ppid: 1, startTicks: 8_000 + index,
+        command: '/bin/bash', children: [pid + 1],
+      });
+      writeProcProcess(procRoot, {
+        pid: pid + 1, ppid: pid, startTicks: 9_000 + index,
+        command: `node /usr/bin/qodercli --resume ${id} --yolo`,
+      });
+      return { session: `work-${index}`, pid, paneId: `%${index + 1}`, currentCommand: 'node' };
+    });
+
+    await detectPaneAgents(panes, { QODER_CONFIG_DIR: path.join(root, 'qoder') }, {
+      procRoot, clockTicks: 100, now, uptimeMs: 100_000,
+      identityCache, identityCacheTtlMs: ttl, processTreeCache,
+    });
+
+    const deadlines = [...identityCache.values()].map((entry) => entry.expiresAt);
+    assert.equal(deadlines.length, panes.length);
+    assert.equal(new Set(deadlines).size, deadlines.length);
+    assert.ok(deadlines.every((deadline) => deadline > now && deadline <= now + ttl));
+  } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

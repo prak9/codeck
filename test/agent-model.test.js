@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   agentActivityText,
+  applyAcceptedUserMessage,
   applyTmuxSnapshot,
   applyAgentEvent,
   findTmuxThreadTarget,
@@ -382,6 +383,58 @@ test('a changed transcript snapshot preserves unchanged turns for keyed renderin
   assert.notEqual(reconciled.turns[1], current.turns[1]);
   assert.equal(reconciled.turns[1].items[0].text, 'Two final');
   assert.deepEqual(reconciled.tmux, current.tmux);
+});
+
+test('a lightweight snapshot cannot delete a streamed user follow-up from the same turn', () => {
+  const first = {
+    id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }],
+  };
+  const followUp = {
+    id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: 'Also verify mobile' }],
+  };
+  const current = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [first, { id: 'reasoning-1', type: 'reasoning', summary: ['Working'] }, followUp],
+    }],
+  });
+  current.tmux = { name: 'report', status: 'working', available: true };
+  const refreshed = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'completed',
+      items: [first, { id: 'answer-1', type: 'agentMessage', text: 'Done' }],
+    }],
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, refreshed);
+
+  assert.deepEqual(reconciled.turns[0].items.map((item) => item.type), [
+    'userMessage', 'userMessage', 'agentMessage',
+  ]);
+  assert.equal(userMessageText(reconciled.turns[0].items[1]), 'Also verify mobile');
+  assert.equal(reconciled.turns[0].status, 'completed');
+});
+
+test('an accepted direct-tmux follow-up appears immediately in its active turn', () => {
+  const thread = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [{
+        id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }],
+      }],
+    }],
+  });
+
+  const updated = applyAcceptedUserMessage(thread, {
+    turnId: 'turn-1', text: 'Also verify mobile', commandId: 'command-12345678',
+  });
+
+  assert.notEqual(updated, thread);
+  assert.deepEqual(updated.turns[0].items.map(userMessageText), ['Start', 'Also verify mobile']);
+  assert.equal(updated.turns[0].items[1].id, 'delivery:command-12345678');
 });
 
 test('adds provider-neutral user and command content safely', () => {

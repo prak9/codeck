@@ -74,9 +74,20 @@ test('an attachment-only Agent follow-up cannot be mistaken for stop', () => {
   assert.equal(composerSubmitAction({ active: false, attachmentCount: 1, provider: 'claude', text: '' }), 'send');
 });
 
+test('only an explicit stop-button submission can interrupt an active turn', () => {
+  assert.equal(composerSubmitAction({
+    active: true, attachmentCount: 0, provider: 'codex', text: '', explicitInterrupt: false,
+  }), 'none');
+  assert.equal(composerSubmitAction({
+    active: true, attachmentCount: 0, provider: 'codex', text: '', explicitInterrupt: true,
+  }), 'interrupt');
+});
+
 test('Shell attachments require a command and preserve the normal stop action', () => {
   assert.equal(composerSubmitAction({ active: false, attachmentCount: 1, provider: 'shell', text: '' }), 'needsShellCommand');
   assert.equal(composerSubmitAction({ active: true, attachmentCount: 1, provider: 'shell', text: '' }), 'needsShellCommand');
   assert.equal(composerSubmitAction({ active: true, attachmentCount: 1, provider: 'shell', text: 'python inspect.py' }), 'send');
-  assert.equal(composerSubmitAction({ active: true, attachmentCount: 0, provider: 'shell', text: '' }), 'interrupt');
+  assert.equal(composerSubmitAction({
+    active: true, attachmentCount: 0, provider: 'shell', text: '', explicitInterrupt: true,
+  }), 'interrupt');
 });

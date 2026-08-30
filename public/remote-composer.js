@@ -32,11 +32,11 @@ export function composerControlState({ active, connected, hasText, opening, pend
   };
 }
 
-export function composerSubmitAction({ active, attachmentCount, provider, text }) {
+export function composerSubmitAction({ active, attachmentCount, explicitInterrupt = false, provider, text }) {
   const hasText = Boolean(String(text || '').trim());
   const hasAttachments = Number(attachmentCount || 0) > 0;
   if (!hasText && hasAttachments && provider === 'shell') return 'needsShellCommand';
-  if (!hasText && active && !hasAttachments) return 'interrupt';
+  if (!hasText && active && !hasAttachments) return explicitInterrupt ? 'interrupt' : 'none';
   if (!hasText && !hasAttachments) return 'none';
   return 'send';
 }

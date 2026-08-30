@@ -11,9 +11,33 @@ const CODEX_HISTORY_READ_LIMIT = 2 * 1024 * 1024;
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
 const AGENT_IDENTITY_CACHE_TTL_MS = 5_000;
 const DETACHED_PROCESS_CACHE_TTL_MS = 5_000;
+const CLAUDE_TRANSCRIPT_MISS_TTL_MS = 5_000;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', cwds: new Map(), previews: new Map() };
 const codexPaneSessions = new Map();
+const claudeTranscriptIndexes = new Map();
+const codexHistoryIndexes = new WeakMap();
 let clockTicksPromise;
+
+// A cold scan populates every cache entry at once. Spread only their first safety
+// audit across the normal TTL; later audits keep the full TTL from their last check.
+function initialAuditDelay(key, ttlMs) {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 1) return Math.max(0, ttlMs || 0);
+  const ttl = Math.floor(ttlMs);
+  const floor = Math.min(1_000, ttl - 1);
+  let hash = 2_166_136_261;
+  for (const character of String(key)) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return floor + 1 + (hash >>> 0) % (ttl - floor);
+}
+
+function initialAuditDelayByIndex(index, count, ttlMs) {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 1) return Math.max(0, ttlMs || 0);
+  const ttl = Math.floor(ttlMs);
+  const floor = Math.min(1_000, ttl - 1);
+  return floor + Math.ceil((ttl - floor) * (index + 1) / Math.max(1, count));
+}
 
 export function parseCodexSessionIndex(content) {
   const names = new Map();
@@ -146,20 +170,37 @@ function latestCodexPrompt(output) {
   return codexPromptBlocks(output).at(-1)?.text || null;
 }
 
+function codexHistoryIndex(history) {
+  if (!Array.isArray(history)) return { exact: new Map(), prefixes: new Map() };
+  const cached = codexHistoryIndexes.get(history);
+  if (cached) return cached;
+  const index = { exact: new Map(), prefixes: new Map() };
+  for (const item of history) {
+    const value = compactCodexText(item?.text);
+    if (!value || !item?.id) continue;
+    const target = value.length > 320 ? index.prefixes : index.exact;
+    const key = value.length > 320 ? value.slice(0, 320) : value;
+    const ids = target.get(key) || new Set();
+    ids.add(item.id);
+    target.set(key, ids);
+  }
+  codexHistoryIndexes.set(history, index);
+  return index;
+}
+
 function matchCodexHistorySession(output, history, acceptId = () => true) {
   const prompts = codexPromptBlocks(output);
   const candidatesByPrompt = prompts.map(() => new Set());
+  const historyIndex = codexHistoryIndex(history);
   let matched = false;
-  for (const item of history || []) {
-    const text = compactCodexText(item?.text);
-    if (!text || !item?.id) continue;
-    const needle = text.slice(0, 320);
-    for (const [index, prompt] of prompts.entries()) {
-      const matches = text.length > needle.length ? prompt.text.startsWith(needle) : prompt.text === text;
-      if (!matches) continue;
-      matched = true;
-      if (!acceptId(item.id)) continue;
-      candidatesByPrompt[index].add(item.id);
+  for (const [index, prompt] of prompts.entries()) {
+    const ids = new Set(historyIndex.exact.get(prompt.text) || []);
+    if (prompt.text.length >= 320) {
+      for (const id of historyIndex.prefixes.get(prompt.text.slice(0, 320)) || []) ids.add(id);
+    }
+    if (ids.size) matched = true;
+    for (const id of ids) {
+      if (acceptId(id)) candidatesByPrompt[index].add(id);
     }
   }
   let candidates = null;
@@ -377,11 +418,11 @@ export function readPaneProcessTrees(panes, {
   const trees = new Map();
   for (const pane of panes || []) {
     const cached = cache?.get(pane.session);
-    const cacheMatchesPane = cached
+    const cacheMatchesPaneIdentity = cached
       && cached.paneId === pane.paneId
       && cached.pid === pane.pid
-      && cached.currentCommand === (pane.currentCommand || '')
-      && cached.expiresAt > now;
+      && cached.currentCommand === (pane.currentCommand || '');
+    const cacheMatchesPane = cacheMatchesPaneIdentity && cached.expiresAt > now;
     if (cacheMatchesPane) {
       const topologyMatches = [...cached.childrenByPid].every(([pid, expected]) => {
         const current = readProcChildren(procRoot, pid);
@@ -422,11 +463,14 @@ export function readPaneProcessTrees(panes, {
     }
     trees.set(pane.session, observation.tree);
     if (cache && observation.tree.length) {
+      const auditDelay = cacheMatchesPaneIdentity
+        ? cacheTtlMs
+        : initialAuditDelay(`${pane.session}\0${pane.paneId}\0${pane.pid}`, cacheTtlMs);
       cache.set(pane.session, {
         paneId: pane.paneId,
         pid: pane.pid,
         currentCommand: pane.currentCommand || '',
-        expiresAt: now + cacheTtlMs,
+        expiresAt: now + auditDelay,
         ...observation,
       });
     } else {
@@ -479,9 +523,12 @@ export function findDetachedAgentSessionIdsFromProc(attachedPids, {
     catch { continue; }
     if (!stat) continue;
     const cached = cache?.get(pid);
-    const reusable = cached?.startTicks === stat.startTicks
-      && cached.name === stat.name
-      && cached.expiresAt > now;
+    const cacheMatchesProcess = cached?.startTicks === stat.startTicks
+      && cached.name === stat.name;
+    const reusable = cacheMatchesProcess && cached.expiresAt > now;
+    const auditDelay = cacheMatchesProcess
+      ? Math.max(0, observationCacheTtlMs)
+      : initialAuditDelay(`${stat.pid}\0${stat.startTicks}\0${stat.name}`, observationCacheTtlMs);
     const process = reusable
       ? { ...cached, ...stat }
       : {
@@ -489,7 +536,7 @@ export function findDetachedAgentSessionIdsFromProc(attachedPids, {
           command: readProcCommand(procRoot, pid, stat.name),
           environmentLoaded: false,
           agentSessionId: null,
-          expiresAt: now + Math.max(0, observationCacheTtlMs),
+          expiresAt: now + auditDelay,
         };
     processes.push(process);
     cache?.set(pid, process);
@@ -581,17 +628,55 @@ export function resolveCodexSessionId(process, codex) {
   return writer?.id || rollout?.id || null;
 }
 
-function findClaudeSlug(sessionId, claudeHome) {
+function claudeTranscriptIndex(claudeHome) {
+  let index = claudeTranscriptIndexes.get(claudeHome);
+  if (!index) {
+    index = { files: new Map(), slugs: new Map(), nextScanAt: 0 };
+    claudeTranscriptIndexes.set(claudeHome, index);
+  }
+  return index;
+}
+
+function refreshClaudeTranscriptIndex(index, claudeHome, now) {
+  const files = new Map(walkFiles(
+    path.join(claudeHome, 'projects'),
+    (name) => new RegExp(`^${UUID}\\.jsonl$`, 'i').test(name),
+  ).map((file) => [path.basename(file, '.jsonl').toLowerCase(), file]));
+  index.files = files;
+  index.nextScanAt = now + CLAUDE_TRANSCRIPT_MISS_TTL_MS;
+  for (const id of index.slugs.keys()) {
+    if (!files.has(id)) index.slugs.delete(id);
+  }
+}
+
+function findClaudeSlug(sessionId, claudeHome, now = Date.now()) {
   if (!sessionId) return null;
-  const file = walkFiles(path.join(claudeHome, 'projects'), (name) => name === `${sessionId}.jsonl`)[0];
+  const id = sessionId.toLowerCase();
+  const index = claudeTranscriptIndex(claudeHome);
+  let file = index.files.get(id);
+  if (!file && now >= index.nextScanAt) {
+    refreshClaudeTranscriptIndex(index, claudeHome, now);
+    file = index.files.get(id);
+  }
   if (!file) return null;
-  const size = fs.statSync(file).size;
-  const length = Math.min(size, 128 * 1024);
+  let stat;
+  try { stat = fs.statSync(file); }
+  catch {
+    index.files.delete(id);
+    index.slugs.delete(id);
+    return null;
+  }
+  const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  const cached = index.slugs.get(id);
+  if (cached?.file === file && cached.signature === signature) return cached.slug;
+  const length = Math.min(stat.size, 128 * 1024);
   const buffer = Buffer.alloc(length);
   const descriptor = fs.openSync(file, 'r');
-  try { fs.readSync(descriptor, buffer, 0, length, size - length); } finally { fs.closeSync(descriptor); }
+  try { fs.readSync(descriptor, buffer, 0, length, stat.size - length); } finally { fs.closeSync(descriptor); }
   const slugs = [...buffer.toString('utf8').matchAll(/"slug"\s*:\s*"([^"]+)"/g)];
-  return slugs.at(-1)?.[1] || null;
+  const slug = slugs.at(-1)?.[1] || null;
+  index.slugs.set(id, { file, signature, slug });
+  return slug;
 }
 
 async function readCodexPaneOutput(session) {
@@ -797,7 +882,24 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     detections.set(pane.session, {
       pane, tree, process: agentProcess, kind, cwd, fingerprint, visiblePrompt, promptChanged,
       registered, explicitId, openSessionId,
+      identityAuditDelay: cached ? identityCacheTtlMs : null,
     });
+  }
+
+  const coldDetectionsByKind = new Map();
+  for (const detection of detections.values()) {
+    if (detection.identityAuditDelay != null) continue;
+    const group = coldDetectionsByKind.get(detection.kind) || [];
+    group.push(detection);
+    coldDetectionsByKind.set(detection.kind, group);
+  }
+  for (const group of coldDetectionsByKind.values()) {
+    group.sort((a, b) => a.pane.session.localeCompare(b.pane.session));
+    for (const [index, detection] of group.entries()) {
+      detection.identityAuditDelay = initialAuditDelayByIndex(
+        index, group.length, identityCacheTtlMs,
+      );
+    }
   }
 
   const needsCodexMetadata = [...detections.values()].some((item) => item.kind === 'codex');
@@ -811,7 +913,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
 
   for (const {
     pane, process, kind, cwd, fingerprint, visiblePrompt, promptChanged,
-    registered, explicitId: providerExplicitId, openSessionId,
+    registered, explicitId: providerExplicitId, openSessionId, identityAuditDelay,
   } of detections.values()) {
     const runtime = {
       startedAt: registered?.startedAt || process.startedAt,
@@ -855,7 +957,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       agent = { kind: 'codex', id, name, ...runtime };
     } else if (kind === 'claude') {
       const id = registered?.id || providerExplicitId;
-      const name = findClaudeSlug(id, claudeHome) || pane.session;
+      const name = findClaudeSlug(id, claudeHome, now) || pane.session;
       agent = { kind: 'claude', id, name, ...runtime };
     } else {
       // A bare --resume selects a transcript inside Qoder's TUI, so its start time is
@@ -874,7 +976,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     if (identityCache && identityCacheTtlMs > 0 && agent.id && cacheable) {
       identityCache.set(pane.session, {
         fingerprint,
-        expiresAt: now + identityCacheTtlMs,
+        expiresAt: now + identityAuditDelay,
         agent: { ...agent },
         prompt: cachePrompt,
       });

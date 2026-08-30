@@ -21,6 +21,35 @@ function copyTurn(turn) {
   };
 }
 
+function mergeTurnUserMessages(current, incoming) {
+  const currentUsers = asArray(current?.items).filter((item) => item?.type === 'userMessage');
+  if (!currentUsers.length) return incoming;
+  const incomingItems = asArray(incoming?.items);
+  const incomingUsers = incomingItems.filter((item) => item?.type === 'userMessage');
+  const used = new Set();
+  const users = currentUsers.map((currentItem) => {
+    let index = incomingUsers.findIndex((item, candidateIndex) => (
+      !used.has(candidateIndex) && currentItem.id && item.id === currentItem.id
+    ));
+    if (index < 0 && currentItem.delivery) {
+      const text = userMessageText(currentItem);
+      index = incomingUsers.findIndex((item, candidateIndex) => (
+        !used.has(candidateIndex) && userMessageText(item) === text
+      ));
+    }
+    if (index < 0) return currentItem;
+    used.add(index);
+    return incomingUsers[index];
+  });
+  incomingUsers.forEach((item, index) => {
+    if (!used.has(index)) users.push(item);
+  });
+  return {
+    ...incoming,
+    items: [...users, ...incomingItems.filter((item) => item?.type !== 'userMessage')],
+  };
+}
+
 export function tmuxSessionsToThreads(sessions) {
   return asArray(sessions).flatMap((session) => {
     if (!session?.name) return [];
@@ -99,7 +128,9 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
   const turns = asArray(refreshed.turns).map((turn) => {
     const existing = currentById.get(turn.id);
-    return existing && JSON.stringify(existing) === JSON.stringify(turn) ? existing : turn;
+    if (!existing) return turn;
+    const merged = mergeTurnUserMessages(existing, turn);
+    return JSON.stringify(existing) === JSON.stringify(merged) ? existing : merged;
   });
   const sameTurns = turns.length === currentTurns.length
     && turns.every((turn, index) => turn === currentTurns[index]);
@@ -130,11 +161,11 @@ export function normalizeInteractionQuestions(params) {
 function mergeTurn(current, incoming) {
   if (!current) return copyTurn(incoming);
   const incomingItems = asArray(incoming?.items);
-  return {
+  return mergeTurnUserMessages(current, {
     ...current,
     ...(incoming || {}),
     items: incomingItems.length ? incomingItems.map(copyItem) : current.items,
-  };
+  });
 }
 
 function updateTurn(thread, turnId, update) {
@@ -164,7 +195,14 @@ export function applyAgentEvent(currentThread, method, params = {}) {
     const item = copyItem(params.item);
     return updateTurn(currentThread, params.turnId, (turn) => {
       const items = asArray(turn.items);
-      const index = items.findIndex((candidate) => candidate.id === item.id);
+      let index = items.findIndex((candidate) => candidate.id === item.id);
+      if (index < 0 && item.type === 'userMessage') {
+        index = items.findIndex((candidate) => (
+          candidate.type === 'userMessage'
+          && candidate.delivery
+          && userMessageText(candidate) === userMessageText(item)
+        ));
+      }
       const updated = [...items];
       if (index < 0) updated.push(item);
       else updated[index] = { ...items[index], ...item };
@@ -212,6 +250,28 @@ export function applyAgentEvent(currentThread, method, params = {}) {
     }));
   }
   return currentThread;
+}
+
+export function applyAcceptedUserMessage(currentThread, {
+  turnId, text, commandId,
+} = {}) {
+  if (!currentThread || !turnId || !commandId || typeof text !== 'string' || !text.trim()) {
+    return currentThread;
+  }
+  return updateTurn(currentThread, turnId, (turn) => {
+    const id = `delivery:${commandId}`;
+    const items = asArray(turn.items);
+    if (items.some((item) => item.id === id)) return turn;
+    return {
+      ...turn,
+      items: [...items, {
+        id,
+        type: 'userMessage',
+        content: [{ type: 'text', text }],
+        delivery: { status: 'accepted' },
+      }],
+    };
+  });
 }
 
 export function latestRunningTurn(thread) {

@@ -48,6 +48,10 @@ class FakeBackend extends EventEmitter {
     return { turn: { id: params.turnId || 'turn-next' } };
   }
 
+  recordSessionMessage(params) {
+    this.calls.push({ method: 'recordSessionMessage', params });
+  }
+
   async interruptTurn(params) {
     this.calls.push({ method: 'interruptTurn', params });
     return {};
@@ -407,14 +411,21 @@ test('routes direct participation to the selected tmux session without trusting 
 
   send(socket, {
     type: 'sendSessionMessage', id: 7, provider: 'claude', threadId: 'thread-1',
-    tmuxSession: 'work', text: 'Review mobile', paneId: '%999', pid: 999,
+    tmuxSession: 'work', text: 'Review mobile', turnId: 'turn-1', mode: 'steer',
+    commandId: 'command-12345678', paneId: '%999', pid: 999,
   });
   await waitFor(() => socket.sent.some((message) => message.id === 7));
 
   assert.deepEqual(messages, [{
     provider: 'claude', threadId: 'thread-1', sessionName: 'work', text: 'Review mobile',
   }]);
-  assert.deepEqual(backends.claude.calls, []);
+  assert.deepEqual(backends.claude.calls, [{
+    method: 'recordSessionMessage',
+    params: {
+      threadId: 'thread-1', turnId: 'turn-1', text: 'Review mobile',
+      commandId: 'command-12345678',
+    },
+  }]);
   assert.equal(socket.sent.find((message) => message.id === 7).ok, true);
   assert.deepEqual(sessionFeed.invalidations, ['sessions']);
 });

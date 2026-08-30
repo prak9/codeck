@@ -29,7 +29,9 @@ test('opens a Codex thread read-only when a terminal already owns its writer', a
 
   const opened = await backend.openThread('thread-1');
 
-  assert.deepEqual(calls.map((call) => call.method), ['thread/resume', 'thread/read', 'thread/turns/list']);
+  assert.deepEqual(calls.map((call) => call.method), [
+    'thread/resume', 'thread/read', 'thread/turns/list', 'thread/turns/list',
+  ]);
   assert.equal(opened.thread.readOnly, true);
   assert.equal(opened.thread.readOnlyReason, 'activeWriter');
   assert.equal(opened.thread.turns.length, 1);
@@ -74,9 +76,112 @@ test('loads Codex history as lightweight turn summaries in chronological order',
       method: 'thread/turns/list',
       params: { threadId: 'thread-1', limit: 80, sortDirection: 'desc', itemsView: 'summary' },
     },
+    {
+      method: 'thread/turns/list',
+      params: { threadId: 'thread-1', limit: 10, sortDirection: 'desc', itemsView: 'full' },
+    },
   ]);
   assert.deepEqual(opened.thread.turns.map((turn) => turn.id), ['turn-old', 'turn-new']);
   assert.equal(opened.thread.name, 'Review');
+});
+
+test('hydrates lightweight Codex summaries with every recent user follow-up only once', async () => {
+  const calls = [];
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const followUp = { id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: 'Also verify mobile' }] };
+  const answer = { id: 'answer-1', type: 'agentMessage', text: 'Done' };
+  const appServer = new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    if (params.itemsView === 'full') {
+      return { data: [{
+        id: 'turn-1', status: 'completed',
+        items: [first, { id: 'tool-1', type: 'commandExecution', command: 'npm test' }, followUp, answer],
+      }] };
+    }
+    return { data: [{ id: 'turn-1', status: 'completed', items: [first, answer] }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+
+  const opened = await backend.openThread('thread-1', { readOnly: true });
+  const reopened = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.deepEqual(opened.thread.turns[0].items.map((item) => item.type), [
+    'userMessage', 'userMessage', 'agentMessage',
+  ]);
+  assert.deepEqual(opened.thread.turns[0].items
+    .filter((item) => item.type === 'userMessage')
+    .map((item) => item.content[0].text), ['Start', 'Also verify mobile']);
+  assert.deepEqual(reopened.thread.turns[0].items, opened.thread.turns[0].items);
+  assert.equal(calls.filter((call) => call.params?.itemsView === 'full').length, 1);
+});
+
+test('records an accepted tmux follow-up in the sparse Codex summary cache', async () => {
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const answer = { id: 'answer-1', type: 'agentMessage', text: 'Working' };
+  const appServer = new FakeAppServer(async (method, params) => {
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    if (params.itemsView === 'full') {
+      return { data: [{ id: 'turn-1', status: 'inProgress', items: [first] }] };
+    }
+    return { data: [{ id: 'turn-1', status: 'inProgress', items: [first, answer] }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+  await backend.openThread('thread-1', { readOnly: true });
+
+  backend.recordSessionMessage({
+    threadId: 'thread-1', turnId: 'turn-1', text: 'Use the latest data',
+    commandId: 'command-12345678',
+  });
+  const opened = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.deepEqual(opened.thread.turns[0].items
+    .filter((item) => item.type === 'userMessage')
+    .map((item) => item.content[0].text), ['Start', 'Use the latest data']);
+});
+
+test('a lagging Codex full refresh cannot delete an accepted tmux follow-up', async () => {
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const acceptedText = 'Use the latest data';
+  let fullUsers = [first];
+  const appServer = new FakeAppServer(async (method, params) => {
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    const items = params.itemsView === 'full'
+      ? fullUsers
+      : [first, { id: 'answer-1', type: 'agentMessage', text: 'Working' }];
+    return { data: [{ id: 'turn-1', status: 'inProgress', items }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+  await backend.openThread('thread-1', { readOnly: true });
+  backend.recordSessionMessage({
+    threadId: 'thread-1', turnId: 'turn-1', text: acceptedText,
+    commandId: 'command-12345678',
+  });
+
+  appServer.emit('notification', {
+    method: 'turn/completed',
+    params: { threadId: 'thread-1', turn: { id: 'turn-1', items: [first] } },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  let opened = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.deepEqual(opened.thread.turns[0].items
+    .filter((item) => item.type === 'userMessage')
+    .map((item) => item.content[0].text), ['Start', acceptedText]);
+
+  fullUsers = [first, {
+    id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: acceptedText }],
+  }];
+  appServer.emit('notification', {
+    method: 'turn/completed',
+    params: { threadId: 'thread-1', turn: { id: 'turn-1', items: fullUsers } },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  opened = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.deepEqual(opened.thread.turns[0].items
+    .filter((item) => item.type === 'userMessage')
+    .map((item) => item.id), ['user-1', 'user-2']);
 });
 
 test('keeps a resumed Codex thread writable', async () => {

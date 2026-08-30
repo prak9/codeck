@@ -1,5 +1,6 @@
 import {
   agentActivityText,
+  applyAcceptedUserMessage,
   applyAgentEvent,
   applyTmuxSnapshot,
   findTmuxThreadTarget,
@@ -12,9 +13,9 @@ import {
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=25';
+} from './agent-model.js?v=26';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
-import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=5';
+import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
@@ -1857,7 +1858,7 @@ function resizeComposer() {
   renderComposerState();
 }
 
-async function submitComposer() {
+async function submitComposer({ explicitInterrupt = false } = {}) {
   if (composerRequestGate.pending || state.threadOpening) return;
   abortSpeechInput();
   const input = $('#composerInput');
@@ -1868,7 +1869,8 @@ async function submitComposer() {
   const active = Boolean(running || state.thread?.tmux?.status === 'working');
   const attachments = [...state.attachments];
   const submitAction = composerSubmitAction({
-    active, attachmentCount: attachments.length, provider: state.provider, text,
+    active, attachmentCount: attachments.length, explicitInterrupt,
+    provider: state.provider, text,
   });
   if (state.thread?.readOnly && !sessionName) {
     setLiveMessage('当前会话只读。');
@@ -1956,6 +1958,8 @@ async function submitComposer() {
           tmuxSession: sessionName,
           text: message,
           commandId: delivery.commandId,
+          mode: delivery.mode,
+          turnId: delivery.turnId || undefined,
         });
         const nextStatus = sessionStatusAfterSend({ previousStatus, result });
         const workingAfterSend = nextStatus === 'working';
@@ -1963,6 +1967,13 @@ async function submitComposer() {
           && state.thread?.id === targetThreadId
           && state.thread?.tmux?.name === sessionName;
         if (stillActive) {
+          if (delivery.turnId) {
+            state.thread = applyAcceptedUserMessage(state.thread, {
+              turnId: delivery.turnId,
+              text: message,
+              commandId: delivery.commandId,
+            });
+          }
           delete state.thread.tmux.commandOutput;
           if (result?.terminalOutput && !workingAfterSend) {
             state.thread.tmux.commandOutput = {
@@ -2362,7 +2373,7 @@ $('#composerInput').addEventListener('keydown', (event) => {
 });
 $('#composerForm').addEventListener('submit', (event) => {
   event.preventDefault();
-  submitComposer();
+  submitComposer({ explicitInterrupt: event.submitter === $('#sendButton') });
 });
 $('.composer-area').addEventListener('dragenter', (event) => {
   if (!hasDraggedFiles(event)) return;
