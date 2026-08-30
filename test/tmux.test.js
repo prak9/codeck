@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, capturePanes, capturePaneSnapshots, createSession, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, capturePanes, capturePaneSnapshots, createSession, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -172,6 +172,52 @@ test('waits for an Agent to process bracketed paste before submitting with tmux 
   ]);
 });
 
+test('submits single-line Agent input literally so Enter cannot overtake bracketed paste', async () => {
+  const calls = [];
+  await sendSessionMessage({
+    provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '提交',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'research', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
+  });
+
+  assert.deepEqual(calls, [
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '提交'] },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+  ]);
+});
+
+test('keeps oversized single-line Agent input out of the tmux process argument list', async () => {
+  const calls = [];
+  const text = 'x'.repeat(70_000);
+  await sendSessionMessage({
+    provider: 'codex', sessionName: 'research', threadId: 'thread-1', text,
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'research', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    bufferName: 'codeck-large-test',
+    loadBuffer: async (bufferName, value) => calls.push({ type: 'load', bufferName, size: value.length }),
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
+  });
+
+  assert.deepEqual(calls, [
+    { type: 'load', bufferName: 'codeck-large-test', size: text.length },
+    {
+      type: 'exec',
+      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-large-test', '-t', '%7'],
+    },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+  ]);
+});
+
 test('captures the /status slash-command output after submitting it literally', async () => {
   const calls = [];
   const result = await sendSessionMessage({
@@ -200,7 +246,7 @@ test('captures the /status slash-command output after submitting it literally', 
     ].join('\n'),
   });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/status'] },
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/status'] },
     { type: 'wait' },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
     { type: 'output-wait' },
@@ -239,12 +285,105 @@ test('captures the /model slash-command output after submitting it literally', a
     ].join('\n'),
   });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/model gpt-5'] },
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/model gpt-5'] },
     { type: 'wait' },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
     { type: 'output-wait' },
     { type: 'capture', paneId: '%7' },
   ]);
+});
+
+test('bare /model bypasses slash completion and waits for the actual Codex picker', async () => {
+  const calls = [];
+  const screens = [
+    '╭────────────────────────╮\n│ OpenAI Codex           │\n╰────────────────────────╯',
+    '/model  choose what model and reasoning effort to use',
+    [
+      '╭────────────────────────╮',
+      '│ OpenAI Codex           │',
+      '╰────────────────────────╯',
+      '',
+      '  Select Model and Effort',
+      '› 1. gpt-5.6-sol (current)  Latest frontier',
+      '  2. gpt-5.6-terra          Coding model',
+      '  Press enter to confirm or esc to go back',
+    ].join('\n'),
+  ];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/model',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'wait' }),
+    waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return screens.shift();
+    },
+  });
+
+  assert.equal(result.terminalOutput, [
+    'Select Model and Effort',
+    '› 1. gpt-5.6-sol (current)  Latest frontier',
+    '2. gpt-5.6-terra          Coding model',
+    'Press enter to confirm or esc to go back',
+  ].join('\n'));
+  assert.deepEqual(calls.slice(0, 3), [
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/model '] },
+    { type: 'wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+  ]);
+  assert.equal(calls.filter((call) => call.type === 'capture').length, 3);
+});
+
+test('selects an exact option in the verified Codex model picker and returns its next step', async () => {
+  const calls = [];
+  const screens = [
+    [
+      '╭──────────────────────────────────────────────╮',
+      '│ Select Model and Effort                      │',
+      '│ › 1. gpt-5.6-sol (current)  Latest frontier │',
+      '│   2. gpt-5.6-terra          Coding model    │',
+      '│ Press enter to confirm or esc to go back     │',
+      '╰──────────────────────────────────────────────╯',
+    ].join('\n'),
+    [
+      '╭──────────────────────────────────────────────╮',
+      '│ Select Reasoning Level for gpt-5.6-terra     │',
+      '│   1. Extra high             Deep reasoning  │',
+      '│ › 2. More reasoning… (current)  Max/Ultra   │',
+      '│ Press enter to confirm or esc to go back     │',
+      '╰──────────────────────────────────────────────╯',
+    ].join('\n'),
+  ];
+  const result = await selectSessionModel({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', option: 'gpt-5.6-terra',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForSlashOutput: async () => calls.push({ type: 'wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return screens.shift();
+    },
+  });
+
+  assert.deepEqual(calls, [
+    { type: 'capture', paneId: '%7' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Down', 'Enter'] },
+    { type: 'wait' },
+    { type: 'capture', paneId: '%7' },
+  ]);
+  assert.equal(result.terminalOutput, [
+    'Select Reasoning Level for gpt-5.6-terra',
+    '1. Extra high             Deep reasoning',
+    '› 2. More reasoning… (current)  Max/Ultra',
+    'Press enter to confirm or esc to go back',
+  ].join('\n'));
 });
 
 test('does not special-case slash commands other than /status and /model', async () => {
@@ -265,7 +404,7 @@ test('does not special-case slash commands other than /status and /model', async
 
   assert.deepEqual(result, {});
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '/skills'] },
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/skills'] },
     { type: 'wait' },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
   ]);
@@ -319,11 +458,7 @@ test('allows only the server-derived pending thread id before an Agent exposes i
   }, options), /匹配|刷新/);
 
   assert.deepEqual(calls, [
-    { type: 'load', bufferName: 'codeck-pending-test', text: 'Start work' },
-    {
-      type: 'exec',
-      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-pending-test', '-t', '%7'],
-    },
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', 'Start work'] },
     { type: 'wait' },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Escape'] },
@@ -429,7 +564,7 @@ test('serializes concurrent input for the same tmux session', async () => {
   let markFirstListStarted;
   const firstListStarted = new Promise((resolve) => { markFirstListStarted = resolve; });
   const firstListGate = new Promise((resolve) => { releaseFirstList = resolve; });
-  const loaded = [];
+  const sent = [];
   const options = {
     listTmuxSessions: async () => {
       listCalls += 1;
@@ -439,8 +574,9 @@ test('serializes concurrent input for the same tmux session', async () => {
       }
       return [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }];
     },
-    loadBuffer: async (_bufferName, text) => loaded.push(text),
-    execTmux: async () => {},
+    execTmux: async (args) => {
+      if (args[0] === 'send-keys' && args[1] === '-l') sent.push(args.at(-1));
+    },
   };
 
   const first = sendSessionMessage({
@@ -451,12 +587,12 @@ test('serializes concurrent input for the same tmux session', async () => {
     provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: 'second',
   }, options);
   await new Promise((resolve) => setImmediate(resolve));
-  const loadedBeforeRelease = [...loaded];
+  const sentBeforeRelease = [...sent];
   releaseFirstList();
   await Promise.all([first, second]);
 
-  assert.deepEqual(loadedBeforeRelease, []);
-  assert.deepEqual(loaded, ['first', 'second']);
+  assert.deepEqual(sentBeforeRelease, []);
+  assert.deepEqual(sent, ['first', 'second']);
 });
 
 test('tmux 2.7 numeric status values still reserve the status row', () => {

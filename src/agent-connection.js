@@ -121,11 +121,14 @@ function tmuxThreads(provider, sessions, threads) {
 }
 
 export class AgentRegistry extends EventEmitter {
-  constructor(backends, { listTmuxSessions, sendTmuxMessage, interruptTmuxSession } = {}) {
+  constructor(backends, {
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, interruptTmuxSession,
+  } = {}) {
     super();
     this.backends = new Map(Object.entries(backends || {}));
     this.listTmuxSessions = listTmuxSessions;
     this.sendTmuxMessage = sendTmuxMessage;
+    this.selectTmuxModel = selectTmuxModel;
     this.interruptTmuxSession = interruptTmuxSession;
     for (const [provider, backend] of this.backends) {
       backend.on('notification', (message) => this.emit('notification', { provider, ...message }));
@@ -159,6 +162,11 @@ export class AgentRegistry extends EventEmitter {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
     return this.sendTmuxMessage({ provider, ...params });
+  }
+  selectSessionModel(provider, params) {
+    this.backend(provider);
+    if (!this.selectTmuxModel) throw new Error('当前服务不支持远程选择模型');
+    return this.selectTmuxModel({ provider, ...params });
   }
   recordSessionMessage(provider, params) {
     if (cleanProvider(provider) === 'shell') return;
@@ -243,6 +251,8 @@ export class AgentHub {
             : null;
           if (currentStatus === 'working' && previousStatus !== 'working') {
             this.#refreshThreadSubscription(subscription.target);
+          } else if (previousStatus === 'working' && currentStatus !== 'working') {
+            this.#invalidateThreadSubscription(subscription.target);
           }
         },
         (error) => send(socket, {
@@ -332,6 +342,15 @@ export class AgentHub {
         return result;
       });
     }
+    if (message.type === 'selectSessionModel') {
+      const threadId = cleanId(message.threadId, 'Thread');
+      const sessionName = cleanId(message.tmuxSession, 'tmux session');
+      const option = cleanId(message.option, 'Model option');
+      this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
+      return this.registry.selectSessionModel(provider, {
+        threadId, sessionName, option,
+      });
+    }
     if (message.type === 'interruptSession') {
       const target = {
         threadId: cleanId(message.threadId, 'Thread'),
@@ -417,6 +436,11 @@ export class AgentHub {
       && resource.threadId === target.threadId
       && resource.tmuxSession === target.tmuxSession
     )).catch(() => {});
+  }
+
+  #invalidateThreadSubscription(target) {
+    if (!this.threadFeed || !target) return;
+    this.threadFeed.invalidate(target).catch(() => {});
   }
 
   #beginThreadSubscription(socket, target) {

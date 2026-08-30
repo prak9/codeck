@@ -49,6 +49,51 @@ Current model: gpt-5.6-codex
   assert.deepEqual(parsed.notes, []);
 });
 
+test('parses the current Codex numbered model picker without treating its notes as models', () => {
+  const parsed = parseModelCommandOutput(`
+Select Model and Effort
+Access legacy models by running codex -m <model_name>
+
+› 1. gpt-5.6-sol (current)  Latest frontier model
+  2. gpt-5.6-terra          Optimized for coding
+  3. gpt-5.5-codex          Previous generation
+
+Press enter to confirm or esc to go back
+`);
+
+  assert.equal(parsed.heading, 'Select Model and Effort');
+  assert.equal(parsed.selected, 'gpt-5.6-sol');
+  assert.deepEqual(parsed.items, [
+    { label: 'gpt-5.6-sol', description: 'Latest frontier model' },
+    { label: 'gpt-5.6-terra', description: 'Optimized for coding' },
+    { label: 'gpt-5.5-codex', description: 'Previous generation' },
+  ]);
+  assert.deepEqual(parsed.notes, [
+    'Access legacy models by running codex -m <model_name>',
+    'Press enter to confirm or esc to go back',
+  ]);
+});
+
+test('parses Codex reasoning choices with multi-word labels', () => {
+  const parsed = parseModelCommandOutput(`
+Select Reasoning Level for gpt-5.6-sol
+
+  1. Low (default)              Fast responses with lighter reasoning
+  2. Medium                     Balanced for everyday tasks
+  3. High                       Greater reasoning depth
+  4. Extra high                 Extra high reasoning depth
+› 5. More reasoning… (current)  Max and Ultra consume usage limits faster
+
+Press enter to confirm or esc to go back
+`);
+
+  assert.equal(parsed.heading, 'Select Reasoning Level for gpt-5.6-sol');
+  assert.equal(parsed.selected, 'More reasoning…');
+  assert.deepEqual(parsed.items.map((item) => item.label), [
+    'Low (default)', 'Medium', 'High', 'Extra high', 'More reasoning…',
+  ]);
+});
+
 test('keeps plain model output as raw notes when no list is present', () => {
   const parsed = parseModelCommandOutput('Model: gpt-5\nContext: 80% left');
   assert.equal(parsed.heading, 'Model');

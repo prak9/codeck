@@ -32,6 +32,25 @@ function splitModelLabel(line) {
   return null;
 }
 
+function splitNumberedModelLabel(line) {
+  const match = /^[›>❯]?\s*\d+\.\s+(.+)$/u.exec(line);
+  if (!match) return null;
+  const current = /^(.*?)\s+\(current\)(?:\s{2,}(.*))?$/iu.exec(match[1]);
+  if (current) {
+    return {
+      label: current[1].trim(),
+      description: (current[2] || '').trim(),
+      current: true,
+    };
+  }
+  const parts = match[1].split(/\s{2,}/u).map((part) => part.trim()).filter(Boolean);
+  return {
+    label: parts[0] || '',
+    description: parts.slice(1).join(' '),
+    current: false,
+  };
+}
+
 export function parseSkillsCommandOutput(text) {
   const raw = String(text || '');
   const lines = raw.split('\n').map((line) => line.replace(/\s+$/u, ''));
@@ -74,12 +93,13 @@ export function parseModelCommandOutput(text) {
   let heading = '';
   let count = '';
   let selected = '';
+  const numberedPicker = lines.some((line) => /^[›>❯]?\s*\d+\.\s+/u.test(line.trim()));
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (/^[─━═\-]{4,}$/u.test(trimmed)) continue;
-    if (!heading && /^(?:current|choose|select|available)?\s*models?$/iu.test(trimmed)) {
+    if (!heading && /^(?:(?:current|choose|select|available)?\s*models?|select model and effort|select reasoning level for .+|advanced reasoning)$/iu.test(trimmed)) {
       heading = trimmed;
       continue;
     }
@@ -89,6 +109,17 @@ export function parseModelCommandOutput(text) {
     }
     if (!selected && /^(?:current|selected)\s+model[:：]\s*/iu.test(trimmed)) {
       selected = trimmed.replace(/^(?:current|selected)\s+model[:：]\s*/iu, '').trim();
+      continue;
+    }
+    const numbered = splitNumberedModelLabel(trimmed);
+    if (numbered?.label) {
+      const { current, ...item } = numbered;
+      items.push(item);
+      if (current) selected = item.label;
+      continue;
+    }
+    if (numberedPicker) {
+      notes.push(trimmed);
       continue;
     }
     const item = splitModelLabel(trimmed);

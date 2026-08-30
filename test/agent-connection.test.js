@@ -110,11 +110,13 @@ function send(socket, message) {
 }
 
 function setup({
-  listTmuxSessions, sendTmuxMessage, interruptTmuxSession,
+  listTmuxSessions, sendTmuxMessage, selectTmuxModel, interruptTmuxSession,
   sessionFeed, threadFeed, protocolEpoch = 'test-epoch',
 } = {}) {
   const backends = Object.fromEntries(['codex', 'claude', 'qodercli'].map((provider) => [provider, new FakeBackend(provider)]));
-  const registry = new AgentRegistry(backends, { listTmuxSessions, sendTmuxMessage, interruptTmuxSession });
+  const registry = new AgentRegistry(backends, {
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, interruptTmuxSession,
+  });
   const hub = new AgentHub(registry, {
     defaultCwd: '/srv/codeck', hostname: 'devbox', sessionFeed, threadFeed, protocolEpoch,
   });
@@ -325,7 +327,7 @@ test('a progressive Codex reply is followed by the exact subscribed transcript',
   threadFeed.close();
 });
 
-test('a tmux session becoming active wakes its sleeping transcript subscription', async () => {
+test('tmux activity transitions wake the transcript subscription at start and completion', async () => {
   const sessionFeed = new FakeSnapshotFeed();
   const threadFeed = new FakeSnapshotFeed();
   const { hub } = setup({ sessionFeed, threadFeed });
@@ -343,8 +345,13 @@ test('a tmux session becoming active wakes its sleeping transcript subscription'
     epoch: 'test-epoch', sequence: 2,
     snapshot: { sessions: [{ name: 'research', status: 'working' }] },
   });
+  sessionFeed.publish('sessions', {
+    epoch: 'test-epoch', sequence: 3,
+    snapshot: { sessions: [{ name: 'research', status: 'done' }] },
+  });
 
   assert.deepEqual(threadFeed.refreshes, [target]);
+  assert.deepEqual(threadFeed.invalidations, [target]);
 });
 
 test('a completed provider turn immediately reconciles its subscribed transcript', async () => {
@@ -472,6 +479,32 @@ test('routes direct participation to the selected tmux session without trusting 
   }]);
   assert.equal(socket.sent.find((message) => message.id === 7).ok, true);
   assert.deepEqual(sessionFeed.invalidations, ['sessions']);
+});
+
+test('routes model picker choices through the verified tmux session instead of a chat message', async () => {
+  const selections = [];
+  const { backends, hub } = setup({
+    selectTmuxModel: async (params) => {
+      selections.push(params);
+      return { terminalOutput: 'Advanced Reasoning' };
+    },
+  });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+
+  send(socket, {
+    type: 'selectSessionModel', id: 8, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'work', option: 'gpt-5.6-terra', paneId: '%999',
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 8));
+
+  assert.deepEqual(selections, [{
+    provider: 'codex', threadId: 'thread-1', sessionName: 'work', option: 'gpt-5.6-terra',
+  }]);
+  assert.deepEqual(backends.codex.calls, []);
+  assert.deepEqual(socket.sent.find((message) => message.id === 8).result, {
+    terminalOutput: 'Advanced Reasoning',
+  });
 });
 
 test('routes a direct tmux interruption without requiring a backend turn id', async () => {

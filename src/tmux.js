@@ -727,8 +727,37 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
 let inputBufferSequence = 0;
 const sessionInputQueues = new Map();
 const PASTE_SUBMIT_DELAY_MS = 80;
+const LITERAL_AGENT_INPUT_MAX_BYTES = 64 * 1024;
 const SLASH_OUTPUT_DELAY_MS = 150;
+const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
 const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model']);
+const CODEX_MODEL_PICKER_TITLE = /(?:select model and effort|select reasoning level for .+|advanced reasoning)/iu;
+
+function codexModelPicker(output) {
+  const rows = cleanScreenRows(output);
+  const start = rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line));
+  const endOffset = start < 0 ? -1 : rows.slice(start)
+    .findIndex((line) => /press enter to confirm or esc to go back/iu.test(line));
+  if (start < 0 || endOffset < 0) return null;
+  const terminalOutput = rows.slice(start, start + endOffset + 1).map((line) => {
+    const content = /^\s*[│║](.*)[│║]\s*$/u.exec(line)?.[1];
+    return (content == null ? line : content).trim();
+  }).filter(Boolean).slice(-SLASH_OUTPUT_MAX_LINES).join('\n');
+  const options = terminalOutput.split('\n').flatMap((line) => {
+    const match = /^([›>❯])?\s*\d+\.\s+(.+)$/u.exec(line.trim());
+    if (!match) return [];
+    const current = /^(.*?)\s+\(current\)(?:\s{2,}(.*))?$/iu.exec(match[2]);
+    const parts = current
+      ? [current[1], current[2] || '']
+      : match[2].split(/\s{2,}/u);
+    const label = parts[0]?.trim();
+    return label ? [{
+      label,
+      cursor: Boolean(match[1]),
+    }] : [];
+  });
+  return options.length ? { terminalOutput, options } : null;
+}
 
 function queueSessionInput(sessionName, operation) {
   const previous = sessionInputQueues.get(sessionName) || Promise.resolve();
@@ -758,9 +787,15 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const waitForPaste = overrides.waitForPaste
       || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
-    if (provider !== 'shell' && text.startsWith('/') && !/[\r\n]/.test(text)) {
-      const command = text.trim().match(/^\/\S+/)?.[0] || '';
-      await execTmux(['send-keys', '-l', '-t', paneId, text]);
+    // Literal key events keep ordinary single-line input ordered with Enter even when
+    // an Agent TUI is too busy to apply an asynchronous bracketed-paste event promptly.
+    const literalAgentInput = provider !== 'shell'
+      && Buffer.byteLength(text, 'utf8') <= LITERAL_AGENT_INPUT_MAX_BYTES
+      && !/[\u0000-\u001f\u007f]/u.test(text);
+    if (literalAgentInput) {
+      const command = text.startsWith('/') ? text.trim().match(/^\/\S+/)?.[0] || '' : '';
+      const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
+      await execTmux(['send-keys', '-l', '-t', paneId, '--', bareCodexModel ? `${command} ` : text]);
       await waitForPaste();
       await execTmux(['send-keys', '-t', paneId, 'Enter']);
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return {};
@@ -768,9 +803,17 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
       const captureSessionPane = overrides.capturePane || capturePane;
       try {
-        await waitForSlashOutput();
-        const screen = await captureSessionPane(paneId);
-        const terminalOutput = resolveSlashCommandOutput(screen);
+        let screen = '';
+        let modelPicker = null;
+        const attempts = bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          await waitForSlashOutput();
+          screen = await captureSessionPane(paneId);
+          modelPicker = bareCodexModel ? codexModelPicker(screen) : null;
+          if (!bareCodexModel || modelPicker) break;
+        }
+        if (bareCodexModel && !modelPicker) return {};
+        const terminalOutput = modelPicker?.terminalOutput || resolveSlashCommandOutput(screen);
         const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
         if (!signals.busy && !signals.background) {
           // A local command redraw (for example /status or /model) is complete work, not Agent
@@ -803,6 +846,54 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
       throw error;
     }
+  });
+}
+
+export async function selectSessionModel({ provider, sessionName, threadId, option }, overrides = {}) {
+  const selectedOption = typeof option === 'string' ? option.trim() : '';
+  if (provider !== 'codex' || !selectedOption || selectedOption.length > 128
+    || /[\u0000-\u001f\u007f]/u.test(selectedOption)) {
+    throw new Error('模型选项无效，请重新打开 /model');
+  }
+  if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
+  return queueSessionInput(sessionName, async () => {
+    const listTmuxSessions = overrides.listTmuxSessions || listSessions;
+    const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
+      || ((name) => paneScreenCache.delete(name));
+    invalidatePaneSnapshot(sessionName);
+    const captureSessionPane = overrides.capturePane || capturePane;
+    const initialScreen = await captureSessionPane(paneId);
+    const picker = codexModelPicker(initialScreen);
+    if (!picker) throw new Error('模型选择器已关闭，请重新输入 /model');
+    const cursor = picker.options.findIndex((candidate) => candidate.cursor);
+    const target = picker.options.findIndex((candidate) => candidate.label === selectedOption);
+    if (cursor < 0 || target < 0) throw new Error('模型选项已变化，请重新输入 /model');
+
+    const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    const direction = target > cursor ? 'Down' : 'Up';
+    const movement = Array.from({ length: Math.abs(target - cursor) }, () => direction);
+    await execTmux(['send-keys', '-t', paneId, ...movement, 'Enter']);
+
+    const waitForSlashOutput = overrides.waitForSlashOutput
+      || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
+    const initialOptions = picker.options.map((candidate) => candidate.label).join('\n');
+    let latestPicker = picker;
+    for (let attempt = 0; attempt < MODEL_PICKER_CAPTURE_ATTEMPTS; attempt += 1) {
+      await waitForSlashOutput();
+      const screen = await captureSessionPane(paneId);
+      if (screen === initialScreen) continue;
+      const nextPicker = codexModelPicker(screen);
+      const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex);
+      if (!signals.busy && !signals.background) {
+        screenActivity.set(sessionName, { hash: screenHash(screen), changedAt: 0 });
+      }
+      if (!nextPicker) return { completed: true };
+      latestPicker = nextPicker;
+      const nextOptions = nextPicker.options.map((candidate) => candidate.label).join('\n');
+      if (nextOptions !== initialOptions) return { terminalOutput: nextPicker.terminalOutput };
+    }
+    return { terminalOutput: latestPicker.terminalOutput };
   });
 }
 

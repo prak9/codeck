@@ -133,10 +133,11 @@ test('model command renders as a selectable popup list', () => {
   assert.match(remoteJs, /openCommandDialog\(commandOutput\)/);
   assert.match(remoteJs, /modelRowButton\(/);
   assert.match(remoteJs, /modelRowButton\(item, parsed\.selected\)/);
+  assert.match(remoteJs, /agentRequest\('selectSessionModel'/);
+  assert.doesNotMatch(remoteJs, /input\.value = `\/model \$\{label\}`/);
   assert.match(remoteJs, /dialog\.showModal\(\)/);
   assert.match(remoteJs, /commandPendingMessage\(/);
-  assert.match(remoteJs, /setLiveMessage\(commandPendingMessage\(input\.value\)\)/);
-  assert.match(remoteJs, /form\.requestSubmit\(\)/);
+  assert.match(remoteJs, /setLiveMessage\(`正在选择 \$\{label\}…`\)/);
   assert.match(css, /\.model-panel\s*\{[^}]*overflow:\s*clip/s);
   assert.match(css, /\.model-row\s*\{[^}]*grid-template-columns:\s*minmax\(112px,\s*32%\)/s);
 });
@@ -205,6 +206,9 @@ test('remote consumes sequenced session and thread snapshots before using slow p
   assert.match(remoteJs, /matchesThreadStreamTarget/);
   assert.match(remoteJs, /SESSION_LIST_FALLBACK_MS\s*=\s*30_000/);
   assert.match(remoteJs, /THREAD_REFRESH_FALLBACK_MS\s*=\s*10_000/);
+  assert.match(remoteJs, /Date\.now\(\) < state\.threadCompletionRefreshUntil[\s\S]*?refreshActiveThread\(\{ force: true \}\)/);
+  assert.doesNotMatch(remoteJs, /Date\.now\(\) < state\.threadRefreshUntil[\s\S]*?refreshActiveThread\(\)/);
+  assert.match(remoteJs, /if \(applyTmuxSnapshot[\s\S]*?refreshActiveThread\(\{ force: true \}\)/);
   assert.doesNotMatch(remoteJs, /SESSION_LIST_POLL_MS\s*=\s*1_500/);
   assert.doesNotMatch(remoteJs, /THREAD_REFRESH_POLL_MS\s*=\s*1_000/);
 });

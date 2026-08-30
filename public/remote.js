@@ -19,7 +19,7 @@ import { composerControlState, composerSubmitAction, createComposerRequestGate, 
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=1';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
-import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=2';
+import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=3';
 import { acceptStreamCursor, matchesThreadStreamTarget } from './stream-state.js?v=1';
@@ -62,6 +62,7 @@ const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 const SESSION_LIST_FALLBACK_MS = 30_000;
 const THREAD_REFRESH_FALLBACK_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_MS = 10_000;
+const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 let viewportFrame = 0;
 
 const state = {
@@ -102,6 +103,7 @@ const state = {
   threadListGeneration: 0,
   threadRefresh: null,
   threadRefreshUntil: 0,
+  threadCompletionRefreshUntil: 0,
   threadHandoff: null,
   threadOpening: null,
   slashCommandIndex: 0,
@@ -214,6 +216,7 @@ function setLiveMessage(message) {
 function resetThreadStream() {
   state.threadStreamCursor = null;
   state.threadStreamHealthy = false;
+  state.threadCompletionRefreshUntil = 0;
 }
 
 function releaseThreadStream() {
@@ -758,7 +761,8 @@ async function loadThreads({ quiet = false } = {}) {
     if (activeThread?.tmux && state.thread) {
       if (applyTmuxSnapshot(state.thread, activeThread.tmux)) {
         state.threadRefreshUntil = Date.now() + THREAD_COMPLETION_REFRESH_MS;
-        if (!state.threadStreamHealthy) refreshActiveThread({ force: true }).catch(() => {});
+        state.threadCompletionRefreshUntil = state.threadRefreshUntil;
+        refreshActiveThread({ force: true }).catch(() => {});
       }
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
@@ -1202,20 +1206,34 @@ function modelRowButton({ label, description }, selected) {
   button.type = 'button';
   button.append(
     element('code', 'model-name', label),
-    element('span', 'model-description', description || '点击直接切换模型'),
+    element('span', 'model-description', description || '点击选择'),
   );
-  button.addEventListener('click', () => {
-    const input = $('#composerInput');
-    const form = $('#composerForm');
-    if (!input || input.disabled || !form || composerRequestGate.pending || state.threadOpening) return;
-    dismissCommandDialog({ restoreFocus: false });
-    input.value = `/model ${label}`;
-    state.slashCommandIndex = 0;
-    state.slashCommandDismissedValue = input.value;
-    resizeComposer();
-    renderComposerState();
-    setLiveMessage(commandPendingMessage(input.value));
-    form.requestSubmit();
+  button.addEventListener('click', async () => {
+    const target = {
+      provider: state.provider,
+      threadId: state.thread?.id,
+      tmuxSession: state.thread?.tmux?.name,
+    };
+    if (!target.threadId || !target.tmuxSession || composerRequestGate.pending || state.threadOpening) return;
+    await composerRequestGate.run(async () => {
+      setLiveMessage(`正在选择 ${label}…`);
+      try {
+        const result = await agentRequest('selectSessionModel', { ...target, option: label });
+        if (state.provider !== target.provider || state.thread?.id !== target.threadId
+          || state.thread?.tmux?.name !== target.tmuxSession) return;
+        if (result?.terminalOutput) {
+          state.thread.tmux.commandOutput = { command: '/model', text: result.terminalOutput };
+          setLiveMessage('请选择推理强度。');
+          scheduleThreadRender(true);
+        } else {
+          delete state.thread.tmux.commandOutput;
+          dismissCommandDialog();
+          setLiveMessage('模型设置已更新。');
+        }
+      } catch (error) {
+        setLiveMessage(error.message);
+      }
+    });
   });
   return button;
 }
@@ -1241,7 +1259,7 @@ function modelCommandDialog(commandOutput) {
   }
   return {
     kicker: 'MODEL',
-    title: '选择模型',
+    title: /reasoning/iu.test(parsed.heading) ? '选择推理强度' : '选择模型',
     summary: [parsed.selected && `当前 ${parsed.selected}`, parsed.count]
       .filter(Boolean).join(' · ') || parsed.heading || '选择后立即应用到当前会话',
     content: panel,
@@ -1975,7 +1993,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
             });
           }
           delete state.thread.tmux.commandOutput;
-          if (result?.terminalOutput && !workingAfterSend) {
+          if (result?.terminalOutput && !result.terminalWorking) {
             state.thread.tmux.commandOutput = {
               command: message.match(/^\/\S*/)?.[0] || '终端命令',
               text: result.terminalOutput,
@@ -2559,6 +2577,11 @@ setInterval(() => {
 setInterval(() => {
   if (!state.threadStreamHealthy) refreshActiveThread().catch(() => {});
 }, THREAD_REFRESH_FALLBACK_MS);
+setInterval(() => {
+  if (Date.now() < state.threadCompletionRefreshUntil) {
+    refreshActiveThread({ force: true }).catch(() => {});
+  }
+}, THREAD_COMPLETION_REFRESH_TICK_MS);
 
 applyTheme(state.theme);
 syncViewportHeight();

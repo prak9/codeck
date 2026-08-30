@@ -10,7 +10,7 @@ import { authenticateToken, createShareToken, terminalAccessForAuth } from './au
 import { createAuthRateLimiter, requestClientAddress } from './auth-rate-limit.js';
 import { createAgentBackends } from './agent-backends.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
-import { createSession, detectWindowSizeSupport, interruptSession, killSession, listSessions, parseViewport, renameSession, sendSessionMessage, validateSessionName } from './tmux.js';
+import { createSession, detectWindowSizeSupport, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
 import { createSessionSnapshotLoader } from './session-snapshot.js';
@@ -297,6 +297,7 @@ const agentWss = new WebSocketServer({ noServer: true, ...AGENT_WEBSOCKET_OPTION
 const agentRegistry = new AgentRegistry(createAgentBackends(), {
   listTmuxSessions: listSessions,
   sendTmuxMessage: sendSessionMessage,
+  selectTmuxModel: selectSessionModel,
   interruptTmuxSession: interruptSession,
 });
 const sessionFeed = createSnapshotFeed(
