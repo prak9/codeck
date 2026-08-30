@@ -48,7 +48,7 @@ test('reads a known tmux-owned Codex thread without waiting for writer acquisiti
 
   const opened = await backend.openThread('thread-1', { readOnly: true });
 
-  assert.deepEqual(calls, ['thread/read', 'thread/turns/list']);
+  assert.deepEqual(calls, ['thread/read', 'thread/turns/list', 'thread/turns/list']);
   assert.equal(opened.thread.readOnly, true);
   assert.equal(opened.thread.readOnlyReason, 'activeWriter');
 });
@@ -114,6 +114,79 @@ test('hydrates lightweight Codex summaries with every recent user follow-up only
     .map((item) => item.content[0].text), ['Start', 'Also verify mobile']);
   assert.deepEqual(reopened.thread.turns[0].items, opened.thread.turns[0].items);
   assert.equal(calls.filter((call) => call.params?.itemsView === 'full').length, 1);
+});
+
+test('starts recent Codex user hydration without waiting for the long summary page', async () => {
+  let resolveSummary;
+  const summary = new Promise((resolve) => { resolveSummary = resolve; });
+  const calls = [];
+  const appServer = new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    if (params.itemsView === 'summary') return summary;
+    return { data: [{ id: 'turn-1', items: [] }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+
+  const opening = backend.openThread('thread-1', { readOnly: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const hydrationStarted = calls.some((call) => call.params?.itemsView === 'full');
+  resolveSummary({ data: [{ id: 'turn-1', items: [] }] });
+  await opening;
+
+  assert.equal(hydrationStarted, true);
+});
+
+test('progressive Codex loading returns a short summary before exact user hydration', async () => {
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const followUp = { id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: 'Also verify mobile' }] };
+  let resolveHydration;
+  const hydration = new Promise((resolve) => { resolveHydration = resolve; });
+  const calls = [];
+  const appServer = new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    if (params.itemsView === 'full') return hydration;
+    return { data: [{ id: 'turn-1', status: 'inProgress', items: [first] }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+  let opened;
+
+  const opening = backend.openThread('thread-1', { readOnly: true, progressive: true })
+    .then((result) => { opened = result; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  const returnedBeforeHydration = Boolean(opened);
+  resolveHydration({ data: [{ id: 'turn-1', status: 'inProgress', items: [first, followUp] }] });
+  await opening;
+  const exact = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.equal(returnedBeforeHydration, true);
+  assert.equal(calls.find((call) => call.params?.itemsView === 'summary').params.limit, 20);
+  assert.deepEqual(opened.thread.turns[0].items.map((item) => item.id), ['user-1']);
+  assert.deepEqual(exact.thread.turns[0].items.map((item) => item.id), ['user-1', 'user-2']);
+});
+
+test('an exact Codex refresh retries after progressive hydration fails transiently', async () => {
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const followUp = { id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: 'Also verify mobile' }] };
+  let hydrationCalls = 0;
+  const appServer = new FakeAppServer(async (method, params) => {
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    if (params.itemsView === 'full') {
+      hydrationCalls += 1;
+      if (hydrationCalls === 1) throw new Error('rollout is still being written');
+      return { data: [{ id: 'turn-1', status: 'inProgress', items: [first, followUp] }] };
+    }
+    return { data: [{ id: 'turn-1', status: 'inProgress', items: [first] }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+
+  await backend.openThread('thread-1', { readOnly: true, progressive: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const exact = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.equal(hydrationCalls, 2);
+  assert.deepEqual(exact.thread.turns[0].items.map((item) => item.id), ['user-1', 'user-2']);
 });
 
 test('records an accepted tmux follow-up in the sparse Codex summary cache', async () => {

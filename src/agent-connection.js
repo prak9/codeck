@@ -300,6 +300,7 @@ export class AgentHub {
       const subscription = this.#beginThreadSubscription(socket, target);
       try {
         const options = message.readOnly === true ? { readOnly: true } : undefined;
+        if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
         const result = await this.registry.openThread(provider, threadId, options);
         return afterReply(result, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {

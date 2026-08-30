@@ -24,6 +24,7 @@ const CODEX_APPROVAL_METHODS = new Set([
   'execCommandApproval',
 ]);
 const CODEX_RECENT_USER_TURN_LIMIT = 10;
+const CODEX_PROGRESSIVE_TURN_LIMIT = 20;
 
 function codexUserItems(turn) {
   return (Array.isArray(turn?.items) ? turn.items : [])
@@ -120,7 +121,7 @@ export class CodexAgentBackend extends EventEmitter {
     });
   }
 
-  async openThread(threadId, { readOnly = false } = {}) {
+  async openThread(threadId, { readOnly = false, progressive = false } = {}) {
     if (!readOnly) {
       try {
         await this.appServer.request('thread/resume', { threadId });
@@ -129,17 +130,17 @@ export class CodexAgentBackend extends EventEmitter {
         readOnly = true;
       }
     }
-    const [result, turnPage] = await Promise.all([
-      this.appServer.request('thread/read', { threadId, includeTurns: false }),
-      this.appServer.request('thread/turns/list', {
-        threadId,
-        limit: 80,
-        sortDirection: 'desc',
-        itemsView: 'summary',
-      }),
-    ]);
+    const read = this.appServer.request('thread/read', { threadId, includeTurns: false });
+    const summary = this.appServer.request('thread/turns/list', {
+      threadId,
+      limit: progressive ? CODEX_PROGRESSIVE_TURN_LIMIT : 80,
+      sortDirection: 'desc',
+      itemsView: 'summary',
+    });
+    const hydration = this.#hydrateUserMessages(threadId);
+    const [result, turnPage] = await Promise.all([read, summary]);
     const summaryTurns = Array.isArray(turnPage?.data) ? [...turnPage.data].reverse() : [];
-    if (summaryTurns.length) await this.#hydrateUserMessages(threadId);
+    if (summaryTurns.length && !progressive) await hydration;
     const cachedUsers = this.userMessages.get(threadId);
     const turns = summaryTurns.map((turn) => mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id)));
     return {
@@ -266,11 +267,11 @@ export class CodexAgentBackend extends EventEmitter {
       for (const turn of Array.isArray(page?.data) ? page.data : []) {
         this.#cacheTurnUsers(threadId, turn, { replace: true });
       }
+      this.hydratedUserMessages.add(threadId);
     }).catch(() => {
       // Full user-message hydration is an enhancement over the summary transcript.
       // Keep the thread readable if the optional view is unavailable.
     }).finally(() => {
-      this.hydratedUserMessages.add(threadId);
       if (this.userMessageLoads.get(threadId) === load) this.userMessageLoads.delete(threadId);
     });
     this.userMessageLoads.set(threadId, load);

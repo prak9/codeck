@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
+import { createSnapshotFeed } from '../src/snapshot-feed.js';
 
 class FakeSocket extends EventEmitter {
   OPEN = 1;
@@ -247,7 +248,7 @@ test('streams shared session snapshots with an epoch and sequence', () => {
 
 test('thread snapshot streams stay bound to provider, thread and tmux session', async () => {
   const threadFeed = new FakeSnapshotFeed();
-  const { hub } = setup({ threadFeed });
+  const { backends, hub } = setup({ threadFeed });
   const socket = new FakeSocket();
   hub.handleConnection(socket);
 
@@ -257,6 +258,10 @@ test('thread snapshot streams stay bound to provider, thread and tmux session', 
   });
   await waitFor(() => socket.sent.some((message) => message.id === 1));
   const target = { provider: 'codex', threadId: 'shared-thread', tmuxSession: 'skills' };
+  assert.deepEqual(backends.codex.calls[0], {
+    method: 'openThread', threadId: 'shared-thread',
+    options: { readOnly: true, progressive: true },
+  });
   threadFeed.publish(target, {
     epoch: 'test-epoch', sequence: 2,
     snapshot: { thread: { id: 'shared-thread', turns: [{ id: 'turn-1', items: [] }] } },
@@ -279,6 +284,45 @@ test('thread snapshot streams stay bound to provider, thread and tmux session', 
     snapshot: { thread: { id: 'shared-thread', turns: [] } },
   });
   assert.equal(socket.sent.length, count);
+});
+
+test('a progressive Codex reply is followed by the exact subscribed transcript', async () => {
+  let registry;
+  const threadFeed = createSnapshotFeed(
+    ({ provider, threadId }) => registry.openThread(provider, threadId, { readOnly: true }),
+    { epoch: 'test-epoch', intervalMs: 60_000 },
+  );
+  const setupResult = setup({ threadFeed });
+  ({ registry } = setupResult);
+  const { backends, hub } = setupResult;
+  backends.codex.openThread = async (threadId, options) => {
+    backends.codex.calls.push({ method: 'openThread', threadId, options });
+    const count = options?.progressive ? 20 : 80;
+    return {
+      thread: {
+        id: threadId,
+        turns: Array.from({ length: count }, (_, index) => ({ id: `turn-${index}`, items: [] })),
+      },
+    };
+  };
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+
+  send(socket, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'report', readOnly: true,
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  await waitFor(() => socket.sent.some((message) => message.type === 'threadSnapshot'));
+
+  assert.equal(socket.sent.find((message) => message.id === 1).result.thread.turns.length, 20);
+  assert.equal(socket.sent.find((message) => message.type === 'threadSnapshot').thread.turns.length, 80);
+  assert.deepEqual(backends.codex.calls.map((call) => call.options), [
+    { readOnly: true, progressive: true },
+    { readOnly: true },
+  ]);
+  socket.close();
+  threadFeed.close();
 });
 
 test('a tmux session becoming active wakes its sleeping transcript subscription', async () => {
