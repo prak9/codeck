@@ -39,11 +39,16 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     readOnly = false,
     detachOtherClients = true,
     canSwitchSession = false,
+    terminalOutputSettleMs = 60,
+    terminalOutputMaxWaitMs = 240,
+    setTerminalOutputTimeout = setTimeout,
+    clearTerminalOutputTimeout = clearTimeout,
     ...dependencyOverrides
   } = overrides;
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
   let activeSession = session;
   let terminal = null;
+  let terminalOutputCleanup = null;
   let closed = ws.readyState !== ws.OPEN;
   let attachSequence = 0;
   let awaitingSessionActivity = false;
@@ -52,6 +57,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const killTerminal = () => {
     const attached = terminal;
     terminal = null;
+    terminalOutputCleanup?.();
+    terminalOutputCleanup = null;
     attached?.kill();
   };
 
@@ -148,10 +155,57 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     }
 
     terminal = attached;
-    if (resetScreen) ws.send('\x1bc');
+    let initialOutput = resetScreen ? '\x1bc' : '';
+    let bufferingInitialOutput = terminalOutputSettleMs > 0;
+    let settleTimer = null;
+    let maxWaitTimer = null;
+    const clearInitialOutputTimers = () => {
+      if (settleTimer) clearTerminalOutputTimeout(settleTimer);
+      if (maxWaitTimer) clearTerminalOutputTimeout(maxWaitTimer);
+      settleTimer = null;
+      maxWaitTimer = null;
+    };
+    const disposeInitialOutput = () => {
+      bufferingInitialOutput = false;
+      initialOutput = '';
+      clearInitialOutputTimers();
+    };
+    const flushInitialOutput = () => {
+      if (!bufferingInitialOutput) return;
+      bufferingInitialOutput = false;
+      clearInitialOutputTimers();
+      if (terminal === attached && isOpen() && initialOutput) ws.send(initialOutput);
+      initialOutput = '';
+    };
+    const scheduleInitialOutputFlush = () => {
+      if (!bufferingInitialOutput) return;
+      if (settleTimer) clearTerminalOutputTimeout(settleTimer);
+      settleTimer = setTerminalOutputTimeout(flushInitialOutput, terminalOutputSettleMs);
+      if (!maxWaitTimer) {
+        maxWaitTimer = setTerminalOutputTimeout(flushInitialOutput, terminalOutputMaxWaitMs);
+      }
+    };
+    const sendTerminalOutput = (data) => {
+      if (!bufferingInitialOutput) {
+        ws.send(data);
+        return;
+      }
+      initialOutput += data;
+      // Do not let a command that prints continuously hold an unbounded buffer while
+      // waiting for the initial screen to become quiet.
+      if (initialOutput.length >= 256 * 1024) flushInitialOutput();
+      else scheduleInitialOutputFlush();
+    };
+    terminalOutputCleanup = disposeInitialOutput;
+    if (bufferingInitialOutput) {
+      if (initialOutput) scheduleInitialOutputFlush();
+    } else if (initialOutput) {
+      ws.send(initialOutput);
+      initialOutput = '';
+    }
     attached.onData((data) => {
       if (terminal !== attached || !isOpen()) return;
-      ws.send(data);
+      sendTerminalOutput(data);
       if (!awaitingSessionActivity) return;
       awaitingSessionActivity = false;
       try { dependencies.onSessionActivity?.(activeSession); }
@@ -159,6 +213,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     });
     attached.onExit(({ exitCode }) => {
       if (terminal !== attached) return;
+      terminalOutputCleanup?.();
+      terminalOutputCleanup = null;
       terminal = null;
       if (isOpen()) ws.close(1000, `terminal exited (${exitCode})`);
     });

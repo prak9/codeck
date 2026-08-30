@@ -947,8 +947,42 @@ export async function preferLatestClientSize() {
 
 // A single gesture should never be able to ask tmux for an unbounded scroll.
 const MAX_SCROLL_LINES = 500;
-// One in-flight scroll per session, so requests apply in the order they were made.
-const scrollQueue = new Map();
+
+export function createSessionScrollQueue(runScroll) {
+  const queues = new Map();
+
+  const startDrain = (name, state) => {
+    const drain = async () => {
+      // Yield once so state.running is assigned before the injected runner can settle.
+      await Promise.resolve();
+      try {
+        while (state.pending) {
+          const lines = state.pending;
+          state.pending = 0;
+          try { await runScroll(name, lines); }
+          catch { /* A later gesture must still be able to scroll this session. */ }
+        }
+      } finally {
+        state.running = null;
+        if (queues.get(name) === state) queues.delete(name);
+      }
+    };
+    state.running = drain();
+  };
+
+  return (name, lines) => {
+    const delta = Number.isFinite(lines) ? Math.trunc(lines) : 0;
+    if (!delta) return queues.get(name)?.running || Promise.resolve();
+    let state = queues.get(name);
+    if (!state) {
+      state = { pending: 0, running: null };
+      queues.set(name, state);
+    }
+    state.pending = Math.max(-MAX_SCROLL_LINES, Math.min(MAX_SCROLL_LINES, state.pending + delta));
+    if (!state.running) startDrain(name, state);
+    return state.running;
+  };
+}
 
 export function clampViewport(cols, rows) {
   const viewport = clampTerminalGrid(cols, rows);
@@ -970,13 +1004,7 @@ export function parseViewport(searchParams) {
 // history lives in tmux's copy mode, so scrolling has to be asked of tmux itself.
 // Positive `lines` moves back into history.
 export function scrollSession(name, lines) {
-  // Scrolls must not overtake each other: tmux applies them in arrival order, and two in
-  // flight at once can land reversed, so a drag stalls or jumps. Chain per session.
-  const queued = (scrollQueue.get(name) || Promise.resolve())
-    .then(() => runSessionScroll(name, lines))
-    .catch(() => {});
-  scrollQueue.set(name, queued);
-  return queued;
+  return queueSessionScroll(name, lines);
 }
 
 async function runSessionScroll(name, lines) {
@@ -994,6 +1022,11 @@ async function runSessionScroll(name, lines) {
   // otherwise, which is the no-op we want rather than an error worth surfacing.
   await exec('tmux', ['send-keys', '-X', '-t', name, '-N', String(count), 'scroll-down']).catch(() => {});
 }
+
+// Keep at most one tmux process in flight per session. Touchmove can emit dozens of
+// updates during one drag; folding the pending deltas prevents those old commands from
+// continuing to move the viewport after the finger has stopped.
+const queueSessionScroll = createSessionScrollQueue(runSessionScroll);
 
 export async function getSessionSize(name) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');

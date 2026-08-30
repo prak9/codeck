@@ -37,6 +37,8 @@ test('normal mode reuses an open owner socket when switching sessions', () => {
   assert.match(connect, /const reuseSocket = state\.canSwitchSession && state\.socket\?\.readyState === WebSocket\.OPEN;/);
   assert.match(connect, /type: 'switch', session, cols: terminal\.cols, rows: terminal\.rows/);
   assert.match(connect, /if \(!reuseSocket\) state\.socket\?\.close\(\);/);
+  assert.match(connect, /terminalElement\.style\.visibility = needsReset \? 'hidden' : '';/);
+  assert.match(connect, /if \(output\) terminal\.write\(output, finishSwitch\);/);
 });
 
 test('normal mode shares the sequenced owner session feed with remote mode', () => {

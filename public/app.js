@@ -973,7 +973,7 @@ async function connect(session) {
 
   const terminal = ensureTerminal();
   const terminalElement = $('#terminal');
-  terminalElement.style.visibility = needsReset && !reuseSocket ? 'hidden' : '';
+  terminalElement.style.visibility = needsReset ? 'hidden' : '';
   const reset = needsReset && !reuseSocket ? resetTerminalInput(terminal) : Promise.resolve();
   fitTerminalView({ suppressResize: reuseSocket });
 
@@ -986,7 +986,7 @@ async function connect(session) {
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
   const pendingOutput = [];
-  let outputReady = reuseSocket || !needsReset;
+  let outputReady = !needsReset;
   let waitingForSwitch = reuseSocket;
   state.socket = socket;
   syncTerminalAccess();
@@ -1004,7 +1004,19 @@ async function connect(session) {
     if (state.connectionId !== connectionId) return;
     if (waitingForSwitch) {
       waitingForSwitch = false;
-      markConnected();
+      const output = terminalOutputForSession(event.data, session);
+      const finishSwitch = () => {
+        if (state.connectionId !== connectionId || state.active !== session || state.socket !== socket) return;
+        outputReady = true;
+        terminalElement.style.visibility = '';
+        if (pendingOutput.length) {
+          terminal.write(terminalOutputForSession(pendingOutput.splice(0).join(''), session));
+        }
+        markConnected();
+      };
+      if (output) terminal.write(output, finishSwitch);
+      else finishSwitch();
+      return;
     }
     if (outputReady) terminal.write(terminalOutputForSession(event.data, session));
     else pendingOutput.push(event.data);
@@ -1023,7 +1035,6 @@ async function connect(session) {
   if (reuseSocket) {
     try {
       socket.send(JSON.stringify({ type: 'switch', session, cols: terminal.cols, rows: terminal.rows }));
-      terminal.focus();
       return;
     } catch {
       state.socket = null;

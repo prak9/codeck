@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, capturePanes, capturePaneSnapshots, createSession, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -30,6 +30,34 @@ test('parses tmux window activity from pane records', () => {
   assert.deepEqual(parsePanes('work\t1\t1\t42\t%7\tbash\t300\n'), [{
     session: 'work', pid: 42, paneId: '%7', score: 2, currentCommand: 'bash', windowActivityAt: 300_000,
   }]);
+});
+
+test('coalesces touch-scroll updates while the previous tmux scroll is in flight', async () => {
+  const calls = [];
+  let releaseFirst;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const scroll = createSessionScrollQueue(async (session, lines) => {
+    calls.push({ session, lines });
+    if (calls.length === 1) {
+      markFirstStarted();
+      await new Promise((resolve) => { releaseFirst = resolve; });
+    }
+  });
+
+  const first = scroll('work', 3);
+  await firstStarted;
+  const second = scroll('work', 4);
+  const third = scroll('work', 5);
+  const correction = scroll('work', -2);
+  assert.deepEqual(calls, [{ session: 'work', lines: 3 }]);
+
+  releaseFirst();
+  await Promise.all([first, second, third, correction]);
+  assert.deepEqual(calls, [
+    { session: 'work', lines: 3 },
+    { session: 'work', lines: 7 },
+  ]);
 });
 
 test('captures all selected panes through one tmux process', async () => {
