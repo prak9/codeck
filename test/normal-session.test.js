@@ -52,3 +52,8 @@ test('normal mode suppresses Codex shared-daemon background counts', () => {
   assert.match(appJs, /terminal\.write\(terminalOutputForSession\(event\.data, session\)\)/);
   assert.match(appJs, /terminal\.write\(terminalOutputForSession\(pendingOutput\.join\(''\), session\)\)/);
 });
+
+test('normal terminal output does not wait for input focus to repaint', () => {
+  assert.match(appJs, /bindTerminalRenderWatchdog\(terminal, \{ isVisible: \(\) => !document\.hidden \}\)/);
+  assert.match(appJs, /if \(!document\.hidden && state\.terminal\) state\.terminal\.refresh\(0, state\.terminal\.rows - 1\)/);
+});

@@ -15,6 +15,50 @@ export function isTerminalCopyShortcut(event, hasSelection) {
   return copyKey && Boolean(event.ctrlKey || event.metaKey);
 }
 
+// A terminal focus or resize forces xterm to repaint, which can hide a missed render
+// after the input buffer was already parsed. Keep the healthy path untouched and only
+// redraw when parsed output produces no render event by the deadline.
+export function bindTerminalRenderWatchdog(terminal, {
+  delayMs = 80,
+  schedule = setTimeout,
+  cancel = clearTimeout,
+  isVisible = () => true,
+} = {}) {
+  let timer = null;
+  let timerVersion = 0;
+  let pendingRender = false;
+  let disposed = false;
+
+  const cancelPending = () => {
+    if (timer !== null) cancel(timer);
+    timer = null;
+    timerVersion += 1;
+  };
+  const parsed = terminal.onWriteParsed(() => {
+    pendingRender = true;
+    if (timer !== null) return;
+    const version = ++timerVersion;
+    timer = schedule(() => {
+      if (disposed || version !== timerVersion) return;
+      timer = null;
+      if (!pendingRender || !isVisible()) return;
+      pendingRender = false;
+      if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1);
+    }, delayMs);
+  });
+  const rendered = terminal.onRender(() => {
+    pendingRender = false;
+    cancelPending();
+  });
+
+  return () => {
+    disposed = true;
+    cancelPending();
+    parsed.dispose?.();
+    rendered.dispose?.();
+  };
+}
+
 export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {
   terminal.options.fontSize = baseFontSize;
   fit.fit();

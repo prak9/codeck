@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  bindTerminalRenderWatchdog,
   clampTerminalGrid,
   fitTerminalGrid,
   isTerminalCopyShortcut,
@@ -55,6 +56,40 @@ test('terminal reset is ordered inside the xterm input queue', async () => {
   finishWrite();
   await reset;
   assert.equal(finished, true);
+});
+
+test('terminal render watchdog redraws parsed output only when xterm misses a render', () => {
+  const scheduled = [];
+  const refreshes = [];
+  let onParsed;
+  let onRender;
+  const terminal = {
+    rows: 24,
+    onWriteParsed(listener) { onParsed = listener; return { dispose() {} }; },
+    onRender(listener) { onRender = listener; return { dispose() {} }; },
+    refresh(start, end) { refreshes.push([start, end]); },
+  };
+  const schedule = (callback, delay) => {
+    const task = { callback, delay, cancelled: false };
+    scheduled.push(task);
+    return task;
+  };
+  const cancel = (task) => { task.cancelled = true; };
+  bindTerminalRenderWatchdog(terminal, { schedule, cancel, delayMs: 80 });
+
+  onParsed();
+  onParsed();
+  assert.equal(scheduled.length, 1, 'bursty output shares one redraw deadline');
+  assert.equal(scheduled[0].delay, 80);
+  scheduled[0].callback();
+  assert.deepEqual(refreshes, [[0, 23]], 'stale parsed output gets one full viewport redraw');
+
+  onParsed();
+  const healthyRender = scheduled[1];
+  onRender();
+  assert.equal(healthyRender.cancelled, true);
+  healthyRender.callback();
+  assert.deepEqual(refreshes, [[0, 23]], 'a normal xterm render needs no duplicate redraw');
 });
 
 test('copy shortcuts leave Ctrl+C as SIGINT when the terminal has no selection', () => {

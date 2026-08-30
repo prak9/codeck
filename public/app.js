@@ -1,9 +1,10 @@
 import { bindMobileScroll } from './mobile-scroll.js';
 import {
+  bindTerminalRenderWatchdog,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=6';
+} from './terminal-utils.js?v=7';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
 import { acceptStreamCursor } from './stream-state.js?v=1';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
@@ -862,6 +863,7 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
+  bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden });
   state.cancelMobileScroll = bindMobileScroll($('#terminal'), terminal, (lines) => {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));
@@ -1263,6 +1265,7 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && voiceInput.abort()) setTerminalVoiceState(false, '语音输入已暂停，草稿仍保留在这里。');
   if (!document.hidden && state.canManage) connectSessionFeed();
+  if (!document.hidden && state.terminal) state.terminal.refresh(0, state.terminal.rows - 1);
 });
 window.addEventListener('pagehide', () => voiceInput.abort());
 window.addEventListener('storage', (event) => {
