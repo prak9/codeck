@@ -10,6 +10,7 @@ const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 
 const CODEX_HISTORY_READ_LIMIT = 2 * 1024 * 1024;
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
 const AGENT_IDENTITY_CACHE_TTL_MS = 5_000;
+const DETACHED_PROCESS_CACHE_TTL_MS = 5_000;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', cwds: new Map(), previews: new Map() };
 const codexPaneSessions = new Map();
 let clockTicksPromise;
@@ -298,6 +299,9 @@ export function paneProcessTree(rootPid, processes) {
 }
 
 function isIndependentProcessLeader(process, procRoot) {
+  if (Number.isFinite(process?.pgrp) && Number.isFinite(process?.session)) {
+    return process.pgrp === process.pid && process.session === process.pid;
+  }
   try {
     const stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(process.pid), 'stat'), 'utf8'));
     return stat?.pgrp === process.pid && stat.session === process.pid;
@@ -363,13 +367,41 @@ function readProcProcess(procRoot, pid, { clockTicks, now, uptimeMs }) {
 
 export function readPaneProcessTrees(panes, {
   procRoot = '/proc', clockTicks = 100, now = Date.now(), uptimeMs = 0,
+  processTreeCache = null, processTreeCacheTtlMs = AGENT_IDENTITY_CACHE_TTL_MS,
 } = {}) {
+  const cache = processTreeCache instanceof Map ? processTreeCache : null;
+  const cacheTtlMs = Number.isFinite(processTreeCacheTtlMs)
+    ? Math.max(0, processTreeCacheTtlMs)
+    : AGENT_IDENTITY_CACHE_TTL_MS;
   const byRoot = new Map();
   const trees = new Map();
   for (const pane of panes || []) {
-    let tree = byRoot.get(pane.pid);
-    if (!tree) {
-      tree = [];
+    const cached = cache?.get(pane.session);
+    const cacheMatchesPane = cached
+      && cached.paneId === pane.paneId
+      && cached.pid === pane.pid
+      && cached.currentCommand === (pane.currentCommand || '')
+      && cached.expiresAt > now;
+    if (cacheMatchesPane) {
+      const topologyMatches = [...cached.childrenByPid].every(([pid, expected]) => {
+        const current = readProcChildren(procRoot, pid);
+        return current.length === expected.length
+          && current.every((child, index) => child === expected[index]);
+      });
+      const agentCommandsMatch = topologyMatches && cached.tree.every((process) => (
+        !agentKindFromCommand(process.command)
+        || readProcCommand(procRoot, process.pid) === process.command
+      ));
+      if (agentCommandsMatch) {
+        trees.set(pane.session, cached.tree);
+        continue;
+      }
+    }
+
+    let observation = byRoot.get(pane.pid);
+    if (!observation) {
+      const tree = [];
+      const childrenByPid = new Map();
       const seen = new Set();
       const queue = [pane.pid];
       while (queue.length) {
@@ -379,29 +411,90 @@ export function readPaneProcessTrees(panes, {
         const process = readProcProcess(procRoot, pid, { clockTicks, now, uptimeMs });
         if (!process) continue;
         tree.push(process);
-        for (const child of readProcChildren(procRoot, pid)) {
+        const children = readProcChildren(procRoot, pid);
+        childrenByPid.set(pid, children);
+        for (const child of children) {
           if (!seen.has(child)) queue.push(child);
         }
       }
-      byRoot.set(pane.pid, tree);
+      observation = { tree, childrenByPid };
+      byRoot.set(pane.pid, observation);
     }
-    trees.set(pane.session, tree);
+    trees.set(pane.session, observation.tree);
+    if (cache && observation.tree.length) {
+      cache.set(pane.session, {
+        paneId: pane.paneId,
+        pid: pane.pid,
+        currentCommand: pane.currentCommand || '',
+        expiresAt: now + cacheTtlMs,
+        ...observation,
+      });
+    } else {
+      cache?.delete(pane.session);
+    }
+  }
+  if (cache) {
+    const activeSessions = new Set((panes || []).map((pane) => pane.session));
+    for (const session of cache.keys()) {
+      if (!activeSessions.has(session)) cache.delete(session);
+    }
   }
   return trees;
 }
 
-export function findDetachedAgentSessionIdsFromProc(attachedPids, { procRoot = '/proc' } = {}) {
+function readProcCommand(procRoot, pid, fallback = '') {
+  try {
+    return fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'), 'utf8')
+      .split('\0').filter(Boolean).join(' ') || fallback;
+  } catch { return fallback; }
+}
+
+function readAgentSessionId(procRoot, pid) {
+  let entries;
+  try { entries = fs.readFileSync(path.join(procRoot, String(pid), 'environ'), 'utf8').split('\0'); }
+  catch { return null; }
+  for (const entry of entries) {
+    const separator = entry.indexOf('=');
+    if (separator < 0 || !AGENT_SESSION_ENV.has(entry.slice(0, separator))) continue;
+    const id = entry.slice(separator + 1);
+    if (new RegExp(`^${UUID}$`, 'i').test(id)) return id;
+  }
+  return null;
+}
+
+export function findDetachedAgentSessionIdsFromProc(attachedPids, {
+  procRoot = '/proc',
+  observationCache = null,
+  observationCacheTtlMs = DETACHED_PROCESS_CACHE_TTL_MS,
+  now = Date.now(),
+} = {}) {
+  const cache = observationCache instanceof Map ? observationCache : null;
   const candidatePids = new Set(readProcChildren(procRoot, 1));
   const queue = [...candidatePids];
+  const processes = [];
   while (queue.length) {
     const pid = queue.shift();
-    let command;
-    try {
-      command = fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'), 'utf8')
-        .split('\0').filter(Boolean).join(' ');
-    } catch { continue; }
-    if (!/(?:^|[ /])codex(?:\s|$)/i.test(command)
-      || !/(?:^|\s)app-server(?:\s|$)/i.test(command)) continue;
+    let stat;
+    try { stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')); }
+    catch { continue; }
+    if (!stat) continue;
+    const cached = cache?.get(pid);
+    const reusable = cached?.startTicks === stat.startTicks
+      && cached.name === stat.name
+      && cached.expiresAt > now;
+    const process = reusable
+      ? { ...cached, ...stat }
+      : {
+          ...stat,
+          command: readProcCommand(procRoot, pid, stat.name),
+          environmentLoaded: false,
+          agentSessionId: null,
+          expiresAt: now + Math.max(0, observationCacheTtlMs),
+        };
+    processes.push(process);
+    cache?.set(pid, process);
+    if (!/(?:^|[ /])codex(?:\s|$)/i.test(process.command)
+      || !/(?:^|\s)app-server(?:\s|$)/i.test(process.command)) continue;
     // app-server may spawn unified-exec from any worker thread. Linux exposes those
     // children only below that thread's task directory, not the process leader's.
     for (const child of readProcThreadChildren(procRoot, pid)) {
@@ -410,12 +503,19 @@ export function findDetachedAgentSessionIdsFromProc(attachedPids, { procRoot = '
       queue.push(child);
     }
   }
-  const processes = [...candidatePids].flatMap((pid) => {
-    try {
-      const stat = parseProcStat(fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8'));
-      return stat ? [{ pid: stat.pid, ppid: stat.ppid }] : [];
-    } catch { return []; }
-  });
+  if (cache) {
+    for (const pid of cache.keys()) {
+      if (!candidatePids.has(pid)) cache.delete(pid);
+    }
+  }
+  for (const process of processes) {
+    if (attachedPids?.has(process.pid) || !isIndependentProcessLeader(process, procRoot)) continue;
+    if (!process.environmentLoaded) {
+      process.agentSessionId = readAgentSessionId(procRoot, process.pid);
+      process.environmentLoaded = true;
+      cache?.set(process.pid, process);
+    }
+  }
   return findDetachedAgentSessionIds(processes, attachedPids, { procRoot });
 }
 
@@ -439,6 +539,10 @@ export function findDetachedAgentSessionIds(processes, attachedPids, { procRoot 
     // terminal session leaders. Unified-exec leaders remain below the app-server
     // parent, while helpers stay in their parent's terminal session.
     if (attachedPids?.has(process.pid) || !isIndependentProcessLeader(process, procRoot)) continue;
+    if (Object.hasOwn(process, 'agentSessionId')) {
+      if (sessionId.test(process.agentSessionId || '')) ids.add(process.agentSessionId);
+      continue;
+    }
     let entries;
     try { entries = fs.readFileSync(path.join(procRoot, String(process.pid), 'environ'), 'utf8').split('\0'); }
     catch { continue; }
@@ -633,7 +737,13 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     : AGENT_IDENTITY_CACHE_TTL_MS;
   const configSignature = [procRoot, codexHome, claudeHome, qoderHome].join('\0');
   const agents = new Map();
-  const trees = readPaneProcessTrees(panes, { procRoot, clockTicks, now, uptimeMs });
+  const processTreeCache = options.processTreeCache instanceof Map ? options.processTreeCache : null;
+  if (options.refreshIdentityCache) processTreeCache?.clear();
+  const trees = readPaneProcessTrees(panes, {
+    procRoot, clockTicks, now, uptimeMs,
+    processTreeCache,
+    processTreeCacheTtlMs: options.processTreeCacheTtlMs,
+  });
   const suppliedPaneOutputs = await Promise.resolve(options.paneOutputs || null);
   const paneOutputs = suppliedPaneOutputs instanceof Map
     ? suppliedPaneOutputs
@@ -771,7 +881,10 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     }
   }
   const attachedPids = new Set([...trees.values()].flat().map((process) => process.pid));
-  const detachedSessionIds = findDetachedAgentSessionIdsFromProc(attachedPids, { procRoot });
+  const detachedSessionIds = findDetachedAgentSessionIdsFromProc(attachedPids, {
+    procRoot,
+    observationCache: options.detachedProcessObservationCache,
+  });
   for (const agent of agents.values()) {
     if (agent.id && detachedSessionIds.has(agent.id)) agent.hasBackgroundProcess = true;
   }

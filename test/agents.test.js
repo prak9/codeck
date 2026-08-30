@@ -293,8 +293,9 @@ test('reuses a resolved Agent identity until its process signature changes or th
       session_id: sessionId, ts: 100, text: '优化会话扫描',
     }));
 
-    const pane = [{ session: 'performance', pid: 10, paneId: '%1' }];
+    const pane = [{ session: 'performance', pid: 10, paneId: '%1', currentCommand: 'node' }];
     const identityCache = new Map();
+    const processTreeCache = new Map();
     let paneReads = 0;
     const detect = (now) => detectPaneAgents(pane, { CODEX_HOME: codexHome }, {
       procRoot,
@@ -303,6 +304,7 @@ test('reuses a resolved Agent identity until its process signature changes or th
       uptimeMs: 100_000,
       identityCache,
       identityCacheTtlMs: 5_000,
+      processTreeCache,
       readCodexPaneOutput: async () => {
         paneReads += 1;
         return '› 优化会话扫描\n• 正在分析';
@@ -362,8 +364,9 @@ test('a new visible Codex prompt invalidates a cached identity before its TTL', 
       JSON.stringify({ session_id: secondId, ts: 200, text: '第二个会话' }),
     ].join('\n'));
 
-    const pane = [{ session: 'switching', pid: 10, paneId: '%1' }];
+    const pane = [{ session: 'switching', pid: 10, paneId: '%1', currentCommand: 'node' }];
     const identityCache = new Map();
+    const processTreeCache = new Map();
     const paneOutputs = new Map([['switching', '› 第一个会话\n• 已完成']]);
     let deepOutput = paneOutputs.get('switching');
     let paneReads = 0;
@@ -374,6 +377,7 @@ test('a new visible Codex prompt invalidates a cached identity before its TTL', 
       uptimeMs: 100_000,
       identityCache,
       identityCacheTtlMs: 5_000,
+      processTreeCache,
       paneOutputs,
       readCodexPaneOutput: async () => {
         paneReads += 1;
@@ -462,12 +466,13 @@ test('a runtime registry session switch invalidates a cached Agent identity befo
     });
     const registry = path.join(qoderHome, 'sessions', '11.json');
     const identityCache = new Map();
+    const processTreeCache = new Map();
     const detect = (now) => detectPaneAgents(
       [{ session: 'switching', pid: 10, paneId: '%1' }],
       { QODER_CONFIG_DIR: qoderHome },
       {
         procRoot, clockTicks: 100, now, uptimeMs: 100_000,
-        identityCache, identityCacheTtlMs: 5_000,
+        identityCache, identityCacheTtlMs: 5_000, processTreeCache,
       },
     );
 
@@ -502,12 +507,13 @@ test('a Claude registry session switch invalidates its cached identity before th
     });
     const registry = path.join(claudeHome, 'sessions', '11.json');
     const identityCache = new Map();
+    const processTreeCache = new Map();
     const detect = (now) => detectPaneAgents(
       [{ session: 'switching', pid: 10, paneId: '%1' }],
       { CLAUDE_CONFIG_DIR: claudeHome },
       {
         procRoot, clockTicks: 100, now, uptimeMs: 100_000,
-        identityCache, identityCacheTtlMs: 5_000,
+        identityCache, identityCacheTtlMs: 5_000, processTreeCache,
       },
     );
 
@@ -553,12 +559,13 @@ test('a Qoder segment FD switch invalidates a cached bare-resume identity before
     const descriptor = path.join(fdRoot, '39');
     fs.symlinkSync(segmentFor(firstId), descriptor);
     const identityCache = new Map();
+    const processTreeCache = new Map();
     const detect = (now) => detectPaneAgents(
       [{ session: 'switching', pid: 10, paneId: '%1' }],
       { QODER_CONFIG_DIR: qoderHome },
       {
         procRoot, clockTicks: 100, now, uptimeMs: 100_000,
-        identityCache, identityCacheTtlMs: 5_000,
+        identityCache, identityCacheTtlMs: 5_000, processTreeCache,
       },
     );
 
@@ -715,6 +722,84 @@ test('reads only each pane process tree from procfs', () => {
   }
 });
 
+test('reuses an unchanged pane process tree without rereading process details', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-pane-proc-cache-'));
+  const processTreeCache = new Map();
+  const originalReadFileSync = fs.readFileSync;
+  let detailReads = 0;
+  try {
+    writeProcProcess(root, {
+      pid: 10, ppid: 1, startTicks: 8_000,
+      command: '/bin/bash', children: [11],
+    });
+    writeProcProcess(root, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo',
+    });
+    const pane = [{ session: 'work', pid: 10, paneId: '%1', currentCommand: 'codex' }];
+    const first = readPaneProcessTrees(pane, {
+      procRoot: root, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
+      processTreeCache,
+    });
+    fs.readFileSync = function countedRead(file, ...args) {
+      if (/\/10\/(?:stat|cmdline)$/.test(String(file))) detailReads += 1;
+      return originalReadFileSync.call(this, file, ...args);
+    };
+    const second = readPaneProcessTrees(pane, {
+      procRoot: root, clockTicks: 100, now: 1_001_000, uptimeMs: 101_000,
+      processTreeCache,
+    });
+
+    assert.equal(detailReads, 0);
+    assert.equal(second.get('work'), first.get('work'));
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('pane process tree observations invalidate on topology changes and expire for command audits', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-pane-proc-cache-invalidation-'));
+  const processTreeCache = new Map();
+  const pane = [{ session: 'work', pid: 10, paneId: '%1', currentCommand: 'node' }];
+  const read = (now) => readPaneProcessTrees(pane, {
+    procRoot: root, clockTicks: 100, now, uptimeMs: 100_000,
+    processTreeCache, processTreeCacheTtlMs: 5_000,
+  }).get('work');
+  try {
+    writeProcProcess(root, {
+      pid: 10, ppid: 1, startTicks: 8_000,
+      command: '/bin/bash', children: [11],
+    });
+    writeProcProcess(root, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo',
+    });
+    assert.deepEqual(read(1_000_000).map((process) => process.pid), [10, 11]);
+
+    writeProcProcess(root, {
+      pid: 10, ppid: 1, startTicks: 8_000,
+      command: '/bin/bash', children: [11, 12],
+    });
+    writeProcProcess(root, {
+      pid: 12, ppid: 10, startTicks: 9_500,
+      command: '/bin/bash -lc npm test',
+    });
+    assert.deepEqual(read(1_001_000).map((process) => process.pid), [10, 11, 12]);
+
+    writeProcProcess(root, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/claude --resume',
+    });
+    assert.equal(
+      read(1_007_000).find((process) => process.pid === 11)?.command,
+      'node /usr/bin/claude --resume',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('discovers detached Agent task leaders without scanning unrelated process trees', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-proc-'));
   const codexId = '01a028e3-8058-73e0-bfc7-e7643f298b0f';
@@ -738,6 +823,126 @@ test('discovers detached Agent task leaders without scanning unrelated process t
 
     assert.deepEqual(findDetachedAgentSessionIdsFromProc(new Set([30]), { procRoot: root }), new Set([codexId]));
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('reuses unchanged detached process observations without rereading commands or environments', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-cache-'));
+  const codexId = '01a04140-1111-7111-8111-111111111111';
+  const observationCache = new Map();
+  const originalReadFileSync = fs.readFileSync;
+  let commandReads = 0;
+  let environmentReads = 0;
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20] });
+    writeProcProcess(root, {
+      pid: 20, ppid: 1, startTicks: 2_000,
+      command: '/bin/bash -lc worker',
+      environment: `CODEX_THREAD_ID=${codexId}\0`,
+    });
+    fs.readFileSync = function countedRead(file, ...args) {
+      if (String(file).endsWith('/cmdline')) commandReads += 1;
+      if (String(file).endsWith('/environ')) environmentReads += 1;
+      return originalReadFileSync.call(this, file, ...args);
+    };
+
+    assert.deepEqual(
+      findDetachedAgentSessionIdsFromProc(new Set(), { procRoot: root, observationCache }),
+      new Set([codexId]),
+    );
+    commandReads = 0;
+    environmentReads = 0;
+    assert.deepEqual(
+      findDetachedAgentSessionIdsFromProc(new Set(), { procRoot: root, observationCache }),
+      new Set([codexId]),
+    );
+    assert.equal(commandReads, 0);
+    assert.equal(environmentReads, 0);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('detached process observations invalidate immediately for new and reused PIDs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-detached-cache-invalidation-'));
+  const firstId = '01a04141-1111-7111-8111-111111111111';
+  const secondId = '01a04142-2222-7222-8222-222222222222';
+  const observationCache = new Map();
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20] });
+    writeProcProcess(root, {
+      pid: 20, ppid: 1, startTicks: 2_000,
+      command: '/bin/bash -lc first', environment: `CODEX_THREAD_ID=${firstId}\0`,
+    });
+    assert.deepEqual(
+      findDetachedAgentSessionIdsFromProc(new Set(), { procRoot: root, observationCache }),
+      new Set([firstId]),
+    );
+
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20, 21] });
+    writeProcProcess(root, {
+      pid: 21, ppid: 1, startTicks: 2_100,
+      command: '/bin/bash -lc second', environment: `QODER_SESSION_ID=${secondId}\0`,
+    });
+    assert.deepEqual(
+      findDetachedAgentSessionIdsFromProc(new Set(), { procRoot: root, observationCache }),
+      new Set([firstId, secondId]),
+    );
+
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20] });
+    writeProcProcess(root, {
+      pid: 20, ppid: 1, startTicks: 3_000,
+      command: '/bin/bash -lc reused', environment: `QODER_SESSION_ID=${secondId}\0`,
+    });
+    assert.deepEqual(
+      findDetachedAgentSessionIdsFromProc(new Set(), { procRoot: root, observationCache }),
+      new Set([secondId]),
+    );
+    assert.deepEqual([...observationCache.keys()], [20]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Agent detection shares detached process observations across session refreshes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agent-detached-cache-'));
+  const codexId = '01a04143-3333-7333-8333-333333333333';
+  const detachedProcessObservationCache = new Map();
+  const originalReadFileSync = fs.readFileSync;
+  let detachedCommandReads = 0;
+  let detachedEnvironmentReads = 0;
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0, children: [20] });
+    writeProcProcess(root, { pid: 10, ppid: 1, command: '/bin/bash' });
+    writeProcProcess(root, {
+      pid: 20, ppid: 1, startTicks: 2_000,
+      command: '/bin/bash -lc worker', environment: `CODEX_THREAD_ID=${codexId}\0`,
+    });
+    fs.writeFileSync(path.join(root, 'uptime'), '100 0\n');
+    fs.readFileSync = function countedRead(file, ...args) {
+      if (String(file).endsWith('/20/cmdline')) detachedCommandReads += 1;
+      if (String(file).endsWith('/20/environ')) detachedEnvironmentReads += 1;
+      return originalReadFileSync.call(this, file, ...args);
+    };
+    const detect = () => detectPaneAgents(
+      [{ session: 'shell', pid: 10, paneId: '%1', currentCommand: 'bash' }],
+      {},
+      {
+        procRoot: root, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
+        detachedProcessObservationCache,
+      },
+    );
+
+    await detect();
+    detachedCommandReads = 0;
+    detachedEnvironmentReads = 0;
+    await detect();
+    assert.equal(detachedCommandReads, 0);
+    assert.equal(detachedEnvironmentReads, 0);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

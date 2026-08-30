@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, capturePanes, createSession, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, capturePanes, capturePaneSnapshots, createSession, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -55,6 +55,80 @@ test('captures all selected panes through one tmux process', async () => {
   assert.equal(calls[0].args.filter((value) => value === 'capture-pane').length, 2);
 });
 
+test('reuses idle pane snapshots and captures only activity changes or working sessions', async () => {
+  const cache = new Map();
+  const batches = [];
+  const capture = async (panes) => {
+    batches.push(panes.map((pane) => pane.session));
+    return panes.map((pane) => [pane.session, `${pane.session}:${pane.windowActivityAt}`]);
+  };
+  const panes = [
+    { session: 'one', paneId: '%1', pid: 10, currentCommand: 'bash', windowActivityAt: 1_000 },
+    { session: 'two', paneId: '%2', pid: 20, currentCommand: 'bash', windowActivityAt: 1_000 },
+  ];
+
+  assert.deepEqual(await capturePaneSnapshots(panes, { cache, capture, now: 10_000 }), [
+    ['one', 'one:1000'], ['two', 'two:1000'],
+  ]);
+  assert.deepEqual(await capturePaneSnapshots(panes, { cache, capture, now: 11_000 }), [
+    ['one', 'one:1000'], ['two', 'two:1000'],
+  ]);
+
+  cache.get('one').working = true;
+  panes[1] = { ...panes[1], windowActivityAt: 2_000 };
+  assert.deepEqual(await capturePaneSnapshots(panes, { cache, capture, now: 12_000 }), [
+    ['one', 'one:1000'], ['two', 'two:2000'],
+  ]);
+  assert.deepEqual(batches, [['one', 'two'], ['one', 'two']]);
+});
+
+test('recent tmux activity keeps a short capture grace window within timestamp resolution', async () => {
+  const cache = new Map();
+  const batches = [];
+  const capture = async (panes) => {
+    batches.push(panes.map((pane) => pane.session));
+    return panes.map((pane) => [pane.session, 'screen']);
+  };
+  const panes = [{
+    session: 'one', paneId: '%1', pid: 10,
+    currentCommand: 'bash', windowActivityAt: 1_000,
+  }];
+
+  await capturePaneSnapshots(panes, { cache, capture, now: 1_500 });
+  await capturePaneSnapshots(panes, { cache, capture, now: 2_000 });
+  await capturePaneSnapshots(panes, { cache, capture, now: 4_000 });
+  assert.deepEqual(batches, [['one'], ['one']]);
+});
+
+test('pane snapshot safety audits are staggered and forced refreshes bypass the cache', async () => {
+  const cache = new Map();
+  const batches = [];
+  const capture = async (panes) => {
+    batches.push(panes.map((pane) => pane.session));
+    return panes.map((pane) => [pane.session, `screen:${pane.session}`]);
+  };
+  const panes = ['one', 'two', 'three'].map((session, index) => ({
+    session, paneId: `%${index + 1}`, pid: index + 1,
+    currentCommand: 'bash', windowActivityAt: 1_000,
+  }));
+
+  await capturePaneSnapshots(panes, { cache, capture, now: 1_000, auditAfterMs: 10_000, auditLimit: 1 });
+  await capturePaneSnapshots(panes, { cache, capture, now: 12_000, auditAfterMs: 10_000, auditLimit: 1 });
+  await capturePaneSnapshots(panes, { cache, capture, now: 12_100, auditAfterMs: 10_000, auditLimit: 1 });
+  await capturePaneSnapshots(panes, { cache, capture, now: 12_200, force: true });
+  await capturePaneSnapshots(panes, {
+    cache, capture, now: 12_300, forceSessions: new Set(['two']),
+  });
+
+  assert.deepEqual(batches, [
+    ['one', 'two', 'three'],
+    ['one'],
+    ['two'],
+    ['one', 'two', 'three'],
+    ['two'],
+  ]);
+});
+
 test('falls back to isolated pane captures when a batched capture cannot be parsed', async () => {
   const calls = [];
   const captures = await capturePanes([
@@ -80,12 +154,14 @@ test('waits for an Agent to process bracketed paste before submitting with tmux 
       name: 'work', agent: { kind: 'claude', id: 'thread-1', paneId: '%7' },
     }],
     bufferName: 'codeck-test',
+    invalidatePaneSnapshot: (sessionName) => calls.push({ type: 'invalidate', sessionName }),
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'wait' }),
   });
 
   assert.deepEqual(calls, [
+    { type: 'invalidate', sessionName: 'work' },
     { type: 'load', bufferName: 'codeck-test', text: 'Review\nmobile' },
     {
       type: 'exec',
@@ -291,9 +367,10 @@ test('interrupts the exact verified Agent pane with Escape', async () => {
       }];
     },
     execTmux: async (args) => calls.push(args),
+    invalidatePaneSnapshot: (sessionName) => calls.push(['invalidate', sessionName]),
   });
-  assert.deepEqual(listOptions, { refreshAgentIdentities: true });
-  assert.deepEqual(calls, [['send-keys', '-t', '%42', 'Escape']]);
+  assert.deepEqual(listOptions, { refreshAgentIdentities: true, refreshPaneSession: 'work' });
+  assert.deepEqual(calls, [['invalidate', 'work'], ['send-keys', '-t', '%42', 'Escape']]);
 });
 
 test('sends shell input and Ctrl-C only to the exact verified shell pane', async () => {

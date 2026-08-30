@@ -85,8 +85,14 @@ export function resolvePaneAgent(detectedAgent, output, pane) {
 }
 // A working pane repaints at least once a second; allow a missed poll before going idle.
 const SCREEN_ACTIVITY_WINDOW_MS = 6_000;
+const PANE_ACTIVITY_GRACE_MS = 2_000;
+const PANE_SCREEN_AUDIT_MS = 30_000;
+const PANE_SCREEN_AUDIT_LIMIT = 8;
 const screenActivity = new Map();
 const agentIdentityCache = new Map();
+const paneProcessTreeCache = new Map();
+const detachedProcessObservationCache = new Map();
+const paneScreenCache = new Map();
 let supportsWindowSizePromise;
 
 export function validateSessionName(name) {
@@ -490,6 +496,62 @@ export async function capturePanes(panes, execTmux = exec) {
   }
 }
 
+export async function capturePaneSnapshots(panes, {
+  cache = null,
+  capture = capturePanes,
+  now = Date.now(),
+  force = false,
+  forceSessions = null,
+  auditAfterMs = PANE_SCREEN_AUDIT_MS,
+  auditLimit = PANE_SCREEN_AUDIT_LIMIT,
+} = {}) {
+  if (!(cache instanceof Map)) return capture(panes);
+  const safeAuditAfterMs = Number.isFinite(auditAfterMs) ? Math.max(0, auditAfterMs) : PANE_SCREEN_AUDIT_MS;
+  const safeAuditLimit = Number.isFinite(auditLimit) ? Math.max(0, Math.floor(auditLimit)) : PANE_SCREEN_AUDIT_LIMIT;
+  const selected = [];
+  let audits = 0;
+  for (const pane of panes) {
+    const cached = cache.get(pane.session);
+    const forced = force || (forceSessions instanceof Set && forceSessions.has(pane.session));
+    const recentActivity = cached?.recentActivityUntil > now;
+    const changed = cached
+      && (cached.paneId !== pane.paneId
+        || cached.pid !== pane.pid
+        || cached.currentCommand !== pane.currentCommand
+        || cached.windowActivityAt !== pane.windowActivityAt);
+    const audit = cached && now - cached.capturedAt >= safeAuditAfterMs && audits < safeAuditLimit;
+    if (!cached || forced || changed || cached.working || recentActivity || audit) {
+      selected.push(pane);
+      if (audit && !forced && !changed && !cached.working && !recentActivity) audits += 1;
+    }
+  }
+
+  const captured = new Map(selected.length ? await capture(selected) : []);
+  for (const pane of selected) {
+    if (!captured.has(pane.session)) continue;
+    const previous = cache.get(pane.session);
+    const activityAge = now - pane.windowActivityAt;
+    const recentActivityUntil = activityAge >= 0 && activityAge <= PANE_ACTIVITY_GRACE_MS
+      ? pane.windowActivityAt + PANE_ACTIVITY_GRACE_MS
+      : previous?.recentActivityUntil || 0;
+    cache.set(pane.session, {
+      paneId: pane.paneId,
+      pid: pane.pid,
+      currentCommand: pane.currentCommand,
+      windowActivityAt: pane.windowActivityAt,
+      capturedAt: now,
+      recentActivityUntil,
+      working: Boolean(previous?.working),
+      screen: captured.get(pane.session),
+    });
+  }
+  const activeSessions = new Set(panes.map((pane) => pane.session));
+  for (const session of cache.keys()) {
+    if (!activeSessions.has(session)) cache.delete(session);
+  }
+  return panes.map((pane) => [pane.session, cache.get(pane.session)?.screen || '']);
+}
+
 function readScreenSignals(session, screen, markers, now) {
   const activity = resolveScreenActivity(screenActivity.get(session), screen, now);
   screenActivity.set(session, activity);
@@ -514,7 +576,7 @@ export function resolveAgentBackgroundState({ agent, screenSignals }) {
   return agent.kind === 'claude' && Boolean(screenSignals?.background);
 }
 
-export async function listSessions({ refreshAgentIdentities = false } = {}) {
+export async function listSessions({ refreshAgentIdentities = false, refreshPaneSession = null } = {}) {
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
@@ -538,10 +600,16 @@ export async function listSessions({ refreshAgentIdentities = false } = {}) {
     }
 
     const now = Date.now();
-    const screensPromise = capturePanes(panes);
+    const screensPromise = capturePaneSnapshots(panes, {
+      cache: paneScreenCache,
+      force: refreshAgentIdentities && !refreshPaneSession,
+      forceSessions: refreshPaneSession ? new Set([refreshPaneSession]) : null,
+    });
     const agentsPromise = detectPaneAgents(panes, process.env, {
       identityCache: agentIdentityCache,
       refreshIdentityCache: refreshAgentIdentities,
+      processTreeCache: paneProcessTreeCache,
+      detachedProcessObservationCache,
       paneOutputs: screensPromise.then((screens) => new Map(screens)),
     });
     const [agents, screens] = await Promise.all([agentsPromise, screensPromise]);
@@ -595,6 +663,8 @@ export async function listSessions({ refreshAgentIdentities = false } = {}) {
           ...(liveOutput ? { liveOutput } : {}),
         } : null;
         const shellLiveOutput = !agent ? resolveShellLiveOutput(screenBySession.get(session.name)) : '';
+        const paneScreen = paneScreenCache.get(session.name);
+        if (paneScreen) paneScreen.working = Boolean(detectedAgent && hasRunningProcess);
         return {
           ...session,
           agent,
@@ -626,7 +696,10 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
   if (!validateClient(provider) || !validateSessionName(sessionName) || !THREAD_ID.test(threadId || '')) {
     throw new Error('会话信息无效，请刷新后重试');
   }
-  const sessions = await listTmuxSessions({ refreshAgentIdentities: true });
+  const sessions = await listTmuxSessions({
+    refreshAgentIdentities: true,
+    refreshPaneSession: sessionName,
+  });
   const session = sessions.find((candidate) => candidate.name === sessionName);
   if (!session) throw new Error('tmux 会话已不存在，请刷新后重试');
 
@@ -679,6 +752,9 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
     const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
+      || ((name) => paneScreenCache.delete(name));
+    invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const waitForPaste = overrides.waitForPaste
       || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
@@ -735,6 +811,9 @@ export async function interruptSession({ provider, sessionName, threadId }, over
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
     const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
+      || ((name) => paneScreenCache.delete(name));
+    invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
   });
