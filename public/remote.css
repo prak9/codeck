@@ -548,3 +548,23 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* 首帧只带尾部若干轮, 更早的按需再取 */
+.load-earlier {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 12px;
+}
+.load-earlier button {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line, rgba(127, 127, 127, 0.35));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  opacity: 0.75;
+  cursor: pointer;
+}
+.load-earlier button:disabled { cursor: default; opacity: 0.45; }
+.load-earlier button:not(:disabled):hover { opacity: 1; }

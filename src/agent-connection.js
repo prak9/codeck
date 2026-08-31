@@ -303,6 +303,10 @@ export class AgentHub {
     threadFeed = null,
     invalidateSessions = null,
     paneExcerpt = null,
+    // 打开会话的首帧只发尾部若干轮: 这条 1.2MB / 43 turns 的会话往返要 73ms,
+    // 几乎全花在序列化、permessage-deflate 与客户端解析上, 而用户一眼能看到的
+    // 只有最后几轮。更早的按需再取。
+    threadTurnWindow = 20,
   } = {}) {
     this.registry = registry;
     this.defaultCwd = defaultCwd;
@@ -312,6 +316,7 @@ export class AgentHub {
     this.threadFeed = threadFeed;
     this.invalidateSessions = invalidateSessions;
     this.paneExcerpt = paneExcerpt;
+    this.threadTurnWindow = threadTurnWindow;
     this.clients = new Map();
     this.commandReceipts = createCommandReceiptCache();
     this.sessionMessageReceipts = new Map();
@@ -460,6 +465,24 @@ export class AgentHub {
       this.#activateThreadSubscription(socket, subscription);
       return {};
     }
+    if (message.type === 'loadThreadHistory') {
+      const threadId = cleanId(message.threadId, 'Thread');
+      const beforeTurnId = typeof message.beforeTurnId === 'string' ? message.beforeTurnId.trim() : '';
+      const limit = Number.isSafeInteger(message.limit) && message.limit > 0
+        ? Math.min(message.limit, 200)
+        : this.threadTurnWindow;
+      const result = await this.registry.openThread(provider, threadId, { readOnly: true });
+      const turns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
+      const end = beforeTurnId ? turns.findIndex((turn) => turn.id === beforeTurnId) : turns.length;
+      if (end < 0) throw new Error('Thread history anchor is no longer present');
+      const start = Math.max(0, end - limit);
+      const slice = turns.slice(start, end);
+      return {
+        turns: slice,
+        truncated: start > 0,
+        oldestTurnId: slice[0]?.id || null,
+      };
+    }
     if (message.type === 'listThreads') return this.registry.listThreads(provider);
     if (message.type === 'openThread') {
       const threadId = cleanId(message.threadId, 'Thread');
@@ -488,9 +511,9 @@ export class AgentHub {
         }
         subscription.cursor = null;
         if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
-        const result = this.#withPaneExcerpt(
+        const result = this.#windowThread(this.#withPaneExcerpt(
           await this.registry.openThread(provider, threadId, options), target.tmuxSession,
-        );
+        ));
         const restored = this.#restoreSessionMessageReceipts(provider, threadId, result);
         return afterReply(restored, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {
@@ -616,6 +639,21 @@ export class AgentHub {
   // The pane excerpt no longer rides the session list, so the thread payload has to
   // carry it; without this the first render after opening a session shows an empty
   // output area until the thread stream catches up.
+  #windowThread(result) {
+    const turns = result?.thread?.turns;
+    const limit = this.threadTurnWindow;
+    if (!Array.isArray(turns) || !Number.isSafeInteger(limit) || limit < 1 || turns.length <= limit) {
+      return result;
+    }
+    const kept = turns.slice(-limit);
+    return {
+      ...result,
+      thread: {
+        ...result.thread, turns: kept, truncated: true, oldestTurnId: kept[0]?.id || null,
+      },
+    };
+  }
+
   #withPaneExcerpt(result, tmuxSession) {
     const excerpt = tmuxSession && this.paneExcerpt ? this.paneExcerpt(tmuxSession) : '';
     if (!excerpt || !result?.thread) return result;

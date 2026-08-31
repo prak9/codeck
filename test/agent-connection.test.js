@@ -36,7 +36,7 @@ class FakeBackend extends EventEmitter {
 
   async openThread(threadId, options) {
     this.calls.push({ method: 'openThread', threadId, options });
-    return { thread: { id: threadId, turns: [] } };
+    return { thread: { id: threadId, turns: this.turns ? [...this.turns] : [] } };
   }
 
   async newThread(params) {
@@ -958,4 +958,65 @@ test('a delivery receipt whose anchor scrolled out of the window is treated as d
 
   assert.equal(resolvedForTest(windowed, receipt), true, '窗口外的锚点视为已送达');
   assert.equal(resolvedForTest(full, receipt), false, '锚点在窗口内且没有匹配消息 → 仍未送达');
+});
+
+test('openThread returns only the recent turns and says more exist', async () => {
+  // 打开这条 1.2MB / 43 turns 的会话要 73ms, 全花在传输和解析上。首帧只发尾部,
+  // 更早的按需再取。
+  const { backends, registry } = setup();
+  const hub = new AgentHub(registry, { defaultCwd: '/srv/codeck', threadTurnWindow: 3 });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  backends.codex.turns = Array.from({ length: 10 }, (_, i) => ({
+    id: `turn-${i}`, status: 'completed', items: [{ id: `item-${i}`, type: 'agentMessage', text: `第 ${i} 轮` }],
+  }));
+
+  send(socket, { type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1' });
+  await waitFor(() => socket.sent.some((m) => m.id === 1));
+  const thread = socket.sent.find((m) => m.id === 1).result.thread;
+
+  assert.deepEqual(thread.turns.map((t) => t.id), ['turn-7', 'turn-8', 'turn-9']);
+  assert.equal(thread.truncated, true);
+  assert.equal(thread.oldestTurnId, 'turn-7');
+});
+
+test('earlier turns can be fetched on demand', async () => {
+  const { backends, registry } = setup();
+  const hub = new AgentHub(registry, { defaultCwd: '/srv/codeck', threadTurnWindow: 3 });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  backends.codex.turns = Array.from({ length: 10 }, (_, i) => ({
+    id: `turn-${i}`, status: 'completed', items: [{ id: `item-${i}`, type: 'agentMessage', text: `第 ${i} 轮` }],
+  }));
+
+  send(socket, {
+    type: 'loadThreadHistory', id: 2, provider: 'codex', threadId: 'thread-1',
+    beforeTurnId: 'turn-7', limit: 3,
+  });
+  await waitFor(() => socket.sent.some((m) => m.id === 2));
+  const result = socket.sent.find((m) => m.id === 2).result;
+
+  assert.deepEqual(result.turns.map((t) => t.id), ['turn-4', 'turn-5', 'turn-6']);
+  assert.equal(result.truncated, true, 'turn-0..3 还在更前面');
+  assert.equal(result.oldestTurnId, 'turn-4');
+});
+
+test('reaching the start of the transcript is reported', async () => {
+  const { backends, registry } = setup();
+  const hub = new AgentHub(registry, { defaultCwd: '/srv/codeck', threadTurnWindow: 3 });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  backends.codex.turns = Array.from({ length: 5 }, (_, i) => ({
+    id: `turn-${i}`, status: 'completed', items: [],
+  }));
+
+  send(socket, {
+    type: 'loadThreadHistory', id: 3, provider: 'codex', threadId: 'thread-1',
+    beforeTurnId: 'turn-2', limit: 10,
+  });
+  await waitFor(() => socket.sent.some((m) => m.id === 3));
+  const result = socket.sent.find((m) => m.id === 3).result;
+
+  assert.deepEqual(result.turns.map((t) => t.id), ['turn-0', 'turn-1']);
+  assert.equal(result.truncated, false, '已到最早, 不该再让客户端继续拉');
 });

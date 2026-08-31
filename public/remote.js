@@ -68,6 +68,7 @@ const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 let viewportFrame = 0;
 
 const state = {
+  loadingEarlier: false,
   token: localStorage.getItem('codeck-token') || '',
   theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   provider: localStorage.getItem('codeck-remote-provider') || 'codex',
@@ -1875,6 +1876,56 @@ function scheduleThreadRender(forceBottom = false) {
   });
 }
 
+
+function loadEarlierNode() {
+  const existing = [...$('#turns').children].find((node) => node.classList?.contains('load-earlier'));
+  if (existing && existing._codeckPending === state.loadingEarlier) return existing;
+  const node = document.createElement('div');
+  node.className = 'load-earlier';
+  node._codeckPending = state.loadingEarlier;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = state.loadingEarlier ? '正在加载…' : '加载更早的对话';
+  button.disabled = Boolean(state.loadingEarlier);
+  button.addEventListener('click', () => loadEarlierTurns());
+  node.append(button);
+  return node;
+}
+
+async function loadEarlierTurns() {
+  const thread = state.thread;
+  if (!thread?.truncated || state.loadingEarlier) return;
+  const anchor = thread.oldestTurnId || thread.turns?.[0]?.id;
+  if (!anchor) return;
+  state.loadingEarlier = true;
+  scheduleThreadRender(false);
+  const transcript = $('#transcript');
+  const heightBefore = transcript.scrollHeight;
+  try {
+    const result = await agentRequest('loadThreadHistory', {
+      provider: state.provider,
+      threadId: thread.id,
+      tmuxSession: thread.tmux?.name || '',
+      beforeTurnId: anchor,
+    });
+    if (state.thread !== thread) return;
+    const earlier = Array.isArray(result?.turns) ? result.turns : [];
+    thread.turns = [...earlier, ...(thread.turns || [])];
+    thread.truncated = Boolean(result?.truncated);
+    thread.oldestTurnId = result?.oldestTurnId || null;
+    scheduleThreadRender(false);
+    // 在顶部插入内容会把已读位置整体下推, 补回滚动量, 否则视线会跳。
+    requestAnimationFrame(() => {
+      transcript.scrollTop += transcript.scrollHeight - heightBefore;
+    });
+  } catch (error) {
+    setLiveMessage(error.message || '加载更早的对话失败');
+  } finally {
+    state.loadingEarlier = false;
+    scheduleThreadRender(false);
+  }
+}
+
 function renderThread() {
   const transcript = $('#transcript');
   const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
@@ -1888,6 +1939,9 @@ function renderThread() {
     const node = existingTurnNodes.get(turn.id);
     return node?._codeckTurn === turn ? node : renderTurn(turn);
   });
+  // 首帧只带尾部若干轮 (打开 1.2MB 的会话原本要 73ms), 更早的按需再取。
+  // 用显式按钮而不是滚动到顶自动加载: 后者要处理滚动位置补偿, 出错的方式更隐蔽。
+  if (state.thread?.truncated) nodes.unshift(loadEarlierNode());
   const terminalContent = terminalActivityContent();
   if (shouldShowTerminalActivity(state.thread) && terminalContent.kind !== 'command') {
     const existing = [...turnContainer.children].find((node) => node.classList.contains('terminal-activity'));
