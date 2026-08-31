@@ -4,6 +4,7 @@ import {
   bindTerminalRenderWatchdog,
   clampTerminalGrid,
   createTerminalRevealGate,
+  createTerminalWriteQueue,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
@@ -103,6 +104,35 @@ test('terminal reveal waits for a quiet parsed frame without delaying terminal w
   cancelledGate.cancel();
   cancelledTasks.forEach((task) => task.callback());
   assert.equal(reveals, 1, 'a superseded session cannot reveal after cancellation');
+});
+
+test('terminal writes keep one parser chunk in flight and drop superseded session frames', () => {
+  const writes = [];
+  const completions = [];
+  const terminal = {
+    write(data, callback) {
+      writes.push(data);
+      completions.push(callback);
+    },
+  };
+  let oldCallbacks = 0;
+  const oldSession = createTerminalWriteQueue(terminal);
+  oldSession.write('old-1', () => { oldCallbacks += 1; });
+  oldSession.write('old-2', () => { oldCallbacks += 1; });
+  oldSession.write('old-3', () => { oldCallbacks += 1; });
+
+  assert.deepEqual(writes, ['old-1']);
+  oldSession.cancel();
+  completions.shift()();
+  assert.deepEqual(writes, ['old-1']);
+  assert.equal(oldCallbacks, 0);
+
+  const nextSession = createTerminalWriteQueue(terminal);
+  nextSession.write('\x1bc');
+  nextSession.write('new-1');
+  assert.deepEqual(writes, ['old-1', '\x1bc']);
+  completions.shift()();
+  assert.deepEqual(writes, ['old-1', '\x1bc', 'new-1']);
 });
 
 test('terminal render watchdog redraws parsed output only when xterm misses a render', () => {

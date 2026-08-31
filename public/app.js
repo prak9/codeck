@@ -2,10 +2,11 @@ import { bindMobileScroll } from './mobile-scroll.js';
 import {
   bindTerminalRenderWatchdog,
   createTerminalRevealGate,
+  createTerminalWriteQueue,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=8';
+} from './terminal-utils.js?v=9';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
 import { acceptStreamCursor } from './stream-state.js?v=1';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
@@ -76,6 +77,7 @@ const state = {
   terminalDropDepth: 0,
   cancelMobileScroll: null,
   cancelTerminalReveal: null,
+  cancelTerminalWrite: null,
   terminalInputReady: false,
   // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
   // legible size and actually resizes the tmux window to the viewport instead of cramming
@@ -964,6 +966,8 @@ async function connect(session) {
   const currentSocket = state.socket;
   state.cancelTerminalReveal?.();
   state.cancelTerminalReveal = null;
+  state.cancelTerminalWrite?.();
+  state.cancelTerminalWrite = null;
   state.terminalInputReady = false;
   state.cancelMobileScroll?.();
   stopKeyRepeat();
@@ -980,6 +984,8 @@ async function connect(session) {
   $('#menuButton').setAttribute('aria-expanded', 'false');
 
   const terminal = ensureTerminal();
+  const terminalWrites = createTerminalWriteQueue(terminal);
+  state.cancelTerminalWrite = terminalWrites.cancel;
   const terminalElement = $('#terminal');
   terminalElement.style.visibility = 'hidden';
   const reset = needsReset && !reuseSocket ? resetTerminalInput(terminal) : Promise.resolve();
@@ -1027,9 +1033,9 @@ async function connect(session) {
     }
     const output = terminalOutputForSession(event.data, session);
     if (!output) return;
-    // Always parse terminal bytes immediately. Besides drawing, xterm answers capability
-    // queries through onData; only the element's reveal is delayed to avoid partial frames.
-    terminal.write(output, () => {
+    // Preserve terminal byte order and capability-query replies, but keep older frames
+    // cancellable instead of filling xterm's internal write buffer before a switch.
+    terminalWrites.write(output, () => {
       if (state.connectionId !== connectionId) return;
       if (switchResetFrame) {
         state.terminalInputReady = true;

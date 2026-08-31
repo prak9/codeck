@@ -1,6 +1,7 @@
 export const MIN_TERMINAL_COLS = 20;
 // tmux supports up to five status lines; keep at least one pane row above them.
 export const MIN_TERMINAL_ROWS = 6;
+const TERMINAL_WRITE_DISCARD_WATERMARK = 50_000_000;
 
 export function clampTerminalGrid(cols, rows) {
   return {
@@ -100,6 +101,59 @@ export function createTerminalRevealGate(onReveal, {
   };
 
   return { parsed, cancel: dispose };
+}
+
+// xterm's internal write buffer cannot be cleared. Keep only one session chunk in that
+// buffer at a time so a session switch can discard every older chunk still waiting here.
+export function createTerminalWriteQueue(terminal) {
+  let first = null;
+  let last = null;
+  let pendingBytes = 0;
+  let writing = false;
+  let cancelled = false;
+
+  const drain = () => {
+    if (cancelled || writing) return;
+    const entry = first;
+    if (!entry) return;
+    first = entry.next;
+    entry.next = null;
+    if (!first) last = null;
+    writing = true;
+    terminal.write(entry.data, () => {
+      writing = false;
+      if (cancelled) return;
+      pendingBytes -= entry.size;
+      try {
+        entry.callback?.();
+      } finally {
+        drain();
+      }
+    });
+  };
+
+  const write = (data, callback) => {
+    if (cancelled) return false;
+    if (pendingBytes > TERMINAL_WRITE_DISCARD_WATERMARK) {
+      throw new Error('write data discarded, use flow control to avoid losing data');
+    }
+    const entry = { data, callback, size: data.length, next: null };
+    pendingBytes += entry.size;
+    if (last) last.next = entry;
+    else first = entry;
+    last = entry;
+    drain();
+    return true;
+  };
+
+  const cancel = () => {
+    cancelled = true;
+    first = null;
+    last = null;
+    pendingBytes = 0;
+  };
+
+  return { write, cancel };
 }
 
 export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {
