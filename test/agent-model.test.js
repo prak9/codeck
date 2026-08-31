@@ -208,7 +208,7 @@ test('builds one ordered sidebar from all tmux sessions', () => {
       id: 'tmux:shell:shell', provider: 'shell', readOnly: false,
       tmux: {
         name: 'shell', title: 'shell', activityAt: 20_000,
-        status: 'done', available: true,
+        status: 'done', available: true, liveOutput: '$ ',
       },
     },
     {
@@ -842,4 +842,33 @@ test('a full refresh still replaces the whole transcript', () => {
   });
 
   assert.deepEqual(reconcileAgentThreadRefresh(current, refreshed).turns.map((t) => t.id), ['kept']);
+});
+
+test('sessions with no usable thread keep the pane excerpt in the list', () => {
+  // 回归: 把 pane 摘录移到 thread 通道时漏了这两类会话 —— 它们从不调 openThread
+  // (openPendingThread / openShellThread 直接用 turns: [] 建线程), 会话列表是它们
+  // 唯一的内容来源。摘除之后连最近的输出都看不到了。
+  const [pending] = tmuxSessionsToThreads([{
+    name: 'research', activityAt: 10_000, status: 'working',
+    agent: { kind: 'codex', id: null, name: 'Research', liveOutput: 'codex 的最新输出' },
+  }]);
+  assert.equal(pending.tmux.available, false, '没有 agent id 就没有结构化会话');
+  assert.equal(pending.tmux.liveOutput, 'codex 的最新输出');
+
+  const [shell] = tmuxSessionsToThreads([{
+    name: 'cli', activityAt: 10_000, status: 'done',
+    liveOutput: '$ ls', agent: null,
+  }]);
+  assert.equal(shell.provider, 'shell');
+  assert.equal(shell.tmux.liveOutput, '$ ls');
+});
+
+test('sessions that do have a thread still leave the excerpt to that thread', () => {
+  // 有 agent id 的会话仍然走 thread 通道, 不重新变成全局广播。
+  const [ready] = tmuxSessionsToThreads([{
+    name: 'skills', activityAt: 10_000, status: 'working',
+    agent: { kind: 'claude', id: 'thread-1', name: 'Skills', liveOutput: '不该出现在列表里' },
+  }]);
+  assert.equal(ready.tmux.available, true);
+  assert.equal(ready.tmux.liveOutput, undefined);
 });

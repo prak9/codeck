@@ -91,7 +91,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=29/);
+  assert.match(html, /\/remote\.css\?v=30/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -270,4 +270,10 @@ test('remote composer exposes an accessible image and file attachment flow', () 
   assert.match(css, /\.attachment-tray\s*\{[^}]*overflow-x:\s*auto/s);
   assert.match(css, /\.composer-stack\s*\{[^}]*min-width:\s*0/s);
   assert.match(css, /\.attachment-tray\s*\{[^}]*max-width:\s*100%/s);
+});
+
+test('the load-earlier control is styled', () => {
+  // 首帧只带尾部若干轮时顶部会出现这个按钮; 没样式会挤在转录内容里。
+  assert.match(css, /\.load-earlier\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.load-earlier button:disabled/s);
 });

@@ -112,9 +112,13 @@ export function tmuxSessionsToThreads(sessions) {
     if (!session?.name) return [];
     const provider = session.agent?.kind || 'shell';
     const available = provider === 'shell' || Boolean(session.agent.id);
-    // The pane excerpt is deliberately absent here: it only matters for the session the
-    // viewer has open, so it travels on that thread's stream instead of being broadcast
-    // to every client for every working session on every scan.
+    // 有结构化会话的, pane 摘录走 thread 通道 (只发给正在看的人), 不在这里广播。
+    // 但 shell 会话与还没暴露 thread id 的 agent 会话从不调 openThread ——
+    // openShellThread / openPendingThread 直接以 turns: [] 建线程, 会话列表是它们
+    // 唯一的内容来源, 摘掉就连最近的输出都看不到。
+    const liveOutput = provider === 'shell'
+      ? session.liveOutput
+      : (session.agent?.id ? '' : session.agent?.liveOutput);
     return [{
       id: session.agent?.id || `tmux:${provider}:${session.name}`,
       provider,
@@ -128,6 +132,7 @@ export function tmuxSessionsToThreads(sessions) {
           : 'done',
         available,
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
+        ...(liveOutput ? { liveOutput } : {}),
       },
     }];
   });

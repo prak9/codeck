@@ -184,17 +184,21 @@ async function sessionSnapshotForAuth(auth) {
   let [sessions, flexibleSize] = await Promise.all([sessionSnapshots.get(), flexibleSizeSupport()]);
   if (!auth.owner) sessions = sessions.filter((session) => session.name === auth.session);
   const enriched = sessions.map((session) => {
-    // The pane excerpt is intentionally dropped here. Only the session the viewer has
-    // open needs it, so it travels on that thread's stream (sessionPaneExcerpts) instead
-    // of being broadcast to every client for every working session on every scan.
-    const { paneId: _paneId, liveOutput: _liveOutput, ...publicSession } = session;
+    // 有结构化会话的, pane 摘录走 thread 通道 (sessionPaneExcerpts), 不在这里广播。
+    // 但 shell 会话与还没暴露 thread id 的 agent 会话从不开 thread, 会话列表是它们
+    // 唯一的内容来源 —— 对这两类必须继续带上, 否则连最近的输出都看不到。
+    const { paneId: _paneId, liveOutput, ...publicSession } = session;
+    const threadless = !session.agent || !session.agent.id;
     return {
       ...publicSession,
+      ...(auth.owner && threadless && liveOutput ? { liveOutput } : {}),
       agent: session.agent ? {
         kind: session.agent.kind,
         id: session.agent.id,
         name: session.agent.name,
         activity: session.agent.activity,
+        ...(auth.owner && threadless && session.agent.liveOutput
+          ? { liveOutput: session.agent.liveOutput } : {}),
       } : null,
       status: resolveSessionStatus(session),
     };
