@@ -48,6 +48,7 @@ const app = express();
 const sessionSnapshots = createSessionSnapshotLoader(listSessions);
 const protocolEpoch = crypto.randomUUID();
 const sessionStatusByName = new Map();
+const sessionPaneExcerpts = new Map();
 let flexibleSizePromise = null;
 const authRateLimiter = createAuthRateLimiter();
 app.disable('x-powered-by');
@@ -183,16 +184,17 @@ async function sessionSnapshotForAuth(auth) {
   let [sessions, flexibleSize] = await Promise.all([sessionSnapshots.get(), flexibleSizeSupport()]);
   if (!auth.owner) sessions = sessions.filter((session) => session.name === auth.session);
   const enriched = sessions.map((session) => {
-    const { paneId: _paneId, liveOutput, ...publicSession } = session;
+    // The pane excerpt is intentionally dropped here. Only the session the viewer has
+    // open needs it, so it travels on that thread's stream (sessionPaneExcerpts) instead
+    // of being broadcast to every client for every working session on every scan.
+    const { paneId: _paneId, liveOutput: _liveOutput, ...publicSession } = session;
     return {
       ...publicSession,
-      ...(auth.owner && liveOutput ? { liveOutput } : {}),
       agent: session.agent ? {
         kind: session.agent.kind,
         id: session.agent.id,
         name: session.agent.name,
         activity: session.agent.activity,
-        ...(auth.owner && session.agent.liveOutput ? { liveOutput: session.agent.liveOutput } : {}),
       } : null,
       status: resolveSessionStatus(session),
     };
@@ -308,15 +310,29 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
 });
 const sessionFeed = createSnapshotFeed(
   async () => {
+    const raw = await sessionSnapshots.get();
     const snapshot = await sessionSnapshotForAuth({ owner: true, session: null, canWrite: true });
     sessionStatusByName.clear();
     for (const session of snapshot.sessions) sessionStatusByName.set(session.name, session.status);
+    sessionPaneExcerpts.clear();
+    for (const session of raw) {
+      const excerpt = session.agent?.liveOutput || session.liveOutput || '';
+      if (excerpt) sessionPaneExcerpts.set(session.name, excerpt);
+    }
     return snapshot;
   },
   { epoch: protocolEpoch, intervalMs: sessionSnapshotRefreshInterval },
 );
+function withPaneExcerpt(result, tmuxSession) {
+  const excerpt = sessionPaneExcerpts.get(tmuxSession);
+  if (!excerpt || !result?.thread) return result;
+  return { ...result, thread: { ...result.thread, liveOutput: excerpt } };
+}
+
 const threadFeed = createSnapshotFeed(
-  ({ provider, threadId }) => agentRegistry.openThread(provider, threadId, { readOnly: true }),
+  async ({ provider, threadId, tmuxSession }) => withPaneExcerpt(
+    await agentRegistry.openThread(provider, threadId, { readOnly: true }), tmuxSession,
+  ),
   {
     epoch: protocolEpoch,
     intervalMs: (snapshot, target) => threadSnapshotRefreshInterval(
@@ -332,6 +348,7 @@ const agentHub = new AgentHub(agentRegistry, {
   sessionFeed,
   threadFeed,
   invalidateSessions: invalidateSessionSnapshots,
+  paneExcerpt: (tmuxSession) => sessionPaneExcerpts.get(tmuxSession) || '',
 });
 
 server.on('upgrade', (req, socket, head) => {

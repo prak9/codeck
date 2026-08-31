@@ -298,6 +298,7 @@ export class AgentHub {
     sessionFeed = null,
     threadFeed = null,
     invalidateSessions = null,
+    paneExcerpt = null,
   } = {}) {
     this.registry = registry;
     this.defaultCwd = defaultCwd;
@@ -306,6 +307,7 @@ export class AgentHub {
     this.sessionFeed = sessionFeed;
     this.threadFeed = threadFeed;
     this.invalidateSessions = invalidateSessions;
+    this.paneExcerpt = paneExcerpt;
     this.clients = new Map();
     this.commandReceipts = createCommandReceiptCache();
     this.sessionMessageReceipts = new Map();
@@ -482,7 +484,9 @@ export class AgentHub {
         }
         subscription.cursor = null;
         if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
-        const result = await this.registry.openThread(provider, threadId, options);
+        const result = this.#withPaneExcerpt(
+          await this.registry.openThread(provider, threadId, options), target.tmuxSession,
+        );
         const restored = this.#restoreSessionMessageReceipts(provider, threadId, result);
         return afterReply(restored, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {
@@ -603,6 +607,15 @@ export class AgentHub {
         command: { id: commandId, status: 'accepted' },
       };
     });
+  }
+
+  // The pane excerpt no longer rides the session list, so the thread payload has to
+  // carry it; without this the first render after opening a session shows an empty
+  // output area until the thread stream catches up.
+  #withPaneExcerpt(result, tmuxSession) {
+    const excerpt = tmuxSession && this.paneExcerpt ? this.paneExcerpt(tmuxSession) : '';
+    if (!excerpt || !result?.thread) return result;
+    return { ...result, thread: { ...result.thread, liveOutput: excerpt } };
   }
 
   #invalidateSessionFeed() {

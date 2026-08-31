@@ -112,7 +112,9 @@ export function tmuxSessionsToThreads(sessions) {
     if (!session?.name) return [];
     const provider = session.agent?.kind || 'shell';
     const available = provider === 'shell' || Boolean(session.agent.id);
-    const liveOutput = provider === 'shell' ? session.liveOutput : session.agent?.liveOutput;
+    // The pane excerpt is deliberately absent here: it only matters for the session the
+    // viewer has open, so it travels on that thread's stream instead of being broadcast
+    // to every client for every working session on every scan.
     return [{
       id: session.agent?.id || `tmux:${provider}:${session.name}`,
       provider,
@@ -126,7 +128,6 @@ export function tmuxSessionsToThreads(sessions) {
           : 'done',
         available,
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
-        ...(liveOutput ? { liveOutput } : {}),
       },
     }];
   });
@@ -423,7 +424,11 @@ export function shouldRefreshTmuxThread(thread, {
   if (!thread?.id || !tmux?.name || tmux.available === false) return false;
   if (force) return true;
   const working = tmux.status === 'working';
-  if (working && (tmux.liveOutput || tmux.activity === '后台任务运行中')) return false;
+  // The pane excerpt now rides the thread's own stream, so read it from the thread first;
+  // keying only on tmux.liveOutput would make this always poll once the session list
+  // stopped carrying it, trading the bytes we saved for a round trip per tick.
+  const liveOutput = thread.liveOutput || tmux.liveOutput;
+  if (working && (liveOutput || tmux.activity === '后台任务运行中')) return false;
   return working || now < refreshUntil;
 }
 

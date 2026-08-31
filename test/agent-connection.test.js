@@ -912,3 +912,29 @@ test('rejects unknown providers and empty prompts', async () => {
   assert.match(socket.sent.find((message) => message.id === 1).error, /provider/i);
   assert.match(socket.sent.find((message) => message.id === 2).error, /message/i);
 });
+
+test('openThread carries the pane excerpt so opening a session is never blank', async () => {
+  // pane 摘录不再随会话列表广播, 打开会话时若首帧不带它, 面板会先空一拍
+  // (openTmuxThread 那条同步路径今天是瞬时有内容的)。
+  const { registry } = setup();
+  const hub = new AgentHub(registry, {
+    defaultCwd: '/srv/codeck',
+    paneExcerpt: (tmuxSession) => (tmuxSession === 'skills' ? 'pane text' : ''),
+  });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+
+  send(socket, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1', tmuxSession: 'skills',
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  const reply = socket.sent.find((message) => message.id === 1);
+  assert.equal(reply.result.thread.liveOutput, 'pane text');
+
+  send(socket, {
+    type: 'openThread', id: 2, provider: 'codex', threadId: 'thread-1', tmuxSession: 'idle',
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 2));
+  const quiet = socket.sent.find((message) => message.id === 2);
+  assert.equal(quiet.result.thread.liveOutput, undefined);
+});

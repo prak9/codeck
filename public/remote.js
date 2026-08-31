@@ -1678,7 +1678,7 @@ function terminalActivityContent() {
       ? working ? 'Shell 命令正在运行' : 'Shell 当前输出'
       : !working ? '终端当前输出'
         : agentActivityText(state.thread) || '终端 Agent 正在工作',
-    output: state.thread?.tmux?.liveOutput || '',
+    output: state.thread?.liveOutput || state.thread?.tmux?.liveOutput || '',
     ariaLabel: 'tmux 当前实时输出',
   };
 }

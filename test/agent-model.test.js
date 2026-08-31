@@ -202,14 +202,13 @@ test('builds one ordered sidebar from all tmux sessions', () => {
       tmux: {
         name: 'codex-work', title: 'Mobile review', activityAt: 30_000,
         status: 'working', available: true, activity: '正在查看文件 · 12秒',
-        liveOutput: '• Explored\n  └ Read remote.js',
       },
     },
     {
       id: 'tmux:shell:shell', provider: 'shell', readOnly: false,
       tmux: {
         name: 'shell', title: 'shell', activityAt: 20_000,
-        status: 'done', available: true, liveOutput: '$ ',
+        status: 'done', available: true,
       },
     },
     {
@@ -759,4 +758,48 @@ test('normalizes agent questions for a shared mobile form', () => {
     isOther: true,
     isSecret: false,
   }]);
+});
+
+test('the session list no longer carries the tmux pane excerpt', () => {
+  // pane 摘录只对"正在看的那个会话"有用, 却随全局会话列表广播给每个客户端:
+  // 实测占增量帧 84% 且随并发工作会话数放大。它改由 thread 通道投递。
+  const [thread] = tmuxSessionsToThreads([{
+    name: 'skills', activityAt: 10_000, status: 'working',
+    liveOutput: 'shell pane text',
+    agent: { kind: 'claude', id: 'thread-1', name: 'Skills', activity: '正在处理', liveOutput: 'agent pane text' },
+  }]);
+
+  assert.equal(thread.tmux.liveOutput, undefined);
+  assert.equal(thread.tmux.status, 'working');
+  assert.equal(thread.tmux.activity, '正在处理');
+});
+
+test('a thread keeps showing its pane excerpt once the thread payload supplies one', () => {
+  // 面板可见性看的是 status, 不是 liveOutput, 所以列表不带摘录也不会有布局跳动;
+  // 但内容必须能从 thread 侧填进来, 否则打开会话会先空一拍。
+  const [thread] = tmuxSessionsToThreads([{
+    name: 'skills', activityAt: 10_000, status: 'working',
+    agent: { kind: 'claude', id: 'thread-1', name: 'Skills', activity: '正在处理' },
+  }]);
+
+  assert.equal(shouldShowTerminalActivity(thread), true);
+  applyTmuxSnapshot(thread, { ...thread.tmux, liveOutput: 'from thread channel' });
+  assert.equal(thread.tmux.liveOutput, 'from thread channel');
+  assert.equal(shouldShowTerminalActivity(thread), true);
+});
+
+test('a thread that already has live output from its own stream is not re-polled', () => {
+  // 这个判据原本读 tmux.liveOutput —— 列表不再带摘录后它会恒为空, 导致每个
+  // 工作中的会话每拍都多打一次 openThread, 把省下的字节又换成往返。
+  const [thread] = tmuxSessionsToThreads([{
+    name: 'skills', activityAt: 10_000, status: 'working',
+    agent: { kind: 'claude', id: 'thread-1', name: 'Skills', activity: '正在处理' },
+  }]);
+
+  assert.equal(shouldRefreshTmuxThread(thread, { now: 10_000, refreshUntil: 0 }), true,
+    'no live output yet: polling is the only way to get it');
+
+  thread.liveOutput = 'pane text from the thread stream';
+  assert.equal(shouldRefreshTmuxThread(thread, { now: 10_000, refreshUntil: 0 }), false,
+    'the thread stream already supplies it: do not poll on top of it');
 });
