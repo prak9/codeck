@@ -163,6 +163,12 @@ app.use('/api', authenticateApiRequest);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// Owner-only stream accounting: how much the delta protocol actually saves, per feed.
+app.get('/api/stream-stats', ownerOnly, (_req, res) => res.json({
+  sessions: sessionFeed.stats(),
+  threads: threadFeed.stats(),
+}));
+
 function flexibleSizeSupport() {
   if (!flexibleSizePromise) {
     flexibleSizePromise = Promise.resolve().then(() => detectWindowSizeSupport()).catch((error) => {

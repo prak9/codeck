@@ -25,6 +25,12 @@ export function createSnapshotFeed(loadSnapshot, {
   cancel = clearTimeout,
 } = {}) {
   const entries = new Map();
+  // Frame accounting: without it there is no way to answer "how much did the delta
+  // protocol actually save" outside of an ad-hoc probe.
+  const frames = {
+    snapshot: { count: 0, bytes: 0 },
+    delta: { count: 0, bytes: 0 },
+  };
   let closed = false;
 
   function entryFor(resource) {
@@ -114,6 +120,15 @@ export function createSnapshotFeed(loadSnapshot, {
       ? frame
       : { ...frame, patch: JSON.parse(serializedPatch) };
     const bytes = frameBytes(stored, serializedSnapshot, serializedPatch);
+    frames[stored.kind === 'snapshot' ? 'snapshot' : 'delta'].count += 1;
+    frames[stored.kind === 'snapshot' ? 'snapshot' : 'delta'].bytes += bytes;
+    if (stored.kind === 'snapshot') {
+      // Nothing before a full frame can serve a resume that this frame cannot serve more
+      // cheaply, and a full frame is several times the size of a delta: keeping the older
+      // entries only spends the byte budget that the following deltas need.
+      entry.journal = [];
+      entry.journalBytes = 0;
+    }
     entry.journal.push({ ...stored, bytes });
     entry.journalBytes += bytes;
     const countLimit = Number.isSafeInteger(journalLimit) && journalLimit > 0 ? journalLimit : 128;
@@ -321,8 +336,21 @@ export function createSnapshotFeed(loadSnapshot, {
     entries.clear();
   }
 
+  function stats() {
+    const journal = {};
+    for (const [key, entry] of entries) journal[key] = entry.journal.length;
+    return {
+      epoch,
+      frames: {
+        snapshot: { ...frames.snapshot },
+        delta: { ...frames.delta },
+      },
+      journal,
+    };
+  }
+
   return {
-    epoch, subscribe, subscribeFrom, canResume,
+    epoch, subscribe, subscribeFrom, canResume, stats,
     refresh, refreshSubscribed, invalidate, close,
   };
 }

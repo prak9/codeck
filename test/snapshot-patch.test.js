@@ -105,3 +105,77 @@ test('a failed patch leaves the previous snapshot intact', () => {
   ]), /array/i);
   assert.deepEqual(previous, before, 'a rejected patch must not partially apply');
 });
+
+test('inserting into a keyed list costs one operation wherever it lands', () => {
+  // 会话列表是排序的, 新会话常常插在队首/中间。按下标比对会重写其后每一项,
+  // 补丁反而比全量还大 (实测队首插入 = 全量的 143%) 而回落全量 —— 恰恰是最
+  // 该省的时刻付全价。按 key 对齐后, 插入应退化成一个 splice。
+  const item = (id) => ({ id, payload: 'x'.repeat(40) });
+  const previous = { list: ['a', 'b', 'c', 'd'].map(item) };
+
+  for (const position of [0, 2, 4]) {
+    const next = structuredClone(previous);
+    next.list.splice(position, 0, item('new'));
+    const patch = createSnapshotPatch(previous, next);
+    assert.equal(patch.length, 1, `insert at ${position} should be one operation`);
+    assert.deepEqual(applySnapshotPatch(structuredClone(previous), patch), next);
+  }
+});
+
+test('removing from a keyed list costs one operation', () => {
+  const item = (id) => ({ id, payload: 'y'.repeat(40) });
+  const previous = { list: ['a', 'b', 'c', 'd'].map(item) };
+  const next = structuredClone(previous);
+  next.list.splice(1, 1);
+
+  const patch = createSnapshotPatch(previous, next);
+  assert.equal(patch.length, 1);
+  assert.deepEqual(applySnapshotPatch(structuredClone(previous), patch), next);
+});
+
+test('a keyed list still diffs surviving elements field by field', () => {
+  const previous = { list: [{ id: 'a', text: 'one' }, { id: 'b', text: 'two' }] };
+  const next = structuredClone(previous);
+  next.list[1].text = 'two+more';
+
+  const patch = createSnapshotPatch(previous, next);
+  assert.deepEqual(patch, [{ op: 'append', path: ['list', 1, 'text'], value: '+more' }]);
+  assert.deepEqual(applySnapshotPatch(structuredClone(previous), patch), next);
+});
+
+test('an insert combined with an edit stays correct', () => {
+  const previous = { list: [{ id: 'a', n: 1 }, { id: 'b', n: 2 }, { id: 'c', n: 3 }] };
+  const next = { list: [{ id: 'z', n: 0 }, { id: 'a', n: 1 }, { id: 'c', n: 9 }] };
+
+  const patch = createSnapshotPatch(previous, next);
+  assert.deepEqual(applySnapshotPatch(structuredClone(previous), patch), next);
+});
+
+test('lists without stable keys keep the positional diff', () => {
+  const previous = { list: [1, 2, 3] };
+  const next = { list: [1, 2, 3, 4] };
+  assert.deepEqual(createSnapshotPatch(previous, next), [{ op: 'set', path: ['list', 3], value: 4 }]);
+});
+
+test('duplicate keys fall back to the positional diff', () => {
+  const previous = { list: [{ id: 'a', n: 1 }, { id: 'a', n: 2 }] };
+  const next = { list: [{ id: 'a', n: 1 }, { id: 'a', n: 3 }] };
+  const patch = createSnapshotPatch(previous, next);
+  assert.deepEqual(applySnapshotPatch(structuredClone(previous), patch), next);
+});
+
+test('splice keeps copy-on-write and rejects an out-of-range range', () => {
+  const previous = { list: [{ id: 'a' }, { id: 'b' }] };
+  const patched = applySnapshotPatch(previous, [
+    { op: 'splice', path: ['list'], index: 1, remove: 0, insert: [{ id: 'x' }] },
+  ]);
+  assert.equal(previous.list.length, 2, 'input must not be mutated');
+  assert.deepEqual(patched.list.map((entry) => entry.id), ['a', 'x', 'b']);
+
+  assert.throws(() => applySnapshotPatch(previous, [
+    { op: 'splice', path: ['list'], index: 9, remove: 0, insert: [] },
+  ]), /array/i);
+  assert.throws(() => applySnapshotPatch(previous, [
+    { op: 'splice', path: ['list'], index: 0, remove: 0, insert: [JSON.parse('{"__proto__": 1}')] },
+  ]), /unsafe/i);
+});

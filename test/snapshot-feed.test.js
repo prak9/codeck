@@ -259,3 +259,41 @@ test('an exact cursor resumes with synchronization only and remains resumable wh
   assert.equal(resumed[0].sequence, 1);
   feed.close();
 });
+
+test('a full frame resets the journal so it cannot evict newer deltas', async () => {
+  // 会话列表的全量帧是增量帧的数倍大; 让它留在 journal 里只会把后面的增量帧
+  // 挤出字节上限, 反而把本可续订的客户端逼回全量。
+  let value = { list: [{ id: 'a', text: 'x' }] };
+  const feed = createSnapshotFeed(async () => structuredClone(value), {
+    intervalMs: 5, patchRatio: 0.9,
+  });
+  const frames = [];
+  const stop = feed.subscribeFrom('resource', null, (frame) => frames.push(frame));
+  await feed.refresh('resource');
+
+  value = { list: [{ id: 'a', text: 'x' }, { id: 'b', text: 'y'.repeat(400) }] };
+  await feed.refresh('resource');
+  value = { list: [{ id: 'a', text: 'x+' }, { id: 'b', text: 'y'.repeat(400) }] };
+  await feed.refresh('resource');
+
+  const stats = feed.stats();
+  assert.ok(stats.journal.resource >= 1, 'the journal keeps the frames after the last full one');
+  stop();
+  feed.close();
+});
+
+test('the feed counts full and delta frames so the saving is measurable', async () => {
+  let value = { list: [{ id: 'a', text: 'x'.repeat(200) }] };
+  const feed = createSnapshotFeed(async () => structuredClone(value), { intervalMs: 5 });
+  const stop = feed.subscribeFrom('resource', null, () => {});
+  await feed.refresh('resource');
+  value = { list: [{ id: 'a', text: 'x'.repeat(200) + '!' }] };
+  await feed.refresh('resource');
+
+  const stats = feed.stats();
+  assert.equal(stats.frames.snapshot.count, 1);
+  assert.equal(stats.frames.delta.count, 1);
+  assert.ok(stats.frames.snapshot.bytes > stats.frames.delta.bytes);
+  stop();
+  feed.close();
+});

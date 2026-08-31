@@ -23,6 +23,57 @@ function cloneValue(value) {
   return copy;
 }
 
+// Positional array diffing rewrites every element after an insertion, so a new entry in a
+// sorted list (a tmux session, a delivery turn) produces a patch larger than the snapshot
+// it replaces and the frame falls back to a full send — exactly when the update matters.
+// Aligning by a stable element key first turns an insertion or a removal into one splice.
+const KEYED_DIFF_LIMIT = 512;
+
+function elementKey(value) {
+  if (!isObject(value) || Array.isArray(value)) return null;
+  if (typeof value.id === 'string' && value.id) return `id:${value.id}`;
+  if (typeof value.name === 'string' && value.name) return `name:${value.name}`;
+  return null;
+}
+
+function keySequence(items) {
+  if (items.length > KEYED_DIFF_LIMIT) return null;
+  const keys = [];
+  const seen = new Set();
+  for (const item of items) {
+    const key = elementKey(item);
+    if (!key || seen.has(key)) return null;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+function matchedPairs(before, after) {
+  const n = before.length;
+  const m = after.length;
+  const table = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      table[i][j] = before[i] === after[j]
+        ? table[i + 1][j + 1] + 1
+        : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+  const pairs = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (before[i] === after[j]) {
+      pairs.push([i, j]);
+      i += 1;
+      j += 1;
+    } else if (table[i + 1][j] >= table[i][j + 1]) i += 1;
+    else j += 1;
+  }
+  return pairs;
+}
+
 export function createSnapshotPatch(previous, next, { maxOperations = 512 } = {}) {
   if (!Number.isSafeInteger(maxOperations) || maxOperations < 1) return null;
   const operations = [];
@@ -51,6 +102,33 @@ export function createSnapshotPatch(previous, next, { maxOperations = 512 } = {}
     }
 
     if (afterArray) {
+      const beforeKeys = keySequence(before);
+      const afterKeys = beforeKeys && keySequence(after);
+      if (afterKeys) {
+        const pairs = matchedPairs(beforeKeys, afterKeys);
+        // Emit splices from the tail backwards so each one leaves the lower indices in
+        // place. Once they have all applied the array holds the target key order, so the
+        // per-element diffs that follow can address elements by their `after` index.
+        const edits = [];
+        let beforeEnd = before.length;
+        let afterEnd = after.length;
+        for (let index = pairs.length - 1; index >= -1; index -= 1) {
+          const [pairBefore, pairAfter] = index >= 0 ? pairs[index] : [-1, -1];
+          const remove = beforeEnd - (pairBefore + 1);
+          const insert = after.slice(pairAfter + 1, afterEnd);
+          if (remove || insert.length) {
+            edits.push({ op: 'splice', path, index: pairBefore + 1, remove, insert });
+          }
+          beforeEnd = pairBefore;
+          afterEnd = pairAfter;
+        }
+        for (const edit of edits) if (!add(edit)) return;
+        for (const [pairBefore, pairAfter] of pairs) {
+          if (exceeded) return;
+          diff(before[pairBefore], after[pairAfter], [...path, pairAfter]);
+        }
+        return;
+      }
       const shared = Math.min(before.length, after.length);
       for (let index = 0; index < shared && !exceeded; index += 1) {
         diff(before[index], after[index], [...path, index]);
@@ -170,6 +248,20 @@ export function applySnapshotPatch(snapshot, operations) {
         throw new Error('Invalid snapshot patch append path');
       }
       parent[key] += operation.value;
+      continue;
+    }
+    if (operation.op === 'splice') {
+      if (!Array.isArray(operation.insert)) throw new Error('Invalid snapshot patch array');
+      let target;
+      try { target = ownPath(path); }
+      catch { throw new Error('Invalid snapshot patch array'); }
+      if (!Array.isArray(target)
+        || !Number.isSafeInteger(operation.index) || operation.index < 0
+        || !Number.isSafeInteger(operation.remove) || operation.remove < 0
+        || operation.index + operation.remove > target.length) {
+        throw new Error('Invalid snapshot patch array');
+      }
+      target.splice(operation.index, operation.remove, ...operation.insert.map(cloneValue));
       continue;
     }
     if (operation.op === 'truncate') {
