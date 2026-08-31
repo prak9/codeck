@@ -46,11 +46,23 @@ export function createSpeechInput({
     onListeningChange(listening);
   }
 
+  // stop() 与 onend 只结束"这一次识别"; 部分浏览器 (iOS Safari 尤其) 要等到
+  // abort() 才真正放开麦克风, 否则状态栏/刘海屏的话筒图标会一直亮着。同时摘掉
+  // 回调, 避免已经作废的识别对象被闭包留住。
+  function release(active) {
+    active.onstart = null;
+    active.onresult = null;
+    active.onerror = null;
+    active.onend = null;
+    try { active.abort(); } catch { /* It may have already finished. */ }
+  }
+
   function finish(active) {
     if (recognition !== active) return;
     recognition = null;
     started = false;
     setListening(false);
+    release(active);
   }
 
   function begin(active) {
@@ -144,8 +156,21 @@ export function createSpeechInput({
     recognition = null;
     started = false;
     setListening(false);
-    try { active.abort(); } catch { /* It may still be preparing a local language pack. */ }
+    release(active);
     return true;
+  }
+
+  // 手机切后台或锁屏时页面并不卸载, 识别对象会继续持有麦克风。
+  const releaseOnHide = () => {
+    if (scope?.document?.visibilityState === 'hidden') abort();
+  };
+  scope?.addEventListener?.('pagehide', abort);
+  scope?.document?.addEventListener?.('visibilitychange', releaseOnHide);
+
+  function dispose() {
+    abort();
+    scope?.removeEventListener?.('pagehide', abort);
+    scope?.document?.removeEventListener?.('visibilitychange', releaseOnHide);
   }
 
   return {
@@ -153,6 +178,7 @@ export function createSpeechInput({
     start,
     stop,
     abort,
+    dispose,
     get active() { return Boolean(recognition); },
     get listening() { return listening; },
   };

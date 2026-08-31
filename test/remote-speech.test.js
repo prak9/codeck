@@ -169,3 +169,82 @@ test('speech input installs a downloadable local pack and falls back online when
   assert.equal(FakeRecognition.instances[0].started, true);
   assert.deepEqual(onlineStatuses, ['正在检查本地语音识别…', '本地识别不可用，正在使用浏览器在线识别…']);
 });
+
+function fakeScope() {
+  const listeners = new Map();
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (type, fn) => listeners.set(`doc:${type}`, fn),
+    removeEventListener: (type) => listeners.delete(`doc:${type}`),
+  };
+  return {
+    SpeechRecognition: FakeRecognition,
+    document: doc,
+    addEventListener: (type, fn) => listeners.set(type, fn),
+    removeEventListener: (type) => listeners.delete(type),
+    fire: (type) => listeners.get(type)?.(),
+    has: (type) => listeners.has(type),
+  };
+}
+
+test('a finished recognition releases the microphone instead of only ending the session', () => {
+  // stop() 只结束本次识别; 部分浏览器要等 abort() 才真正放开麦克风 ——
+  // 这就是 iOS 上话筒图标停在刘海屏不走的原因。
+  FakeRecognition.instances.length = 0;
+  const speech = createSpeechInput({ scope: fakeScope() });
+  speech.start();
+  const active = FakeRecognition.instances.at(-1);
+
+  active.onend();
+
+  assert.equal(active.aborted, true, 'the recognizer must be released, not just ended');
+  assert.equal(active.onresult, null, 'handlers must be detached so nothing retains it');
+  assert.equal(speech.active, false);
+});
+
+test('an errored recognition also releases the microphone', () => {
+  FakeRecognition.instances.length = 0;
+  const speech = createSpeechInput({ scope: fakeScope(), onError: () => {} });
+  speech.start();
+  const active = FakeRecognition.instances.at(-1);
+
+  active.onerror({ error: 'no-speech' });
+
+  assert.equal(active.aborted, true);
+  assert.equal(speech.active, false);
+});
+
+test('backgrounding the page releases the microphone', () => {
+  // 手机切后台/锁屏时页面不卸载, 识别对象会继续占着麦克风。
+  FakeRecognition.instances.length = 0;
+  const scope = fakeScope();
+  const speech = createSpeechInput({ scope });
+  speech.start();
+  const active = FakeRecognition.instances.at(-1);
+
+  scope.document.visibilityState = 'hidden';
+  scope.fire('doc:visibilitychange');
+
+  assert.equal(active.aborted, true);
+  assert.equal(speech.active, false);
+});
+
+test('leaving the page releases the microphone', () => {
+  FakeRecognition.instances.length = 0;
+  const scope = fakeScope();
+  const speech = createSpeechInput({ scope });
+  speech.start();
+  const active = FakeRecognition.instances.at(-1);
+
+  scope.fire('pagehide');
+
+  assert.equal(active.aborted, true);
+});
+
+test('dispose detaches the lifecycle listeners it installed', () => {
+  const scope = fakeScope();
+  const speech = createSpeechInput({ scope });
+  assert.equal(scope.has('pagehide'), true);
+  speech.dispose();
+  assert.equal(scope.has('pagehide'), false);
+});

@@ -14,7 +14,7 @@ import {
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=29';
+} from './agent-model.js?v=30';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -22,9 +22,9 @@ import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt }
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
-import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=3';
-import { applySnapshotPatch } from './snapshot-patch.js?v=1';
-import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=2';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=4';
+import { applySnapshotPatch } from './snapshot-patch.js?v=2';
+import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
   completeSlashCommand,
   slashCommandKeyAction,
