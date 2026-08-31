@@ -220,6 +220,21 @@ test('submits single-line Agent input literally so Enter cannot overtake bracket
   ]);
 });
 
+test('reports when Claude input was submitted while the current turn was still running', async () => {
+  const result = await sendSessionMessage({
+    provider: 'claude', sessionName: 'work', threadId: 'thread-1', text: 'Keep going',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', hasRunningProcess: true,
+      agent: { kind: 'claude', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async () => {},
+    waitForPaste: async () => {},
+  });
+
+  assert.deepEqual(result, { inputWasQueued: true });
+});
+
 test('releases Codex input queued behind a background terminal wait', async () => {
   const calls = [];
   const screens = [

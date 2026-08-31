@@ -14,7 +14,7 @@ import {
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=28';
+} from './agent-model.js?v=29';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -23,7 +23,8 @@ import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=3';
-import { acceptStreamCursor, matchesThreadStreamTarget } from './stream-state.js?v=1';
+import { applySnapshotPatch } from './snapshot-patch.js?v=1';
+import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=2';
 import {
   completeSlashCommand,
   slashCommandKeyAction,
@@ -73,10 +74,16 @@ const state = {
   providers: Object.keys(PROVIDERS),
   providerCapabilities: new Map(),
   protocolEpoch: '',
+  streamVersion: 1,
   commandReceiptTtlMs: 10 * 60_000,
   sessionStreamCursor: null,
+  sessionStreamSnapshot: null,
+  sessionStreamResyncing: false,
   sessionStreamHealthy: false,
   threadStreamCursor: null,
+  threadStreamSnapshot: null,
+  threadStreamKey: '',
+  threadStreamResyncing: false,
   threadStreamHealthy: false,
   socket: null,
   socketGeneration: 0,
@@ -214,10 +221,35 @@ function setLiveMessage(message) {
   $('#liveStatus').textContent = state.liveMessage;
 }
 
-function resetThreadStream() {
-  state.threadStreamCursor = null;
+function streamTargetKey({ provider, threadId, tmuxSession = '' } = {}) {
+  return provider && threadId ? `${provider}:${threadId}:${tmuxSession || ''}` : '';
+}
+
+function resetThreadStream(target = null) {
+  const nextKey = streamTargetKey(target || {});
+  if (!nextKey || nextKey !== state.threadStreamKey) {
+    state.threadStreamCursor = null;
+    state.threadStreamSnapshot = null;
+    state.threadStreamKey = nextKey;
+  }
+  state.threadStreamResyncing = false;
   state.threadStreamHealthy = false;
   state.threadCompletionRefreshUntil = 0;
+}
+
+function resumableThreadCursor(target) {
+  return state.streamVersion === 2
+    && state.threadStreamSnapshot
+    && state.threadStreamKey === streamTargetKey(target)
+    ? state.threadStreamCursor
+    : null;
+}
+
+function rememberOpenedThread(target, thread) {
+  state.threadStreamKey = streamTargetKey(target);
+  state.threadStreamCursor = null;
+  state.threadStreamSnapshot = thread || null;
+  state.threadStreamResyncing = false;
 }
 
 function releaseThreadStream() {
@@ -416,6 +448,45 @@ function rejectPendingRequests(message) {
   state.requests.clear();
 }
 
+function subscribeSessionStream(socket, cursor = state.sessionStreamCursor) {
+  if (state.streamVersion !== 2 || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: 'subscribeSessions',
+    cursor: state.sessionStreamSnapshot ? cursor : null,
+  }));
+}
+
+function resyncSessionStream() {
+  const socket = state.socket;
+  if (state.sessionStreamResyncing || state.streamVersion !== 2
+    || socket?.readyState !== WebSocket.OPEN) return;
+  state.sessionStreamResyncing = true;
+  state.sessionStreamHealthy = false;
+  subscribeSessionStream(socket, null);
+}
+
+function queueSessionStreamSnapshot(snapshot, cursor) {
+  state.sessionStreamSnapshot = snapshot;
+  state.sessionStreamCursor = cursor;
+  state.sessionStreamResyncing = false;
+  state.sessionStreamHealthy = true;
+  state.sessionSnapshot = snapshot;
+  loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message));
+}
+
+function resyncThreadStream(target) {
+  if (state.threadStreamResyncing || state.streamVersion !== 2
+    || state.socket?.readyState !== WebSocket.OPEN) return;
+  state.threadStreamResyncing = true;
+  state.threadStreamHealthy = false;
+  state.socket.send(JSON.stringify({
+    type: 'resyncThread',
+    provider: target.provider,
+    threadId: target.threadId,
+    tmuxSession: target.tmuxSession || '',
+  }));
+}
+
 function connectSocket() {
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = null;
@@ -424,7 +495,7 @@ function connectSocket() {
   rejectPendingRequests('连接已重置');
   setConnectionStatus('busy', '正在连接');
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/agent`, `codeck.${websocketProtocolToken(state.token)}`);
+  const socket = new WebSocket(`${protocol}//${location.host}/agent?streamVersion=2`, `codeck.${websocketProtocolToken(state.token)}`);
   state.socket = socket;
 
   socket.addEventListener('message', (event) => {
@@ -437,6 +508,8 @@ function connectSocket() {
   socket.addEventListener('close', () => {
     if (generation !== state.socketGeneration) return;
     state.socket = null;
+    state.sessionStreamResyncing = false;
+    state.threadStreamResyncing = false;
     state.sessionStreamHealthy = false;
     state.threadStreamHealthy = false;
     rejectPendingRequests('Agent 连接已断开');
@@ -460,6 +533,7 @@ async function handleReady(message) {
   const nextEpoch = typeof message.protocol?.epoch === 'string' ? message.protocol.epoch : '';
   if (nextEpoch !== state.protocolEpoch) {
     state.sessionStreamCursor = null;
+    state.sessionStreamSnapshot = null;
     resetThreadStream();
     for (const [key, delivery] of state.pendingDeliveries) {
       if (delivery.serverEpoch !== nextEpoch) {
@@ -468,6 +542,7 @@ async function handleReady(message) {
     }
   }
   state.protocolEpoch = nextEpoch;
+  state.streamVersion = message.protocol?.version === 2 ? 2 : 1;
   if (Number.isFinite(message.protocol?.commandReceiptTtlMs) && message.protocol.commandReceiptTtlMs > 0) {
     state.commandReceiptTtlMs = message.protocol.commandReceiptTtlMs;
   }
@@ -485,6 +560,7 @@ async function handleReady(message) {
   state.interactions.clear();
   state.reconnectDelay = 1_000;
   setConnectionStatus('online', '已连接');
+  subscribeSessionStream(state.socket);
   renderProviderControls();
   renderHeader();
   if (!state.threads.length || state.sessionSnapshot) await loadThreads();
@@ -520,12 +596,43 @@ function handleSocketMessage(message) {
     return;
   }
   if (message.type === 'sessionsSnapshot') {
+    if (message.version === 2) {
+      const accepted = acceptStreamFrame(state.sessionStreamCursor, message.stream, 'snapshot');
+      if (!accepted.accepted || !message.snapshot) return;
+      queueSessionStreamSnapshot(message.snapshot, accepted.cursor);
+      return;
+    }
     const accepted = acceptStreamCursor(state.sessionStreamCursor, message.stream);
     state.sessionStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
     if (!accepted.accepted || !message.snapshot) return;
     state.sessionStreamCursor = accepted.cursor;
     state.sessionSnapshot = message.snapshot;
     loadThreads({ quiet: true }).catch((error) => setLiveMessage(error.message));
+    return;
+  }
+  if (message.type === 'sessionsPatch') {
+    const accepted = acceptStreamFrame(state.sessionStreamCursor, message.stream, 'delta');
+    if (accepted.gap || !state.sessionStreamSnapshot) {
+      resyncSessionStream();
+      return;
+    }
+    if (!accepted.accepted) return;
+    try {
+      const snapshot = applySnapshotPatch(state.sessionStreamSnapshot, message.patch);
+      queueSessionStreamSnapshot(snapshot, accepted.cursor);
+    } catch {
+      state.sessionStreamSnapshot = null;
+      resyncSessionStream();
+    }
+    return;
+  }
+  if (message.type === 'sessionsSynchronized') {
+    const accepted = acceptStreamFrame(state.sessionStreamCursor, message.stream, 'synchronized');
+    if (accepted.gap) resyncSessionStream();
+    else if (accepted.accepted) {
+      state.sessionStreamResyncing = false;
+      state.sessionStreamHealthy = true;
+    }
     return;
   }
   if (message.type === 'sessionsStreamError') {
@@ -536,6 +643,22 @@ function handleSocketMessage(message) {
   }
   if (message.type === 'threadSnapshot') {
     if (!matchesThreadStreamTarget(state.thread, message.target)) return;
+    if (message.version === 2) {
+      const accepted = acceptStreamFrame(state.threadStreamCursor, message.stream, 'snapshot');
+      if (!accepted.accepted || !message.thread) return;
+      state.threadStreamCursor = accepted.cursor;
+      state.threadStreamSnapshot = message.thread;
+      state.threadStreamKey = streamTargetKey(message.target);
+      state.threadStreamResyncing = false;
+      state.threadStreamHealthy = true;
+      const refreshed = normalizeAgentThread(message.target.provider, message.thread);
+      const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
+      if (reconciled !== state.thread) {
+        state.thread = reconciled;
+        scheduleThreadRender(false);
+      }
+      return;
+    }
     const accepted = acceptStreamCursor(state.threadStreamCursor, message.stream);
     state.threadStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
     if (!accepted.accepted || !message.thread) return;
@@ -545,6 +668,42 @@ function handleSocketMessage(message) {
     if (reconciled === state.thread) return;
     state.thread = reconciled;
     scheduleThreadRender(false);
+    return;
+  }
+  if (message.type === 'threadPatch') {
+    if (!matchesThreadStreamTarget(state.thread, message.target)) return;
+    const accepted = acceptStreamFrame(state.threadStreamCursor, message.stream, 'delta');
+    if (accepted.gap || !state.threadStreamSnapshot) {
+      resyncThreadStream(message.target);
+      return;
+    }
+    if (!accepted.accepted) return;
+    try {
+      const snapshot = applySnapshotPatch(state.threadStreamSnapshot, message.patch);
+      state.threadStreamSnapshot = snapshot;
+      state.threadStreamCursor = accepted.cursor;
+      state.threadStreamResyncing = false;
+      state.threadStreamHealthy = true;
+      const refreshed = normalizeAgentThread(message.target.provider, snapshot);
+      const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
+      if (reconciled !== state.thread) {
+        state.thread = reconciled;
+        scheduleThreadRender(false);
+      }
+    } catch {
+      state.threadStreamSnapshot = null;
+      resyncThreadStream(message.target);
+    }
+    return;
+  }
+  if (message.type === 'threadSynchronized') {
+    if (!matchesThreadStreamTarget(state.thread, message.target)) return;
+    const accepted = acceptStreamFrame(state.threadStreamCursor, message.stream, 'synchronized');
+    if (accepted.gap) resyncThreadStream(message.target);
+    else if (accepted.accepted) {
+      state.threadStreamResyncing = false;
+      state.threadStreamHealthy = true;
+    }
     return;
   }
   if (message.type === 'threadStreamError') {
@@ -713,7 +872,8 @@ function handoffTmuxThread(thread) {
   const previousThreadId = state.thread?.id;
   const provider = thread.provider;
   const sessionName = thread.tmux.name;
-  resetThreadStream();
+  const streamTarget = { provider, threadId: thread.id, tmuxSession: sessionName };
+  resetThreadStream(streamTarget);
   const handoff = { promise: null };
   const load = (async () => {
     const result = await agentRequest('openThread', {
@@ -721,6 +881,7 @@ function handoffTmuxThread(thread) {
       threadId: thread.id,
       readOnly: true,
       tmuxSession: sessionName,
+      streamCursor: resumableThreadCursor(streamTarget),
     });
     if (
       state.threadHandoff !== handoff
@@ -730,9 +891,12 @@ function handoffTmuxThread(thread) {
       || state.thread?.tmux?.name !== sessionName
     ) return;
     state.activeThreadId = thread.id;
-    state.thread = normalizeAgentThread(provider, result.thread);
+    if (!result?.resumed) {
+      rememberOpenedThread(streamTarget, result.thread);
+      state.thread = normalizeAgentThread(provider, result.thread);
+    }
     state.thread.tmux = { ...thread.tmux };
-    state.threadStreamHealthy = Boolean(state.protocolEpoch);
+    state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = Date.now() + 2_500;
     setLiveMessage('已同步对话记录，可直接参与。');
     renderThreadList();
@@ -806,19 +970,28 @@ async function openThread(threadId, {
   if (!quiet) setLiveMessage('正在读取会话…');
   renderComposerState();
   const directSession = Boolean(listedThread?.tmux?.name);
+  const streamTarget = {
+    provider,
+    threadId,
+    tmuxSession: listedThread?.tmux?.name || tmuxSession || '',
+  };
   try {
-    resetThreadStream();
+    resetThreadStream(streamTarget);
     const result = await agentRequest('openThread', {
       provider,
       threadId,
       readOnly: directSession || readOnly,
-      tmuxSession: listedThread?.tmux?.name || tmuxSession || '',
+      tmuxSession: streamTarget.tmuxSession,
+      streamCursor: resumableThreadCursor(streamTarget),
     });
     if (state.threadOpening !== opening) return;
     state.activeThreadId = threadId;
-    state.thread = normalizeAgentThread(provider, result.thread);
+    if (!result?.resumed) {
+      rememberOpenedThread(streamTarget, result.thread);
+      state.thread = normalizeAgentThread(provider, result.thread);
+    }
     if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
-    state.threadStreamHealthy = Boolean(state.protocolEpoch);
+    state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
     setLiveMessage(directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : '');
     renderThreadList();
@@ -842,13 +1015,20 @@ async function refreshActiveThread({ force = false } = {}) {
   })) return;
   const provider = state.provider;
   const threadId = current.id;
+  const streamTarget = { provider, threadId, tmuxSession: sessionName || '' };
   const load = agentRequest('openThread', {
     provider, threadId, readOnly: true, tmuxSession: sessionName || '',
+    streamCursor: resumableThreadCursor(streamTarget),
   });
   state.threadRefresh = load;
   try {
     const result = await load;
     if (state.provider !== provider || state.thread?.id !== threadId || state.thread?.tmux?.name !== sessionName) return;
+    if (result?.resumed) {
+      state.threadStreamHealthy = false;
+      return;
+    }
+    rememberOpenedThread(streamTarget, result.thread);
     const refreshed = normalizeAgentThread(provider, result.thread);
     state.threadStreamHealthy = Boolean(state.protocolEpoch);
     const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
@@ -2003,6 +2183,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
               baselineUserMessageId: delivery.baselineUserMessageId,
               baselineTurnId: delivery.baselineTurnId,
               baselineMatchingTextCount: delivery.baselineMatchingTextCount,
+              inputWasQueued: result?.inputWasQueued === true,
             });
           }
           delete state.thread.tmux.commandOutput;

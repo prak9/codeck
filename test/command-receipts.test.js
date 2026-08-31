@@ -46,3 +46,19 @@ test('the receipt cache never evicts an unexpired idempotency record', async () 
     { ok: true },
   );
 });
+
+test('a failed side effect is not silently retried under the same command id', async () => {
+  // 载荷可能在 tmux 写入成功之后才失败 (recordSessionMessage 等后续步骤抛错),
+  // 所以失败结果必须和成功一样被记住: 同 commandId 重试只能拿回同一个失败,
+  // 不能重新执行 —— 否则"同一服务进程内重试不重复写 tmux"就被打穿了。
+  let executions = 0;
+  const receipts = createCommandReceiptCache({ ttlMs: 60_000 });
+  const execute = async () => {
+    executions += 1;
+    throw new Error('tmux write rejected');
+  };
+
+  await assert.rejects(receipts.run('command-12345678', 'same-payload', execute), /tmux write rejected/);
+  await assert.rejects(receipts.run('command-12345678', 'same-payload', execute), /tmux write rejected/);
+  assert.equal(executions, 1, 'a retry must not re-run a side effect that may already have landed');
+});

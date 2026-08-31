@@ -349,7 +349,8 @@ server.on('upgrade', (req, socket, head) => {
       socket.destroy();
       return;
     }
-    agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit('connection', ws));
+    const streamVersion = url.searchParams.get('streamVersion') === '2' ? 2 : 1;
+    agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit('connection', ws, { streamVersion }));
     return;
   }
   const session = url.searchParams.get('session');
@@ -373,7 +374,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', (ws, session, viewport, terminalAccess) => handleTerminalConnection(ws, session, viewport, terminalAccess));
-agentWss.on('connection', (ws) => agentHub.handleConnection(ws));
+agentWss.on('connection', (ws, options) => agentHub.handleConnection(ws, options));
 server.on('close', () => {
   sessionFeed.close();
   threadFeed.close();

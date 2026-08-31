@@ -438,6 +438,33 @@ test('an accepted direct-tmux follow-up appears immediately in its active turn',
   assert.equal(updated.turns[0].items[1].id, 'delivery:command-12345678');
 });
 
+test('an input absorbed by a running Claude turn stays ahead of that turn output', () => {
+  const thread = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-running', status: 'completed',
+      items: [
+        { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] },
+        { id: 'answer-1', type: 'agentMessage', text: 'Final answer' },
+      ],
+    }],
+  });
+
+  const updated = applyAcceptedUserMessage(thread, {
+    text: 'Also inspect receipts', commandId: 'command-queued-1',
+    inputWasQueued: true, baselineVersion: 2,
+    baselineUserMessageId: 'user-1', baselineTurnId: 'turn-running',
+    baselineMatchingTextCount: 0,
+  });
+
+  assert.equal(updated.turns.length, 1);
+  assert.deepEqual(updated.turns[0].items.map((item) => item.type), [
+    'userMessage', 'userMessage', 'agentMessage',
+  ]);
+  assert.equal(updated.turns[0].items[1].id, 'delivery:command-queued-1');
+  assert.equal(updated.turns[0].items.at(-1).text, 'Final answer');
+});
+
 test('an accepted tmux message without a running turn survives stale snapshots', () => {
   const current = normalizeAgentThread('codex', {
     id: 'thread-1',

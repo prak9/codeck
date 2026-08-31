@@ -814,18 +814,24 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const waitForPaste = overrides.waitForPaste
       || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
     const command = text.startsWith('/') ? text.trim().match(/^\/\S+/)?.[0] || '' : '';
+    const inputWasQueued = provider !== 'shell' && Boolean(session.hasRunningProcess);
     const shouldCheckQueuedInput = provider === 'codex' && !command
       && Boolean(session.hasRunningProcess || session.agent?.hasBackgroundProcess);
     const finishAgentInput = async () => {
-      if (!shouldCheckQueuedInput) return {};
-      const released = await releaseCodexQueuedInput({
-        paneId,
-        execTmux,
-        captureSessionPane: overrides.capturePane || capturePane,
-        waitForQueuedInput: overrides.waitForQueuedInput
-          || (() => new Promise((resolve) => setTimeout(resolve, QUEUED_INPUT_DELAY_MS))),
-      });
-      return released ? { terminalWorking: true } : {};
+      let terminalWorking = false;
+      if (shouldCheckQueuedInput) {
+        terminalWorking = await releaseCodexQueuedInput({
+          paneId,
+          execTmux,
+          captureSessionPane: overrides.capturePane || capturePane,
+          waitForQueuedInput: overrides.waitForQueuedInput
+            || (() => new Promise((resolve) => setTimeout(resolve, QUEUED_INPUT_DELAY_MS))),
+        });
+      }
+      return {
+        ...(terminalWorking ? { terminalWorking: true } : {}),
+        ...(inputWasQueued ? { inputWasQueued: true } : {}),
+      };
     };
     // Literal key events keep ordinary single-line input ordered with Enter even when
     // an Agent TUI is too busy to apply an asynchronous bracketed-paste event promptly.

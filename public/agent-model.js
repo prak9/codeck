@@ -207,6 +207,9 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   const currentTurns = asArray(current.turns);
   const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
   const resolvedDeliveries = resolvedDeliveryIds(current, refreshed);
+  const refreshedItemIds = new Set(asArray(refreshed.turns).flatMap((turn) => (
+    asArray(turn?.items).map((item) => item?.id).filter(Boolean)
+  )));
   const refreshedTurnIds = new Set(asArray(refreshed.turns).map((turn) => turn.id));
   const turns = asArray(refreshed.turns).flatMap((turn) => {
     const existing = currentById.get(turn.id);
@@ -217,7 +220,9 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   });
   for (const turn of currentTurns) {
     if (!turn.deliveryOnly || refreshedTurnIds.has(turn.id)) continue;
-    const items = asArray(turn.items).filter((item) => !resolvedDeliveries.has(item.id));
+    const items = asArray(turn.items).filter((item) => (
+      !resolvedDeliveries.has(item.id) && !refreshedItemIds.has(item.id)
+    ));
     if (!items.length) continue;
     turns.push(items.length === asArray(turn.items).length ? turn : { ...turn, items });
   }
@@ -353,7 +358,7 @@ export function applyAgentEvent(currentThread, method, params = {}) {
 
 export function applyAcceptedUserMessage(currentThread, {
   turnId, text, commandId, baselineVersion, baselineUserMessageId, baselineTurnId,
-  baselineMatchingTextCount,
+  baselineMatchingTextCount, inputWasQueued = false,
 } = {}) {
   if (!currentThread || !commandId || typeof text !== 'string' || !text.trim()) {
     return currentThread;
@@ -369,6 +374,7 @@ export function applyAcceptedUserMessage(currentThread, {
     baselineTurnId: baselineTurnId || null,
     baselineMatchingTextCount: Number.isSafeInteger(baselineMatchingTextCount)
       && baselineMatchingTextCount >= 0 ? baselineMatchingTextCount : 0,
+    ...(inputWasQueued ? { inputWasQueued: true } : {}),
   } : { status: 'accepted', ...fallback };
   const acceptedItem = {
     id,
@@ -377,13 +383,22 @@ export function applyAcceptedUserMessage(currentThread, {
     delivery,
   };
   if (matchingUserAfterDeliveryBaseline(currentThread, acceptedItem)) return currentThread;
-  const targetTurnId = turnId || `delivery-turn:${commandId}`;
+  const queuedTurnId = inputWasQueued && baselineTurnId
+    && asArray(currentThread.turns).some((turn) => turn.id === baselineTurnId)
+    ? baselineTurnId
+    : null;
+  const targetTurnId = turnId || queuedTurnId || `delivery-turn:${commandId}`;
   return updateTurn(currentThread, targetTurnId, (turn) => {
     const items = asArray(turn.items);
+    const firstOutput = inputWasQueued
+      ? items.findIndex((item) => item?.type !== 'userMessage')
+      : -1;
+    const nextItems = [...items];
+    nextItems.splice(firstOutput < 0 ? items.length : firstOutput, 0, acceptedItem);
     return {
       ...turn,
-      ...(!turnId ? { status: 'completed', deliveryOnly: true } : {}),
-      items: [...items, acceptedItem],
+      ...(!turnId && !queuedTurnId ? { status: 'completed', deliveryOnly: true } : {}),
+      items: nextItems,
     };
   });
 }

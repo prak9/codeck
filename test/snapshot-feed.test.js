@@ -187,3 +187,75 @@ test('snapshot feed can wake only matching subscribed resources', async () => {
   assert.equal(loads.get('thread-2'), before.get('thread-2') + 1);
   feed.close();
 });
+
+test('a cursor subscriber replays contiguous thread patches without another full snapshot', async () => {
+  const initialText = 'x'.repeat(2_000);
+  let value = { thread: { id: 'thread-1', turns: [{ id: 'turn-1', text: initialText }] } };
+  const feed = createSnapshotFeed(() => value, {
+    epoch: 'epoch-v2', intervalMs: 60_000, schedule: () => 1, cancel: () => {},
+  });
+  const live = [];
+  const unsubscribe = feed.subscribeFrom('thread-1', null, (frame) => live.push(frame));
+  await feed.refresh('thread-1');
+  await Promise.resolve();
+  assert.equal(live[0].kind, 'snapshot');
+  const firstCursor = { epoch: live[0].epoch, sequence: live[0].sequence };
+
+  value = { thread: { id: 'thread-1', turns: [{ id: 'turn-1', text: `${initialText} world` }] } };
+  await feed.refresh('thread-1');
+  assert.equal(live.at(-1).kind, 'delta');
+  assert.equal(live.at(-1).baseSequence, firstCursor.sequence);
+  unsubscribe();
+
+  const resumed = [];
+  feed.subscribeFrom('thread-1', firstCursor, (frame) => resumed.push(frame));
+  await Promise.resolve();
+  assert.deepEqual(resumed.map((frame) => frame.kind), ['delta', 'synchronized']);
+  assert.equal(resumed[0].sequence, 2);
+  assert.equal(resumed[1].sequence, 2);
+  feed.close();
+});
+
+test('a cursor older than the bounded journal falls back to one current snapshot', async () => {
+  let value = { value: 'one' };
+  const feed = createSnapshotFeed(() => value, {
+    epoch: 'epoch-gap', journalLimit: 1, intervalMs: 60_000,
+    schedule: () => 1, cancel: () => {},
+  });
+  const live = [];
+  const unsubscribe = feed.subscribeFrom('resource', null, (frame) => live.push(frame));
+  await feed.refresh('resource');
+  const staleCursor = { epoch: 'epoch-gap', sequence: 1 };
+  value = { value: 'two' };
+  await feed.refresh('resource');
+  value = { value: 'three' };
+  await feed.refresh('resource');
+  unsubscribe();
+
+  const resumed = [];
+  feed.subscribeFrom('resource', staleCursor, (frame) => resumed.push(frame));
+  await Promise.resolve();
+  assert.deepEqual(resumed.map((frame) => frame.kind), ['snapshot', 'synchronized']);
+  assert.equal(resumed[0].sequence, 3);
+  assert.deepEqual(resumed[0].snapshot, value);
+  feed.close();
+});
+
+test('an exact cursor resumes with synchronization only and remains resumable while retained', async () => {
+  const feed = createSnapshotFeed(() => ({ value: 'stable' }), {
+    epoch: 'epoch-current', intervalMs: 60_000, schedule: () => 1, cancel: () => {},
+  });
+  const initial = [];
+  const unsubscribe = feed.subscribeFrom('resource', null, (frame) => initial.push(frame));
+  await feed.refresh('resource');
+  const cursor = { epoch: 'epoch-current', sequence: 1 };
+  unsubscribe();
+  assert.equal(feed.canResume('resource', cursor), true);
+
+  const resumed = [];
+  feed.subscribeFrom('resource', cursor, (frame) => resumed.push(frame));
+  await Promise.resolve();
+  assert.deepEqual(resumed.map((frame) => frame.kind), ['synchronized']);
+  assert.equal(resumed[0].sequence, 1);
+  feed.close();
+});

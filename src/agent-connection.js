@@ -48,6 +48,16 @@ function cleanRequestId(value) {
   return cleanId(value, 'Request');
 }
 
+function cleanStreamCursor(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || typeof value.epoch !== 'string' || !value.epoch
+    || !Number.isSafeInteger(value.sequence) || value.sequence < 0) {
+    throw new Error('Invalid stream cursor');
+  }
+  return { epoch: value.epoch, sequence: value.sequence };
+}
+
 function cleanAnswers(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Answers are required');
   const entries = Object.entries(value);
@@ -119,24 +129,39 @@ function sessionMessageReceiptResolved(thread, receipt) {
     [receipt.baselineMatchingTextCount]);
 }
 
+function sessionMessageReceiptItem(receipt) {
+  return {
+    id: `delivery:${receipt.commandId}`,
+    type: 'userMessage',
+    content: [{ type: 'text', text: receipt.text }],
+    delivery: {
+      status: 'accepted',
+      baselineVersion: receipt.baselineVersion,
+      baselineUserMessageId: receipt.baselineUserMessageId,
+      baselineTurnId: receipt.baselineTurnId,
+      baselineMatchingTextCount: receipt.baselineMatchingTextCount,
+      ...(receipt.inputWasQueued ? { inputWasQueued: true } : {}),
+    },
+  };
+}
+
 function sessionMessageReceiptTurn(receipt) {
   return {
     id: `delivery-turn:${receipt.commandId}`,
     status: 'completed',
     deliveryOnly: true,
-    items: [{
-      id: `delivery:${receipt.commandId}`,
-      type: 'userMessage',
-      content: [{ type: 'text', text: receipt.text }],
-      delivery: {
-        status: 'accepted',
-        baselineVersion: receipt.baselineVersion,
-        baselineUserMessageId: receipt.baselineUserMessageId,
-        baselineTurnId: receipt.baselineTurnId,
-        baselineMatchingTextCount: receipt.baselineMatchingTextCount,
-      },
-    }],
+    items: [sessionMessageReceiptItem(receipt)],
   };
+}
+
+function sessionMessageReceiptTurnIndex(turns, receipt) {
+  if (receipt.baselineTurnId) {
+    const index = turns.findIndex((turn) => turn.id === receipt.baselineTurnId);
+    if (index >= 0) return index;
+  }
+  if (!receipt.baselineUserMessageId) return -1;
+  return turns.findIndex((turn) => (Array.isArray(turn?.items) ? turn.items : [])
+    .some((item) => item?.type === 'userMessage' && item.id === receipt.baselineUserMessageId));
 }
 
 function timestampMs(value) {
@@ -291,8 +316,10 @@ export class AgentHub {
     registry.on('backendError', ({ provider }) => this.#clearProviderRequests(provider));
   }
 
-  handleConnection(socket) {
+  handleConnection(socket, { streamVersion = 1 } = {}) {
+    const negotiatedStreamVersion = streamVersion === 2 ? 2 : 1;
     const client = {
+      streamVersion: negotiatedStreamVersion,
       deliveredRequests: new Set(),
       threadSubscription: null,
       unsubscribeSessions: null,
@@ -304,43 +331,13 @@ export class AgentHub {
       defaultCwd: this.defaultCwd,
       hostname: this.hostname,
       protocol: {
-        version: 1,
+        version: negotiatedStreamVersion,
         epoch: this.protocolEpoch,
         commandReceiptTtlMs: COMMAND_RECEIPT_TTL_MS,
       },
       providers: this.registry.providerInfo(),
     });
-    if (this.sessionFeed) {
-      client.unsubscribeSessions = this.sessionFeed.subscribe(
-        'sessions',
-        ({ epoch, sequence, snapshot }) => {
-          const subscription = client.threadSubscription;
-          const previousStatus = subscription?.target.tmuxSession
-            ? client.sessionStatuses.get(subscription.target.tmuxSession)
-            : null;
-          client.sessionStatuses = new Map((snapshot?.sessions || []).map((session) => [session.name, session.status]));
-          send(socket, {
-            type: 'sessionsSnapshot',
-            version: 1,
-            stream: { epoch, sequence },
-            snapshot,
-          });
-          const currentStatus = subscription?.target.tmuxSession
-            ? client.sessionStatuses.get(subscription.target.tmuxSession)
-            : null;
-          if (currentStatus === 'working' && previousStatus !== 'working') {
-            this.#refreshThreadSubscription(subscription.target);
-          } else if (previousStatus === 'working' && currentStatus !== 'working') {
-            this.#invalidateThreadSubscription(subscription.target);
-          }
-        },
-        (error) => send(socket, {
-          type: 'sessionsStreamError',
-          version: 1,
-          error: error.message || 'Session stream failed',
-        }),
-      );
-    }
+    if (this.sessionFeed && negotiatedStreamVersion === 1) this.#subscribeSessions(socket, null);
     socket.on('message', (data) => this.#handleMessage(socket, data));
     const cleanup = () => this.#removeClient(socket);
     socket.once('close', cleanup);
@@ -353,6 +350,63 @@ export class AgentHub {
     client.unsubscribeSessions?.();
     client.threadSubscription?.unsubscribe?.();
     this.clients.delete(socket);
+  }
+
+  #subscribeSessions(socket, cursor) {
+    const client = this.clients.get(socket);
+    if (!client || !this.sessionFeed) return;
+    client.unsubscribeSessions?.();
+    const onSnapshot = (frame) => {
+      const snapshot = frame.snapshot;
+      const subscription = client.threadSubscription;
+      const previousStatus = subscription?.target.tmuxSession
+        ? client.sessionStatuses.get(subscription.target.tmuxSession)
+        : null;
+      if (snapshot) {
+        client.sessionStatuses = new Map((snapshot.sessions || []).map((session) => [session.name, session.status]));
+      }
+      if (client.streamVersion === 1) {
+        send(socket, {
+          type: 'sessionsSnapshot', version: 1,
+          stream: { epoch: frame.epoch, sequence: frame.sequence },
+          snapshot,
+        });
+      } else if (frame.kind === 'delta') {
+        send(socket, {
+          type: 'sessionsPatch', version: 2,
+          stream: {
+            epoch: frame.epoch, baseSequence: frame.baseSequence, sequence: frame.sequence,
+          },
+          patch: frame.patch,
+        });
+      } else if (frame.kind === 'synchronized') {
+        send(socket, {
+          type: 'sessionsSynchronized', version: 2,
+          stream: { epoch: frame.epoch, sequence: frame.sequence },
+        });
+      } else {
+        send(socket, {
+          type: 'sessionsSnapshot', version: 2,
+          stream: { epoch: frame.epoch, sequence: frame.sequence },
+          snapshot,
+        });
+      }
+      const currentStatus = subscription?.target.tmuxSession
+        ? client.sessionStatuses.get(subscription.target.tmuxSession)
+        : null;
+      if (currentStatus === 'working' && previousStatus !== 'working') {
+        this.#refreshThreadSubscription(subscription.target);
+      } else if (previousStatus === 'working' && currentStatus !== 'working') {
+        this.#invalidateThreadSubscription(subscription.target);
+      }
+    };
+    const onError = (error) => send(socket, {
+      type: 'sessionsStreamError', version: client.streamVersion,
+      error: error.message || 'Session stream failed',
+    });
+    client.unsubscribeSessions = client.streamVersion === 2
+      ? this.sessionFeed.subscribeFrom('sessions', cursor, onSnapshot, onError)
+      : this.sessionFeed.subscribe('sessions', onSnapshot, onError);
   }
 
   async #handleMessage(socket, data) {
@@ -373,8 +427,31 @@ export class AgentHub {
 
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
+    if (message.type === 'subscribeSessions') {
+      const client = this.clients.get(socket);
+      if (client?.streamVersion !== 2) throw new Error('Session cursors require stream protocol V2');
+      this.#subscribeSessions(socket, cleanStreamCursor(message.cursor));
+      return {};
+    }
     if (message.type === 'unsubscribeThread') {
       this.#clearThreadSubscription(socket, this.clients.get(socket)?.threadSubscription);
+      return {};
+    }
+    if (message.type === 'resyncThread') {
+      const client = this.clients.get(socket);
+      if (client?.streamVersion !== 2) throw new Error('Thread cursors require stream protocol V2');
+      const target = {
+        provider,
+        threadId: cleanId(message.threadId, 'Thread'),
+        tmuxSession: typeof message.tmuxSession === 'string' ? message.tmuxSession.trim() : '',
+      };
+      const current = client.threadSubscription;
+      if (!current || subscriptionKey(current.target.provider, current.target.threadId) !== subscriptionKey(provider, target.threadId)
+        || current.target.tmuxSession !== target.tmuxSession) {
+        throw new Error('Thread subscription changed');
+      }
+      const subscription = this.#beginThreadSubscription(socket, target, null);
+      this.#activateThreadSubscription(socket, subscription);
       return {};
     }
     if (message.type === 'listThreads') return this.registry.listThreads(provider);
@@ -386,9 +463,24 @@ export class AgentHub {
         threadId,
         tmuxSession: typeof message.tmuxSession === 'string' ? message.tmuxSession.trim() : '',
       };
-      const subscription = this.#beginThreadSubscription(socket, target);
+      const client = this.clients.get(socket);
+      const streamCursor = client?.streamVersion === 2
+        ? cleanStreamCursor(message.streamCursor)
+        : null;
+      const subscription = this.#beginThreadSubscription(socket, target, streamCursor);
       try {
         const options = message.readOnly === true ? { readOnly: true } : undefined;
+        const resumable = client?.streamVersion === 2 && streamCursor
+          && (message.readOnly === true || target.tmuxSession)
+          && !this.#hasSessionMessageReceipts(provider, threadId)
+          && this.threadFeed?.canResume(target, streamCursor);
+        if (resumable) {
+          return afterReply(
+            { resumed: true, stream: streamCursor },
+            () => this.#activateThreadSubscription(socket, subscription),
+          );
+        }
+        subscription.cursor = null;
         if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
         const result = await this.registry.openThread(provider, threadId, options);
         const restored = this.#restoreSessionMessageReceipts(provider, threadId, result);
@@ -424,7 +516,9 @@ export class AgentHub {
         const receiptRecorded = !turnId && provider !== 'shell' && commandId
           && !text.startsWith('/') && (!result?.terminalOutput || result.terminalWorking)
           && this.#recordSessionMessageReceipt(provider, {
-            threadId, text, commandId, ...baseline,
+            threadId, text, commandId,
+            inputWasQueued: result?.inputWasQueued === true,
+            ...baseline,
           });
         this.#invalidateSessionFeed();
         const target = { provider, threadId, tmuxSession: sessionName };
@@ -527,6 +621,14 @@ export class AgentHub {
     }
   }
 
+  #hasSessionMessageReceipts(provider, threadId) {
+    this.#pruneSessionMessageReceipts();
+    for (const receipt of this.sessionMessageReceipts.values()) {
+      if (receipt.provider === provider && receipt.threadId === threadId) return true;
+    }
+    return false;
+  }
+
   #recordSessionMessageReceipt(provider, receipt) {
     if (receipt.baselineVersion !== 2) return false;
     this.#pruneSessionMessageReceipts();
@@ -560,11 +662,29 @@ export class AgentHub {
     const itemIds = new Set(turns.flatMap((turn) => (
       Array.isArray(turn?.items) ? turn.items.map((item) => item?.id) : []
     )));
-    const restored = pending
-      .map(sessionMessageReceiptTurn)
-      .filter((turn) => !itemIds.has(turn.items[0].id));
-    if (!restored.length) return result;
-    return { ...result, thread: { ...thread, turns: [...turns, ...restored] } };
+    let restoredTurns = turns;
+    const standalone = [];
+    for (const receipt of pending) {
+      const item = sessionMessageReceiptItem(receipt);
+      if (itemIds.has(item.id)) continue;
+      const turnIndex = receipt.inputWasQueued
+        ? sessionMessageReceiptTurnIndex(restoredTurns, receipt)
+        : -1;
+      if (turnIndex < 0) {
+        standalone.push(sessionMessageReceiptTurn(receipt));
+      } else {
+        if (restoredTurns === turns) restoredTurns = [...turns];
+        const target = restoredTurns[turnIndex];
+        const items = [...(Array.isArray(target?.items) ? target.items : [])];
+        const firstOutput = items.findIndex((candidate) => candidate?.type !== 'userMessage');
+        items.splice(firstOutput < 0 ? items.length : firstOutput, 0, item);
+        restoredTurns[turnIndex] = { ...target, items };
+      }
+      itemIds.add(item.id);
+    }
+    if (standalone.length) restoredTurns = [...restoredTurns, ...standalone];
+    if (restoredTurns === turns) return result;
+    return { ...result, thread: { ...thread, turns: restoredTurns } };
   }
 
   #refreshThreadSubscription(target) {
@@ -581,18 +701,75 @@ export class AgentHub {
     this.threadFeed.invalidate(target).catch(() => {});
   }
 
-  #beginThreadSubscription(socket, target) {
+  #beginThreadSubscription(socket, target, cursor = null) {
     const client = this.clients.get(socket);
     if (!client) return null;
     client.threadSubscription?.unsubscribe?.();
     const subscription = {
       target,
+      cursor,
       ready: false,
       pending: [],
       unsubscribe: null,
+      deltaBaseSafe: !this.#hasSessionMessageReceipts(target.provider, target.threadId),
+      fullAtSync: false,
     };
     client.threadSubscription = subscription;
     return subscription;
+  }
+
+  #deliverV2ThreadFrame(socket, subscription, frame) {
+    const restored = frame.snapshot
+      ? this.#restoreSessionMessageReceipts(
+        subscription.target.provider,
+        subscription.target.threadId,
+        frame.snapshot,
+      )
+      : null;
+    const hasPendingReceipts = this.#hasSessionMessageReceipts(
+      subscription.target.provider,
+      subscription.target.threadId,
+    );
+    const sendFull = () => {
+      if (!restored?.thread) return false;
+      this.#deliverThreadMessage(socket, subscription, {
+        type: 'threadSnapshot', version: 2, target: subscription.target,
+        stream: { epoch: frame.epoch, sequence: frame.sequence },
+        thread: restored.thread,
+      });
+      subscription.deltaBaseSafe = !hasPendingReceipts;
+      subscription.fullAtSync = false;
+      return true;
+    };
+
+    if (frame.kind === 'synchronized') {
+      if (subscription.fullAtSync && !sendFull()) {
+        this.#deliverThreadMessage(socket, subscription, {
+          type: 'threadStreamError', version: 2, target: subscription.target,
+          error: 'Thread stream requires a full snapshot',
+        });
+        return;
+      }
+      this.#deliverThreadMessage(socket, subscription, {
+        type: 'threadSynchronized', version: 2, target: subscription.target,
+        stream: { epoch: frame.epoch, sequence: frame.sequence },
+      });
+      return;
+    }
+    if (frame.kind === 'delta' && subscription.deltaBaseSafe && !hasPendingReceipts) {
+      this.#deliverThreadMessage(socket, subscription, {
+        type: 'threadPatch', version: 2, target: subscription.target,
+        stream: {
+          epoch: frame.epoch, baseSequence: frame.baseSequence, sequence: frame.sequence,
+        },
+        patch: frame.patch,
+      });
+      return;
+    }
+    if (!sendFull()) {
+      subscription.deltaBaseSafe = false;
+      subscription.fullAtSync = true;
+    }
   }
 
   #activateThreadSubscription(socket, subscription) {
@@ -600,9 +777,9 @@ export class AgentHub {
     if (!client || !subscription || client.threadSubscription !== subscription) return;
     subscription.ready = true;
     if (this.threadFeed && subscription.target.provider !== 'shell') {
-      subscription.unsubscribe = this.threadFeed.subscribe(
-        subscription.target,
-        ({ epoch, sequence, snapshot }) => {
+      const onSnapshot = client.streamVersion === 2
+        ? (frame) => this.#deliverV2ThreadFrame(socket, subscription, frame)
+        : ({ epoch, sequence, snapshot }) => {
           const restored = this.#restoreSessionMessageReceipts(
             subscription.target.provider,
             subscription.target.threadId,
@@ -615,14 +792,16 @@ export class AgentHub {
             stream: { epoch, sequence },
             thread: restored?.thread,
           });
-        },
-        (error) => this.#deliverThreadMessage(socket, subscription, {
+        };
+      const onError = (error) => this.#deliverThreadMessage(socket, subscription, {
           type: 'threadStreamError',
-          version: 1,
+          version: client.streamVersion,
           target: subscription.target,
           error: error.message || 'Thread stream failed',
-        }),
-      );
+        });
+      subscription.unsubscribe = client.streamVersion === 2
+        ? this.threadFeed.subscribeFrom(subscription.target, subscription.cursor, onSnapshot, onError)
+        : this.threadFeed.subscribe(subscription.target, onSnapshot, onError);
     }
     for (const message of subscription.pending.splice(0)) send(socket, message);
     this.#sendPending(socket, subscription);

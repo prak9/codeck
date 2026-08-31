@@ -65,12 +65,21 @@ class FakeSnapshotFeed {
   subscriptions = new Set();
   invalidations = [];
   refreshes = [];
+  resumable = false;
 
   subscribe(resource, listener, onError = () => {}) {
-    const subscription = { resource, listener, onError };
+    const subscription = { mode: 'snapshot', resource, listener, onError };
     this.subscriptions.add(subscription);
     return () => this.subscriptions.delete(subscription);
   }
+
+  subscribeFrom(resource, cursor, listener, onError = () => {}) {
+    const subscription = { mode: 'delta', resource, cursor, listener, onError };
+    this.subscriptions.add(subscription);
+    return () => this.subscriptions.delete(subscription);
+  }
+
+  canResume() { return this.resumable; }
 
   publish(resource, event) {
     for (const subscription of this.subscriptions) {
@@ -246,6 +255,58 @@ test('streams shared session snapshots with an epoch and sequence', () => {
   });
   socket.close();
   assert.equal(sessionFeed.subscriptions.size, 0);
+});
+
+test('a V2 client subscribes sessions from its cursor and receives patches', async () => {
+  const sessionFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ sessionFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+
+  assert.equal(socket.sent[0].protocol.version, 2);
+  assert.equal(sessionFeed.subscriptions.size, 0, 'V2 waits for the client cursor');
+  const cursor = { epoch: 'test-epoch', sequence: 6 };
+  send(socket, { type: 'subscribeSessions', cursor });
+  await waitFor(() => sessionFeed.subscriptions.size === 1);
+  assert.deepEqual([...sessionFeed.subscriptions][0], {
+    mode: 'delta', resource: 'sessions', cursor,
+    listener: [...sessionFeed.subscriptions][0].listener,
+    onError: [...sessionFeed.subscriptions][0].onError,
+  });
+
+  sessionFeed.publish('sessions', {
+    kind: 'delta', epoch: 'test-epoch', baseSequence: 6, sequence: 7,
+    patch: [{ op: 'set', path: ['sessions', 0, 'status'], value: 'working' }],
+    snapshot: { sessions: [{ name: 'skills', status: 'working' }] },
+  });
+  assert.deepEqual(socket.sent.at(-1), {
+    type: 'sessionsPatch', version: 2,
+    stream: { epoch: 'test-epoch', baseSequence: 6, sequence: 7 },
+    patch: [{ op: 'set', path: ['sessions', 0, 'status'], value: 'working' }],
+  });
+});
+
+test('a resumable V2 tmux thread skips another full backend load', async () => {
+  const threadFeed = new FakeSnapshotFeed();
+  threadFeed.resumable = true;
+  const { backends, hub } = setup({ threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+  const cursor = { epoch: 'test-epoch', sequence: 12 };
+
+  send(socket, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', readOnly: true, streamCursor: cursor,
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+
+  assert.equal(backends.codex.calls.length, 0);
+  assert.deepEqual(socket.sent.find((message) => message.id === 1).result, {
+    resumed: true, stream: cursor,
+  });
+  const subscription = [...threadFeed.subscriptions][0];
+  assert.equal(subscription.mode, 'delta');
+  assert.deepEqual(subscription.cursor, cursor);
 });
 
 test('thread snapshot streams stay bound to provider, thread and tmux session', async () => {
@@ -526,6 +587,113 @@ test('restores accepted no-turn tmux messages after reconnect until the transcri
   opened = fourth.sent.find((message) => message.id === 6).result.thread;
   assert.equal(opened.turns.flatMap((turn) => turn.items)
     .filter((item) => item.delivery).length, 0);
+});
+
+test('keeps an absorbed Claude input ahead of the answer instead of as an unanswered tail turn', async () => {
+  const anchor = {
+    id: 'user-anchor', type: 'userMessage',
+    content: [{ type: 'text', text: 'Start reviewing' }],
+  };
+  const answer = { id: 'answer-1', type: 'agentMessage', text: 'Review complete.' };
+  const { backends, hub } = setup({
+    sendTmuxMessage: async () => ({ inputWasQueued: true }),
+  });
+  backends.claude.openThread = async (threadId, options) => {
+    backends.claude.calls.push({ method: 'openThread', threadId, options });
+    return {
+      thread: {
+        id: threadId,
+        turns: [{ id: 'turn-running', status: 'completed', items: [anchor, answer] }],
+      },
+    };
+  };
+
+  const first = new FakeSocket();
+  hub.handleConnection(first);
+  send(first, {
+    type: 'openThread', id: 1, provider: 'claude', threadId: 'claude-thread',
+    tmuxSession: 'claude', readOnly: true,
+  });
+  await waitFor(() => first.sent.some((message) => message.id === 1));
+  send(first, {
+    type: 'sendSessionMessage', id: 2, provider: 'claude', threadId: 'claude-thread',
+    tmuxSession: 'claude', text: 'Also check the receipt path', commandId: 'command-queued-1',
+    baselineVersion: 2, baselineUserMessageId: 'user-anchor',
+    baselineTurnId: 'turn-running', baselineMatchingTextCount: 0,
+  });
+  await waitFor(() => first.sent.some((message) => message.id === 2));
+  first.close();
+
+  const second = new FakeSocket();
+  hub.handleConnection(second);
+  send(second, {
+    type: 'openThread', id: 3, provider: 'claude', threadId: 'claude-thread',
+    tmuxSession: 'claude', readOnly: true,
+  });
+  await waitFor(() => second.sent.some((message) => message.id === 3));
+  const turns = second.sent.find((message) => message.id === 3).result.thread.turns;
+
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0].items.map((item) => item.type), [
+    'userMessage', 'userMessage', 'agentMessage',
+  ]);
+  assert.equal(turns[0].items[1].delivery.status, 'accepted');
+  assert.equal(turns.at(-1).items.at(-1).text, 'Review complete.');
+});
+
+test('V2 thread patches rebase through full snapshots while a delivery receipt is pending', async () => {
+  const anchor = {
+    id: 'user-anchor', type: 'userMessage',
+    content: [{ type: 'text', text: 'Start' }],
+  };
+  const threadFeed = new FakeSnapshotFeed();
+  const { hub } = setup({
+    sendTmuxMessage: async () => ({ terminalWorking: true }),
+    threadFeed,
+  });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+  const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'research' };
+  send(socket, { type: 'openThread', id: 1, ...target, readOnly: true });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  send(socket, {
+    type: 'sendSessionMessage', id: 2, ...target, text: '怎么样了',
+    commandId: 'command-v2-receipt', baselineVersion: 2,
+    baselineUserMessageId: 'user-anchor', baselineTurnId: 'turn-1',
+    baselineMatchingTextCount: 0,
+  });
+  await waitFor(() => socket.sent.some((message) => message.id === 2));
+
+  const rawThread = (items) => ({
+    thread: { id: 'thread-1', turns: [{ id: 'turn-1', status: 'completed', items }] },
+  });
+  threadFeed.publish(target, {
+    kind: 'delta', epoch: 'test-epoch', baseSequence: 1, sequence: 2,
+    patch: [{ op: 'set', path: ['thread', 'turns', 0, 'status'], value: 'completed' }],
+    snapshot: rawThread([anchor]),
+  });
+  assert.equal(socket.sent.at(-1).type, 'threadSnapshot');
+  assert.deepEqual(socket.sent.at(-1).thread.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery).map((item) => item.id), ['delivery:command-v2-receipt']);
+
+  const actual = {
+    id: 'user-actual', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+  };
+  threadFeed.publish(target, {
+    kind: 'delta', epoch: 'test-epoch', baseSequence: 2, sequence: 3,
+    patch: [{ op: 'set', path: ['thread', 'turns', 0, 'items', 1], value: actual }],
+    snapshot: rawThread([anchor, actual]),
+  });
+  assert.equal(socket.sent.at(-1).type, 'threadSnapshot', 'receipt resolution sends one clean full base');
+  assert.equal(socket.sent.at(-1).thread.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery).length, 0);
+
+  threadFeed.publish(target, {
+    kind: 'delta', epoch: 'test-epoch', baseSequence: 3, sequence: 4,
+    patch: [{ op: 'set', path: ['thread', 'turns', 0, 'status'], value: 'inProgress' }],
+    snapshot: rawThread([anchor, actual]),
+  });
+  assert.equal(socket.sent.at(-1).type, 'threadPatch');
 });
 
 test('opens, starts, follows up, steers and interrupts the selected provider', async () => {
