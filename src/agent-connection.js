@@ -5,6 +5,8 @@ import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-rec
 import { resolveSessionStatus } from './session-status.js';
 
 const SESSION_START_MATCH_MS = 120_000;
+const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
+const SESSION_MESSAGE_RECEIPT_LIMIT = 1_024;
 
 function approvalKey(provider, id) {
   return `${provider}:${String(id)}`;
@@ -59,6 +61,82 @@ function cleanAnswers(value) {
       return result;
     })];
   }));
+}
+
+function cleanDeliveryBaseline(message) {
+  if (message.baselineVersion !== 2) return {};
+  const cleanOptionalId = (value) => {
+    if (value == null || value === '') return null;
+    if (typeof value !== 'string') throw new Error('Invalid delivery baseline');
+    const result = value.trim();
+    if (result.length > 256) throw new Error('Invalid delivery baseline');
+    return result || null;
+  };
+  const count = message.baselineMatchingTextCount;
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid delivery baseline');
+  return {
+    baselineVersion: 2,
+    baselineUserMessageId: cleanOptionalId(message.baselineUserMessageId),
+    baselineTurnId: cleanOptionalId(message.baselineTurnId),
+    baselineMatchingTextCount: count,
+  };
+}
+
+function sessionUserMessageText(item) {
+  if (typeof item?.content === 'string') return item.content;
+  return (Array.isArray(item?.content) ? item.content : [])
+    .filter((part) => typeof part?.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+function sessionUserMessageEntries(thread) {
+  return (Array.isArray(thread?.turns) ? thread.turns : []).flatMap((turn, turnIndex) => (
+    (Array.isArray(turn?.items) ? turn.items : [])
+      .filter((item) => item?.type === 'userMessage' && !item.delivery)
+      .map((item) => ({ item, turnIndex }))
+  ));
+}
+
+function sessionMessageReceiptResolved(thread, receipt) {
+  if (receipt.baselineVersion !== 2) return false;
+  const users = sessionUserMessageEntries(thread);
+  let candidates;
+  if (receipt.baselineUserMessageId) {
+    const anchorIndex = users.findIndex(({ item }) => item.id === receipt.baselineUserMessageId);
+    if (anchorIndex < 0) return false;
+    candidates = users.slice(anchorIndex + 1);
+  } else if (receipt.baselineTurnId) {
+    const turnIndex = (Array.isArray(thread?.turns) ? thread.turns : [])
+      .findIndex((turn) => turn.id === receipt.baselineTurnId);
+    if (turnIndex < 0) return false;
+    candidates = users.filter((entry) => entry.turnIndex > turnIndex);
+  } else {
+    candidates = users;
+  }
+  return Boolean(candidates
+    .filter(({ item }) => sessionUserMessageText(item) === receipt.text)
+    [receipt.baselineMatchingTextCount]);
+}
+
+function sessionMessageReceiptTurn(receipt) {
+  return {
+    id: `delivery-turn:${receipt.commandId}`,
+    status: 'completed',
+    deliveryOnly: true,
+    items: [{
+      id: `delivery:${receipt.commandId}`,
+      type: 'userMessage',
+      content: [{ type: 'text', text: receipt.text }],
+      delivery: {
+        status: 'accepted',
+        baselineVersion: receipt.baselineVersion,
+        baselineUserMessageId: receipt.baselineUserMessageId,
+        baselineTurnId: receipt.baselineTurnId,
+        baselineMatchingTextCount: receipt.baselineMatchingTextCount,
+      },
+    }],
+  };
 }
 
 function timestampMs(value) {
@@ -205,6 +283,7 @@ export class AgentHub {
     this.invalidateSessions = invalidateSessions;
     this.clients = new Map();
     this.commandReceipts = createCommandReceiptCache();
+    this.sessionMessageReceipts = new Map();
     this.pendingRequests = new Map();
     this.resolvedRequests = new Set();
     registry.on('notification', (message) => this.#broadcastNotification(message));
@@ -312,7 +391,8 @@ export class AgentHub {
         const options = message.readOnly === true ? { readOnly: true } : undefined;
         if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
         const result = await this.registry.openThread(provider, threadId, options);
-        return afterReply(result, () => this.#activateThreadSubscription(socket, subscription));
+        const restored = this.#restoreSessionMessageReceipts(provider, threadId, result);
+        return afterReply(restored, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {
         this.#clearThreadSubscription(socket, subscription);
         throw error;
@@ -325,20 +405,31 @@ export class AgentHub {
       const turnId = typeof message.turnId === 'string' && message.turnId.trim()
         ? message.turnId.trim()
         : null;
+      const baseline = cleanDeliveryBaseline(message);
+      const commandId = message.commandId == null ? '' : String(message.commandId).trim();
       if (provider !== 'shell') this.registry.backend(provider);
       this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
       const payload = {
         threadId, sessionName, text,
         ...(turnId ? { turnId, mode: message.mode === 'steer' ? 'steer' : 'followUp' } : {}),
+        ...baseline,
       };
       return this.#runCommand(message, provider, payload, async () => {
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text });
         this.registry.recordSessionMessage(provider, {
           threadId, turnId, text,
-          commandId: message.commandId == null ? '' : String(message.commandId).trim(),
+          commandId,
+          ...baseline,
         });
+        const receiptRecorded = !turnId && provider !== 'shell' && commandId
+          && !text.startsWith('/') && (!result?.terminalOutput || result.terminalWorking)
+          && this.#recordSessionMessageReceipt(provider, {
+            threadId, text, commandId, ...baseline,
+          });
         this.#invalidateSessionFeed();
-        this.#refreshThreadSubscription({ provider, threadId, tmuxSession: sessionName });
+        const target = { provider, threadId, tmuxSession: sessionName };
+        if (receiptRecorded) this.#invalidateThreadSubscription(target);
+        else this.#refreshThreadSubscription(target);
         return result;
       });
     }
@@ -429,6 +520,53 @@ export class AgentHub {
     } catch { /* The session stream reports its own recoverable loader errors. */ }
   }
 
+  #pruneSessionMessageReceipts() {
+    const now = Date.now();
+    for (const [commandId, receipt] of this.sessionMessageReceipts) {
+      if (receipt.expiresAt <= now) this.sessionMessageReceipts.delete(commandId);
+    }
+  }
+
+  #recordSessionMessageReceipt(provider, receipt) {
+    if (receipt.baselineVersion !== 2) return false;
+    this.#pruneSessionMessageReceipts();
+    if (this.sessionMessageReceipts.has(receipt.commandId)) return true;
+    while (this.sessionMessageReceipts.size >= SESSION_MESSAGE_RECEIPT_LIMIT) {
+      this.sessionMessageReceipts.delete(this.sessionMessageReceipts.keys().next().value);
+    }
+    this.sessionMessageReceipts.set(receipt.commandId, {
+      provider,
+      ...receipt,
+      expiresAt: Date.now() + SESSION_MESSAGE_RECEIPT_TTL_MS,
+    });
+    return true;
+  }
+
+  #restoreSessionMessageReceipts(provider, threadId, result) {
+    const thread = result?.thread;
+    if (!thread) return result;
+    this.#pruneSessionMessageReceipts();
+    const pending = [];
+    for (const [commandId, receipt] of this.sessionMessageReceipts) {
+      if (receipt.provider !== provider || receipt.threadId !== threadId) continue;
+      if (sessionMessageReceiptResolved(thread, receipt)) {
+        this.sessionMessageReceipts.delete(commandId);
+      } else {
+        pending.push(receipt);
+      }
+    }
+    if (!pending.length) return result;
+    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    const itemIds = new Set(turns.flatMap((turn) => (
+      Array.isArray(turn?.items) ? turn.items.map((item) => item?.id) : []
+    )));
+    const restored = pending
+      .map(sessionMessageReceiptTurn)
+      .filter((turn) => !itemIds.has(turn.items[0].id));
+    if (!restored.length) return result;
+    return { ...result, thread: { ...thread, turns: [...turns, ...restored] } };
+  }
+
   #refreshThreadSubscription(target) {
     if (!this.threadFeed || !target) return;
     this.threadFeed.refreshSubscribed((resource) => (
@@ -464,13 +602,20 @@ export class AgentHub {
     if (this.threadFeed && subscription.target.provider !== 'shell') {
       subscription.unsubscribe = this.threadFeed.subscribe(
         subscription.target,
-        ({ epoch, sequence, snapshot }) => this.#deliverThreadMessage(socket, subscription, {
-          type: 'threadSnapshot',
-          version: 1,
-          target: subscription.target,
-          stream: { epoch, sequence },
-          thread: snapshot?.thread,
-        }),
+        ({ epoch, sequence, snapshot }) => {
+          const restored = this.#restoreSessionMessageReceipts(
+            subscription.target.provider,
+            subscription.target.threadId,
+            snapshot,
+          );
+          this.#deliverThreadMessage(socket, subscription, {
+            type: 'threadSnapshot',
+            version: 1,
+            target: subscription.target,
+            stream: { epoch, sequence },
+            thread: restored?.thread,
+          });
+        },
         (error) => this.#deliverThreadMessage(socket, subscription, {
           type: 'threadStreamError',
           version: 1,

@@ -425,6 +425,109 @@ test('deduplicates a retried tmux send by command id', async () => {
     first.sent.find((message) => message.id === 1).result);
 });
 
+test('restores accepted no-turn tmux messages after reconnect until the transcript catches up', async () => {
+  const anchor = {
+    id: 'user-anchor', type: 'userMessage',
+    content: [{ type: 'text', text: 'Start the long task' }],
+  };
+  const actual = [];
+  const threadFeed = new FakeSnapshotFeed();
+  const { backends, hub } = setup({
+    sendTmuxMessage: async () => ({ terminalWorking: true }),
+    threadFeed,
+  });
+  backends.codex.openThread = async (threadId, options) => {
+    backends.codex.calls.push({ method: 'openThread', threadId, options });
+    return {
+      thread: {
+        id: threadId,
+        turns: [{ id: 'turn-interrupted', status: 'interrupted', items: [anchor, ...actual] }],
+      },
+    };
+  };
+
+  const first = new FakeSocket();
+  hub.handleConnection(first);
+  send(first, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', readOnly: true,
+  });
+  await waitFor(() => first.sent.some((message) => message.id === 1));
+  send(first, {
+    type: 'sendSessionMessage', id: 2, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', text: '怎么样了', commandId: 'command-no-turn-1',
+    baselineVersion: 2, baselineUserMessageId: 'user-anchor',
+    baselineTurnId: 'turn-interrupted', baselineMatchingTextCount: 0,
+  });
+  await waitFor(() => first.sent.some((message) => message.id === 2));
+  const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'research' };
+  threadFeed.publish(target, {
+    epoch: 'test-epoch', sequence: 2,
+    snapshot: {
+      thread: {
+        id: 'thread-1',
+        turns: [{ id: 'turn-interrupted', status: 'interrupted', items: [anchor] }],
+      },
+    },
+  });
+  assert.deepEqual(first.sent.at(-1).thread.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery)
+    .map((item) => item.id), ['delivery:command-no-turn-1']);
+  first.close();
+
+  const second = new FakeSocket();
+  hub.handleConnection(second);
+  send(second, {
+    type: 'openThread', id: 3, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', readOnly: true,
+  });
+  await waitFor(() => second.sent.some((message) => message.id === 3));
+  let opened = second.sent.find((message) => message.id === 3).result.thread;
+  assert.deepEqual(opened.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery)
+    .map((item) => item.content[0].text), ['怎么样了']);
+
+  send(second, {
+    type: 'sendSessionMessage', id: 4, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', text: '怎么样了', commandId: 'command-no-turn-2',
+    baselineVersion: 2, baselineUserMessageId: 'user-anchor',
+    baselineTurnId: 'turn-interrupted', baselineMatchingTextCount: 1,
+  });
+  await waitFor(() => second.sent.some((message) => message.id === 4));
+  second.close();
+
+  actual.push({
+    id: 'user-actual-1', type: 'userMessage',
+    content: [{ type: 'text', text: '怎么样了' }],
+  });
+  const third = new FakeSocket();
+  hub.handleConnection(third);
+  send(third, {
+    type: 'openThread', id: 5, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', readOnly: true,
+  });
+  await waitFor(() => third.sent.some((message) => message.id === 5));
+  opened = third.sent.find((message) => message.id === 5).result.thread;
+  assert.deepEqual(opened.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery)
+    .map((item) => item.id), ['delivery:command-no-turn-2']);
+
+  actual.push({
+    id: 'user-actual-2', type: 'userMessage',
+    content: [{ type: 'text', text: '怎么样了' }],
+  });
+  const fourth = new FakeSocket();
+  hub.handleConnection(fourth);
+  send(fourth, {
+    type: 'openThread', id: 6, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'research', readOnly: true,
+  });
+  await waitFor(() => fourth.sent.some((message) => message.id === 6));
+  opened = fourth.sent.find((message) => message.id === 6).result.thread;
+  assert.equal(opened.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery).length, 0);
+});
+
 test('opens, starts, follows up, steers and interrupts the selected provider', async () => {
   const { backends, hub } = setup();
   const socket = new FakeSocket();

@@ -1982,6 +1982,10 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           commandId: delivery.commandId,
           mode: delivery.mode,
           turnId: delivery.turnId || undefined,
+          baselineVersion: delivery.baselineVersion,
+          baselineUserMessageId: delivery.baselineUserMessageId,
+          baselineTurnId: delivery.baselineTurnId,
+          baselineMatchingTextCount: delivery.baselineMatchingTextCount,
         });
         const nextStatus = sessionStatusAfterSend({ previousStatus, result });
         const workingAfterSend = nextStatus === 'working';
