@@ -31,15 +31,20 @@ const SHELL_COMMANDS = new Set([
 // lexical: a gerund, an ellipsis, then an elapsed timer in parentheses ("Gesticulating…
 // (1m 58s · ↓ 6.1k tokens)"). The finished turn keeps the same glyph but drops both the
 // ellipsis and the parentheses ("Worked for 45s"), so the shape separates them while the
-// randomised verb cannot. "esc to interrupt" is a weaker second source: the footer swaps
-// it out whenever messages are queued.
+// randomised verb cannot.
+//
+// "esc to interrupt" used to be a usable second source, because the older footer only
+// carried it while a turn was in flight. Newer builds keep it in the permanent shortcut
+// hint, so an idle pane matched it and the session sat on "working" forever. There is no
+// lexical way to tell the old busy footer from the new idle one, so the spinner is now
+// the only busy marker; both live busy captures in the tests carry it.
 //
 // Background footer markers are kept narrow so a transcript line like "Ran 1 shell
 // command" cannot pin the indicator on. Codex can retain a completed terminal count in
 // its footer, so resolveAgentBackgroundState verifies it against a live owned process.
 export const AGENT_SCREEN_MARKERS = {
   claude: {
-    busy: { lines: 12, patterns: [/^[^\p{L}\n]{0,4}\p{L}+…\s*\(\d/u, /esc to interrupt/i] },
+    busy: { lines: 12, patterns: [/^[^\p{L}\n]{0,4}\p{L}+…\s*\(\d/u] },
     background: { lines: 1, patterns: [/\b\d+\s+(?:shell|monitor|task)s?\b/i] },
   },
   codex: {

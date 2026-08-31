@@ -817,6 +817,17 @@ const CLAUDE_IDLE = `
   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
 `;
 
+// 新版 Claude Code 把 "esc to interrupt" 留在了常驻快捷键提示里 —— 空闲时也在。
+// 下面是实抓的空闲 pane: 提示符是空的, 没有 spinner, 但 footer 带着这句话。
+// 旧版空闲 footer 不含它, 所以它一度是可用的忙判据; 现在不是了。
+const CLAUDE_IDLE_WITH_INTERRUPT_HINT = `
+✻ Worked for 45s
+────────────────────────────────
+❯
+────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents      /rc active
+`;
+
 const CLAUDE_BACKGROUND = `
 ✻ Churned for 27s · 1 shell, 1 monitor still running
 ────────────────────────────────
@@ -854,6 +865,7 @@ const signals = (output, kind) => resolveScreenSignals(output, AGENT_SCREEN_MARK
 test('reads the claude turn-in-flight marker from the footer', () => {
   assert.deepEqual(signals(CLAUDE_BUSY, 'claude'), { busy: true, background: false });
   assert.deepEqual(signals(CLAUDE_IDLE, 'claude'), { busy: false, background: false });
+  assert.deepEqual(signals(CLAUDE_IDLE_WITH_INTERRUPT_HINT, 'claude'), { busy: false, background: false });
 });
 
 test('reads claude background tasks that outlive the turn', () => {
