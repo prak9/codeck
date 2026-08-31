@@ -166,15 +166,50 @@ test('progressive Codex loading returns a short summary before exact user hydrat
   assert.deepEqual(exact.thread.turns[0].items.map((item) => item.id), ['user-1', 'user-2']);
 });
 
+test('refreshes items appended to an interrupted Codex turn without waiting for completion', async () => {
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Continue' }] };
+  const interim = { id: 'answer-1', type: 'agentMessage', text: 'Checking the latest state' };
+  const final = { id: 'answer-2', type: 'agentMessage', text: 'The task is complete' };
+  let latestItems = [first, interim];
+  const calls = [];
+  const appServer = new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
+    if (params.itemsView === 'full') {
+      if (params.limit === 1) {
+        return { data: [{ id: 'turn-1', status: 'interrupted', items: latestItems }] };
+      }
+      return { data: [{ id: 'turn-1', status: 'interrupted', items: [first] }] };
+    }
+    return { data: [{ id: 'turn-1', status: 'interrupted', items: [first] }] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+
+  const progressive = await backend.openThread('thread-1', { readOnly: true, progressive: true });
+  const firstExact = await backend.openThread('thread-1', { readOnly: true });
+  latestItems = [first, interim, final];
+  const secondExact = await backend.openThread('thread-1', { readOnly: true });
+
+  assert.deepEqual(progressive.thread.turns[0].items.map((item) => item.id), ['user-1']);
+  assert.deepEqual(firstExact.thread.turns[0].items.map((item) => item.id), ['user-1', 'answer-1']);
+  assert.deepEqual(secondExact.thread.turns[0].items.map((item) => item.id), [
+    'user-1', 'answer-1', 'answer-2',
+  ]);
+  assert.equal(calls.filter((call) => call.params?.itemsView === 'full' && call.params.limit === 1).length, 2);
+});
+
 test('an exact Codex refresh retries after progressive hydration fails transiently', async () => {
   const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
   const followUp = { id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: 'Also verify mobile' }] };
   let hydrationCalls = 0;
   const appServer = new FakeAppServer(async (method, params) => {
     if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [] } };
-    if (params.itemsView === 'full') {
+    if (params.itemsView === 'full' && params.limit === 10) {
       hydrationCalls += 1;
       if (hydrationCalls === 1) throw new Error('rollout is still being written');
+      return { data: [{ id: 'turn-1', status: 'inProgress', items: [first, followUp] }] };
+    }
+    if (params.itemsView === 'full') {
       return { data: [{ id: 'turn-1', status: 'inProgress', items: [first, followUp] }] };
     }
     return { data: [{ id: 'turn-1', status: 'inProgress', items: [first] }] };

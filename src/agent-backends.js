@@ -75,6 +75,24 @@ function mergeCodexSummaryUsers(turn, cachedUsers) {
   };
 }
 
+function mergeCodexFullTurn(summaryTurn, fullTurn, cachedUsers) {
+  const items = [...(Array.isArray(fullTurn?.items) ? fullTurn.items : [])];
+  const itemIds = new Set(items.map((item) => item?.id).filter(Boolean));
+  const fullUsers = codexUserItems(fullTurn);
+  for (const item of Array.isArray(cachedUsers) ? cachedUsers : []) {
+    if (item?.id && itemIds.has(item.id)) continue;
+    if (item?.delivery && fullUsers.some((candidate) => (
+      codexUserItemText(candidate) === codexUserItemText(item)
+    ))) continue;
+    items.push(item);
+  }
+  return { ...summaryTurn, ...fullTurn, items };
+}
+
+function codexTurnNeedsFullItems(turn) {
+  return turn?.status === 'inProgress' || turn?.status === 'interrupted';
+}
+
 function isActiveWriterError(error) {
   return /already has an active writer/i.test(error?.message || '');
 }
@@ -140,9 +158,18 @@ export class CodexAgentBackend extends EventEmitter {
     const hydration = this.#hydrateUserMessages(threadId);
     const [result, turnPage] = await Promise.all([read, summary]);
     const summaryTurns = Array.isArray(turnPage?.data) ? [...turnPage.data].reverse() : [];
-    if (summaryTurns.length && !progressive) await hydration;
+    const latestSummaryTurn = summaryTurns.at(-1);
+    const latestFull = !progressive && readOnly && codexTurnNeedsFullItems(latestSummaryTurn)
+      ? this.#readLatestFullTurn(threadId, latestSummaryTurn.id)
+      : Promise.resolve(null);
+    if (summaryTurns.length && !progressive) await Promise.all([hydration, latestFull]);
+    const fullTurn = await latestFull;
     const cachedUsers = this.userMessages.get(threadId);
-    const turns = summaryTurns.map((turn) => mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id)));
+    const turns = summaryTurns.map((turn) => (
+      turn.id === fullTurn?.id
+        ? mergeCodexFullTurn(turn, fullTurn, cachedUsers?.get(turn.id))
+        : mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id))
+    ));
     return {
       ...result,
       thread: {
@@ -276,6 +303,24 @@ export class CodexAgentBackend extends EventEmitter {
     });
     this.userMessageLoads.set(threadId, load);
     return load;
+  }
+
+  async #readLatestFullTurn(threadId, expectedTurnId) {
+    try {
+      const page = await this.appServer.request('thread/turns/list', {
+        threadId,
+        limit: 1,
+        sortDirection: 'desc',
+        itemsView: 'full',
+      });
+      const turn = (Array.isArray(page?.data) ? page.data : [])
+        .find((candidate) => candidate?.id === expectedTurnId);
+      if (turn) this.#cacheTurnUsers(threadId, turn, { replace: true });
+      return turn || null;
+    } catch {
+      // The full active-turn view supplements the lightweight transcript.
+      return null;
+    }
   }
 
   #observeNotification(message) {
