@@ -112,14 +112,18 @@ function sessionMessageReceiptResolved(thread, receipt) {
   if (receipt.baselineVersion !== 2) return false;
   const users = sessionUserMessageEntries(thread);
   let candidates;
+  // thread 流只推尾部窗口时, 锚点可能已经滚出窗口。那意味着此后又发生了整整一个
+  // 窗口的对话 —— 这条消息要么早就送达, 要么早已无从补救; 继续判为"未送达"只会
+  // 让那条乐观回显永远挂着, 表现为一条重复的待发消息。
+  const outOfWindow = Boolean(thread?.truncated);
   if (receipt.baselineUserMessageId) {
     const anchorIndex = users.findIndex(({ item }) => item.id === receipt.baselineUserMessageId);
-    if (anchorIndex < 0) return false;
+    if (anchorIndex < 0) return outOfWindow;
     candidates = users.slice(anchorIndex + 1);
   } else if (receipt.baselineTurnId) {
     const turnIndex = (Array.isArray(thread?.turns) ? thread.turns : [])
       .findIndex((turn) => turn.id === receipt.baselineTurnId);
-    if (turnIndex < 0) return false;
+    if (turnIndex < 0) return outOfWindow;
     candidates = users.filter((entry) => entry.turnIndex > turnIndex);
   } else {
     candidates = users;
@@ -939,3 +943,5 @@ export class AgentHub {
     }
   }
 }
+
+export const resolvedForTest = sessionMessageReceiptResolved;

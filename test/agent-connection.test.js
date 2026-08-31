@@ -938,3 +938,24 @@ test('openThread carries the pane excerpt so opening a session is never blank', 
   const quiet = socket.sent.find((message) => message.id === 2);
   assert.equal(quiet.result.thread.liveOutput, undefined);
 });
+
+test('a delivery receipt whose anchor scrolled out of the window is treated as delivered', async () => {
+  // 回执靠 baselineUserMessageId 在 transcript 里定位锚点。thread 流只推尾部
+  // 窗口后, 老锚点会落在窗口外; 原逻辑 return false (未送达) 会让那条乐观回显
+  // 永远挂着, 表现为一条重复的待发消息。
+  const { resolvedForTest } = await import('../src/agent-connection.js');
+  const receipt = {
+    baselineVersion: 2, baselineUserMessageId: 'u-old', baselineTurnId: null,
+    baselineMatchingTextCount: 0, text: '在吗',
+  };
+  const windowed = { truncated: true, turns: [
+    { id: 't9', items: [{ id: 'x', type: 'agentMessage', text: '最近' }] },
+  ] };
+  const full = { turns: [
+    { id: 't1', items: [{ id: 'u-old', type: 'userMessage', content: [{ type: 'text', text: '更早' }] }] },
+    { id: 't9', items: [{ id: 'x', type: 'agentMessage', text: '最近' }] },
+  ] };
+
+  assert.equal(resolvedForTest(windowed, receipt), true, '窗口外的锚点视为已送达');
+  assert.equal(resolvedForTest(full, receipt), false, '锚点在窗口内且没有匹配消息 → 仍未送达');
+});

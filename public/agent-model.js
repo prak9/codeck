@@ -205,7 +205,15 @@ function renderedThreadMetadata(thread) {
 
 export function reconcileAgentThreadRefresh(current, refreshed) {
   if (!current) return refreshed;
-  const currentTurns = asArray(current.turns);
+  const allCurrentTurns = asArray(current.turns);
+  // 流只推尾部窗口时 (refreshed.truncated), 窗口之前的历史不在这一帧里 —— 它们
+  // 是已有的, 不是被删的。不保留就等于每秒把用户往回翻的历史清一次。
+  // 没有该标记时保持原语义: 服务端没给的 turn 就是被删了。
+  const windowStart = refreshed?.truncated
+    ? allCurrentTurns.findIndex((turn) => turn.id === asArray(refreshed.turns)[0]?.id)
+    : -1;
+  const retained = windowStart > 0 ? allCurrentTurns.slice(0, windowStart) : [];
+  const currentTurns = retained.length ? allCurrentTurns.slice(windowStart) : allCurrentTurns;
   const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
   const resolvedDeliveries = resolvedDeliveryIds(current, refreshed);
   const refreshedItemIds = new Set(asArray(refreshed.turns).flatMap((turn) => (
@@ -232,7 +240,7 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   if (sameTurns && renderedThreadMetadata(current) === renderedThreadMetadata(refreshed)) return current;
   return {
     ...refreshed,
-    turns,
+    turns: retained.length ? [...retained, ...turns] : turns,
     ...(current?.tmux ? { tmux: { ...current.tmux } } : {}),
   };
 }

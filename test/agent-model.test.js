@@ -803,3 +803,43 @@ test('a thread that already has live output from its own stream is not re-polled
   assert.equal(shouldRefreshTmuxThread(thread, { now: 10_000, refreshUntil: 0 }), false,
     'the thread stream already supplies it: do not poll on top of it');
 });
+
+test('a windowed refresh keeps the history that falls outside the window', () => {
+  // thread 流只推尾部窗口以省下序列化与传输; 但 reconcile 是拿 refreshed.turns
+  // 整个重建 turns 的, 不保留就等于每秒把用户往回翻的历史删掉一次。
+  const current = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [
+      { id: 'old-1', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: '很早以前' }] },
+      { id: 'old-2', status: 'completed', items: [{ id: 'b', type: 'agentMessage', text: '稍早' }] },
+      { id: 'recent', status: 'completed', items: [{ id: 'c', type: 'agentMessage', text: '最近' }] },
+    ],
+  });
+  const windowed = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    truncated: true,
+    turns: [{ id: 'recent', status: 'completed', items: [{ id: 'c', type: 'agentMessage', text: '最近+更新' }] }],
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, windowed);
+
+  assert.deepEqual(reconciled.turns.map((turn) => turn.id), ['old-1', 'old-2', 'recent']);
+  assert.equal(reconciled.turns[2].items[0].text, '最近+更新');
+});
+
+test('a full refresh still replaces the whole transcript', () => {
+  // 没有 truncated 标记时必须保持原语义: 服务端说没有的 turn 就是被删了。
+  const current = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [
+      { id: 'gone', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: '删掉' }] },
+      { id: 'kept', status: 'completed', items: [{ id: 'b', type: 'agentMessage', text: '留着' }] },
+    ],
+  });
+  const refreshed = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [{ id: 'kept', status: 'completed', items: [{ id: 'b', type: 'agentMessage', text: '留着' }] }],
+  });
+
+  assert.deepEqual(reconcileAgentThreadRefresh(current, refreshed).turns.map((t) => t.id), ['kept']);
+});
