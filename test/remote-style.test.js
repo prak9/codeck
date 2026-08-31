@@ -220,6 +220,15 @@ test('remote sends stable command ids and preserves an uncertain draft for safe 
   assert.match(remoteJs, /发送状态未知/);
 });
 
+test('an accepted tmux message is echoed before an Agent turn exists', () => {
+  assert.match(remoteJs, /if \(stillActive\) \{[\s\S]{0,180}state\.thread = applyAcceptedUserMessage/);
+  assert.doesNotMatch(remoteJs, /if \(delivery\.turnId\) \{\s*state\.thread = applyAcceptedUserMessage/s);
+  assert.match(remoteJs, /baselineUserCount:\s*threadUserMessageCount\(state\.thread\)/);
+  assert.match(remoteJs, /baselineUserCount:\s*delivery\.baselineUserCount/);
+  assert.match(remoteJs, /targetProvider !== 'shell' && !message\.trimStart\(\)\.startsWith\('\/'\)/);
+  assert.match(remoteJs, /if \(!turn\.deliveryOnly\)/);
+});
+
 test('a completed tmux turn waits for the authoritative session status', () => {
   assert.doesNotMatch(
     remoteJs,

@@ -31,6 +31,9 @@ export function prepareDeliveryAttempt(current, input, {
     expiresAt: now() + receiptTtlMs,
     mode: input.mode === 'steer' ? 'steer' : 'followUp',
     turnId: input.turnId || null,
+    baselineUserCount: Number.isSafeInteger(input.baselineUserCount) && input.baselineUserCount >= 0
+      ? input.baselineUserCount
+      : null,
   };
 }
 

@@ -59,6 +59,49 @@ export function bindTerminalRenderWatchdog(terminal, {
   };
 }
 
+export function createTerminalRevealGate(onReveal, {
+  settleMs = 80,
+  maxWaitMs = 240,
+  schedule = setTimeout,
+  cancel = clearTimeout,
+} = {}) {
+  let settleTimer = null;
+  let maxWaitTimer = null;
+  let settleVersion = 0;
+  let finished = false;
+
+  const clearTimers = () => {
+    if (settleTimer !== null) cancel(settleTimer);
+    if (maxWaitTimer !== null) cancel(maxWaitTimer);
+    settleTimer = null;
+    maxWaitTimer = null;
+  };
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    settleVersion += 1;
+    clearTimers();
+    onReveal();
+  };
+  const parsed = () => {
+    if (finished) return;
+    const version = ++settleVersion;
+    if (settleTimer !== null) cancel(settleTimer);
+    settleTimer = schedule(() => {
+      if (version === settleVersion) finish();
+    }, settleMs);
+    if (maxWaitTimer === null) maxWaitTimer = schedule(finish, maxWaitMs);
+  };
+  const dispose = () => {
+    if (finished) return;
+    finished = true;
+    settleVersion += 1;
+    clearTimers();
+  };
+
+  return { parsed, cancel: dispose };
+}
+
 export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {
   terminal.options.fontSize = baseFontSize;
   fit.fit();
@@ -92,7 +135,11 @@ export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = nu
 }
 
 // xterm's synchronous reset() leaves already queued writes alive. An in-band RIS is
-// parsed after those writes, so the next connection starts from a clean terminal state.
+// parsed after those writes, then clear() drops the previous session's scrollback before
+// the next queued terminal frame is parsed.
 export function resetTerminalInput(terminal) {
-  return new Promise((resolve) => terminal.write('\x1bc', resolve));
+  return new Promise((resolve) => terminal.write('\x1bc', () => {
+    terminal.clear();
+    resolve();
+  }));
 }

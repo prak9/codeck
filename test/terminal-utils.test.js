@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   bindTerminalRenderWatchdog,
   clampTerminalGrid,
+  createTerminalRevealGate,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
@@ -40,11 +41,13 @@ test('terminal grid uses the same usable floor in the browser and server', () =>
 test('terminal reset is ordered inside the xterm input queue', async () => {
   let finishWrite;
   const writes = [];
+  let clears = 0;
   const terminal = {
     write(data, callback) {
       writes.push(data);
       finishWrite = callback;
     },
+    clear() { clears += 1; },
   };
 
   let finished = false;
@@ -52,10 +55,54 @@ test('terminal reset is ordered inside the xterm input queue', async () => {
   await Promise.resolve();
   assert.deepEqual(writes, ['\x1bc']);
   assert.equal(finished, false, 'the reset waits behind already queued output');
+  assert.equal(clears, 0);
 
   finishWrite();
   await reset;
   assert.equal(finished, true);
+  assert.equal(clears, 1, 'old scrollback is cleared before the reset completes');
+});
+
+test('terminal reveal waits for a quiet parsed frame without delaying terminal writes', () => {
+  const scheduled = [];
+  let reveals = 0;
+  const schedule = (callback, delay) => {
+    const task = { callback, delay, cancelled: false };
+    scheduled.push(task);
+    return task;
+  };
+  const cancel = (task) => { task.cancelled = true; };
+  const gate = createTerminalRevealGate(() => { reveals += 1; }, { schedule, cancel });
+
+  gate.parsed();
+  gate.parsed();
+  const [staleSettle, maxWait, latestSettle] = scheduled;
+  assert.equal(staleSettle.delay, 80);
+  assert.equal(staleSettle.cancelled, true);
+  assert.equal(maxWait.delay, 240);
+  assert.equal(latestSettle.delay, 80);
+
+  staleSettle.callback();
+  assert.equal(reveals, 0, 'a superseded frame cannot reveal a partial screen');
+  latestSettle.callback();
+  assert.equal(reveals, 1);
+  assert.equal(maxWait.cancelled, true);
+  maxWait.callback();
+  assert.equal(reveals, 1, 'the maximum wait cannot reveal the same screen twice');
+
+  const cancelledTasks = [];
+  const cancelledGate = createTerminalRevealGate(() => { reveals += 1; }, {
+    schedule(callback) {
+      const task = { callback, cancelled: false };
+      cancelledTasks.push(task);
+      return task;
+    },
+    cancel(task) { task.cancelled = true; },
+  });
+  cancelledGate.parsed();
+  cancelledGate.cancel();
+  cancelledTasks.forEach((task) => task.callback());
+  assert.equal(reveals, 1, 'a superseded session cannot reveal after cancellation');
 });
 
 test('terminal render watchdog redraws parsed output only when xterm misses a render', () => {

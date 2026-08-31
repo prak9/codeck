@@ -33,7 +33,6 @@ function fakeTerminal() {
 
 function dependencies(overrides = {}) {
   return {
-    terminalOutputSettleMs: 0,
     getSessionSize: async () => ({ width: 80, height: 24 }),
     getLinkedWindowSessions: async () => [],
     preferLatestClientSize: async () => true,
@@ -186,22 +185,11 @@ test('an owner can switch the attached tmux session without replacing the socket
   assert.deepEqual(ws.closes, []);
 });
 
-test('a session switch settles the initial tmux redraw into one terminal frame', async () => {
+test('a session switch forwards terminal protocol queries without delay', async () => {
   const ws = new FakeSocket();
   const created = [];
-  const timers = [];
-  const setTerminalOutputTimeout = (callback, delay) => {
-    const timer = { callback, delay, cancelled: false };
-    timers.push(timer);
-    return timer;
-  };
-  const clearTerminalOutputTimeout = (timer) => { timer.cancelled = true; };
   await handleTerminalConnection(ws, 'first', { width: 80, height: 24 }, dependencies({
     canSwitchSession: true,
-    terminalOutputSettleMs: 60,
-    terminalOutputMaxWaitMs: 240,
-    setTerminalOutputTimeout,
-    clearTerminalOutputTimeout,
     createTerminal: (session) => {
       const terminal = fakeTerminal();
       created.push({ session, terminal });
@@ -213,17 +201,9 @@ test('a session switch settles the initial tmux redraw into one terminal frame',
     type: 'switch', session: 'second', cols: 120, rows: 36,
   })), false);
   await new Promise((resolve) => setImmediate(resolve));
-  created[1].terminal.dataCallback('first redraw');
-  created[1].terminal.dataCallback(' + final redraw');
+  created[1].terminal.dataCallback('\x1b[>c');
 
-  assert.deepEqual(ws.sent, []);
-  const settleTimer = timers.findLast((timer) => timer.delay === 60 && !timer.cancelled);
-  assert.ok(settleTimer, 'the latest redraw schedules a quiet-period flush');
-  settleTimer.callback();
-  assert.deepEqual(ws.sent, ['\x1bcfirst redraw + final redraw']);
-
-  created[1].terminal.dataCallback('live output');
-  assert.deepEqual(ws.sent, ['\x1bcfirst redraw + final redraw', 'live output']);
+  assert.deepEqual(ws.sent, ['\x1bc', '\x1b[>c']);
 });
 
 test('a rapid owner switch discards pending input and setup from the superseded session', async () => {

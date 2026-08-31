@@ -96,11 +96,12 @@ test('a configured owner token is never written to process logs', () => {
 });
 
 test('the shared terminal UI enables terminal input without exposing owner actions', () => {
-  assert.match(appSource, /state\.terminal\.options\.disableStdin = !state\.canWrite/);
+  assert.match(appSource, /const writable = state\.canWrite && state\.terminalInputReady/);
+  assert.match(appSource, /state\.terminal\.options\.disableStdin = !writable/);
   assert.match(appSource, /data-terminal-action="paste"/);
-  assert.match(appSource, /control\.disabled = !state\.canWrite/);
+  assert.match(appSource, /control\.disabled = !writable/);
   assert.match(appSource, /if \(!state\.canWrite\) return false;/);
-  assert.match(appSource, /state\.canWrite && state\.socket\?\.readyState === WebSocket\.OPEN/);
+  assert.match(appSource, /state\.canWrite && state\.terminalInputReady && state\.socket\?\.readyState === WebSocket\.OPEN/);
   assert.match(appSource, /state\.canWrite \? '已连接（共享协作）' : '已连接（只读）'/);
   assert.match(appSource, /state\.canWrite \? '协作链接暂不支持上传图片' : '当前分享链接为只读'/);
   assert.match(appSource, /state\.canWrite \? '协作链接暂不支持上传文件' : '当前分享链接为只读'/);

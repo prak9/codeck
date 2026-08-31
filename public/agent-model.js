@@ -9,6 +9,7 @@ function copyItem(item) {
     content: Array.isArray(item.content) ? item.content.map((part) => ({ ...part })) : item.content,
     changes: Array.isArray(item.changes) ? item.changes.map((change) => ({ ...change })) : item.changes,
     arguments: item.arguments && typeof item.arguments === 'object' ? { ...item.arguments } : item.arguments,
+    delivery: item.delivery && typeof item.delivery === 'object' ? { ...item.delivery } : item.delivery,
   };
 }
 
@@ -21,22 +22,47 @@ function copyTurn(turn) {
   };
 }
 
-function mergeTurnUserMessages(current, incoming) {
-  const currentUsers = asArray(current?.items).filter((item) => item?.type === 'userMessage');
+function threadUserMessages(thread) {
+  return asArray(thread?.turns).flatMap((turn) => (
+    asArray(turn?.items).filter((item) => item?.type === 'userMessage')
+  ));
+}
+
+export function threadUserMessageCount(thread) {
+  return threadUserMessages(thread).length;
+}
+
+function resolvedDeliveryIds(current, refreshed) {
+  const incomingUsers = threadUserMessages(refreshed).filter((item) => !item.delivery);
+  const used = new Set();
+  const resolved = new Set();
+  for (const delivery of threadUserMessages(current).filter((item) => item.delivery)) {
+    const baseline = delivery.delivery?.baselineUserCount;
+    if (!Number.isSafeInteger(baseline) || baseline < 0) continue;
+    const index = incomingUsers.findIndex((item, candidateIndex) => (
+      candidateIndex >= baseline
+      && !used.has(candidateIndex)
+      && userMessageText(item) === userMessageText(delivery)
+    ));
+    if (index < 0) continue;
+    used.add(index);
+    resolved.add(delivery.id);
+  }
+  return resolved;
+}
+
+function mergeTurnUserMessages(current, incoming, resolvedDeliveries = new Set()) {
+  const currentUsers = asArray(current?.items).filter((item) => (
+    item?.type === 'userMessage' && !resolvedDeliveries.has(item.id)
+  ));
   if (!currentUsers.length) return incoming;
   const incomingItems = asArray(incoming?.items);
   const incomingUsers = incomingItems.filter((item) => item?.type === 'userMessage');
   const used = new Set();
   const users = currentUsers.map((currentItem) => {
-    let index = incomingUsers.findIndex((item, candidateIndex) => (
+    const index = incomingUsers.findIndex((item, candidateIndex) => (
       !used.has(candidateIndex) && currentItem.id && item.id === currentItem.id
     ));
-    if (index < 0 && currentItem.delivery) {
-      const text = userMessageText(currentItem);
-      index = incomingUsers.findIndex((item, candidateIndex) => (
-        !used.has(candidateIndex) && userMessageText(item) === text
-      ));
-    }
     if (index < 0) return currentItem;
     used.add(index);
     return incomingUsers[index];
@@ -48,6 +74,18 @@ function mergeTurnUserMessages(current, incoming) {
     ...incoming,
     items: [...users, ...incomingItems.filter((item) => item?.type !== 'userMessage')],
   };
+}
+
+function removeUserMessage(thread, itemId) {
+  let changed = false;
+  const turns = asArray(thread?.turns).flatMap((turn) => {
+    const items = asArray(turn.items).filter((item) => item.id !== itemId);
+    if (items.length === asArray(turn.items).length) return [turn];
+    changed = true;
+    if (turn.deliveryOnly && !items.length) return [];
+    return [{ ...turn, items }];
+  });
+  return changed ? { ...thread, turns } : thread;
 }
 
 export function tmuxSessionsToThreads(sessions) {
@@ -126,12 +164,21 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   if (!current) return refreshed;
   const currentTurns = asArray(current.turns);
   const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
-  const turns = asArray(refreshed.turns).map((turn) => {
+  const resolvedDeliveries = resolvedDeliveryIds(current, refreshed);
+  const refreshedTurnIds = new Set(asArray(refreshed.turns).map((turn) => turn.id));
+  const turns = asArray(refreshed.turns).flatMap((turn) => {
     const existing = currentById.get(turn.id);
-    if (!existing) return turn;
-    const merged = mergeTurnUserMessages(existing, turn);
-    return JSON.stringify(existing) === JSON.stringify(merged) ? existing : merged;
+    if (!existing) return [turn];
+    const merged = mergeTurnUserMessages(existing, turn, resolvedDeliveries);
+    if (merged.deliveryOnly && !asArray(merged.items).length) return [];
+    return [JSON.stringify(existing) === JSON.stringify(merged) ? existing : merged];
   });
+  for (const turn of currentTurns) {
+    if (!turn.deliveryOnly || refreshedTurnIds.has(turn.id)) continue;
+    const items = asArray(turn.items).filter((item) => !resolvedDeliveries.has(item.id));
+    if (!items.length) continue;
+    turns.push(items.length === asArray(turn.items).length ? turn : { ...turn, items });
+  }
   const sameTurns = turns.length === currentTurns.length
     && turns.every((turn, index) => turn === currentTurns[index]);
   if (sameTurns && renderedThreadMetadata(current) === renderedThreadMetadata(refreshed)) return current;
@@ -193,7 +240,17 @@ export function applyAgentEvent(currentThread, method, params = {}) {
   }
   if (method === 'item/started' || method === 'item/completed') {
     const item = copyItem(params.item);
-    return updateTurn(currentThread, params.turnId, (turn) => {
+    let thread = currentThread;
+    const targetTurn = asArray(thread.turns).find((turn) => turn.id === params.turnId);
+    if (item.type === 'userMessage'
+      && !asArray(targetTurn?.items).some((candidate) => candidate.id === item.id)) {
+      const text = userMessageText(item);
+      const delivery = text && threadUserMessages(thread).find((candidate) => (
+        candidate.delivery && userMessageText(candidate) === text
+      ));
+      if (delivery) thread = removeUserMessage(thread, delivery.id);
+    }
+    return updateTurn(thread, params.turnId, (turn) => {
       const items = asArray(turn.items);
       let index = items.findIndex((candidate) => candidate.id === item.id);
       if (index < 0 && item.type === 'userMessage') {
@@ -253,22 +310,32 @@ export function applyAgentEvent(currentThread, method, params = {}) {
 }
 
 export function applyAcceptedUserMessage(currentThread, {
-  turnId, text, commandId,
+  turnId, text, commandId, baselineUserCount,
 } = {}) {
-  if (!currentThread || !turnId || !commandId || typeof text !== 'string' || !text.trim()) {
+  if (!currentThread || !commandId || typeof text !== 'string' || !text.trim()) {
     return currentThread;
   }
-  return updateTurn(currentThread, turnId, (turn) => {
-    const id = `delivery:${commandId}`;
+  const id = `delivery:${commandId}`;
+  const currentUsers = threadUserMessages(currentThread);
+  if (currentUsers.some((item) => item.id === id)) return currentThread;
+  const baseline = Number.isSafeInteger(baselineUserCount) && baselineUserCount >= 0
+    ? baselineUserCount
+    : currentUsers.length;
+  const actualUsers = currentUsers.filter((item) => !item.delivery);
+  if (actualUsers.some((item, index) => (
+    index >= baseline && userMessageText(item) === text
+  ))) return currentThread;
+  const targetTurnId = turnId || `delivery-turn:${commandId}`;
+  return updateTurn(currentThread, targetTurnId, (turn) => {
     const items = asArray(turn.items);
-    if (items.some((item) => item.id === id)) return turn;
     return {
       ...turn,
+      ...(!turnId ? { status: 'completed', deliveryOnly: true } : {}),
       items: [...items, {
         id,
         type: 'userMessage',
         content: [{ type: 'text', text }],
-        delivery: { status: 'accepted' },
+        delivery: { status: 'accepted', baselineUserCount: baseline },
       }],
     };
   });

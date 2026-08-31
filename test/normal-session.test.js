@@ -37,8 +37,22 @@ test('normal mode reuses an open owner socket when switching sessions', () => {
   assert.match(connect, /const reuseSocket = state\.canSwitchSession && state\.socket\?\.readyState === WebSocket\.OPEN;/);
   assert.match(connect, /type: 'switch', session, cols: terminal\.cols, rows: terminal\.rows/);
   assert.match(connect, /if \(!reuseSocket\) state\.socket\?\.close\(\);/);
-  assert.match(connect, /terminalElement\.style\.visibility = needsReset \? 'hidden' : '';/);
-  assert.match(connect, /if \(output\) terminal\.write\(output, finishSwitch\);/);
+  assert.match(connect, /terminalElement\.style\.visibility = 'hidden';/);
+  assert.match(connect, /createTerminalRevealGate/);
+  assert.match(connect, /terminal\.write\(output, \(\) => \{/);
+  assert.doesNotMatch(connect, /pendingOutput|waitingForSwitch|outputReady/);
+});
+
+test('normal mode drops stale terminal frames until the switched session reset boundary', () => {
+  const start = appJs.indexOf('async function connect(session)');
+  const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
+  const connect = appJs.slice(start, end);
+
+  assert.match(appJs, /terminalInputReady:\s*false/);
+  assert.match(appJs, /state\.canWrite && state\.terminalInputReady && state\.socket\?\.readyState === WebSocket\.OPEN/);
+  assert.match(connect, /let awaitingSwitchReset = reuseSocket;/);
+  assert.match(connect, /if \(awaitingSwitchReset\) \{[\s\S]*?event\.data !== '\\x1bc'[\s\S]*?switchResetFrame = true;/);
+  assert.match(connect, /terminal\.write\(output, \(\) => \{[\s\S]*?if \(switchResetFrame\) \{[\s\S]*?state\.terminalInputReady = true;/);
 });
 
 test('normal mode shares the sequenced owner session feed with remote mode', () => {
@@ -51,8 +65,8 @@ test('normal mode shares the sequenced owner session feed with remote mode', () 
 
 test('normal mode suppresses Codex shared-daemon background counts', () => {
   assert.match(appJs, /hideSharedCodexBackgroundFooter/);
-  assert.match(appJs, /terminal\.write\(terminalOutputForSession\(event\.data, session\)\)/);
-  assert.match(appJs, /terminal\.write\(terminalOutputForSession\(pendingOutput\.join\(''\), session\)\)/);
+  assert.match(appJs, /const output = terminalOutputForSession\(event\.data, session\);/);
+  assert.match(appJs, /terminal\.write\(output, \(\) => \{/);
 });
 
 test('normal terminal output does not wait for input focus to repaint', () => {

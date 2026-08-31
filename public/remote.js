@@ -11,13 +11,14 @@ import {
   reconcileAgentThreadRefresh,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
+  threadUserMessageCount,
   tmuxSessionsToThreads,
   userMessageText,
-} from './agent-model.js?v=26';
+} from './agent-model.js?v=27';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
-import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=1';
+import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=2';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
@@ -1429,13 +1430,15 @@ function renderTurn(turn) {
   if (output && turn.status !== 'inProgress' && turn.status !== 'running') {
     section.append(agentOutputActions(output));
   }
-  const foot = element('div', 'turn-foot');
-  if (turn.status === 'inProgress') foot.append(element('span', 'spinner'), element('span', 'working', '正在处理'));
-  else {
-    const duration = Number.isFinite(turn.durationMs) ? ` · ${Math.max(.1, turn.durationMs / 1000).toFixed(1)} 秒` : '';
-    foot.textContent = `${statusText(turn.status)}${duration}`;
+  if (!turn.deliveryOnly) {
+    const foot = element('div', 'turn-foot');
+    if (turn.status === 'inProgress') foot.append(element('span', 'spinner'), element('span', 'working', '正在处理'));
+    else {
+      const duration = Number.isFinite(turn.durationMs) ? ` · ${Math.max(.1, turn.durationMs / 1000).toFixed(1)} 秒` : '';
+      foot.textContent = `${statusText(turn.status)}${duration}`;
+    }
+    section.append(foot);
   }
-  section.append(foot);
   return section;
 }
 
@@ -1944,6 +1947,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
         attachmentIds: attachments.map((attachment) => attachment.id),
         mode: running ? 'steer' : 'followUp',
         turnId: running?.id || null,
+        baselineUserCount: threadUserMessageCount(state.thread),
       };
       deliveryKey = deliveryAttemptKey(deliveryInput);
       delivery = prepareDeliveryAttempt(state.pendingDeliveries.get(deliveryKey), deliveryInput, {
@@ -1985,11 +1989,13 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           && state.thread?.id === targetThreadId
           && state.thread?.tmux?.name === sessionName;
         if (stillActive) {
-          if (delivery.turnId) {
+          if (targetProvider !== 'shell' && !message.trimStart().startsWith('/')
+            && (!result?.terminalOutput || result.terminalWorking)) {
             state.thread = applyAcceptedUserMessage(state.thread, {
               turnId: delivery.turnId,
               text: message,
               commandId: delivery.commandId,
+              baselineUserCount: delivery.baselineUserCount,
             });
           }
           delete state.thread.tmux.commandOutput;

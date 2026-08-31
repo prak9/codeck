@@ -437,6 +437,137 @@ test('an accepted direct-tmux follow-up appears immediately in its active turn',
   assert.equal(updated.turns[0].items[1].id, 'delivery:command-12345678');
 });
 
+test('an accepted tmux message without a running turn survives stale snapshots', () => {
+  const current = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-old', status: 'completed',
+      items: [{
+        id: 'user-old', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+      }],
+    }],
+  });
+  const accepted = applyAcceptedUserMessage(current, {
+    text: '怎么样了', commandId: 'command-12345678',
+  });
+
+  assert.equal(accepted.turns.length, 2);
+  assert.equal(accepted.turns[1].deliveryOnly, true);
+  assert.equal(userMessageText(accepted.turns[1].items[0]), '怎么样了');
+
+  const stale = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: current.turns,
+  });
+  const preserved = reconcileAgentThreadRefresh(accepted, stale);
+  assert.equal(preserved.turns.length, 2, 'an older snapshot cannot erase the accepted bubble');
+
+  const actual = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [...current.turns, {
+      id: 'turn-new', status: 'completed',
+      items: [{
+        id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+      }],
+    }],
+  });
+  const reconciled = reconcileAgentThreadRefresh(preserved, actual);
+  const users = reconciled.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.type === 'userMessage');
+  assert.deepEqual(users.map((item) => item.id), ['user-old', 'user-new']);
+  assert.equal(reconciled.turns.some((turn) => turn.deliveryOnly), false);
+});
+
+test('repeated accepted messages reconcile one at a time in transcript order', () => {
+  const empty = normalizeAgentThread('codex', { id: 'thread-1', turns: [] });
+  const first = applyAcceptedUserMessage(empty, {
+    text: '怎么样了', commandId: 'command-first',
+  });
+  const second = applyAcceptedUserMessage(first, {
+    text: '怎么样了', commandId: 'command-second',
+  });
+  const oneActual = reconcileAgentThreadRefresh(second, normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'completed',
+      items: [{
+        id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+      }],
+    }],
+  }));
+
+  assert.deepEqual(oneActual.turns.flatMap((turn) => turn.items).map((item) => item.id), [
+    'user-1', 'delivery:command-second',
+  ]);
+
+  const bothActual = reconcileAgentThreadRefresh(oneActual, normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      {
+        id: 'turn-1', status: 'completed',
+        items: [{
+          id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+        }],
+      },
+      {
+        id: 'turn-2', status: 'completed',
+        items: [{
+          id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+        }],
+      },
+    ],
+  }));
+
+  assert.deepEqual(bothActual.turns.flatMap((turn) => turn.items).map((item) => item.id), [
+    'user-1', 'user-2',
+  ]);
+  assert.equal(bothActual.turns.some((turn) => turn.deliveryOnly), false);
+});
+
+test('a live user item replaces its matching no-turn delivery without a duplicate flash', () => {
+  const current = applyAcceptedUserMessage(normalizeAgentThread('codex', {
+    id: 'thread-1', turns: [],
+  }), {
+    text: '怎么样了', commandId: 'command-12345678',
+  });
+  const updated = applyAgentEvent(current, 'item/started', {
+    threadId: 'thread-1',
+    turnId: 'turn-new',
+    item: {
+      id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+    },
+  });
+
+  assert.equal(updated.turns.some((turn) => turn.deliveryOnly), false);
+  assert.deepEqual(updated.turns.flatMap((turn) => turn.items).map((item) => item.id), ['user-new']);
+});
+
+test('an Agent update that wins the send-response race prevents a duplicate accepted bubble', () => {
+  const actual = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      {
+        id: 'turn-old', status: 'completed',
+        items: [{
+          id: 'user-old', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+        }],
+      },
+      {
+        id: 'turn-new', status: 'inProgress',
+        items: [{
+          id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+        }],
+      },
+    ],
+  });
+
+  const updated = applyAcceptedUserMessage(actual, {
+    text: '怎么样了', commandId: 'command-12345678', baselineUserCount: 1,
+  });
+
+  assert.equal(updated, actual);
+});
+
 test('adds provider-neutral user and command content safely', () => {
   let thread = normalizeAgentThread('claude', { id: 'thread-1', turns: [] });
   thread = applyAgentEvent(thread, 'item/started', {

@@ -1,10 +1,11 @@
 import { bindMobileScroll } from './mobile-scroll.js';
 import {
   bindTerminalRenderWatchdog,
+  createTerminalRevealGate,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=7';
+} from './terminal-utils.js?v=8';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
 import { acceptStreamCursor } from './stream-state.js?v=1';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
@@ -74,6 +75,8 @@ const state = {
   connectionId: 0,
   terminalDropDepth: 0,
   cancelMobileScroll: null,
+  cancelTerminalReveal: null,
+  terminalInputReady: false,
   // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
   // legible size and actually resizes the tmux window to the viewport instead of cramming
   // the desktop pane's full grid onto a phone screen. Bookmarking a link with this plus
@@ -140,7 +143,8 @@ function resizeTerminalVoiceDraft() {
 }
 
 function syncTerminalVoiceControls() {
-  const connected = state.canWrite && state.socket?.readyState === WebSocket.OPEN;
+  const connected = state.canWrite && state.terminalInputReady
+    && state.socket?.readyState === WebSocket.OPEN;
   const composerOpen = !$('#terminalVoiceComposer').hidden;
   for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
     trigger.hidden = !state.canWrite || composerOpen;
@@ -674,9 +678,10 @@ function connectedStateLabel() {
 }
 
 function syncTerminalAccess() {
-  if (state.terminal) state.terminal.options.disableStdin = !state.canWrite;
+  const writable = state.canWrite && state.terminalInputReady;
+  if (state.terminal) state.terminal.options.disableStdin = !writable;
   for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
-    control.disabled = !state.canWrite;
+    control.disabled = !writable;
   }
   syncTerminalVoiceControls();
 }
@@ -884,7 +889,7 @@ function ensureTerminal() {
     return !handleQuickSwitchKeydown(event);
   });
   terminal.onData((data) => {
-    if (state.canWrite && state.socket?.readyState === WebSocket.OPEN) {
+    if (state.canWrite && state.terminalInputReady && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -948,7 +953,7 @@ async function connect(session) {
   if (state.active === session && state.socket && state.socket.readyState <= WebSocket.OPEN) {
     $('#sidebar').classList.remove('open');
     $('#menuButton').setAttribute('aria-expanded', 'false');
-    if (state.socket.readyState === WebSocket.OPEN) state.terminal?.focus();
+    if (state.socket.readyState === WebSocket.OPEN && state.terminalInputReady) state.terminal?.focus();
     return;
   }
   closeTerminalVoiceComposer({ restoreFocus: false });
@@ -957,6 +962,9 @@ async function connect(session) {
   const needsReset = Boolean(state.terminal);
   const reuseSocket = state.canSwitchSession && state.socket?.readyState === WebSocket.OPEN;
   const currentSocket = state.socket;
+  state.cancelTerminalReveal?.();
+  state.cancelTerminalReveal = null;
+  state.terminalInputReady = false;
   state.cancelMobileScroll?.();
   stopKeyRepeat();
   if (!reuseSocket) state.socket?.close();
@@ -973,7 +981,7 @@ async function connect(session) {
 
   const terminal = ensureTerminal();
   const terminalElement = $('#terminal');
-  terminalElement.style.visibility = needsReset ? 'hidden' : '';
+  terminalElement.style.visibility = 'hidden';
   const reset = needsReset && !reuseSocket ? resetTerminalInput(terminal) : Promise.resolve();
   fitTerminalView({ suppressResize: reuseSocket });
 
@@ -985,49 +993,62 @@ async function connect(session) {
   const socket = reuseSocket
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
-  const pendingOutput = [];
-  let outputReady = !needsReset;
-  let waitingForSwitch = reuseSocket;
+  let displayReady = false;
+  let awaitingSwitchReset = reuseSocket;
   state.socket = socket;
   syncTerminalAccess();
   const markConnected = () => {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = connectedStateLabel();
     syncTerminalAccess();
-    if (outputReady) terminal.focus();
+    if (displayReady) terminal.focus();
   };
+  const revealGate = createTerminalRevealGate(() => {
+    if (state.connectionId !== connectionId || state.active !== session
+      || state.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    displayReady = true;
+    state.cancelTerminalReveal = null;
+    terminalElement.style.visibility = '';
+    markConnected();
+  });
+  state.cancelTerminalReveal = revealGate.cancel;
   socket.onopen = reuseSocket ? null : () => {
+    state.terminalInputReady = true;
     markConnected();
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
   };
   socket.onmessage = (event) => {
     if (state.connectionId !== connectionId) return;
-    if (waitingForSwitch) {
-      waitingForSwitch = false;
-      const output = terminalOutputForSession(event.data, session);
-      const finishSwitch = () => {
-        if (state.connectionId !== connectionId || state.active !== session || state.socket !== socket) return;
-        outputReady = true;
-        terminalElement.style.visibility = '';
-        if (pendingOutput.length) {
-          terminal.write(terminalOutputForSession(pendingOutput.splice(0).join(''), session));
-        }
-        markConnected();
-      };
-      if (output) terminal.write(output, finishSwitch);
-      else finishSwitch();
-      return;
+    let switchResetFrame = false;
+    if (awaitingSwitchReset) {
+      if (event.data !== '\x1bc') return;
+      awaitingSwitchReset = false;
+      switchResetFrame = true;
     }
-    if (outputReady) terminal.write(terminalOutputForSession(event.data, session));
-    else pendingOutput.push(event.data);
+    const output = terminalOutputForSession(event.data, session);
+    if (!output) return;
+    // Always parse terminal bytes immediately. Besides drawing, xterm answers capability
+    // queries through onData; only the element's reveal is delayed to avoid partial frames.
+    terminal.write(output, () => {
+      if (state.connectionId !== connectionId) return;
+      if (switchResetFrame) {
+        state.terminalInputReady = true;
+        syncTerminalAccess();
+        return;
+      }
+      if (output === '\x1bc') return;
+      revealGate.parsed();
+    });
   };
   socket.onclose = (event) => {
     if (state.connectionId !== connectionId) return;
+    state.terminalInputReady = false;
     $('#connectionState').textContent = event.reason || '连接已断开';
     syncTerminalAccess();
   };
   socket.onerror = () => {
     if (state.connectionId !== connectionId) return;
+    state.terminalInputReady = false;
     $('#connectionState').textContent = '连接失败';
     syncTerminalAccess();
   };
@@ -1045,11 +1066,6 @@ async function connect(session) {
 
   await reset;
   if (state.connectionId !== connectionId || state.active !== session || state.socket !== socket) return;
-  if (needsReset) terminal.clear();
-  outputReady = true;
-  terminalElement.style.visibility = '';
-  if (pendingOutput.length) terminal.write(terminalOutputForSession(pendingOutput.join(''), session));
-  if (socket.readyState === WebSocket.OPEN) terminal.focus();
 }
 
 function openNewDialog() {
@@ -1130,6 +1146,7 @@ function stopKeyRepeat() {
 
 function sendTerminalKey(name) {
   if (!state.canWrite) return false;
+  if (!state.terminalInputReady) return false;
   if (state.socket?.readyState !== WebSocket.OPEN) return false;
   state.socket.send(JSON.stringify({ type: 'input', data: TERMINAL_KEYS[name] }));
   return true;
