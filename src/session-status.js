@@ -13,7 +13,23 @@ export function sessionSnapshotRefreshInterval(snapshot) {
   return statuses.includes('background') ? 2_000 : 5_000;
 }
 
-export function threadSnapshotRefreshInterval(snapshot, tmuxStatus) {
+function timestampMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 10_000_000_000 ? value : value * 1000;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function threadSnapshotRefreshInterval(snapshot, tmuxStatus, now = Date.now()) {
   const structuredActive = snapshot?.thread?.status?.type === 'active';
-  return tmuxStatus === 'working' || structuredActive ? 1_000 : 10_000;
+  if (tmuxStatus === 'working' || structuredActive) return 1_000;
+  if (tmuxStatus === 'background') return 2_000;
+  const latestTurn = snapshot?.thread?.turns?.at(-1);
+  const updatedAt = timestampMs(snapshot?.thread?.updatedAt);
+  const updateAge = now - updatedAt;
+  const externalTurnMayStillFlush = (
+    latestTurn?.status === 'inProgress' || latestTurn?.status === 'interrupted'
+  ) && updateAge >= 0 && updateAge <= 15_000;
+  return externalTurnMayStillFlush ? 1_000 : 10_000;
 }

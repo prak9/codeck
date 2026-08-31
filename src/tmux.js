@@ -692,7 +692,7 @@ function loadTmuxBuffer(bufferName, text) {
   });
 }
 
-async function verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions) {
+async function verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions) {
   if (!validateClient(provider) || !validateSessionName(sessionName) || !THREAD_ID.test(threadId || '')) {
     throw new Error('会话信息无效，请刷新后重试');
   }
@@ -710,7 +710,7 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
     if (!PANE_ID.test(session.paneId || '')) {
       throw new Error('无法安全确认 Shell pane，请刷新后重试');
     }
-    return session.paneId;
+    return { paneId: session.paneId, session };
   }
 
   if (!AGENT_CLIENTS.has(provider)) throw new Error('会话信息无效，请刷新后重试');
@@ -721,7 +721,7 @@ async function verifiedSessionPane({ provider, sessionName, threadId }, listTmux
   if (!PANE_ID.test(session.agent.paneId || '')) {
     throw new Error('无法安全确认 Agent pane，请刷新后重试');
   }
-  return session.agent.paneId;
+  return { paneId: session.agent.paneId, session };
 }
 
 let inputBufferSequence = 0;
@@ -729,9 +729,33 @@ const sessionInputQueues = new Map();
 const PASTE_SUBMIT_DELAY_MS = 80;
 const LITERAL_AGENT_INPUT_MAX_BYTES = 64 * 1024;
 const SLASH_OUTPUT_DELAY_MS = 150;
+const QUEUED_INPUT_DELAY_MS = 60;
+const QUEUED_INPUT_CAPTURE_ATTEMPTS = 5;
 const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
 const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model']);
 const CODEX_MODEL_PICKER_TITLE = /(?:select model and effort|select reasoning level for .+|advanced reasoning)/iu;
+const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call/iu;
+const CODEX_QUEUED_INPUT_ACTION = /press esc to interrupt and send immediately/iu;
+
+function hasCodexQueuedInput(output) {
+  const text = screenLines(output).join(' ');
+  return CODEX_QUEUED_INPUT_NOTICE.test(text) && CODEX_QUEUED_INPUT_ACTION.test(text);
+}
+
+async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, waitForQueuedInput }) {
+  try {
+    for (let attempt = 0; attempt < QUEUED_INPUT_CAPTURE_ATTEMPTS; attempt += 1) {
+      await waitForQueuedInput();
+      const screen = await captureSessionPane(paneId);
+      if (hasCodexQueuedInput(screen)) {
+        await execTmux(['send-keys', '-t', paneId, 'Escape']);
+        return true;
+      }
+      if (resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex).busy) return false;
+    }
+  } catch { /* Input was delivered; a best-effort queue check must not report failure. */ }
+  return false;
+}
 
 function codexModelPicker(output) {
   const rows = cleanScreenRows(output);
@@ -780,25 +804,40 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
-    const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const { paneId, session } = await verifiedSessionTarget(
+      { provider, sessionName, threadId }, listTmuxSessions,
+    );
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const waitForPaste = overrides.waitForPaste
       || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
+    const command = text.startsWith('/') ? text.trim().match(/^\/\S+/)?.[0] || '' : '';
+    const shouldCheckQueuedInput = provider === 'codex' && !command
+      && Boolean(session.hasRunningProcess || session.agent?.hasBackgroundProcess);
+    const finishAgentInput = async () => {
+      if (!shouldCheckQueuedInput) return {};
+      const released = await releaseCodexQueuedInput({
+        paneId,
+        execTmux,
+        captureSessionPane: overrides.capturePane || capturePane,
+        waitForQueuedInput: overrides.waitForQueuedInput
+          || (() => new Promise((resolve) => setTimeout(resolve, QUEUED_INPUT_DELAY_MS))),
+      });
+      return released ? { terminalWorking: true } : {};
+    };
     // Literal key events keep ordinary single-line input ordered with Enter even when
     // an Agent TUI is too busy to apply an asynchronous bracketed-paste event promptly.
     const literalAgentInput = provider !== 'shell'
       && Buffer.byteLength(text, 'utf8') <= LITERAL_AGENT_INPUT_MAX_BYTES
       && !/[\u0000-\u001f\u007f]/u.test(text);
     if (literalAgentInput) {
-      const command = text.startsWith('/') ? text.trim().match(/^\/\S+/)?.[0] || '' : '';
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
       await execTmux(['send-keys', '-l', '-t', paneId, '--', bareCodexModel ? `${command} ` : text]);
       await waitForPaste();
       await execTmux(['send-keys', '-t', paneId, 'Enter']);
-      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return {};
+      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return finishAgentInput();
       const waitForSlashOutput = overrides.waitForSlashOutput
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
       const captureSessionPane = overrides.capturePane || capturePane;
@@ -846,6 +885,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
       throw error;
     }
+    return finishAgentInput();
   });
 }
 
@@ -858,7 +898,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
-    const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const { paneId } = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
@@ -901,7 +941,7 @@ export async function interruptSession({ provider, sessionName, threadId }, over
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
-    const paneId = await verifiedSessionPane({ provider, sessionName, threadId }, listTmuxSessions);
+    const { paneId } = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);

@@ -64,7 +64,31 @@ test('thread snapshots back off only when both tmux and the structured thread ar
   assert.equal(threadSnapshotRefreshInterval({
     thread: { status: { type: 'idle' } },
   }, 'working'), 1_000);
+});
+
+test('thread snapshots keep following background and recently updated external turns', () => {
   assert.equal(threadSnapshotRefreshInterval({
     thread: { status: { type: 'idle' } },
-  }, 'background'), 10_000);
+  }, 'background', 20_000), 2_000);
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: {
+      status: { type: 'notLoaded' },
+      updatedAt: 19,
+      turns: [{ id: 'turn-1', status: 'interrupted', items: [] }],
+    },
+  }, 'done', 20_000), 1_000);
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: {
+      status: { type: 'notLoaded' },
+      updatedAt: 1,
+      turns: [{ id: 'turn-1', status: 'interrupted', items: [] }],
+    },
+  }, 'done', 20_000), 10_000);
+  assert.equal(threadSnapshotRefreshInterval({
+    thread: {
+      status: { type: 'idle' },
+      updatedAt: 19,
+      turns: [{ id: 'turn-1', status: 'completed', items: [] }],
+    },
+  }, 'done', 20_000), 10_000);
 });

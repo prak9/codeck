@@ -220,6 +220,78 @@ test('submits single-line Agent input literally so Enter cannot overtake bracket
   ]);
 });
 
+test('releases Codex input queued behind a background terminal wait', async () => {
+  const calls = [];
+  const screens = [
+    '• Waiting for background terminal (2h 04m)\n› Write tests for @filename',
+    [
+      '• Waiting for background terminal (2h 04m)',
+      '• Messages to be submitted after',
+      '  next tool call (press esc to',
+      '  interrupt and send immediately)',
+      '  ↳ 怎么样了',
+    ].join('\n'),
+  ];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '怎么样了',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'research',
+      agent: {
+        kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true,
+      },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'paste-wait' }),
+    waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return screens.shift();
+    },
+  });
+
+  assert.deepEqual(result, { terminalWorking: true });
+  assert.deepEqual(calls, [
+    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '怎么样了'] },
+    { type: 'paste-wait' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'queue-wait' },
+    { type: 'capture', paneId: '%7' },
+    { type: 'queue-wait' },
+    { type: 'capture', paneId: '%7' },
+    { type: 'exec', args: ['send-keys', '-t', '%7', 'Escape'] },
+  ]);
+});
+
+test('does not interrupt Codex when submitted input starts a normal turn', async () => {
+  const calls = [];
+  const screens = [
+    '• Waiting for background terminal (2h 04m)\n› Write tests for @filename',
+    '◦ Working (1s • esc to interrupt)\n› Write tests for @filename',
+  ];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '继续检查',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'research',
+      agent: {
+        kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true,
+      },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => calls.push({ type: 'paste-wait' }),
+    waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
+    capturePane: async (paneId) => {
+      calls.push({ type: 'capture', paneId });
+      return screens.shift();
+    },
+  });
+
+  assert.deepEqual(result, {});
+  assert.equal(calls.some((call) => call.type === 'exec' && call.args.includes('Escape')), false);
+  assert.equal(calls.filter((call) => call.type === 'capture').length, 2);
+});
+
 test('keeps oversized single-line Agent input out of the tmux process argument list', async () => {
   const calls = [];
   const text = 'x'.repeat(70_000);
