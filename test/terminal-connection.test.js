@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleTerminalConnection, terminalAttachArgs } from '../src/terminal-connection.js';
+import {
+  createTerminalOutputBatcher,
+  handleTerminalConnection,
+  terminalAttachArgs,
+} from '../src/terminal-connection.js';
 
 class FakeSocket extends EventEmitter {
   OPEN = 1;
@@ -43,10 +47,55 @@ function dependencies(overrides = {}) {
   };
 }
 
+const waitForTerminalOutput = () => new Promise((resolve) => setTimeout(resolve, 12));
+
 test('read-only clients attach without detaching the session owner', () => {
   assert.deepEqual(terminalAttachArgs('shared', { readOnly: true }), ['attach-session', '-r', '-t', 'shared']);
   assert.deepEqual(terminalAttachArgs('owner'), ['attach-session', '-d', '-t', 'owner']);
   assert.deepEqual(terminalAttachArgs('collaborator', { detachOtherClients: false }), ['attach-session', '-t', 'collaborator']);
+});
+
+test('terminal output batches adjacent pty fragments into one repaint', () => {
+  const scheduled = [];
+  const sent = [];
+  const batcher = createTerminalOutputBatcher((data) => sent.push(data), {
+    schedule: (callback, delay) => {
+      const task = { callback, delay, cancelled: false };
+      scheduled.push(task);
+      return task;
+    },
+    cancel: (task) => { task.cancelled = true; },
+  });
+
+  batcher.write('frame-a');
+  batcher.write('frame-b');
+  assert.deepEqual(sent, [], 'a split terminal frame is not exposed half-drawn');
+  assert.equal(scheduled.length, 3);
+  assert.equal(scheduled[0].delay, 2);
+  assert.equal(scheduled[0].cancelled, true, 'the second fragment extends the quiet deadline');
+  assert.equal(scheduled[1].delay, 8, 'continuous output still has a bounded deadline');
+  assert.equal(scheduled[2].delay, 2);
+  scheduled[2].callback();
+  assert.deepEqual(sent, ['frame-aframe-b']);
+  assert.equal(scheduled[1].cancelled, true);
+});
+
+test('terminal output discards an old pending batch when the session changes', () => {
+  const scheduled = [];
+  const sent = [];
+  const batcher = createTerminalOutputBatcher((data) => sent.push(data), {
+    schedule: (callback) => {
+      const task = { callback, cancelled: false };
+      scheduled.push(task);
+      return task;
+    },
+    cancel: (task) => { task.cancelled = true; },
+  });
+
+  batcher.write('stale half-frame');
+  batcher.cancel();
+  scheduled.forEach((task) => task.callback());
+  assert.deepEqual(sent, []);
 });
 
 test('a socket closed during setup never creates a terminal', async () => {
@@ -95,7 +144,7 @@ test('messages received during setup are applied after an exact-size attach', as
   releaseLinks([]);
   await setup;
 
-  assert.deepEqual(terminal.sizes, [[48, 6]]);
+  assert.deepEqual(terminal.sizes, [], 'modern tmux receives the exact pty size at spawn');
   assert.deepEqual(terminal.writes, ['x']);
   ws.emit('close');
   assert.equal(terminal.killed, true);
@@ -117,6 +166,7 @@ test('a read-only terminal never forwards client input to tmux', async () => {
   await setup;
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'whoami\r' })), false);
   terminal.dataCallback('visible output');
+  await waitForTerminalOutput();
 
   assert.deepEqual(terminal.writes, []);
   assert.deepEqual(terminalOptions, { readOnly: true });
@@ -170,7 +220,7 @@ test('an owner can switch the attached tmux session without replacing the socket
   }));
 
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'switch', session: 'second', cols: 120, rows: 36 })), false);
-  await new Promise((resolve) => setImmediate(resolve));
+  await waitForTerminalOutput();
 
   assert.equal(created[0].terminal.killed, true);
   assert.deepEqual(created.map(({ session, size }) => ({ session, size })), [
@@ -181,11 +231,12 @@ test('an owner can switch the attached tmux session without replacing the socket
   created[0].terminal.dataCallback('stale output');
   created[0].terminal.exitCallback({ exitCode: 0 });
   created[1].terminal.dataCallback('current output');
+  await waitForTerminalOutput();
   assert.deepEqual(ws.sent, ['\x1bc', 'current output']);
   assert.deepEqual(ws.closes, []);
 });
 
-test('a session switch forwards terminal protocol queries without delay', async () => {
+test('a session switch forwards terminal protocol queries within the bounded output batch', async () => {
   const ws = new FakeSocket();
   const created = [];
   await handleTerminalConnection(ws, 'first', { width: 80, height: 24 }, dependencies({
@@ -200,8 +251,9 @@ test('a session switch forwards terminal protocol queries without delay', async 
   ws.emit('message', Buffer.from(JSON.stringify({
     type: 'switch', session: 'second', cols: 120, rows: 36,
   })), false);
-  await new Promise((resolve) => setImmediate(resolve));
+  await waitForTerminalOutput();
   created[1].terminal.dataCallback('\x1b[>c');
+  await waitForTerminalOutput();
 
   assert.deepEqual(ws.sent, ['\x1bc', '\x1b[>c']);
 });
@@ -254,7 +306,31 @@ test('a supplied browser viewport skips the redundant tmux size lookup', async (
   }));
 
   assert.equal(sizeLookups, 0);
-  assert.deepEqual(terminal.sizes, [[120, 36]]);
+  assert.deepEqual(terminal.sizes, []);
+});
+
+test('a legacy tmux server still receives one explicit initial resize', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'legacy', { width: 92, height: 28 }, dependencies({
+    preferLatestClientSize: async () => false,
+    createTerminal: () => terminal,
+  }));
+
+  assert.deepEqual(terminal.sizes, [[92, 28]]);
+});
+
+test('terminal resize messages are ignored until the browser grid changes', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'desktop', { width: 120, height: 36 }, dependencies({
+    createTerminal: () => terminal,
+  }));
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 120, rows: 36 })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 121, rows: 36 })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 121, rows: 36 })), false);
+  assert.deepEqual(terminal.sizes, [[121, 36]]);
 });
 
 test('a client without a viewport still attaches at the current tmux size', async () => {
@@ -265,5 +341,5 @@ test('a client without a viewport still attaches at the current tmux size', asyn
     createTerminal: () => terminal,
   }));
 
-  assert.deepEqual(terminal.sizes, [[92, 28]]);
+  assert.deepEqual(terminal.sizes, []);
 });

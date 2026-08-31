@@ -4,6 +4,7 @@ import {
   bindTerminalRenderWatchdog,
   clampTerminalGrid,
   createTerminalRevealGate,
+  createTerminalResizeGate,
   createTerminalWriteQueue,
   fitTerminalGrid,
   isTerminalCopyShortcut,
@@ -135,7 +136,30 @@ test('terminal writes keep one parser chunk in flight and drop superseded sessio
   assert.deepEqual(writes, ['old-1', '\x1bc', 'new-1']);
 });
 
-test('terminal render watchdog redraws parsed output only when xterm misses a render', () => {
+test('terminal writes coalesce a burst waiting behind the parser', () => {
+  const writes = [];
+  const completions = [];
+  const callbacks = [];
+  const terminal = {
+    write(data, callback) {
+      writes.push(data);
+      completions.push(callback);
+    },
+  };
+  const queue = createTerminalWriteQueue(terminal);
+  queue.write('frame-1', () => callbacks.push(1));
+  queue.write('frame-2', () => callbacks.push(2));
+  queue.write('frame-3', () => callbacks.push(3));
+
+  assert.deepEqual(writes, ['frame-1']);
+  completions.shift()();
+  assert.deepEqual(writes, ['frame-1', 'frame-2frame-3']);
+  assert.deepEqual(callbacks, [1]);
+  completions.shift()();
+  assert.deepEqual(callbacks, [1, 2, 3]);
+});
+
+test('terminal render watchdog debounces parser bursts and forces at most one redraw per outage', () => {
   const scheduled = [];
   const refreshes = [];
   let onParsed;
@@ -152,21 +176,60 @@ test('terminal render watchdog redraws parsed output only when xterm misses a re
     return task;
   };
   const cancel = (task) => { task.cancelled = true; };
-  bindTerminalRenderWatchdog(terminal, { schedule, cancel, delayMs: 80 });
+  bindTerminalRenderWatchdog(terminal, {
+    schedule, cancel, settleMs: 120, maxWaitMs: 500,
+  });
 
   onParsed();
   onParsed();
-  assert.equal(scheduled.length, 1, 'bursty output shares one redraw deadline');
-  assert.equal(scheduled[0].delay, 80);
-  scheduled[0].callback();
+  assert.equal(scheduled.length, 3, 'a burst keeps one max deadline and replaces its settle deadline');
+  assert.equal(scheduled[0].delay, 120);
+  assert.equal(scheduled[0].cancelled, true);
+  assert.equal(scheduled[1].delay, 500);
+  assert.equal(scheduled[2].delay, 120);
+  scheduled[1].callback();
   assert.deepEqual(refreshes, [[0, 23]], 'stale parsed output gets one full viewport redraw');
 
   onParsed();
-  const healthyRender = scheduled[1];
+  assert.equal(scheduled.length, 3, 'more parser events cannot repeatedly flash before a real render');
+
   onRender();
-  assert.equal(healthyRender.cancelled, true);
-  healthyRender.callback();
+  onParsed();
+  const healthySettle = scheduled.at(-2);
+  const healthyMax = scheduled.at(-1);
+  onRender();
+  assert.equal(healthySettle.cancelled, true);
+  assert.equal(healthyMax.cancelled, true);
+  healthySettle.callback();
+  healthyMax.callback();
   assert.deepEqual(refreshes, [[0, 23]], 'a normal xterm render needs no duplicate redraw');
+});
+
+test('terminal resize gate sends only changed grids and can mark an attach size as synchronized', () => {
+  const sent = [];
+  const gate = createTerminalResizeGate((cols, rows) => sent.push([cols, rows]));
+
+  gate.mark(120, 36);
+  assert.equal(gate.send(120, 36), false);
+  assert.equal(gate.send(121, 36), true);
+  assert.equal(gate.send(121, 36), false);
+  assert.equal(gate.send(121, 37), true);
+  assert.deepEqual(sent, [[121, 36], [121, 37]]);
+});
+
+test('terminal resize gate retries a grid that the transport could not send yet', () => {
+  let ready = false;
+  const sent = [];
+  const gate = createTerminalResizeGate((cols, rows) => {
+    if (!ready) return false;
+    sent.push([cols, rows]);
+    return true;
+  });
+
+  assert.equal(gate.send(100, 30), false);
+  ready = true;
+  assert.equal(gate.send(100, 30), true);
+  assert.deepEqual(sent, [[100, 30]]);
 });
 
 test('copy shortcuts leave Ctrl+C as SIGINT when the terminal has no selection', () => {

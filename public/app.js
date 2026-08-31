@@ -2,11 +2,12 @@ import { bindMobileScroll } from './mobile-scroll.js';
 import {
   bindTerminalRenderWatchdog,
   createTerminalRevealGate,
+  createTerminalResizeGate,
   createTerminalWriteQueue,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=9';
+} from './terminal-utils.js?v=10';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=3';
 import { acceptStreamCursor } from './stream-state.js?v=1';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
@@ -78,6 +79,7 @@ const state = {
   cancelMobileScroll: null,
   cancelTerminalReveal: null,
   cancelTerminalWrite: null,
+  terminalResizeGate: null,
   terminalInputReady: false,
   // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
   // legible size and actually resizes the tmux window to the viewport instead of cramming
@@ -905,7 +907,7 @@ function ensureTerminal() {
     if (text) navigator.clipboard?.writeText(text).catch(() => {});
   });
   terminal.onResize(({ cols, rows }) => {
-    if (!state.fitting && state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+    if (!state.fitting) state.terminalResizeGate?.send(cols, rows);
   });
   new ResizeObserver(fitTerminalView).observe($('#terminal').parentElement);
   state.terminal = terminal;
@@ -935,9 +937,7 @@ function fitTerminalView({ suppressResize = false } = {}) {
     $('#viewModeButton').setAttribute('aria-pressed', 'false');
   }
   state.fitting = false;
-  if (!suppressResize && state.socket?.readyState === WebSocket.OPEN) {
-    state.socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
-  }
+  if (!suppressResize) state.terminalResizeGate?.send(terminal.cols, terminal.rows);
 }
 
 function markActiveSession(session) {
@@ -968,6 +968,7 @@ async function connect(session) {
   state.cancelTerminalReveal = null;
   state.cancelTerminalWrite?.();
   state.cancelTerminalWrite = null;
+  state.terminalResizeGate = null;
   state.terminalInputReady = false;
   state.cancelMobileScroll?.();
   stopKeyRepeat();
@@ -999,10 +1000,25 @@ async function connect(session) {
   const socket = reuseSocket
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
+  const resizeGate = createTerminalResizeGate((cols, rows) => {
+    if (state.connectionId !== connectionId || state.socket !== socket
+      || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+    return true;
+  });
+  if (!reuseSocket) resizeGate.mark(terminal.cols, terminal.rows);
+  state.terminalResizeGate = resizeGate;
   let displayReady = false;
   let awaitingSwitchReset = reuseSocket;
+  let terminalResetReady = !needsReset;
   state.socket = socket;
   syncTerminalAccess();
+  const enableTerminalInput = () => {
+    if (reuseSocket || !terminalResetReady || state.connectionId !== connectionId
+      || state.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    state.terminalInputReady = true;
+    syncTerminalAccess();
+  };
   const markConnected = () => {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = connectedStateLabel();
@@ -1019,9 +1035,9 @@ async function connect(session) {
   });
   state.cancelTerminalReveal = revealGate.cancel;
   socket.onopen = reuseSocket ? null : () => {
-    state.terminalInputReady = true;
+    enableTerminalInput();
     markConnected();
-    socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+    resizeGate.send(terminal.cols, terminal.rows);
   };
   socket.onmessage = (event) => {
     if (state.connectionId !== connectionId) return;
@@ -1062,6 +1078,7 @@ async function connect(session) {
   if (reuseSocket) {
     try {
       socket.send(JSON.stringify({ type: 'switch', session, cols: terminal.cols, rows: terminal.rows }));
+      resizeGate.mark(terminal.cols, terminal.rows);
       return;
     } catch {
       state.socket = null;
@@ -1072,6 +1089,8 @@ async function connect(session) {
 
   await reset;
   if (state.connectionId !== connectionId || state.active !== session || state.socket !== socket) return;
+  terminalResetReady = true;
+  enableTerminalInput();
 }
 
 function openNewDialog() {

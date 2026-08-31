@@ -34,6 +34,63 @@ const defaultDependencies = {
   validateSessionName,
 };
 
+// node-pty can split one tmux repaint across adjacent data callbacks. Sending each
+// fragment as a WebSocket message lets xterm render a half-written screen between them.
+// A tiny bounded window joins those fragments while keeping terminal-query latency below
+// one display frame; a session switch can also discard the pending old frame.
+export function createTerminalOutputBatcher(send, {
+  settleMs = 2,
+  maxWaitMs = 8,
+  schedule = setTimeout,
+  cancel = clearTimeout,
+} = {}) {
+  let pending = '';
+  let settleTimer = null;
+  let maxWaitTimer = null;
+  let stopped = false;
+
+  const clearTimers = () => {
+    if (settleTimer !== null) cancel(settleTimer);
+    if (maxWaitTimer !== null) cancel(maxWaitTimer);
+    settleTimer = null;
+    maxWaitTimer = null;
+  };
+  const flush = () => {
+    clearTimers();
+    if (stopped || !pending) return;
+    const output = pending;
+    pending = '';
+    send(output);
+  };
+  const write = (data) => {
+    if (stopped || !data) return false;
+    pending += data;
+    if (settleTimer !== null) cancel(settleTimer);
+    const settle = schedule(() => {
+      if (settleTimer !== settle) return;
+      settleTimer = null;
+      flush();
+    }, settleMs);
+    settleTimer = settle;
+    if (maxWaitTimer === null) {
+      const maximum = schedule(() => {
+        if (maxWaitTimer !== maximum) return;
+        maxWaitTimer = null;
+        flush();
+      }, maxWaitMs);
+      maxWaitTimer = maximum;
+    }
+    return true;
+  };
+  const stop = () => {
+    stopped = true;
+    pending = '';
+    clearTimers();
+  };
+
+  return { write, cancel: stop };
+}
+
 export async function handleTerminalConnection(ws, session, viewport, overrides = {}) {
   const {
     readOnly = false,
@@ -44,6 +101,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
   let activeSession = session;
   let terminal = null;
+  let terminalOutput = null;
+  let terminalGrid = '';
   let closed = ws.readyState !== ws.OPEN;
   let attachSequence = 0;
   let awaitingSessionActivity = false;
@@ -52,6 +111,9 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const killTerminal = () => {
     const attached = terminal;
     terminal = null;
+    terminalOutput?.cancel();
+    terminalOutput = null;
+    terminalGrid = '';
     attached?.kill();
   };
 
@@ -94,7 +156,12 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
       }
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
-        terminal.resize(...dependencies.clampViewport(message.cols, message.rows));
+        const [cols, rows] = dependencies.clampViewport(message.cols, message.rows);
+        const nextGrid = `${cols}x${rows}`;
+        if (nextGrid !== terminalGrid) {
+          terminalGrid = nextGrid;
+          terminal.resize(cols, rows);
+        }
       }
       if (message.type === 'scroll' && Number.isInteger(message.lines)) {
         dependencies.scrollSession(activeSession, message.lines).catch(() => {});
@@ -111,6 +178,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     activeSession = nextSession;
     killTerminal();
     let initialSize = nextViewport;
+    let usesLatestClientSize = false;
     try {
       const setup = [dependencies.getLinkedWindowSessions(nextSession)];
       if (!initialSize) setup.push(dependencies.getSessionSize(nextSession));
@@ -123,7 +191,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         ws.close(1008, '当前窗口被多个 tmux 会话共享，请先取消窗口链接');
         return;
       }
-      await dependencies.preferLatestClientSize();
+      usesLatestClientSize = await dependencies.preferLatestClientSize();
       if (!isOpen() || sequence !== attachSequence) return;
     } catch (error) {
       if (isOpen() && sequence === attachSequence) ws.close(1011, error.message || 'tmux size configuration failed');
@@ -148,13 +216,14 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     }
 
     terminal = attached;
+    terminalGrid = `${attachSize.width}x${attachSize.height}`;
+    terminalOutput = createTerminalOutputBatcher((data) => {
+      if (terminal === attached && isOpen()) ws.send(data);
+    });
     if (resetScreen) ws.send('\x1bc');
     attached.onData((data) => {
       if (terminal !== attached || !isOpen()) return;
-      // Terminal output is a bidirectional protocol, not just display text. Queries in
-      // this stream must reach xterm immediately so its replies return while tmux is
-      // still expecting them; delaying them can leak replies into the Agent's input.
-      ws.send(data);
+      terminalOutput.write(data);
       if (!awaitingSessionActivity) return;
       awaitingSessionActivity = false;
       try { dependencies.onSessionActivity?.(activeSession); }
@@ -162,12 +231,15 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     });
     attached.onExit(({ exitCode }) => {
       if (terminal !== attached) return;
+      terminalOutput?.cancel();
+      terminalOutput = null;
       terminal = null;
+      terminalGrid = '';
       if (isOpen()) ws.close(1000, `terminal exited (${exitCode})`);
     });
-    // tmux 2.7 has no window-size=latest. This explicit SIGWINCH makes the old server
-    // adopt the browser's exact dimensions after attaching.
-    attached.resize(attachSize.width, attachSize.height);
+    // Modern tmux receives the exact pty dimensions at spawn and follows the newest
+    // client. Older servers need one explicit SIGWINCH after attaching.
+    if (!usesLatestClientSize) attached.resize(attachSize.width, attachSize.height);
     while (pending.length && terminal === attached) handleMessage(pending.shift());
   }
 

@@ -20,41 +20,63 @@ export function isTerminalCopyShortcut(event, hasSelection) {
 // after the input buffer was already parsed. Keep the healthy path untouched and only
 // redraw when parsed output produces no render event by the deadline.
 export function bindTerminalRenderWatchdog(terminal, {
-  delayMs = 80,
+  settleMs = 120,
+  maxWaitMs = 500,
   schedule = setTimeout,
   cancel = clearTimeout,
   isVisible = () => true,
 } = {}) {
-  let timer = null;
-  let timerVersion = 0;
+  let settleTimer = null;
+  let maxWaitTimer = null;
   let pendingRender = false;
+  let forcedSinceRender = false;
   let disposed = false;
 
-  const cancelPending = () => {
-    if (timer !== null) cancel(timer);
-    timer = null;
-    timerVersion += 1;
+  const clearTimers = () => {
+    if (settleTimer !== null) cancel(settleTimer);
+    if (maxWaitTimer !== null) cancel(maxWaitTimer);
+    settleTimer = null;
+    maxWaitTimer = null;
+  };
+  const forceRender = () => {
+    if (disposed || forcedSinceRender || !pendingRender) return;
+    clearTimers();
+    pendingRender = false;
+    if (!isVisible() || terminal.rows <= 0) return;
+    // One forced redraw is enough to wake a renderer that missed its frame. Repeating
+    // full-viewport refreshes while ANSI output is still arriving creates visible
+    // flashes and cannot repair a renderer that did not react to the first refresh.
+    forcedSinceRender = true;
+    terminal.refresh(0, terminal.rows - 1);
   };
   const parsed = terminal.onWriteParsed(() => {
     pendingRender = true;
-    if (timer !== null) return;
-    const version = ++timerVersion;
-    timer = schedule(() => {
-      if (disposed || version !== timerVersion) return;
-      timer = null;
-      if (!pendingRender || !isVisible()) return;
-      pendingRender = false;
-      if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1);
-    }, delayMs);
+    if (forcedSinceRender) return;
+    if (settleTimer !== null) cancel(settleTimer);
+    const settle = schedule(() => {
+      if (settleTimer !== settle) return;
+      settleTimer = null;
+      forceRender();
+    }, settleMs);
+    settleTimer = settle;
+    if (maxWaitTimer === null) {
+      const maximum = schedule(() => {
+        if (maxWaitTimer !== maximum) return;
+        maxWaitTimer = null;
+        forceRender();
+      }, maxWaitMs);
+      maxWaitTimer = maximum;
+    }
   });
   const rendered = terminal.onRender(() => {
     pendingRender = false;
-    cancelPending();
+    forcedSinceRender = false;
+    clearTimers();
   });
 
   return () => {
     disposed = true;
-    cancelPending();
+    clearTimers();
     parsed.dispose?.();
     rendered.dispose?.();
   };
@@ -106,30 +128,37 @@ export function createTerminalRevealGate(onReveal, {
 // xterm's internal write buffer cannot be cleared. Keep only one session chunk in that
 // buffer at a time so a session switch can discard every older chunk still waiting here.
 export function createTerminalWriteQueue(terminal) {
-  let first = null;
-  let last = null;
+  let queuedData = '';
+  let queuedSize = 0;
+  let queuedCallbacks = [];
   let pendingBytes = 0;
   let writing = false;
   let cancelled = false;
 
-  const drain = () => {
-    if (cancelled || writing) return;
-    const entry = first;
-    if (!entry) return;
-    first = entry.next;
-    entry.next = null;
-    if (!first) last = null;
+  const start = (data, size, callbacks) => {
+    if (cancelled) return;
     writing = true;
-    terminal.write(entry.data, () => {
+    terminal.write(data, () => {
       writing = false;
       if (cancelled) return;
-      pendingBytes -= entry.size;
+      pendingBytes -= size;
       try {
-        entry.callback?.();
+        for (const callback of callbacks) callback?.();
       } finally {
         drain();
       }
     });
+  };
+
+  const drain = () => {
+    if (cancelled || writing || !queuedSize) return;
+    const data = queuedData;
+    const size = queuedSize;
+    const callbacks = queuedCallbacks;
+    queuedData = '';
+    queuedSize = 0;
+    queuedCallbacks = [];
+    start(data, size, callbacks);
   };
 
   const write = (data, callback) => {
@@ -137,23 +166,42 @@ export function createTerminalWriteQueue(terminal) {
     if (pendingBytes > TERMINAL_WRITE_DISCARD_WATERMARK) {
       throw new Error('write data discarded, use flow control to avoid losing data');
     }
-    const entry = { data, callback, size: data.length, next: null };
-    pendingBytes += entry.size;
-    if (last) last.next = entry;
-    else first = entry;
-    last = entry;
-    drain();
+    const size = data.length;
+    pendingBytes += size;
+    if (!writing && !queuedSize) start(data, size, [callback]);
+    else {
+      queuedData += data;
+      queuedSize += size;
+      queuedCallbacks.push(callback);
+    }
     return true;
   };
 
   const cancel = () => {
     cancelled = true;
-    first = null;
-    last = null;
+    queuedData = '';
+    queuedSize = 0;
+    queuedCallbacks = [];
     pendingBytes = 0;
   };
 
   return { write, cancel };
+}
+
+export function createTerminalResizeGate(sendResize) {
+  let lastGrid = '';
+  const gridKey = (cols, rows) => `${cols}x${rows}`;
+  const mark = (cols, rows) => {
+    lastGrid = gridKey(cols, rows);
+  };
+  const send = (cols, rows) => {
+    const nextGrid = gridKey(cols, rows);
+    if (nextGrid === lastGrid) return false;
+    if (sendResize(cols, rows) === false) return false;
+    lastGrid = nextGrid;
+    return true;
+  };
+  return { mark, send };
 }
 
 export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {

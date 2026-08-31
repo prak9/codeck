@@ -28,6 +28,25 @@ test('normal session polling does not refit an unchanged desktop terminal', () =
   assert.doesNotMatch(refresh, /if \(state\.active && state\.terminal\) fitTerminalView\(\);/);
 });
 
+test('normal terminal deduplicates browser and tmux grids before sending resize', () => {
+  const ensureStart = appJs.indexOf('function ensureTerminal()');
+  const ensureEnd = appJs.indexOf('\n\nfunction isMobileOverview()', ensureStart);
+  const fitStart = appJs.indexOf('function fitTerminalView(');
+  const fitEnd = appJs.indexOf('\n\nfunction markActiveSession(', fitStart);
+  const connectStart = appJs.indexOf('async function connect(session)');
+  const connectEnd = appJs.indexOf('\n\nfunction openNewDialog()', connectStart);
+  const terminalPath = appJs.slice(ensureStart, connectEnd);
+
+  assert.match(appJs, /createTerminalResizeGate/);
+  assert.match(appJs.slice(ensureStart, ensureEnd), /state\.terminalResizeGate\?\.send\(cols, rows\)/);
+  assert.match(appJs.slice(fitStart, fitEnd), /state\.terminalResizeGate\?\.send\(terminal\.cols, terminal\.rows\)/);
+  assert.match(appJs.slice(connectStart, connectEnd), /const resizeGate = createTerminalResizeGate/);
+  assert.match(appJs.slice(connectStart, connectEnd), /state\.terminalResizeGate = resizeGate/);
+  assert.match(appJs.slice(connectStart, connectEnd), /resizeGate\.mark\(terminal\.cols, terminal\.rows\)/);
+  assert.equal([...terminalPath.matchAll(/socket\.send\(JSON\.stringify\(\{ type: 'resize'/g)].length, 1,
+    'only the resize gate may write a resize frame');
+});
+
 test('normal mode reuses an open owner socket when switching sessions', () => {
   const start = appJs.indexOf('async function connect(session)');
   const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
@@ -58,9 +77,24 @@ test('normal mode drops stale terminal frames until the switched session reset b
   assert.match(connect, /terminalWrites\.write\(output, \(\) => \{[\s\S]*?if \(switchResetFrame\) \{[\s\S]*?state\.terminalInputReady = true;/);
 });
 
+test('normal mode does not forward an old terminal reply through a replacement socket', () => {
+  const start = appJs.indexOf('async function connect(session)');
+  const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
+  const connect = appJs.slice(start, end);
+
+  assert.match(connect, /let terminalResetReady = !needsReset;/);
+  assert.match(connect, /const enableTerminalInput = \(\) => \{[\s\S]*?terminalResetReady[\s\S]*?state\.terminalInputReady = true;/);
+  assert.match(connect, /socket\.onopen = reuseSocket \? null : \(\) => \{[\s\S]*?enableTerminalInput\(\);/);
+  assert.match(connect, /await reset;[\s\S]*?terminalResetReady = true;[\s\S]*?enableTerminalInput\(\);/);
+  assert.doesNotMatch(connect, /socket\.onopen = reuseSocket \? null : \(\) => \{\s*state\.terminalInputReady = true;/);
+});
+
 test('normal mode shares the sequenced owner session feed with remote mode', () => {
   assert.match(appJs, /acceptStreamCursor/);
   assert.match(appJs, /message\.type === 'sessionsSnapshot'/);
+  assert.match(appJs, /new WebSocket\(`\$\{protocol\}\/\/\$\{location\.host\}\/agent`/);
+  assert.doesNotMatch(appJs, /\/agent\?streamVersion=2|sessionsPatch|subscribeSessions/,
+    'an unfinished cursor client must not be published before the server rollout');
   assert.match(appJs, /SESSION_LIST_FALLBACK_MS\s*=\s*30_000/);
   assert.match(appJs, /!state\.sessionStreamHealthy/);
   assert.doesNotMatch(appJs, /SESSION_LIST_POLL_MS\s*=\s*3_000/);
