@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import nodePath from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
@@ -358,6 +362,39 @@ export class CodexAgentBackend extends EventEmitter {
   }
 }
 
+
+// Claude Code 把 transcript 写在 ~/.claude/projects/<cwd 的 / 换成 ->/<sessionId>.jsonl。
+// 这是 SDK 的内部布局, 所以只有在文件确实存在、且大小与 SDK 自己报告的 fileSize
+// 完全一致时才认它。布局一旦变化, 校验失败 -> 回落到 SDK 的整份读取, 只会变慢,
+// 不会读错。
+function claudeTranscriptFile(threadId, info) {
+  const cwd = typeof info?.cwd === 'string' ? info.cwd : '';
+  const size = Number(info?.fileSize);
+  if (!cwd || !/^[0-9a-fA-F-]{36}$/.test(threadId) || !Number.isFinite(size)) return null;
+  const file = nodePath.join(
+    os.homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'), `${threadId}.jsonl`,
+  );
+  try {
+    if (fs.statSync(file).size !== size) return null;
+  } catch {
+    return null;
+  }
+  return file;
+}
+
+async function readTranscriptRange(file, start, end) {
+  const handle = await fsp.open(file, 'r');
+  try {
+    const length = Math.max(0, end - start);
+    if (!length) return '';
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, Math.max(0, start));
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 export function createAgentBackends() {
   return {
     codex: new CodexAgentBackend(),
@@ -371,6 +408,8 @@ export function createAgentBackends() {
       listSessions: listClaudeSessions,
       getSessionInfo: getClaudeSessionInfo,
       getSessionMessages: getClaudeSessionMessages,
+      transcriptFile: claudeTranscriptFile,
+      readTranscriptRange,
     }),
     qodercli: new SdkAgentBackend({
       provider: 'qodercli',

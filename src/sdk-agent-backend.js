@@ -212,6 +212,8 @@ export class SdkAgentBackend extends EventEmitter {
     listSessions,
     getSessionInfo,
     getSessionMessages,
+    transcriptFile = null,
+    readTranscriptRange = null,
     idleTimeoutMs = 60_000,
   }) {
     super();
@@ -229,6 +231,8 @@ export class SdkAgentBackend extends EventEmitter {
     this.listSessions = listSessions;
     this.getSessionInfo = getSessionInfo;
     this.getSessionMessages = getSessionMessages;
+    this.transcriptFile = transcriptFile;
+    this.readTranscriptRange = readTranscriptRange;
     this.idleTimeoutMs = idleTimeoutMs;
     this.runtimes = new Map();
     this.transcriptCache = new Map();
@@ -336,6 +340,50 @@ export class SdkAgentBackend extends EventEmitter {
     this.approvals.clear();
   }
 
+  // 活跃会话的 transcript 每秒都在变长, revision 必然失效, 于是整份重读:
+  // 实测 3.9MB 的会话每次 ~37ms, 占 openThread 54ms 的大头。文件只会追加,
+  // 所以命中过缓存之后只读新增的那段字节, 解析后接到已缓存的消息上。
+  // 任何一处对不上 (路径推不出、文件缩了、某行解析失败) 都回落整份读取。
+  async #appendedTranscript(threadId, info, cached) {
+    if (!this.transcriptFile || !this.readTranscriptRange) return null;
+    if (!Array.isArray(cached?.messages) || !Number.isFinite(cached?.size)) return null;
+    const size = Number(info?.fileSize);
+    if (!Number.isFinite(size) || size <= cached.size) return null;
+    const file = this.transcriptFile(threadId, info);
+    if (!file) return null;
+    // 多读前一个字节: 全量回落时记下的 size 取自 info.fileSize, 可能正好落在一行
+    // 中间 (写入方还没写完那行)。要求它是换行符, 否则宁可回落, 不冒从行中间接续
+    // 却恰好解析成功的风险。
+    let chunk;
+    try {
+      chunk = await this.readTranscriptRange(file, cached.size - 1, size);
+    } catch {
+      return null;
+    }
+    if (typeof chunk !== 'string' || chunk[0] !== '\n') return null;
+    chunk = chunk.slice(1);
+    if (!chunk) return null;
+    // 末行可能只写了一半, 只消费到最后一个换行为止; 剩下的等下一轮连同后续一起读。
+    const lastBreak = chunk.lastIndexOf('\n');
+    if (lastBreak < 0) return null;
+    const consumed = chunk.slice(0, lastBreak + 1);
+    const appended = [];
+    for (const line of consumed.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        appended.push(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    }
+    const messages = [...cached.messages, ...appended];
+    return {
+      messages,
+      turns: transcriptToTurns(messages),
+      size: cached.size + Buffer.byteLength(consumed),
+    };
+  }
+
   async #persistedTurns(threadId, info) {
     const revision = transcriptRevision(info);
     const cached = revision ? this.transcriptCache.get(threadId) : null;
@@ -345,11 +393,21 @@ export class SdkAgentBackend extends EventEmitter {
       return cached.turns;
     }
 
+    const appended = await this.#appendedTranscript(threadId, info, cached);
+    if (appended) {
+      this.transcriptCache.delete(threadId);
+      this.transcriptCache.set(threadId, { revision, ...appended });
+      while (this.transcriptCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
+        this.transcriptCache.delete(this.transcriptCache.keys().next().value);
+      }
+      return appended.turns;
+    }
+
     const loadKey = revision ? `${threadId}\0${revision}` : null;
     let load = loadKey ? this.transcriptLoads.get(loadKey) : null;
     if (!load) {
       load = Promise.resolve(this.getSessionMessages(threadId, { dir: info.cwd }))
-        .then(transcriptToTurns);
+        .then((messages) => ({ messages, turns: transcriptToTurns(messages) }));
       if (loadKey) {
         this.transcriptLoads.set(loadKey, load);
         load.finally(() => {
@@ -357,10 +415,12 @@ export class SdkAgentBackend extends EventEmitter {
         }).catch(() => {});
       }
     }
-    const turns = await load;
+    const { messages, turns } = await load;
     if (revision) {
       this.transcriptCache.delete(threadId);
-      this.transcriptCache.set(threadId, { revision, turns });
+      this.transcriptCache.set(threadId, {
+        revision, turns, messages, size: Number(info?.fileSize),
+      });
       while (this.transcriptCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
         this.transcriptCache.delete(this.transcriptCache.keys().next().value);
       }

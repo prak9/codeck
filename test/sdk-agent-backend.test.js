@@ -314,3 +314,125 @@ test('releases an interactive CLI process after the completed session is idle', 
   assert.equal(queries[0].closed, true);
   backend.close();
 });
+
+function transcriptBackend({ file, chunks, infoFor }) {
+  // 每次 openThread 都整份重读 transcript 是活跃会话每秒 ~37ms 的来源
+  // (3.9MB 文件的读取+解码占了 openThread 54ms 里的大头)。这里用可注入的
+  // reader 记录到底读了哪些字节区间。
+  const reads = [];
+  let fullLoads = 0;
+  const backend = new SdkAgentBackend({
+    provider: 'claude',
+    label: 'Claude Code',
+    query: () => new FakeQuery(''),
+    listSessions: async () => [],
+    getSessionInfo: async () => infoFor(),
+    getSessionMessages: async () => {
+      fullLoads += 1;
+      return chunks.join('').split('\n').filter(Boolean).flatMap((entry) => {
+        try { return [JSON.parse(entry)]; } catch { return []; }
+      });
+    },
+    transcriptFile: () => file,
+    readTranscriptRange: async (path, start, end) => {
+      reads.push({ path, start, end });
+      return chunks.join('').slice(start, end);
+    },
+  });
+  return { backend, reads, fullLoads: () => fullLoads };
+}
+
+const line = (id, text) => `${JSON.stringify({ type: 'user', uuid: id, message: { role: 'user', content: text } })}\n`;
+
+test('a grown transcript is read from the previous offset instead of in full', async () => {
+  const chunks = [line('a', 'one') + line('b', 'two')];
+  let size = chunks.join('').length;
+  const { backend, reads, fullLoads } = transcriptBackend({
+    file: '/transcripts/thread.jsonl',
+    chunks,
+    infoFor: () => ({ sessionId: 't1', cwd: '/srv', lastModified: size, fileSize: size }),
+  });
+
+  await backend.openThread('t1');
+  assert.equal(fullLoads(), 1, 'the first load has nothing to append to');
+
+  const before = chunks.join('').length;
+  chunks.push(line('c', 'three'));
+  size = chunks.join('').length;
+  await backend.openThread('t1');
+
+  assert.equal(fullLoads(), 1, 'the grown transcript must not be re-read in full');
+  assert.equal(reads.at(-1).path, '/transcripts/thread.jsonl');
+  assert.equal(reads.at(-1).end, size);
+  assert.ok(reads.at(-1).start >= before - 1 && reads.at(-1).start <= before,
+    'only the appended range is read, plus the byte that proves the boundary');
+});
+
+test('an incremental transcript read still yields the whole conversation', async () => {
+  const chunks = [line('a', 'one')];
+  let size = chunks.join('').length;
+  const { backend } = transcriptBackend({
+    file: '/transcripts/thread.jsonl',
+    chunks,
+    infoFor: () => ({ sessionId: 't1', cwd: '/srv', lastModified: size, fileSize: size }),
+  });
+
+  await backend.openThread('t1');
+  chunks.push(line('b', 'two'));
+  size = chunks.join('').length;
+  const { thread } = await backend.openThread('t1');
+
+  const texts = thread.turns.flatMap((turn) => turn.items.map((item) => item.text ?? item.content?.[0]?.text));
+  assert.ok(texts.includes('one'), 'history before the appended range survives');
+  assert.ok(texts.includes('two'), 'the appended range is applied');
+});
+
+test('a half-written trailing line never resumes from its middle', async () => {
+  const chunks = [line('a', 'one')];
+  let size = chunks.join('').length;
+  const { backend, fullLoads } = transcriptBackend({
+    file: '/transcripts/thread.jsonl',
+    chunks,
+    infoFor: () => ({ sessionId: 't1', cwd: '/srv', lastModified: size, fileSize: size }),
+  });
+  await backend.openThread('t1');
+
+  chunks.push('{"type":"user","uuid":"partial"');   // 写了一半, 没有换行
+  size = chunks.join('').length;
+  await backend.openThread('t1');
+
+  chunks[chunks.length - 1] += ',"message":{"role":"user","content":"two"}}\n';
+  size = chunks.join('').length;
+  const { thread } = await backend.openThread('t1');
+
+  // 关键是不出错: 半行既不能被当成完整消息, 也不能在补全后从中间接续。
+  // 代价是这两轮各回落一次整份读取, 之后自动恢复增量。
+  const texts = thread.turns.flatMap((turn) => turn.items.map((item) => item.text ?? item.content?.[0]?.text));
+  assert.equal(texts.filter((value) => value === 'two').length, 1, 'the completed line lands exactly once');
+  assert.ok(texts.includes('one'), 'earlier history survives the fallback');
+
+  const loadsAfterRecovery = fullLoads();
+  chunks.push(line('c', 'three'));
+  size = chunks.join('').length;
+  await backend.openThread('t1');
+  assert.equal(fullLoads(), loadsAfterRecovery, 'incremental reading resumes after the partial line settles');
+});
+
+test('a shrunken or unreadable transcript falls back to a full load', async () => {
+  const chunks = [line('a', 'one') + line('b', 'two')];
+  let size = chunks.join('').length;
+  const { backend, fullLoads } = transcriptBackend({
+    file: '/transcripts/thread.jsonl',
+    chunks,
+    infoFor: () => ({ sessionId: 't1', cwd: '/srv', lastModified: size, fileSize: size }),
+  });
+  await backend.openThread('t1');
+  assert.equal(fullLoads(), 1);
+
+  chunks.length = 0;
+  chunks.push(line('z', 'compacted'));
+  size = chunks.join('').length;
+  await backend.openThread('t1');
+
+  assert.equal(fullLoads(), 2, 'a transcript that shrank cannot be appended to');
+});
