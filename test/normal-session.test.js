@@ -90,14 +90,35 @@ test('normal mode does not forward an old terminal reply through a replacement s
 });
 
 test('normal mode shares the sequenced owner session feed with remote mode', () => {
-  assert.match(appJs, /acceptStreamCursor/);
+  // 服务端 v2 已随 remote 页上线, 终端页这次跟上: 整份快照每帧 ~2.9KB,
+  // 而增量帧只有几百字节。闸门从"还不许用 v2"换成"必须把 v2 用完整"。
+  assert.match(appJs, /new WebSocket\(`\$\{protocol\}\/\/\$\{location\.host\}\/agent\?streamVersion=2`/);
   assert.match(appJs, /message\.type === 'sessionsSnapshot'/);
-  assert.match(appJs, /new WebSocket\(`\$\{protocol\}\/\/\$\{location\.host\}\/agent`/);
-  assert.doesNotMatch(appJs, /\/agent\?streamVersion=2|sessionsPatch|subscribeSessions/,
-    'an unfinished cursor client must not be published before the server rollout');
+  assert.match(appJs, /message\.type === 'sessionsPatch'/);
+  assert.match(appJs, /message\.type === 'sessionsSynchronized'/);
+  assert.match(appJs, /acceptStreamFrame/);
+  assert.match(appJs, /applySnapshotPatch/);
   assert.match(appJs, /SESSION_LIST_FALLBACK_MS\s*=\s*30_000/);
   assert.match(appJs, /!state\.sessionStreamHealthy/);
   assert.doesNotMatch(appJs, /SESSION_LIST_POLL_MS\s*=\s*3_000/);
+});
+
+test('the normal-mode v2 client subscribes for itself and can fall back to a full snapshot', () => {
+  // 服务端只对 v1 在连接时自动订阅 (agent-connection.js), v2 不自己发就一帧都收不到。
+  assert.match(appJs, /protocol\?\.version === 2 && socket\.readyState === WebSocket\.OPEN/);
+  assert.match(appJs, /type: 'subscribeSessions'/);
+  // 补丁接不上必须能退回整份快照, 否则侧栏就此停更。
+  assert.match(appJs, /accepted\.gap \|\| !state\.sessionStreamSnapshot/);
+});
+
+test('the sidebar only rebuilds when what it renders actually changed', () => {
+  // 任一会话工作时服务端按 750ms 推送, activityAt 每秒都在跳, 但侧栏显示的
+  // 相对时间是分桶的 —— 没变还重建 DOM 就是在和 xterm 抢主线程。
+  assert.match(appJs, /sessionsRenderSignature/);
+  assert.match(appJs, /if \(!force && signature === sessionRenderSignature\) return;/);
+  // 事件委托: 不再每轮渲染给每一行重绑监听器。
+  assert.match(appJs, /bindSessionListDelegates/);
+  assert.doesNotMatch(appJs, /list\.querySelectorAll\('\.session-row'\)\.forEach/);
 });
 
 test('normal mode suppresses Codex shared-daemon background counts', () => {

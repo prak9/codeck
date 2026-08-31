@@ -9,7 +9,9 @@ import {
   resetTerminalInput,
 } from './terminal-utils.js?v=10';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=6';
-import { acceptStreamCursor } from './stream-state.js?v=3';
+import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
+import { applySnapshotPatch } from './snapshot-patch.js?v=2';
+import { sessionsRenderSignature } from './session-render.js?v=1';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -70,6 +72,7 @@ const state = {
   sessionFeedGeneration: 0,
   sessionFeedReconnectTimer: null,
   sessionStreamCursor: null,
+  sessionStreamSnapshot: null,
   sessionStreamHealthy: false,
   terminal: null,
   fit: null,
@@ -540,8 +543,54 @@ function sessionFolderHtml(entry, indexByName) {
     </details>`;
 }
 
-function renderSessions() {
+
+// 一次性的事件委托。原来每轮渲染都要给每一行重新 addEventListener, 会话越多越贵,
+// 而 innerHTML 重建后旧监听器本就随节点一起丢弃 —— 委托到容器上只需绑一次。
+let sessionListDelegated = false;
+
+function bindSessionListDelegates(list) {
+  if (sessionListDelegated) return;
+  sessionListDelegated = true;
+  list.addEventListener('click', (event) => {
+    const rename = event.target.closest?.('.rename-session');
+    if (rename && list.contains(rename)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (rename.dataset.renameSession) renameSession(rename.dataset.renameSession);
+      return;
+    }
+    const row = event.target.closest?.('.session-row');
+    if (row && list.contains(row)) {
+      event.preventDefault();
+      if (row.dataset.session) connect(row.dataset.session);
+    }
+  });
+  // toggle 不冒泡, 只能在捕获阶段代理。
+  list.addEventListener('toggle', (event) => {
+    const folder = event.target.closest?.('.session-folder');
+    if (folder && list.contains(folder)) setSessionFolderOpen(folder.dataset.sessionFolder, folder.open);
+  }, true);
+}
+
+let sessionRenderSignature = null;
+
+function renderSessions({ force = false } = {}) {
   const list = $('#sessionList');
+  // 服务端在任一会话工作时按 750ms 推送, 而 activityAt / agent.activity 每秒都在
+  // 变。侧栏显示的相对时间是分桶的, 多数帧渲染结果完全一样 —— 没变就别重建 DOM,
+  // 那是和 xterm 抢主线程、让打字发涩的原因。
+  const signature = sessionsRenderSignature(state.sessions, {
+    status: resolveSessionStatus,
+    timeLabel: timeAgo,
+    active: state.active || '',
+    canManage: state.canManage,
+    extra: [
+      state.overview, state.expandedSessionFolders.join(','),
+      state.folderSessionPrefixes.join(','), state.hiddenSessionPrefixes.join(','),
+    ].join('|'),
+  });
+  if (!force && signature === sessionRenderSignature) return;
+  sessionRenderSignature = signature;
   const scrollTop = list.scrollTop;
   const focusedSession = document.activeElement?.closest?.('[data-session]')?.dataset.session;
   const focusedFolder = document.activeElement?.closest?.('[data-session-folder]')?.dataset.sessionFolder;
@@ -557,24 +606,7 @@ function renderSessions() {
   list.innerHTML = entries.map((entry) => entry.type === 'folder'
     ? sessionFolderHtml(entry, indexByName)
     : sessionEntryHtml(entry.item, indexByName.get(entry.item.name))).join('');
-  list.querySelectorAll('.session-folder').forEach((folder) => {
-    folder.addEventListener('toggle', () => setSessionFolderOpen(folder.dataset.sessionFolder, folder.open));
-  });
-  list.querySelectorAll('.session-row').forEach((row) => {
-    row.addEventListener('click', (event) => {
-      event.preventDefault();
-      const target = row.dataset.session;
-      if (target) connect(target);
-    });
-  });
-  list.querySelectorAll('.rename-session').forEach((button) => {
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const currentName = button.dataset.renameSession;
-      if (currentName) renameSession(currentName);
-    });
-  });
+  bindSessionListDelegates(list);
   if (focusedSession) {
     [...list.querySelectorAll('[data-session]')].find((row) => row.dataset.session === focusedSession)?.focus({ preventScroll: true });
   } else if (focusedFolder) {
@@ -643,7 +675,7 @@ function connectSessionFeed() {
   state.sessionFeedReconnectTimer = null;
   const generation = ++state.sessionFeedGeneration;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/agent`, `codeck.${websocketProtocolToken(state.token)}`);
+  const socket = new WebSocket(`${protocol}//${location.host}/agent?streamVersion=2`, `codeck.${websocketProtocolToken(state.token)}`);
   state.sessionFeedSocket = socket;
   socket.addEventListener('message', (event) => {
     if (generation !== state.sessionFeedGeneration) return;
@@ -651,17 +683,62 @@ function connectSessionFeed() {
     try { message = JSON.parse(event.data); }
     catch { return; }
     if (message.type === 'ready') {
-      if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) state.sessionStreamCursor = null;
+      if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) {
+        state.sessionStreamCursor = null;
+        state.sessionStreamSnapshot = null;
+      }
+      // v1 由服务端在连接时自动订阅; v2 必须客户端自己发, 否则一帧都收不到。
+      if (message.protocol?.version === 2 && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'subscribeSessions',
+          cursor: state.sessionStreamSnapshot ? state.sessionStreamCursor : null,
+        }));
+      }
       return;
     }
+    const applyFeedSnapshot = (snapshot, cursor) => {
+      state.sessionStreamCursor = cursor;
+      state.sessionStreamSnapshot = snapshot;
+      state.sessionStreamHealthy = true;
+      state.sessionsRefreshSeq += 1;
+      const activeGridChanged = applySessionSnapshot(snapshot);
+      if (state.terminal && isMobileOverview() && activeGridChanged) fitTerminalView();
+    };
     if (message.type === 'sessionsSnapshot') {
+      if (message.version === 2) {
+        const accepted = acceptStreamFrame(state.sessionStreamCursor, message.stream, 'snapshot');
+        if (!accepted.accepted || !message.snapshot) return;
+        applyFeedSnapshot(message.snapshot, accepted.cursor);
+        return;
+      }
       const accepted = acceptStreamCursor(state.sessionStreamCursor, message.stream);
       state.sessionStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
       if (!accepted.accepted || !message.snapshot) return;
-      state.sessionStreamCursor = accepted.cursor;
-      state.sessionsRefreshSeq += 1;
-      const activeGridChanged = applySessionSnapshot(message.snapshot);
-      if (state.terminal && isMobileOverview() && activeGridChanged) fitTerminalView();
+      applyFeedSnapshot(message.snapshot, accepted.cursor);
+      return;
+    }
+    if (message.type === 'sessionsPatch') {
+      const accepted = acceptStreamFrame(state.sessionStreamCursor, message.stream, 'delta');
+      if (accepted.gap || !state.sessionStreamSnapshot) {
+        // 补丁接不上就退回整份快照; 空 cursor 让服务端直接发全量。
+        state.sessionStreamSnapshot = null;
+        state.sessionStreamCursor = null;
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'subscribeSessions', cursor: null }));
+        return;
+      }
+      if (!accepted.accepted) return;
+      try {
+        applyFeedSnapshot(applySnapshotPatch(state.sessionStreamSnapshot, message.patch), accepted.cursor);
+      } catch {
+        state.sessionStreamSnapshot = null;
+        state.sessionStreamCursor = null;
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'subscribeSessions', cursor: null }));
+      }
+      return;
+    }
+    if (message.type === 'sessionsSynchronized') {
+      const accepted = acceptStreamFrame(state.sessionStreamCursor, message.stream, 'synchronized');
+      if (accepted.accepted) state.sessionStreamHealthy = true;
       return;
     }
     if (message.type === 'sessionsStreamError') state.sessionStreamHealthy = false;
