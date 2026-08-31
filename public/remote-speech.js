@@ -34,11 +34,23 @@ export function createSpeechInput({
   onListeningChange = () => {},
   onStatus = () => {},
   onError = () => {},
+  // stop() 之后完全依赖浏览器回调 onend 才会释放。iOS 上切后台、或识别其实从未
+  // 真正启动时, onend 可能不来, 那个对象就一直握着麦克风。
+  releaseTimeoutMs = 1_500,
+  schedule = (fn, ms) => setTimeout(fn, ms),
+  cancel = (timer) => clearTimeout(timer),
 } = {}) {
   const Recognition = speechRecognitionConstructor(scope);
   let recognition = null;
   let listening = false;
   let started = false;
+  let releaseTimer = null;
+
+  function clearReleaseTimer() {
+    if (releaseTimer === null) return;
+    cancel(releaseTimer);
+    releaseTimer = null;
+  }
 
   function setListening(next) {
     if (listening === next) return;
@@ -50,6 +62,7 @@ export function createSpeechInput({
   // abort() 才真正放开麦克风, 否则状态栏/刘海屏的话筒图标会一直亮着。同时摘掉
   // 回调, 避免已经作废的识别对象被闭包留住。
   function release(active) {
+    clearReleaseTimer();
     active.onstart = null;
     active.onresult = null;
     active.onerror = null;
@@ -141,12 +154,19 @@ export function createSpeechInput({
   function stop() {
     if (!recognition) return false;
     if (!started) return abort();
+    const active = recognition;
     try { recognition.stop(); }
     catch (error) {
-      const active = recognition;
       finish(active);
       onError(speechRecognitionError(error));
+      return true;
     }
+    // 先给浏览器机会正常收尾; onend 没来就强制释放。
+    clearReleaseTimer();
+    releaseTimer = schedule(() => {
+      releaseTimer = null;
+      finish(active);
+    }, releaseTimeoutMs);
     return true;
   }
 

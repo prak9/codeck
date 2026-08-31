@@ -22,7 +22,7 @@ import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt }
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
-import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=4';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=5';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {

@@ -248,3 +248,47 @@ test('dispose detaches the lifecycle listeners it installed', () => {
   speech.dispose();
   assert.equal(scope.has('pagehide'), false);
 });
+
+test('a stop that never gets its onend still releases the microphone', async () => {
+  // stop() 之后完全依赖浏览器回调 onend 才会释放。iOS 上切后台或识别从未真正
+  // 启动时 onend 可能不来, 那个对象就一直握着麦克风 —— 话筒图标不走。
+  FakeRecognition.instances.length = 0;
+  const timers = [];
+  const scope = fakeScope();
+  const speech = createSpeechInput({
+    scope,
+    releaseTimeoutMs: 20,
+    schedule: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    cancel: () => {},
+  });
+  speech.start();
+  const active = FakeRecognition.instances.at(-1);
+  active.onstart();
+
+  speech.stop();
+  assert.equal(active.stopped, true);
+  assert.equal(active.aborted, false, '先给浏览器机会正常收尾');
+
+  timers.at(-1).fn();          // onend 始终没来, 兜底定时器到点
+  assert.equal(active.aborted, true, '兜底必须真正释放');
+  assert.equal(speech.active, false);
+});
+
+test('a stop that does get its onend cancels the fallback', () => {
+  FakeRecognition.instances.length = 0;
+  let cancelled = 0;
+  const speech = createSpeechInput({
+    scope: fakeScope(),
+    releaseTimeoutMs: 20,
+    schedule: () => 1,
+    cancel: () => { cancelled += 1; },
+  });
+  speech.start();
+  const active = FakeRecognition.instances.at(-1);
+  active.onstart();
+  speech.stop();
+  active.onend();
+
+  assert.equal(active.aborted, true);
+  assert.ok(cancelled >= 1, '正常收尾后不该留着定时器');
+});
