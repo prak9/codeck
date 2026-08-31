@@ -14,6 +14,7 @@ import {
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
+  userMessageDeliveryBaseline,
   userMessageText,
 } from '../public/agent-model.js';
 
@@ -478,14 +479,91 @@ test('an accepted tmux message without a running turn survives stale snapshots',
   assert.equal(reconciled.turns.some((turn) => turn.deliveryOnly), false);
 });
 
+test('history expansion cannot impersonate a newly accepted repeated message', () => {
+  const expanded = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      {
+        id: 'turn-history-1', status: 'completed',
+        items: [{
+          id: 'user-history-1', type: 'userMessage', content: [{ type: 'text', text: 'Earlier' }],
+        }],
+      },
+      {
+        id: 'turn-history-2', status: 'completed',
+        items: [{
+          id: 'user-history-2', type: 'userMessage', content: [{ type: 'text', text: 'Earlier again' }],
+        }],
+      },
+      {
+        id: 'turn-old-repeat', status: 'completed',
+        items: [{
+          id: 'user-old-repeat', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+        }],
+      },
+      {
+        id: 'turn-recent', status: 'completed',
+        items: [
+          { id: 'user-recent', type: 'userMessage', content: [{ type: 'text', text: '继续' }] },
+          { id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: '检查结果' }] },
+        ],
+      },
+    ],
+  });
+
+  const accepted = applyAcceptedUserMessage(expanded, {
+    text: '怎么样了',
+    commandId: 'command-12345678',
+    baselineVersion: 2,
+    baselineUserMessageId: 'user-anchor',
+    baselineTurnId: 'turn-recent',
+    baselineMatchingTextCount: 0,
+  });
+
+  assert.notEqual(accepted, expanded, 'history inserted before the stable anchor is not this send');
+  assert.equal(accepted.turns.at(-1).items[0].id, 'delivery:command-12345678');
+
+  const preserved = reconcileAgentThreadRefresh(accepted, expanded);
+  assert.equal(preserved.turns.at(-1).items[0].id, 'delivery:command-12345678');
+
+  const actual = normalizeAgentThread('codex', {
+    ...expanded,
+    turns: [...expanded.turns, {
+      id: 'turn-new', status: 'inProgress',
+      items: [{
+        id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }],
+      }],
+    }],
+  });
+  const responseRace = applyAcceptedUserMessage(actual, {
+    text: '怎么样了',
+    commandId: 'command-racing-response',
+    baselineVersion: 2,
+    baselineUserMessageId: 'user-anchor',
+    baselineTurnId: 'turn-recent',
+    baselineMatchingTextCount: 0,
+  });
+  assert.equal(responseRace, actual, 'the real post-anchor message wins the response race');
+
+  const reconciled = reconcileAgentThreadRefresh(preserved, actual);
+  assert.deepEqual(reconciled.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.type === 'userMessage').map((item) => item.id), [
+    'user-history-1', 'user-history-2', 'user-old-repeat', 'user-recent', 'user-anchor', 'user-new',
+  ]);
+});
+
 test('repeated accepted messages reconcile one at a time in transcript order', () => {
   const empty = normalizeAgentThread('codex', { id: 'thread-1', turns: [] });
+  const firstBaseline = userMessageDeliveryBaseline(empty, '怎么样了');
   const first = applyAcceptedUserMessage(empty, {
-    text: '怎么样了', commandId: 'command-first',
+    text: '怎么样了', commandId: 'command-first', ...firstBaseline,
   });
+  const secondBaseline = userMessageDeliveryBaseline(first, '怎么样了');
   const second = applyAcceptedUserMessage(first, {
-    text: '怎么样了', commandId: 'command-second',
+    text: '怎么样了', commandId: 'command-second', ...secondBaseline,
   });
+  assert.equal(firstBaseline.baselineMatchingTextCount, 0);
+  assert.equal(secondBaseline.baselineMatchingTextCount, 1);
   const oneActual = reconcileAgentThreadRefresh(second, normalizeAgentThread('codex', {
     id: 'thread-1',
     turns: [{
@@ -522,6 +600,53 @@ test('repeated accepted messages reconcile one at a time in transcript order', (
     'user-1', 'user-2',
   ]);
   assert.equal(bothActual.turns.some((turn) => turn.deliveryOnly), false);
+});
+
+test('a sparse server echo cannot erase the stable delivery anchor', () => {
+  const base = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [{
+        id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: '继续' }],
+      }],
+    }],
+  });
+  const accepted = applyAcceptedUserMessage(base, {
+    turnId: 'turn-1', text: '怎么样了', commandId: 'command-12345678',
+    ...userMessageDeliveryBaseline(base, '怎么样了'),
+  });
+  const serverEcho = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [
+        base.turns[0].items[0],
+        {
+          id: 'delivery:command-12345678', type: 'userMessage',
+          content: [{ type: 'text', text: '怎么样了' }], delivery: { status: 'accepted' },
+        },
+      ],
+    }],
+  });
+
+  const preserved = reconcileAgentThreadRefresh(accepted, serverEcho);
+  const pending = preserved.turns[0].items.at(-1);
+  assert.equal(pending.delivery.baselineVersion, 2);
+  assert.equal(pending.delivery.baselineUserMessageId, 'user-anchor');
+
+  const actual = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [
+        base.turns[0].items[0],
+        { id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: '怎么样了' }] },
+      ],
+    }],
+  });
+  assert.deepEqual(reconcileAgentThreadRefresh(preserved, actual).turns[0].items
+    .map((item) => item.id), ['user-anchor', 'user-new']);
 });
 
 test('a live user item replaces its matching no-turn delivery without a duplicate flash', () => {
@@ -562,7 +687,11 @@ test('an Agent update that wins the send-response race prevents a duplicate acce
   });
 
   const updated = applyAcceptedUserMessage(actual, {
-    text: '怎么样了', commandId: 'command-12345678', baselineUserCount: 1,
+    text: '怎么样了', commandId: 'command-12345678',
+    baselineVersion: 2,
+    baselineUserMessageId: 'user-old',
+    baselineTurnId: 'turn-old',
+    baselineMatchingTextCount: 0,
   });
 
   assert.equal(updated, actual);

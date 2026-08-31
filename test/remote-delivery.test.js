@@ -15,12 +15,25 @@ const input = {
 };
 
 test('an uncertain retry reuses its command id while the server epoch is unchanged', () => {
-  const first = prepareDeliveryAttempt(null, { ...input, mode: 'followUp', baselineUserCount: 7 }, {
+  const first = prepareDeliveryAttempt(null, {
+    ...input,
+    mode: 'followUp',
+    baselineVersion: 2,
+    baselineUserMessageId: 'user-7',
+    baselineTurnId: 'turn-7',
+    baselineMatchingTextCount: 0,
+  }, {
     serverEpoch: 'epoch-1',
     createId: () => 'command-12345678',
   });
   const retry = prepareDeliveryAttempt(first, {
-    ...input, mode: 'steer', turnId: 'turn-2', baselineUserCount: 8,
+    ...input,
+    mode: 'steer',
+    turnId: 'turn-2',
+    baselineVersion: 2,
+    baselineUserMessageId: 'user-8',
+    baselineTurnId: 'turn-8',
+    baselineMatchingTextCount: 1,
   }, {
     serverEpoch: 'epoch-1',
     createId: () => 'should-not-run',
@@ -31,7 +44,9 @@ test('an uncertain retry reuses its command id while the server epoch is unchang
   assert.equal(retry.commandId, 'command-12345678');
   assert.equal(retry.mode, 'followUp');
   assert.equal(retry.turnId, null);
-  assert.equal(retry.baselineUserCount, 7);
+  assert.equal(retry.baselineUserMessageId, 'user-7');
+  assert.equal(retry.baselineTurnId, 'turn-7');
+  assert.equal(retry.baselineMatchingTextCount, 0);
 });
 
 test('an uncertain delivery is blocked after a server restart', () => {

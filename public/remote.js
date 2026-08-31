@@ -11,14 +11,14 @@ import {
   reconcileAgentThreadRefresh,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
-  threadUserMessageCount,
   tmuxSessionsToThreads,
+  userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=27';
+} from './agent-model.js?v=28';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
-import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=2';
+import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=3';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
@@ -1947,7 +1947,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
         attachmentIds: attachments.map((attachment) => attachment.id),
         mode: running ? 'steer' : 'followUp',
         turnId: running?.id || null,
-        baselineUserCount: threadUserMessageCount(state.thread),
+        ...userMessageDeliveryBaseline(state.thread, text),
       };
       deliveryKey = deliveryAttemptKey(deliveryInput);
       delivery = prepareDeliveryAttempt(state.pendingDeliveries.get(deliveryKey), deliveryInput, {
@@ -1995,7 +1995,10 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
               turnId: delivery.turnId,
               text: message,
               commandId: delivery.commandId,
-              baselineUserCount: delivery.baselineUserCount,
+              baselineVersion: delivery.baselineVersion,
+              baselineUserMessageId: delivery.baselineUserMessageId,
+              baselineTurnId: delivery.baselineTurnId,
+              baselineMatchingTextCount: delivery.baselineMatchingTextCount,
             });
           }
           delete state.thread.tmux.commandOutput;

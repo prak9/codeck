@@ -22,31 +22,45 @@ function copyTurn(turn) {
   };
 }
 
-function threadUserMessages(thread) {
-  return asArray(thread?.turns).flatMap((turn) => (
+function threadUserMessageEntries(thread) {
+  return asArray(thread?.turns).flatMap((turn, turnIndex) => (
     asArray(turn?.items).filter((item) => item?.type === 'userMessage')
+      .map((item) => ({ item, turn, turnIndex }))
   ));
 }
 
-export function threadUserMessageCount(thread) {
-  return threadUserMessages(thread).length;
+function threadUserMessages(thread) {
+  return threadUserMessageEntries(thread).map((entry) => entry.item);
+}
+
+function usersAfterDeliveryBaseline(thread, delivery) {
+  if (delivery?.baselineVersion !== 2) return null;
+  const incoming = threadUserMessageEntries(thread).filter((entry) => !entry.item.delivery);
+  if (delivery.baselineUserMessageId) {
+    const anchorIndex = incoming.findIndex((entry) => entry.item.id === delivery.baselineUserMessageId);
+    return anchorIndex < 0 ? null : incoming.slice(anchorIndex + 1);
+  }
+  if (delivery.baselineTurnId) {
+    const turnIndex = asArray(thread?.turns).findIndex((turn) => turn.id === delivery.baselineTurnId);
+    return turnIndex < 0 ? null : incoming.filter((entry) => entry.turnIndex > turnIndex);
+  }
+  return incoming;
+}
+
+function matchingUserAfterDeliveryBaseline(thread, deliveryItem) {
+  const candidates = usersAfterDeliveryBaseline(thread, deliveryItem.delivery);
+  if (!candidates) return null;
+  const ordinal = Number.isSafeInteger(deliveryItem.delivery?.baselineMatchingTextCount)
+    && deliveryItem.delivery.baselineMatchingTextCount >= 0
+    ? deliveryItem.delivery.baselineMatchingTextCount
+    : 0;
+  return candidates.filter((entry) => userMessageText(entry.item) === userMessageText(deliveryItem))[ordinal]?.item || null;
 }
 
 function resolvedDeliveryIds(current, refreshed) {
-  const incomingUsers = threadUserMessages(refreshed).filter((item) => !item.delivery);
-  const used = new Set();
   const resolved = new Set();
   for (const delivery of threadUserMessages(current).filter((item) => item.delivery)) {
-    const baseline = delivery.delivery?.baselineUserCount;
-    if (!Number.isSafeInteger(baseline) || baseline < 0) continue;
-    const index = incomingUsers.findIndex((item, candidateIndex) => (
-      candidateIndex >= baseline
-      && !used.has(candidateIndex)
-      && userMessageText(item) === userMessageText(delivery)
-    ));
-    if (index < 0) continue;
-    used.add(index);
-    resolved.add(delivery.id);
+    if (matchingUserAfterDeliveryBaseline(refreshed, delivery)) resolved.add(delivery.id);
   }
   return resolved;
 }
@@ -65,7 +79,12 @@ function mergeTurnUserMessages(current, incoming, resolvedDeliveries = new Set()
     ));
     if (index < 0) return currentItem;
     used.add(index);
-    return incomingUsers[index];
+    const incomingItem = incomingUsers[index];
+    if (!currentItem.delivery || !incomingItem.delivery) return incomingItem;
+    return {
+      ...incomingItem,
+      delivery: { ...currentItem.delivery, ...incomingItem.delivery },
+    };
   });
   incomingUsers.forEach((item, index) => {
     if (!used.has(index)) users.push(item);
@@ -146,6 +165,29 @@ export function normalizeAgentThread(provider, thread) {
     provider,
     preview: thread?.name || thread?.preview || '新会话',
     turns: asArray(thread?.turns).map(copyTurn),
+  };
+}
+
+export function userMessageDeliveryBaseline(thread, text) {
+  const entries = threadUserMessageEntries(thread);
+  const actual = entries.filter((entry) => !entry.item.delivery);
+  const anchor = actual.at(-1);
+  const baselineUserMessageId = typeof anchor?.item.id === 'string' && anchor.item.id
+    ? anchor.item.id
+    : null;
+  const baselineTurnId = anchor?.turn.id || [...asArray(thread?.turns)]
+    .reverse().find((turn) => !turn.deliveryOnly)?.id || null;
+  const baselineMatchingTextCount = entries.filter(({ item }) => (
+    item.delivery?.baselineVersion === 2
+    && item.delivery.baselineUserMessageId === baselineUserMessageId
+    && item.delivery.baselineTurnId === baselineTurnId
+    && userMessageText(item) === text
+  )).length;
+  return {
+    baselineVersion: 2,
+    baselineUserMessageId,
+    baselineTurnId,
+    baselineMatchingTextCount,
   };
 }
 
@@ -310,7 +352,8 @@ export function applyAgentEvent(currentThread, method, params = {}) {
 }
 
 export function applyAcceptedUserMessage(currentThread, {
-  turnId, text, commandId, baselineUserCount,
+  turnId, text, commandId, baselineVersion, baselineUserMessageId, baselineTurnId,
+  baselineMatchingTextCount,
 } = {}) {
   if (!currentThread || !commandId || typeof text !== 'string' || !text.trim()) {
     return currentThread;
@@ -318,25 +361,29 @@ export function applyAcceptedUserMessage(currentThread, {
   const id = `delivery:${commandId}`;
   const currentUsers = threadUserMessages(currentThread);
   if (currentUsers.some((item) => item.id === id)) return currentThread;
-  const baseline = Number.isSafeInteger(baselineUserCount) && baselineUserCount >= 0
-    ? baselineUserCount
-    : currentUsers.length;
-  const actualUsers = currentUsers.filter((item) => !item.delivery);
-  if (actualUsers.some((item, index) => (
-    index >= baseline && userMessageText(item) === text
-  ))) return currentThread;
+  const fallback = userMessageDeliveryBaseline(currentThread, text);
+  const delivery = baselineVersion === 2 ? {
+    status: 'accepted',
+    baselineVersion,
+    baselineUserMessageId: baselineUserMessageId || null,
+    baselineTurnId: baselineTurnId || null,
+    baselineMatchingTextCount: Number.isSafeInteger(baselineMatchingTextCount)
+      && baselineMatchingTextCount >= 0 ? baselineMatchingTextCount : 0,
+  } : { status: 'accepted', ...fallback };
+  const acceptedItem = {
+    id,
+    type: 'userMessage',
+    content: [{ type: 'text', text }],
+    delivery,
+  };
+  if (matchingUserAfterDeliveryBaseline(currentThread, acceptedItem)) return currentThread;
   const targetTurnId = turnId || `delivery-turn:${commandId}`;
   return updateTurn(currentThread, targetTurnId, (turn) => {
     const items = asArray(turn.items);
     return {
       ...turn,
       ...(!turnId ? { status: 'completed', deliveryOnly: true } : {}),
-      items: [...items, {
-        id,
-        type: 'userMessage',
-        content: [{ type: 'text', text }],
-        delivery: { status: 'accepted', baselineUserCount: baseline },
-      }],
+      items: [...items, acceptedItem],
     };
   });
 }

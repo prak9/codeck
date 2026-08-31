@@ -31,9 +31,13 @@ export function prepareDeliveryAttempt(current, input, {
     expiresAt: now() + receiptTtlMs,
     mode: input.mode === 'steer' ? 'steer' : 'followUp',
     turnId: input.turnId || null,
-    baselineUserCount: Number.isSafeInteger(input.baselineUserCount) && input.baselineUserCount >= 0
-      ? input.baselineUserCount
-      : null,
+    ...(input.baselineVersion === 2 ? {
+      baselineVersion: 2,
+      baselineUserMessageId: input.baselineUserMessageId || null,
+      baselineTurnId: input.baselineTurnId || null,
+      baselineMatchingTextCount: Number.isSafeInteger(input.baselineMatchingTextCount)
+        && input.baselineMatchingTextCount >= 0 ? input.baselineMatchingTextCount : 0,
+    } : {}),
   };
 }
 
