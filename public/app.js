@@ -8,7 +8,7 @@ import {
   isTerminalCopyShortcut,
   resetTerminalInput,
 } from './terminal-utils.js?v=10';
-import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=5';
+import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=6';
 import { acceptStreamCursor } from './stream-state.js?v=3';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {

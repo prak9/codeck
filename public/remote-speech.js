@@ -42,6 +42,7 @@ export function createSpeechInput({
 } = {}) {
   const Recognition = speechRecognitionConstructor(scope);
   let recognition = null;
+  let instance = null;
   let listening = false;
   let started = false;
   let releaseTimer = null;
@@ -70,6 +71,18 @@ export function createSpeechInput({
     try { active.abort(); } catch { /* It may have already finished. */ }
   }
 
+  // WebKit 把音频会话绑在识别对象上, 每次 new 一个都会留下一个拿不回来的旧会话
+  // —— iOS 上切到桌面后话筒图标不走。复用同一个对象, 只有它拒绝重启时才换新的。
+  function recognizer() {
+    if (instance) return instance;
+    instance = new Recognition();
+    instance.lang = lang;
+    instance.continuous = false;
+    instance.interimResults = true;
+    instance.maxAlternatives = 1;
+    return instance;
+  }
+
   function finish(active) {
     if (recognition !== active) return;
     recognition = null;
@@ -78,20 +91,29 @@ export function createSpeechInput({
     release(active);
   }
 
-  function begin(active) {
+  function begin(active, retried = false) {
     if (recognition !== active) return false;
     try {
       started = true;
       active.start();
       return true;
     } catch (error) {
+      if (!retried && instance === active) {
+        // 复用的对象拒绝重启 (InvalidStateError 等): 换一个新的再来一次,
+        // 否则语音功能会就此死掉。
+        release(active);
+        instance = null;
+        recognition = null;
+        started = false;
+        return start(true);
+      }
       finish(active);
       onError(speechRecognitionError(error));
       return false;
     }
   }
 
-  async function beginWithLocalRecognition(active, availability) {
+  async function beginWithLocalRecognition(active, availability, retried = false) {
     let local = false;
     try {
       const result = await availability;
@@ -108,16 +130,12 @@ export function createSpeechInput({
       catch { local = false; }
     }
     if (!local) onStatus('本地识别不可用，正在使用浏览器在线识别…');
-    begin(active);
+    begin(active, retried);
   }
 
-  function start() {
+  function start(retried = false) {
     if (!Recognition || recognition) return false;
-    const active = new Recognition();
-    active.lang = lang;
-    active.continuous = false;
-    active.interimResults = true;
-    active.maxAlternatives = 1;
+    const active = recognizer();
     active.onstart = () => recognition === active && setListening(true);
     active.onresult = (event) => {
       if (recognition !== active) return;
@@ -143,12 +161,12 @@ export function createSpeechInput({
       try {
         availability = Recognition.available({ langs: [lang], processLocally: true, quality: 'dictation' });
       } catch {
-        return begin(active);
+        return begin(active, retried);
       }
-      beginWithLocalRecognition(active, availability);
+      beginWithLocalRecognition(active, availability, retried);
       return true;
     }
-    return begin(active);
+    return begin(active, retried);
   }
 
   function stop() {
@@ -182,7 +200,8 @@ export function createSpeechInput({
 
   // 手机切后台或锁屏时页面并不卸载, 识别对象会继续持有麦克风。
   const releaseOnHide = () => {
-    if (scope?.document?.visibilityState === 'hidden') abort();
+    if (scope?.document?.visibilityState !== 'hidden') return;
+    if (abort()) onStatus('已释放麦克风（页面切到后台）');
   };
   scope?.addEventListener?.('pagehide', abort);
   scope?.document?.addEventListener?.('visibilitychange', releaseOnHide);

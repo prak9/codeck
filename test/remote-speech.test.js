@@ -292,3 +292,49 @@ test('a stop that does get its onend cancels the fallback', () => {
   assert.equal(active.aborted, true);
   assert.ok(cancelled >= 1, '正常收尾后不该留着定时器');
 });
+
+test('the recognizer instance is reused instead of allocated per start', async () => {
+  // WebKit 把音频会话绑在识别对象上, 每次 new 一个会留下拿不回来的旧会话 ——
+  // iOS 上切到桌面后话筒图标不走, 这是唯一还没试过的机制。
+  FakeRecognition.instances.length = 0;
+  const speech = createSpeechInput({ scope: fakeScope() });
+
+  speech.start();
+  FakeRecognition.instances.at(-1).onend();
+  speech.start();
+  FakeRecognition.instances.at(-1).onend();
+
+  assert.equal(FakeRecognition.instances.length, 1, '同一个对象反复使用');
+});
+
+test('a recognizer that refuses to restart is replaced', async () => {
+  // 复用的对象若拒绝再次 start (InvalidStateError), 必须换新的, 不能把语音功能弄死。
+  FakeRecognition.instances.length = 0;
+  const errors = [];
+  class Stubborn extends FakeRecognition {
+    start() { if (Stubborn.instances.indexOf(this) === 0) { throw new Error('InvalidStateError'); } this.started = true; }
+  }
+  Stubborn.instances = FakeRecognition.instances;
+  const scope = fakeScope();
+  scope.SpeechRecognition = Stubborn;
+  const speech = createSpeechInput({ scope, onError: (m) => errors.push(m) });
+
+  assert.equal(speech.start(), true, '换新对象后应当启动成功');
+  assert.equal(FakeRecognition.instances.length, 2);
+  assert.deepEqual(errors, [], '不应把这次重试暴露成用户可见的错误');
+});
+
+test('releasing because the page was hidden reports it', async () => {
+  // 手机上无法开控制台。把"切后台时确实释放了"变成界面上看得到的一句话,
+  // 这样才能区分"处理器没跑" 和 "跑了但 iOS 仍然占着麦克风"。
+  const statuses = [];
+  const scope = fakeScope();
+  const speech = createSpeechInput({ scope, onStatus: (m) => statuses.push(m) });
+  speech.start();
+  FakeRecognition.instances.at(-1).onstart();
+
+  scope.document.visibilityState = 'hidden';
+  scope.fire('doc:visibilitychange');
+
+  assert.ok(statuses.some((m) => m.includes('已释放麦克风')), statuses.join(' | '));
+});
