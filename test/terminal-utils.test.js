@@ -24,11 +24,14 @@ function sizingHarness(width, height) {
     },
   };
   const fit = {
+    proposeDimensions() {
+      return {
+        cols: Math.max(2, Math.floor(width / (terminal.options.fontSize * 0.6))),
+        rows: Math.max(1, Math.floor(height / (terminal.options.fontSize * 1.2))),
+      };
+    },
     fit() {
-      terminal.resize(
-        Math.max(2, Math.floor(width / (terminal.options.fontSize * 0.6))),
-        Math.max(1, Math.floor(height / (terminal.options.fontSize * 1.2))),
-      );
+      throw new Error('fitTerminalGrid must measure, not resize, while searching');
     },
   };
   return { fit, sizes, terminal };
@@ -265,4 +268,21 @@ test('an overview that fits keeps the requested grid exactly', () => {
   });
   assert.deepEqual(result, { cols: 80, rows: 20, overview: true });
   assert.deepEqual(harness.sizes.at(-1), [80, 20]);
+});
+
+test('fitting resizes the terminal at most once, whatever the font search costs', () => {
+  // 每次 resize 都会让 xterm 重排并重新折行, 而重新折行是有损的: 先变宽再变窄,
+  // 原来的断行就找不回来了。搜索字号期间反复 resize, 最后又可能落回服务端已知的
+  // 同一个网格 —— 那样不会发出 resize, tmux 不重绘, 损坏就永久留在屏幕上。
+  const harness = sizingHarness(460, 18);
+  fitTerminalGrid(harness.terminal, harness.fit, { baseFontSize: 16, overviewSize: { cols: 180, rows: 40 } });
+  assert.equal(harness.sizes.length, 1, `搜索期间发生了额外的 resize: ${JSON.stringify(harness.sizes)}`);
+});
+
+test('a fit that lands on the current grid does not touch the buffer at all', () => {
+  const harness = sizingHarness(460, 64);
+  harness.terminal.cols = 80;
+  harness.terminal.rows = 20;
+  fitTerminalGrid(harness.terminal, harness.fit, { baseFontSize: 16, overviewSize: { cols: 80, rows: 20 } });
+  assert.deepEqual(harness.sizes, [], '网格没变就不该 resize —— 那正是不重绘却已损坏的来源');
 });

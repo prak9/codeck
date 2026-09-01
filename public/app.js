@@ -7,7 +7,7 @@ import {
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=10';
+} from './terminal-utils.js?v=11';
 import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';

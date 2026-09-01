@@ -205,19 +205,31 @@ export function createTerminalResizeGate(sendResize) {
 }
 
 export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {
+  // Measure while searching for a font size; never resize. Each terminal.resize() rewraps
+  // the buffer, and rewrapping is lossy — widen then narrow back and the original line
+  // breaks are gone. The search ran fit.fit() up to five times, so it could land back on
+  // the grid the server already had: the resize gate then sent nothing, tmux never
+  // repainted, and the rewrap damage stayed on screen. Toggling the input bar in overview
+  // mode does exactly that, because there the fit moves the font size, not the grid.
+  const measure = () => {
+    const proposed = fit.proposeDimensions?.();
+    return Number.isFinite(proposed?.cols) && Number.isFinite(proposed?.rows)
+      ? proposed
+      : { cols: terminal.cols, rows: terminal.rows };
+  };
   terminal.options.fontSize = baseFontSize;
-  fit.fit();
-  const readableTarget = clampTerminalGrid(terminal.cols, terminal.rows);
+  let available = measure();
+  const readableTarget = clampTerminalGrid(available.cols, available.rows);
   let overview = Boolean(overviewSize);
   let target = overview ? clampTerminalGrid(overviewSize.cols, overviewSize.rows) : readableTarget;
-  const fitsTarget = () => terminal.cols >= target.cols && terminal.rows >= target.rows;
+  const fitsTarget = () => available.cols >= target.cols && available.rows >= target.rows;
   const shrinkToFit = () => {
     for (let attempt = 0; attempt < 4 && !fitsTarget(); attempt += 1) {
-      const ratio = Math.min(terminal.cols / target.cols, terminal.rows / target.rows, 1);
+      const ratio = Math.min(available.cols / target.cols, available.rows / target.rows, 1);
       const nextFontSize = Math.max(1, Math.floor(terminal.options.fontSize * ratio * 9.7) / 10);
       if (nextFontSize === terminal.options.fontSize) break;
       terminal.options.fontSize = nextFontSize;
-      fit.fit();
+      available = measure();
     }
   };
 
@@ -228,10 +240,10 @@ export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = nu
     overview = false;
     target = readableTarget;
     terminal.options.fontSize = baseFontSize;
-    fit.fit();
+    available = measure();
     shrinkToFit();
   }
-  const viewport = fitsTarget() ? target : clampTerminalGrid(terminal.cols, terminal.rows);
+  const viewport = fitsTarget() ? target : clampTerminalGrid(available.cols, available.rows);
   if (viewport.cols !== terminal.cols || viewport.rows !== terminal.rows) terminal.resize(viewport.cols, viewport.rows);
   return { ...viewport, overview };
 }
