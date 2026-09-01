@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, detectPaneAgents, findCodexHistorySessionId, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexHistory, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId } from '../src/agents.js';
+import { agentKindFromCommand, detectPaneAgents, findCodexHistorySessionId, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexHistory, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId, uniqueCodexStartMatch } from '../src/agents.js';
 
 function writeProcProcess(root, {
   pid, ppid, pgrp = pid, session = pid, startTicks = 0, command = '', children = [], environment = '', cwd = null,
@@ -1166,4 +1166,57 @@ test('ps is asked for one field per -o, never a comma-joined header', () => {
     assert.equal(argument.includes(','), false, `"${argument}" would collapse into one column`);
   }
   assert.equal(PS_ARGUMENTS.filter((a) => a.endsWith('=')).length, 4, 'pid, ppid, etimes, args');
+});
+
+test('an ambiguous pane still resolves when its start time matches exactly one rollout', () => {
+  // 现场情形: research 与 report 两个 codex 会话共用 cwd /home/x/py, 可见文本
+  // 去不掉歧义, 于是身份被整个放弃 —— 正文与历史全空。但进程启动时刻与它自己的
+  // rollout 是秒级吻合且唯一的, 这条线索原本被丢掉了。
+  const startedAt = 1_700_000_000_000;
+  const codex = {
+    starts: [
+      { id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 5_000 },
+      { id: 'bbbbbbbb-0000-4000-8000-000000000002', startedAt: startedAt + 400_000 },
+    ],
+    writers: [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 1_000 }],
+  };
+  assert.equal(
+    uniqueCodexStartMatch({ startedAt }, codex),
+    'aaaaaaaa-0000-4000-8000-000000000001',
+  );
+});
+
+test('two rollouts started together stay ambiguous and are refused', () => {
+  // 猜错的后果是把别的会话的对话显示到这边, 所以只有唯一时才认。
+  const startedAt = 1_700_000_000_000;
+  const codex = {
+    starts: [
+      { id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 2_000 },
+      { id: 'bbbbbbbb-0000-4000-8000-000000000002', startedAt: startedAt + 4_000 },
+    ],
+  };
+  assert.equal(uniqueCodexStartMatch({ startedAt }, codex), null);
+});
+
+test('a rollout already claimed by another pane is not reused', () => {
+  const startedAt = 1_700_000_000_000;
+  const codex = {
+    starts: [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 3_000 }],
+    writers: [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 1_000 }],
+  };
+  assert.equal(uniqueCodexStartMatch({ startedAt }, codex, new Set(['aaaaaaaa-0000-4000-8000-000000000001'])), null);
+});
+
+test('a start time far from every rollout resolves to nothing', () => {
+  const startedAt = 1_700_000_000_000;
+  const codex = { starts: [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 600_000 }] };
+  assert.equal(uniqueCodexStartMatch({ startedAt }, codex), null);
+});
+
+test('a rollout with no live writer lock is refused', () => {
+  // 早已结束的会话也可能恰好落在启动时间窗口里; writer lock 是活进程才持有的,
+  // 缺了它就不能认 —— 否则会把陈旧会话安到别的 pane 上。
+  const startedAt = 1_700_000_000_000;
+  const codex = { starts: [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 3_000 }] };
+  assert.equal(uniqueCodexStartMatch({ startedAt }, codex), null);
 });

@@ -611,6 +611,31 @@ function nearestCodexCandidate(startedAt, starts) {
   return candidate?.distance <= 120_000 ? candidate : null;
 }
 
+// 可见文本去不掉歧义时的兜底: 进程启动时刻与 rollout 创建时刻是秒级吻合的强信号,
+// 但原来只要 visibleMatch.matched 为真就被整个丢弃 —— 现场表现是同一个 cwd 下开了
+// 两个 codex 会话 (research 与 report 都在 /home/x/py), 两边都拿不到身份, 正文与
+// 历史全空。只有"窗口内唯一、且没被别的 pane 认领"时才采用: 猜错的后果是把另一个
+// 会话的对话显示到这边, 所以宁可继续放弃。
+const UNIQUE_START_MATCH_WINDOW_MS = 30_000;
+
+export function uniqueCodexStartMatch(process, codex, claimed = new Set()) {
+  const startedAt = process?.startedAt;
+  if (!Number.isFinite(startedAt)) return null;
+  const within = (list) => (list || []).filter((item) => (
+    Math.abs(item.startedAt - startedAt) <= UNIQUE_START_MATCH_WINDOW_MS
+  ));
+  // 唯一性必须在剔除"已认领"之前判断: 否则别的 pane 认领掉其余候选后, 会把本来
+  // 有歧义的情形伪装成唯一。
+  const rollouts = within(codex?.starts);
+  if (rollouts.length !== 1 || claimed.has(rollouts[0].id)) return null;
+  // 只有启动时刻还不够: 一个早已结束的旧会话也可能恰好落在窗口里 (测试
+  // "Codex rollout cwd disambiguates identical prompts" 就是这种情形, 它会把陈旧
+  // 会话安到别的 pane 上)。writer lock 是活着的进程才会持有的, 用它做第二重证据。
+  const locks = within(codex?.writers);
+  if (locks.length !== 1 || locks[0].id !== rollouts[0].id) return null;
+  return rollouts[0].id;
+}
+
 export function resolveCodexSessionId(process, codex) {
   const resumed = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1];
   if (resumed) return resumed;
@@ -911,6 +936,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       : []
   ))));
 
+  // 同一轮里已经被确定归属的 rollout, 不再作为其它 pane 的兜底候选。
+  const claimedCodexIds = new Set();
+  for (const agent of agents.values()) if (agent?.kind === 'codex' && agent.id) claimedCodexIds.add(agent.id);
   for (const {
     pane, process, kind, cwd, fingerprint, visiblePrompt, promptChanged,
     registered, explicitId: providerExplicitId, openSessionId, identityAuditDelay,
@@ -944,7 +972,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
       let id = explicitId || verifiedVisibleId || rememberedId
-        || (visibleMatch.matched ? null : resolveCodexSessionId(process, codex));
+        || (visibleMatch.matched
+          ? uniqueCodexStartMatch(process, codex, claimedCodexIds)
+          : resolveCodexSessionId(process, codex));
       if (explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
       let name = codex.names.get(id) || codexPreview(id, codex);
       if (!name) {
@@ -954,6 +984,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
           name = paneIdentity.name || codex.names.get(id) || codexPreview(id, codex);
         }
       }
+      if (id) claimedCodexIds.add(id);
       agent = { kind: 'codex', id, name, ...runtime };
     } else if (kind === 'claude') {
       const id = registered?.id || providerExplicitId;
