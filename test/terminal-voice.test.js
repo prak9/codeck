@@ -1,17 +1,10 @@
 import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { speechDraftForTerminal } from '../public/remote-speech.js';
 
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-
-test('terminal voice drafts cannot contain an implicit Enter', () => {
-  assert.equal(speechDraftForTerminal('  检查这个问题\n然后修复  '), '检查这个问题 然后修复');
-  assert.equal(speechDraftForTerminal('git status\r\ngit diff'), 'git status git diff');
-  assert.equal(speechDraftForTerminal(''), '');
-});
 
 test('normal terminal voice input uses an inline Remote-style draft composer', () => {
   assert.ok(html.indexOf('SpeechRecognition') < html.indexOf('/styles.css'));
@@ -28,7 +21,7 @@ test('normal terminal voice input uses an inline Remote-style draft composer', (
   assert.match(appJs, /createSpeechInput/);
   assert.match(appJs, /onStatus:\s*\(message\)\s*=>\s*setTerminalVoiceState/);
   assert.match(appJs, /if \(!draft\.value\) draft\.placeholder = message/);
-  assert.match(appJs, /speechDraftForTerminal/);
+  assert.match(appJs, /terminalDraftForSend/);
   assert.match(appJs, /function submitTerminalVoiceDraft\(/);
   assert.match(appJs, /socket\.send\(JSON\.stringify\(\{ type: 'input', data: `\$\{text\}\\r` \}\)\)/);
   assert.doesNotMatch(appJs, /onTranscript:[\s\S]{0,500}socket\.send/);
@@ -48,12 +41,12 @@ test('the terminal input bar is local by default and hands whitelisted keys to t
   // 逐字符直通让打字延迟等于 RTT。默认收进本地输入条, 回车才发一次;
   // 而补全/切模式/中断必须逐键到达 CLI, 否则本地缓冲就把它们吃掉了。
   assert.match(appJs, /if \(writable\) openTerminalComposer\(\)/);
-  assert.match(appJs, /terminalComposerKeyAction\(event, \{ draft: \$\('#terminalVoiceDraft'\)\.value \}\)/);
+  assert.match(appJs, /terminalComposerKeyAction\(event, \{\s*draft: draft\.value,/s);
   assert.match(appJs, /action\.key === 'tab' && action\.shift.*TERMINAL_SHIFT_TAB/s);
   assert.match(appJs, /function handOffTerminalInput\(/);
   // 输入条常驻: 没有会改变终端高度的开关, 也就没有随之而来的重排与重绘问题。
   assert.doesNotMatch(html, /closeTerminalVoiceButton/);
-  assert.match(html, /placeholder="输入后回车发送 · @ Tab Esc 直达 CLI"/);
+  assert.match(html, /placeholder="回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI"/);
 });
 
 test('the input bar renders in the same face the terminal will echo it in', () => {

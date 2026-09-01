@@ -11,10 +11,6 @@ export function mergeSpeechDraft(draft, transcript) {
   return `${base}${separator}${spoken}`;
 }
 
-export function speechDraftForTerminal(draft) {
-  return String(draft || '').replace(/[\r\n]+/gu, ' ').trim();
-}
-
 export function speechRecognitionError(error) {
   const code = typeof error === 'string' ? error : error?.error || error?.name;
   if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'NotAllowedError') {

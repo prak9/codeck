@@ -20,18 +20,29 @@ const CONTROL_KEYS = new Map([
   ['l', 'ctrl-l'],
 ]);
 
-export function terminalComposerKeyAction(event, { draft = '' } = {}) {
+export function terminalComposerKeyAction(event, { draft = '', caret = null, hasSelection = false } = {}) {
   if (!event || event.isComposing) return { type: 'insert' };
   const key = event.key;
+  // Cmd 是浏览器的地盘 —— 复制、粘贴、全选。把它和 Ctrl 一样对待, macOS 上 Cmd+C
+  // 就会给 CLI 发中断而不是复制。
+  const control = event.ctrlKey && !event.metaKey;
 
   if (key === 'Enter') {
+    // Shift+Enter 交给浏览器原生插入换行 —— 那样撤销栈是完整的。
     if (event.shiftKey) return { type: 'insert' };
+    // 行尾反斜杠续行, 与 Codex 和 Claude Code 一致: 换行, 并吃掉那个反斜杠。
+    const before = draft.slice(0, caret ?? draft.length);
+    if (before.endsWith('\\')) return { type: 'newline', stripBackslash: true };
     return { type: 'send' };
   }
+  // Ctrl+J 就是 \n, TUI 读作换行而非提交。
+  if (control && key?.toLowerCase?.() === 'j') return { type: 'newline' };
   // '@' 触发 CLI 的路径补全, 它需要接管后续按键。
   if (key === '@') return { type: 'handoff' };
 
-  if ((event.ctrlKey || event.metaKey) && CONTROL_KEYS.has(key?.toLowerCase?.())) {
+  if (control && CONTROL_KEYS.has(key?.toLowerCase?.())) {
+    // 草稿里选中了文字时 Ctrl+C 是复制; 没有选中才是中断。
+    if (key.toLowerCase() === 'c' && hasSelection) return { type: 'insert' };
     return { type: 'passthrough', key: CONTROL_KEYS.get(key.toLowerCase()) };
   }
   // Shift+Tab 是切换模式, 与补全的 Tab 是两回事, 但都该交给 CLI。
@@ -45,3 +56,8 @@ export function terminalComposerKeyAction(event, { draft = '' } = {}) {
 }
 
 export const TERMINAL_SHIFT_TAB = '\x1b[Z';
+
+// 发送时保留换行。\n 是 Ctrl+J, TUI 读作"换行, 不要提交"; 结尾的 \r 才是提交。
+export function terminalDraftForSend(draft) {
+  return String(draft || '').replace(/\r\n?/gu, '\n').trim();
+}

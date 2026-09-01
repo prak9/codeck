@@ -39,3 +39,29 @@ test('an in-flight IME composition is never intercepted', () => {
   assert.equal(terminalComposerKeyAction(press('Enter', { isComposing: true })).type, 'insert');
   assert.equal(terminalComposerKeyAction(press('Escape', { isComposing: true })).type, 'insert');
 });
+
+test('Ctrl+J inserts a newline instead of doing nothing', () => {
+  // Codex 与 Claude Code 的 TUI 都把 \r 当提交、\n 当换行, Ctrl+J 正是 \n。
+  assert.deepEqual(terminalComposerKeyAction(press('j', { ctrlKey: true })), { type: 'newline' });
+  // Shift+Enter 走浏览器原生插入, 撤销栈才完整; 只有浏览器不认的 Ctrl+J 需要我们动手。
+  assert.equal(terminalComposerKeyAction(press('Enter', { shiftKey: true })).type, 'insert');
+});
+
+test('a trailing backslash turns Enter into a newline and eats the backslash', () => {
+  assert.deepEqual(terminalComposerKeyAction(press('Enter'), { draft: 'first \\', caret: 7 }),
+    { type: 'newline', stripBackslash: true });
+  // 反斜杠不在光标正前方时, 回车仍然是发送。
+  assert.equal(terminalComposerKeyAction(press('Enter'), { draft: 'a \\ b', caret: 5 }).type, 'send');
+});
+
+test('Cmd shortcuts stay with the browser so copy and paste still work', () => {
+  // 之前 metaKey 与 ctrlKey 同等对待, 于是 macOS 上 Cmd+C 会给 CLI 发中断而不是复制。
+  assert.equal(terminalComposerKeyAction(press('c', { metaKey: true })).type, 'insert');
+  assert.equal(terminalComposerKeyAction(press('a', { metaKey: true })).type, 'insert');
+});
+
+test('Ctrl+C copies when something is selected, and interrupts when nothing is', () => {
+  assert.equal(terminalComposerKeyAction(press('c', { ctrlKey: true }), { hasSelection: true }).type, 'insert');
+  assert.deepEqual(terminalComposerKeyAction(press('c', { ctrlKey: true }), { hasSelection: false }),
+    { type: 'passthrough', key: 'ctrl-c' });
+});

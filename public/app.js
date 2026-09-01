@@ -8,11 +8,11 @@ import {
   isTerminalCopyShortcut,
   resetTerminalInput,
 } from './terminal-utils.js?v=11';
-import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './remote-speech.js?v=6';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
-import { terminalComposerKeyAction, TERMINAL_SHIFT_TAB } from './terminal-compose.js?v=1';
+import { terminalComposerKeyAction, terminalDraftForSend, TERMINAL_SHIFT_TAB } from './terminal-compose.js?v=2';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -118,7 +118,7 @@ function setTerminalVoiceState(active, message = '') {
   capture.setAttribute('aria-pressed', String(active));
   capture.setAttribute('aria-label', active ? '停止语音输入' : terminalVoiceHadResult ? '重新语音输入' : '开始语音输入');
   const draft = $('#terminalVoiceDraft');
-  if (!draft.value) draft.placeholder = message || '输入后回车发送 · @ Tab Esc 直达 CLI';
+  if (!draft.value) draft.placeholder = message || '回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI';
   $('#terminalVoiceStatus').textContent = message;
 }
 
@@ -159,7 +159,7 @@ function syncTerminalVoiceControls() {
     trigger.disabled = !connected;
   }
   $('#terminalVoiceCaptureButton').disabled = !connected;
-  $('#sendTerminalVoiceButton').disabled = !connected || !speechDraftForTerminal($('#terminalVoiceDraft').value);
+  $('#sendTerminalVoiceButton').disabled = !connected || !terminalDraftForSend($('#terminalVoiceDraft').value);
   if (!connected && voiceInput.active) {
     voiceInput.abort();
     setTerminalVoiceState(false, '终端连接已断开，语音草稿仍保留。');
@@ -228,6 +228,16 @@ function focusTerminalInput() {
   state.terminal?.focus();
 }
 
+function insertDraftNewline(stripBackslash = false) {
+  const draft = $('#terminalVoiceDraft');
+  const end = draft.selectionEnd;
+  const start = draft.selectionStart - (stripBackslash ? 1 : 0);
+  draft.value = `${draft.value.slice(0, start)}\n${draft.value.slice(end)}`;
+  draft.selectionStart = draft.selectionEnd = start + 1;
+  resizeTerminalVoiceDraft();
+  syncTerminalVoiceControls();
+}
+
 function sendTerminalInput(data) {
   if (!state.canWrite || state.socket?.readyState !== WebSocket.OPEN) return false;
   try {
@@ -250,7 +260,7 @@ function handOffTerminalInput(prefix) {
 
 function submitTerminalVoiceDraft() {
   const socket = state.socket;
-  const text = speechDraftForTerminal($('#terminalVoiceDraft').value);
+  const text = terminalDraftForSend($('#terminalVoiceDraft').value);
   if (!text) return setTerminalVoiceState(false, '请先说话或输入文字。');
   if (!state.canWrite) return setTerminalVoiceState(false, '当前分享链接为只读。');
   if (socket?.readyState !== WebSocket.OPEN) return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
@@ -1331,10 +1341,16 @@ $('#terminalVoiceDraft').addEventListener('input', () => {
   syncTerminalVoiceControls();
 });
 $('#terminalVoiceDraft').addEventListener('keydown', (event) => {
-  const action = terminalComposerKeyAction(event, { draft: $('#terminalVoiceDraft').value });
+  const draft = $('#terminalVoiceDraft');
+  const action = terminalComposerKeyAction(event, {
+    draft: draft.value,
+    caret: draft.selectionStart,
+    hasSelection: draft.selectionStart !== draft.selectionEnd,
+  });
   if (action.type === 'insert') return;
   event.preventDefault();
   if (action.type === 'send') return $('#terminalVoiceComposer').requestSubmit();
+  if (action.type === 'newline') return insertDraftNewline(action.stripBackslash);
   if (action.type === 'passthrough') {
     if (action.key === 'tab' && action.shift) return sendTerminalInput(TERMINAL_SHIFT_TAB);
     return sendTerminalKey(action.key);
