@@ -245,6 +245,9 @@ export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = nu
   }
   const viewport = fitsTarget() ? target : clampTerminalGrid(available.cols, available.rows);
   if (viewport.cols !== terminal.cols || viewport.rows !== terminal.rows) terminal.resize(viewport.cols, viewport.rows);
+  // FitAddon 的 fit() 会在 resize 前清一次渲染缓存, 不走它就少了那一步; 而全览模式下
+  // 变的是字号、网格不动, 那条路径上连 resize 都没有, 屏幕不会自己跟上。统一重绘一次。
+  terminal.refresh?.(0, Math.max(0, terminal.rows - 1));
   return { ...viewport, overview };
 }
 

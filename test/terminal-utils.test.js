@@ -13,6 +13,7 @@ import {
 
 function sizingHarness(width, height) {
   const sizes = [];
+  const repaints = [];
   const terminal = {
     cols: 80,
     rows: 24,
@@ -21,6 +22,9 @@ function sizingHarness(width, height) {
       this.cols = cols;
       this.rows = rows;
       sizes.push([cols, rows]);
+    },
+    refresh(start, end) {
+      repaints.push([start, end]);
     },
   };
   const fit = {
@@ -34,7 +38,7 @@ function sizingHarness(width, height) {
       throw new Error('fitTerminalGrid must measure, not resize, while searching');
     },
   };
-  return { fit, sizes, terminal };
+  return { fit, repaints, sizes, terminal };
 }
 
 test('terminal grid uses the same usable floor in the browser and server', () => {
@@ -285,4 +289,21 @@ test('a fit that lands on the current grid does not touch the buffer at all', ()
   harness.terminal.rows = 20;
   fitTerminalGrid(harness.terminal, harness.fit, { baseFontSize: 16, overviewSize: { cols: 80, rows: 20 } });
   assert.deepEqual(harness.sizes, [], '网格没变就不该 resize —— 那正是不重绘却已损坏的来源');
+});
+
+test('fitting always repaints, since the font size can change without the grid moving', () => {
+  // FitAddon 的 fit() 会在 resize 前清一次渲染缓存; 我们不再走 fit() 就少了那一步。
+  // 而全览模式下调整的是字号、网格不动, 那条路径上根本没有 resize 来触发重绘。
+  const harness = sizingHarness(460, 64);
+  harness.terminal.cols = 80;
+  harness.terminal.rows = 20;
+  fitTerminalGrid(harness.terminal, harness.fit, { baseFontSize: 16, overviewSize: { cols: 80, rows: 20 } });
+  assert.deepEqual(harness.sizes, [], '网格没变就不该 resize');
+  assert.deepEqual(harness.repaints, [[0, 19]], '但仍然要重绘, 否则字号变了而屏幕没跟上');
+});
+
+test('a terminal without refresh() still fits', () => {
+  const harness = sizingHarness(460, 18);
+  delete harness.terminal.refresh;
+  assert.doesNotThrow(() => fitTerminalGrid(harness.terminal, harness.fit, { baseFontSize: 16 }));
 });

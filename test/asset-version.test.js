@@ -10,8 +10,8 @@ const read = (name) => readFileSync(fileURLToPath(new URL(`../public/${name}`, i
 // 服务端一切正常, 测试全绿, 而屏幕上的 bug 还在。这条把两件事绑在一起: app.js 或它
 // 直接引入的任何模块变了, 下面的指纹就会变, 逼你连 app.js?v= 一起推。
 // 失败时: 推高 index.html 里的 app.js?v=, 再把这里的 fingerprint 换成报错里的实际值。
-const APP_VERSION = 92;
-const FINGERPRINT = 'a1bcc52b2d5b33a8';
+const APP_VERSION = 93;
+const FINGERPRINT = '5d4172722800f36d';
 
 test('changing a module the terminal page loads forces its cache-busting version up', () => {
   const html = read('index.html');
