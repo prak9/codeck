@@ -55,3 +55,14 @@ test('the terminal input bar is local by default and hands whitelisted keys to t
   assert.match(appJs, /closeTerminalVoiceComposer\(\{ raw: true \}\)/);
   assert.match(html, /placeholder="输入后回车发送 · @ Tab Esc 直达 CLI"/);
 });
+
+test('the input bar renders in the same face the terminal will echo it in', () => {
+  // 输入条里的字下一秒就出现在正上方的终端里。字体不一致时同一句话换了张脸,
+  // 拉丁字母尤其刺眼。终端与 remote 正文都是 Courier New, 输入条必须跟着它,
+  // 而不是跟侧栏图标那套 chrome 字体。
+  const xtermFont = appJs.match(/fontFamily: '([^']+)'/)?.[1] || '';
+  assert.match(xtermFont, /^"Courier New"/);
+  assert.match(css, /\.terminal-voice-composer textarea\s*\{[^}]*font-family:\s*"Courier New"/s);
+  // 16px 是 iOS 聚焦时不缩放页面的下限。
+  assert.match(css, /\.terminal-voice-composer textarea\s*\{[^}]*font-size:\s*16px/s);
+});
