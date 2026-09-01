@@ -214,6 +214,10 @@ export class SdkAgentBackend extends EventEmitter {
     getSessionMessages,
     transcriptFile = null,
     readTranscriptRange = null,
+    // 增量读取要留着已解析的 messages 才能把新增部分接上去, 但它比 turns 还大
+    // (实测单会话 3.7MB vs 1.3MB)。稳定的 transcript 走 revision 命中直接返回
+    // turns, 根本不碰 messages —— 只有还在增长的才需要, 所以只给最近几个保留。
+    rawMessageCacheEntries = 3,
     idleTimeoutMs = 60_000,
   }) {
     super();
@@ -233,6 +237,7 @@ export class SdkAgentBackend extends EventEmitter {
     this.getSessionMessages = getSessionMessages;
     this.transcriptFile = transcriptFile;
     this.readTranscriptRange = readTranscriptRange;
+    this.rawMessageCacheEntries = rawMessageCacheEntries;
     this.idleTimeoutMs = idleTimeoutMs;
     this.runtimes = new Map();
     this.transcriptCache = new Map();
@@ -384,6 +389,21 @@ export class SdkAgentBackend extends EventEmitter {
     };
   }
 
+  // Map 迭代序即插入序, 每次命中都 delete+set 重新插到末尾, 所以末尾是最近使用的。
+  #trimTranscriptCache() {
+    while (this.transcriptCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
+      this.transcriptCache.delete(this.transcriptCache.keys().next().value);
+    }
+    const keep = Math.max(1, this.rawMessageCacheEntries);
+    const entries = [...this.transcriptCache.entries()];
+    for (const [id, entry] of entries.slice(0, Math.max(0, entries.length - keep))) {
+      if (!entry.messages) continue;
+      // 丢掉原始消息但留住 turns: 缓存依旧命中, 只是这个会话下次增长时
+      // 回落一次整份读取 (实测 ~37ms), 之后重新拿回增量。
+      this.transcriptCache.set(id, { revision: entry.revision, turns: entry.turns });
+    }
+  }
+
   async #persistedTurns(threadId, info) {
     const revision = transcriptRevision(info);
     const cached = revision ? this.transcriptCache.get(threadId) : null;
@@ -397,9 +417,7 @@ export class SdkAgentBackend extends EventEmitter {
     if (appended) {
       this.transcriptCache.delete(threadId);
       this.transcriptCache.set(threadId, { revision, ...appended });
-      while (this.transcriptCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
-        this.transcriptCache.delete(this.transcriptCache.keys().next().value);
-      }
+      this.#trimTranscriptCache();
       return appended.turns;
     }
 
@@ -421,9 +439,7 @@ export class SdkAgentBackend extends EventEmitter {
       this.transcriptCache.set(threadId, {
         revision, turns, messages, size: Number(info?.fileSize),
       });
-      while (this.transcriptCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
-        this.transcriptCache.delete(this.transcriptCache.keys().next().value);
-      }
+      this.#trimTranscriptCache();
     }
     return turns;
   }

@@ -436,3 +436,39 @@ test('a shrunken or unreadable transcript falls back to a full load', async () =
 
   assert.equal(fullLoads(), 2, 'a transcript that shrank cannot be appended to');
 });
+
+test('only the newest transcripts keep their raw messages in memory', async () => {
+  // 增量读取要留着已解析的 messages 才能把新增部分接上去, 但那让单个会话的缓存
+  // 从 1.3MB 涨到 5.0MB (实测), 16 个槽最坏 80MB。而稳定的 transcript 走
+  // revision 命中直接返回 turns, 根本不碰 messages —— 只有还在增长的才需要。
+  const chunks = {};
+  const sizes = {};
+  const backend = new SdkAgentBackend({
+    provider: 'claude',
+    label: 'Claude Code',
+    query: () => new FakeQuery(''),
+    listSessions: async () => [],
+    getSessionInfo: async (id) => ({ sessionId: id, cwd: '/srv', lastModified: sizes[id], fileSize: sizes[id] }),
+    getSessionMessages: async (id) => chunks[id].join('').split('\n').filter(Boolean).flatMap((entry) => {
+      try { return [JSON.parse(entry)]; } catch { return []; }
+    }),
+    transcriptFile: (id) => `/transcripts/${id}.jsonl`,
+    readTranscriptRange: async (file, start, end) => {
+      const id = file.split('/').pop().replace('.jsonl', '');
+      return chunks[id].join('').slice(start, end);
+    },
+    rawMessageCacheEntries: 2,
+  });
+
+  for (const id of ['a', 'b', 'c']) {
+    chunks[id] = [line(`${id}1`, 'one')];
+    sizes[id] = chunks[id].join('').length;
+    await backend.openThread(id);
+  }
+
+  const retained = [...backend.transcriptCache.entries()].filter(([, entry]) => entry.messages);
+  assert.equal(retained.length, 2, '只有最近两个保留原始消息');
+  assert.deepEqual(retained.map(([id]) => id), ['b', 'c'], '保留的是最近使用的');
+  // 被裁掉 messages 的那个仍然可用: 只是下次增长时回落一次整份读取。
+  assert.ok(backend.transcriptCache.get('a').turns, 'turns 必须保留, 否则缓存就白做了');
+});
