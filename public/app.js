@@ -12,6 +12,7 @@ import { createSpeechInput, mergeSpeechDraft, speechDraftForTerminal } from './r
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
+import { terminalComposerKeyAction, TERMINAL_SHIFT_TAB } from './terminal-compose.js?v=1';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -117,7 +118,7 @@ function setTerminalVoiceState(active, message = '') {
   capture.setAttribute('aria-pressed', String(active));
   capture.setAttribute('aria-label', active ? '停止语音输入' : terminalVoiceHadResult ? '重新语音输入' : '开始语音输入');
   const draft = $('#terminalVoiceDraft');
-  if (!draft.value) draft.placeholder = message || '语音输入，也可以修改后发送';
+  if (!draft.value) draft.placeholder = message || '输入后回车发送 · @ Tab Esc 直达 CLI';
   $('#terminalVoiceStatus').textContent = message;
 }
 
@@ -182,6 +183,18 @@ function toggleTerminalVoiceInput() {
   startTerminalVoiceInput();
 }
 
+// 打开输入条本身不需要语音支持 —— 它现在是终端的默认输入面。只有点"语音"才要。
+function openTerminalComposer({ focus = false } = {}) {
+  if (!state.canWrite || state.socket?.readyState !== WebSocket.OPEN) return false;
+  if (!$('#terminalVoiceComposer').hidden) return true;
+  $('#terminalVoiceComposer').hidden = false;
+  resizeTerminalVoiceDraft();
+  setTerminalVoiceState(false, '');
+  syncTerminalVoiceControls();
+  if (focus) $('#terminalVoiceDraft').focus();
+  return true;
+}
+
 function openTerminalVoiceComposer() {
   if (!voiceInput.supported) return setConnectionMessage('当前浏览器不支持语音识别');
   if (!state.canWrite) return setConnectionMessage('当前分享链接为只读');
@@ -201,12 +214,39 @@ function toggleTerminalVoiceComposer() {
   toggleTerminalVoiceInput();
 }
 
-function closeTerminalVoiceComposer({ restoreFocus = true } = {}) {
+function closeTerminalVoiceComposer({ restoreFocus = true, raw = false } = {}) {
+  state.rawTerminalInput = raw;
   voiceInput.abort();
   $('#terminalVoiceComposer').hidden = true;
   setTerminalVoiceState(false, '语音输入已关闭。');
   syncTerminalVoiceControls();
   if (restoreFocus && !matchMedia('(pointer: coarse)').matches) state.terminal?.focus();
+}
+
+// 本地输入条开着时它才是打字的落点; 逐字符模式下才把焦点给 xterm。
+function focusTerminalInput() {
+  if (!$('#terminalVoiceComposer').hidden) return $('#terminalVoiceDraft').focus();
+  state.terminal?.focus();
+}
+
+function sendTerminalInput(data) {
+  if (!state.canWrite || state.socket?.readyState !== WebSocket.OPEN) return false;
+  try {
+    state.socket.send(JSON.stringify({ type: 'input', data }));
+  } catch { return false; }
+  return true;
+}
+
+// 交权: 输入条收起, 焦点回到终端, 之后每个按键都直通, 直到用户按回车(CLI 收下这一行)
+// 或按 Esc(放弃补全) —— 那时再把本地输入条收回来。
+function handOffTerminalInput(prefix) {
+  if (!sendTerminalInput(prefix)) return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
+  $('#terminalVoiceDraft').value = '';
+  resizeTerminalVoiceDraft();
+  state.handoffTerminalInput = true;
+  closeTerminalVoiceComposer({ restoreFocus: false });
+  state.terminal?.focus();
+  setConnectionMessage('已交给 CLI 补全，回车或 Esc 后恢复本地输入');
 }
 
 function submitTerminalVoiceDraft() {
@@ -764,6 +804,9 @@ function syncTerminalAccess() {
   for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
     control.disabled = !writable;
   }
+  // 逐字符直通意味着每敲一个键都要一次往返, 跟手程度等于 RTT。默认把输入收到本地
+  // 输入条里, 回车才发一次。关闭输入条(×)即退回逐字符模式, 供全屏 TUI 使用。
+  if (writable && !state.rawTerminalInput) openTerminalComposer();
   syncTerminalVoiceControls();
 }
 
@@ -972,6 +1015,10 @@ function ensureTerminal() {
   terminal.onData((data) => {
     if (state.canWrite && state.terminalInputReady && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'input', data }));
+      if (state.handoffTerminalInput && /[\r\n\x1b]/.test(data)) {
+        state.handoffTerminalInput = false;
+        openTerminalComposer({ focus: true });
+      }
     }
   });
   // Touch browsers have no dependable shortcut or native selection bubble for xterm's
@@ -1032,7 +1079,7 @@ async function connect(session) {
   if (state.active === session && state.socket && state.socket.readyState <= WebSocket.OPEN) {
     $('#sidebar').classList.remove('open');
     $('#menuButton').setAttribute('aria-expanded', 'false');
-    if (state.socket.readyState === WebSocket.OPEN && state.terminalInputReady) state.terminal?.focus();
+    if (state.socket.readyState === WebSocket.OPEN && state.terminalInputReady) focusTerminalInput();
     return;
   }
   closeTerminalVoiceComposer({ restoreFocus: false });
@@ -1100,7 +1147,7 @@ async function connect(session) {
     if (state.connectionId !== connectionId) return;
     $('#connectionState').textContent = connectedStateLabel();
     syncTerminalAccess();
-    if (displayReady) terminal.focus();
+    if (displayReady) focusTerminalInput();
   };
   const revealGate = createTerminalRevealGate(() => {
     if (state.connectionId !== connectionId || state.active !== session
@@ -1226,7 +1273,7 @@ $('#viewModeButton').addEventListener('click', () => {
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   fitTerminalView();
-  state.terminal?.focus();
+  focusTerminalInput();
 });
 
 // Held keys repeat, the way a physical keyboard does. Without it the arrows move one
@@ -1276,7 +1323,10 @@ for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]'
 }
 $('#terminalVoiceCaptureButton').addEventListener('pointerdown', (event) => event.preventDefault());
 $('#terminalVoiceCaptureButton').addEventListener('click', toggleTerminalVoiceInput);
-$('#closeTerminalVoiceButton').addEventListener('click', () => closeTerminalVoiceComposer());
+$('#closeTerminalVoiceButton').addEventListener('click', () => {
+  closeTerminalVoiceComposer({ raw: true });
+  setConnectionMessage('已切换到逐字符输入，按键直接发往终端');
+});
 $('#terminalVoiceComposer').addEventListener('submit', (event) => {
   event.preventDefault();
   submitTerminalVoiceDraft();
@@ -1286,9 +1336,16 @@ $('#terminalVoiceDraft').addEventListener('input', () => {
   syncTerminalVoiceControls();
 });
 $('#terminalVoiceDraft').addEventListener('keydown', (event) => {
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  const action = terminalComposerKeyAction(event, { draft: $('#terminalVoiceDraft').value });
+  if (action.type === 'insert') return;
   event.preventDefault();
-  $('#terminalVoiceComposer').requestSubmit();
+  if (action.type === 'send') return $('#terminalVoiceComposer').requestSubmit();
+  if (action.type === 'passthrough') {
+    if (action.key === 'tab' && action.shift) return sendTerminalInput(TERMINAL_SHIFT_TAB);
+    return sendTerminalKey(action.key);
+  }
+  // handoff: '@' 之后的补全需要 CLI 逐键接管, 先把已输入的原样送过去(不带回车)。
+  handOffTerminalInput(`${$('#terminalVoiceDraft').value}@`);
 });
 
 // Neither clipboard direction has a touch gesture to hang off. `.xterm` sets
@@ -1454,7 +1511,7 @@ $('#sessionList').addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     $('#sidebar').classList.remove('open');
     $('#menuButton').setAttribute('aria-expanded', 'false');
-    state.terminal?.focus();
+    focusTerminalInput();
     return;
   }
   const nextIndex = event.key === 'ArrowDown' ? (index + 1) % rows.length
