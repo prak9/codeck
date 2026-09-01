@@ -43,7 +43,7 @@ test('the terminal input bar is local by default and hands whitelisted keys to t
   // 而补全/切模式/中断必须逐键到达 CLI, 否则本地缓冲就把它们吃掉了。
   assert.match(appJs, /if \(writable\) openTerminalComposer\(\)/);
   assert.match(appJs, /terminalComposerKeyAction\(event, \{\s*draft: draft\.value,/s);
-  assert.match(appJs, /action\.key === 'tab' && action\.shift.*TERMINAL_SHIFT_TAB/s);
+  assert.match(appJs, /action\.type === 'passthrough'\) return sendTerminalInput\(action\.data\)/);
   assert.match(appJs, /function handOffTerminalInput\(/);
   // 输入条常驻: 没有会改变终端高度的开关, 也就没有随之而来的重排与重绘问题。
   assert.doesNotMatch(html, /closeTerminalVoiceButton/);

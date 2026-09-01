@@ -12,7 +12,7 @@ import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
-import { terminalComposerKeyAction, terminalDraftForSend, TERMINAL_SHIFT_TAB } from './terminal-compose.js?v=2';
+import { terminalComposerKeyAction, terminalDraftForSend } from './terminal-compose.js?v=3';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -1352,10 +1352,7 @@ $('#terminalVoiceDraft').addEventListener('keydown', (event) => {
   event.preventDefault();
   if (action.type === 'send') return $('#terminalVoiceComposer').requestSubmit();
   if (action.type === 'newline') return insertDraftNewline(action.stripBackslash);
-  if (action.type === 'passthrough') {
-    if (action.key === 'tab' && action.shift) return sendTerminalInput(TERMINAL_SHIFT_TAB);
-    return sendTerminalKey(action.key);
-  }
+  if (action.type === 'passthrough') return sendTerminalInput(action.data);
   // handoff: '@' 之后的补全需要 CLI 逐键接管, 先把已输入的原样送过去(不带回车)。
   handOffTerminalInput(`${$('#terminalVoiceDraft').value}@`);
 });

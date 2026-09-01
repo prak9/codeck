@@ -16,11 +16,28 @@ test('Enter sends the line, Shift+Enter keeps editing', () => {
 });
 
 test('interrupt, mode cycling and completion reach the CLI untouched', () => {
-  assert.deepEqual(terminalComposerKeyAction(press('Escape')), { type: 'passthrough', key: 'escape' });
-  assert.deepEqual(terminalComposerKeyAction(press('Tab')), { type: 'passthrough', key: 'tab', shift: false });
-  assert.deepEqual(terminalComposerKeyAction(press('Tab', { shiftKey: true })), { type: 'passthrough', key: 'tab', shift: true });
-  assert.deepEqual(terminalComposerKeyAction(press('c', { ctrlKey: true })), { type: 'passthrough', key: 'ctrl-c' });
-  assert.deepEqual(terminalComposerKeyAction(press('d', { ctrlKey: true })), { type: 'passthrough', key: 'ctrl-d' });
+  assert.deepEqual(terminalComposerKeyAction(press('Escape')), { type: 'passthrough', data: '\x1b' });
+  assert.deepEqual(terminalComposerKeyAction(press('Tab')), { type: 'passthrough', data: '\t' });
+  assert.deepEqual(terminalComposerKeyAction(press('Tab', { shiftKey: true })), { type: 'passthrough', data: '\x1b[Z' });
+  assert.deepEqual(terminalComposerKeyAction(press('c', { ctrlKey: true })), { type: 'passthrough', data: '\x03' });
+  assert.deepEqual(terminalComposerKeyAction(press('d', { ctrlKey: true })), { type: 'passthrough', data: '\x04' });
+});
+
+test('any Ctrl combination the browser does not need goes to the CLI as its control byte', () => {
+  // 白名单枚举不出 CLI 会绑什么。终端里 Ctrl+字母 本来就是原样送达, 所以默认直通,
+  // 只把浏览器真正需要的几个留在本地。Ctrl+R 尤其重要 —— 不接管的话它会刷新整个页面。
+  assert.deepEqual(terminalComposerKeyAction(press('r', { ctrlKey: true })), { type: 'passthrough', data: '\x12' });
+  assert.deepEqual(terminalComposerKeyAction(press('t', { ctrlKey: true })), { type: 'passthrough', data: '\x14' });
+  assert.deepEqual(terminalComposerKeyAction(press('b', { ctrlKey: true })), { type: 'passthrough', data: '\x02' });
+  assert.deepEqual(terminalComposerKeyAction(press('u', { ctrlKey: true })), { type: 'passthrough', data: '\x15' });
+});
+
+test('the browser keeps the editing shortcuts a textarea cannot do without', () => {
+  for (const key of ['v', 'x', 'z', 'y', 'a']) {
+    assert.equal(terminalComposerKeyAction(press(key, { ctrlKey: true })).type, 'insert', `Ctrl+${key}`);
+  }
+  // Ctrl+J 是我们自己的换行, 不该变成 \n 直通。
+  assert.equal(terminalComposerKeyAction(press('j', { ctrlKey: true })).type, 'newline');
 });
 
 test('@ hands control to the CLI so its path completion can take over', () => {
@@ -28,7 +45,7 @@ test('@ hands control to the CLI so its path completion can take over', () => {
 });
 
 test('arrow keys navigate history only when the draft is empty', () => {
-  assert.equal(terminalComposerKeyAction(press('ArrowUp'), { draft: '' }).type, 'passthrough');
+  assert.deepEqual(terminalComposerKeyAction(press('ArrowUp'), { draft: '' }), { type: 'passthrough', data: '\x1b[A' });
   assert.equal(terminalComposerKeyAction(press('ArrowUp'), { draft: 'hello' }).type, 'insert',
     '草稿非空时方向键是在编辑本地文本, 不该被抢走');
   assert.equal(terminalComposerKeyAction(press('ArrowLeft'), { draft: 'hi' }).type, 'insert');
@@ -63,5 +80,5 @@ test('Cmd shortcuts stay with the browser so copy and paste still work', () => {
 test('Ctrl+C copies when something is selected, and interrupts when nothing is', () => {
   assert.equal(terminalComposerKeyAction(press('c', { ctrlKey: true }), { hasSelection: true }).type, 'insert');
   assert.deepEqual(terminalComposerKeyAction(press('c', { ctrlKey: true }), { hasSelection: false }),
-    { type: 'passthrough', key: 'ctrl-c' });
+    { type: 'passthrough', data: '\x03' });
 });
