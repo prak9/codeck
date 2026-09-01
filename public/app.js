@@ -12,7 +12,7 @@ import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
-import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForSend } from './terminal-compose.js?v=4';
+import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForHandoff, terminalDraftForSend } from './terminal-compose.js?v=5';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -111,10 +111,6 @@ let terminalVoiceHadResult = false;
 const TERMINAL_KEY_HINT = '回车发送 · \u2303J 换行 · @ Tab Esc 直达 CLI';
 
 function setTerminalVoiceState(active, message = '') {
-  for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
-    trigger.classList.toggle('listening', active);
-    trigger.setAttribute('aria-pressed', String(active));
-  }
   const capture = $('#terminalVoiceCaptureButton');
   capture.classList.toggle('listening', active);
   capture.setAttribute('aria-pressed', String(active));
@@ -154,11 +150,6 @@ function resizeTerminalVoiceDraft() {
 function syncTerminalVoiceControls() {
   const connected = state.canWrite && state.terminalInputReady
     && state.socket?.readyState === WebSocket.OPEN;
-  const composerOpen = !$('#terminalVoiceComposer').hidden;
-  for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
-    trigger.hidden = !state.canWrite || composerOpen;
-    trigger.disabled = !connected;
-  }
   $('#terminalVoiceCaptureButton').disabled = !connected;
   $('#sendTerminalVoiceButton').disabled = !connected || !terminalDraftForSend($('#terminalVoiceDraft').value);
   if (!connected && voiceInput.active) {
@@ -194,25 +185,6 @@ function openTerminalComposer({ focus = false } = {}) {
   syncTerminalVoiceControls();
   if (focus) $('#terminalVoiceDraft').focus();
   return true;
-}
-
-function openTerminalVoiceComposer() {
-  if (!voiceInput.supported) return setConnectionMessage('当前浏览器不支持语音识别');
-  if (!state.canWrite) return setConnectionMessage('当前分享链接为只读');
-  if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
-  terminalVoiceBaseDraft = '';
-  terminalVoiceHadResult = false;
-  $('#terminalVoiceDraft').value = '';
-  $('#terminalVoiceComposer').hidden = false;
-  resizeTerminalVoiceDraft();
-  setTerminalVoiceState(false, '准备开始语音识别。');
-  syncTerminalVoiceControls();
-  startTerminalVoiceInput();
-}
-
-function toggleTerminalVoiceComposer() {
-  if ($('#terminalVoiceComposer').hidden) return openTerminalVoiceComposer();
-  toggleTerminalVoiceInput();
 }
 
 function closeTerminalVoiceComposer({ restoreFocus = true } = {}) {
@@ -251,7 +223,7 @@ function sendTerminalInput(data) {
 // —— 收起会改变终端高度, 而终端重排正是 × 那个按钮闯的祸。
 function handOffTerminalInput(suffix) {
   const draft = $('#terminalVoiceDraft');
-  if (!sendTerminalInput(`${terminalDraftForSend(draft.value)}${suffix}`)) {
+  if (!sendTerminalInput(`${terminalDraftForHandoff(draft.value)}${suffix}`)) {
     return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
   }
   draft.value = '';
@@ -1337,10 +1309,6 @@ for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
   $('.mobile-keybar').addEventListener(type, stopKeyRepeat);
 }
 
-for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
-  trigger.addEventListener('pointerdown', (event) => event.preventDefault());
-  trigger.addEventListener('click', toggleTerminalVoiceComposer);
-}
 $('#terminalVoiceCaptureButton').addEventListener('pointerdown', (event) => event.preventDefault());
 $('#terminalVoiceCaptureButton').addEventListener('click', toggleTerminalVoiceInput);
 $('#terminalVoiceComposer').addEventListener('submit', (event) => {

@@ -37,7 +37,13 @@ export function terminalComposerKeyAction(event, { draft = '', caret = null, has
   if (control && letter === 'j') return { type: 'newline' };
   // 进入模式的键: 之后每个按键都是这个模式的输入(补全的路径、搜索的查询串), 必须逐键
   // 到达 CLI。一次性的键(Ctrl+L 清屏、Ctrl+C 中断)不该抢焦点, 所以只列这两个。
-  if (key === '@') return { type: 'handoff', data: '@' };
+  // 补全只在词首触发, 所以只有词首的 @ 才交权 —— 否则 user@host 这种会在 @ 处
+  // 把人丢进逐字符模式, 而 CLI 那边压根没有菜单。
+  if (key === '@') {
+    const before = draft.slice(0, caret ?? draft.length);
+    if (!before || /\s$/u.test(before)) return { type: 'handoff', data: '@' };
+    return { type: 'insert' };
+  }
   if (control && letter === 'r') return { type: 'handoff', data: '\x12' };
 
   if (control && letter >= 'a' && letter <= 'z') {
@@ -63,7 +69,17 @@ export function endsTerminalHandoff(data) {
   return data === '\x1b';
 }
 
+function normalizeDraft(draft) {
+  return String(draft || '').replace(/\r\n?/gu, '\n');
+}
+
 // 发送时保留换行。\n 是 Ctrl+J, TUI 读作"换行, 不要提交"; 结尾的 \r 才是提交。
 export function terminalDraftForSend(draft) {
-  return String(draft || '').replace(/\r\n?/gu, '\n').trim();
+  return normalizeDraft(draft).trim();
+}
+
+// 交权时不能裁剪: 被裁掉的正是把 @ 和前一个词隔开的那个空格, 而补全只在词首触发,
+// 于是 "看下 @" 变成 "看下@", 菜单不会出现, 功能静默失效。
+export function terminalDraftForHandoff(draft) {
+  return normalizeDraft(draft);
 }

@@ -119,12 +119,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; }
 .terminal-tool-button, .view-mode-button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); cursor: pointer; }
 .terminal-tool-button:disabled { opacity: .55; cursor: wait; }
-.voice-input-trigger { display: none; }
-.speech-input .voice-input-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.voice-input-trigger svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.voice-input-trigger.listening { border-color: #ff6b3555; background: #ff6b3514; color: #ff9a78; animation: voice-pulse 1.35s ease-in-out infinite; }
-.voice-input-trigger:disabled { cursor: not-allowed; }
-.view-mode-button { display: none; }
+.speech-input .view-mode-button { display: none; }
 .view-mode-button[aria-pressed="true"] { border-color: #ff6b3548; background: #ff6b3510; color: #ff9a78; }
 .terminal-frame { min-height: 0; flex: 1; padding: 14px 10px 10px 15px; overflow: hidden; border: 1px solid var(--line-strong); border-bottom: 0; border-radius: var(--terminal-radius) var(--terminal-radius) 0 0; background: var(--terminal); box-shadow: inset 0 1px #ffffff08; }
 .terminal-frame.drag-over { border-color: #ff8b6080; box-shadow: 0 0 0 3px #ff8b6026, 0 18px 45px #00000038, inset 0 1px #ffffff08; }
@@ -254,14 +249,12 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .empty-state h2 { font-size: 34px; }
   .terminal-view { height: 100%; padding: 10px calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); }
   .terminal-header { min-height: 62px; }
-  .terminal-actions .voice-input-trigger { display: none; }
-  .terminal-tool-button, .view-mode-button { min-height: 44px; }
+  .terminal-actions   .terminal-tool-button, .view-mode-button { min-height: 44px; }
   .view-mode-button { display: block; }
   .danger-button { min-height: 44px; }
   :root { --terminal-radius: 12px; }
   .terminal-frame { padding: 11px 7px 7px 11px; touch-action: pan-x pan-y pinch-zoom; }
   .mobile-keybar { display: flex; }
-  .speech-input .mobile-voice-trigger { display: inline-flex; min-height: 44px; }
   .client-options { grid-template-columns: 1fr 1fr; }
   input[type="text"], input[type="password"], input:not([type]) { font-size: 16px; }
   dialog { max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px); overflow-y: auto; }

@@ -8,15 +8,14 @@ const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf
 
 test('normal terminal voice input uses an inline Remote-style draft composer', () => {
   assert.ok(html.indexOf('SpeechRecognition') < html.indexOf('/styles.css'));
-  assert.match(html, /id="terminalVoiceButton"[^>]*data-terminal-action="voice"[^>]*aria-label="语音输入"/);
-  assert.match(html, /class="voice-input-trigger mobile-voice-trigger"[^>]*data-terminal-action="voice"/);
+  // 输入条常驻后, 顶栏和键盘条上那两个"语音"触发按钮的 hidden 条件永远成立 ——
+  // 永远不会显示的控件比没有控件更糟。条内的话筒按钮就是唯一入口。
+  assert.doesNotMatch(html, /data-terminal-action="voice"/);
   assert.match(html, /id="terminalVoiceComposer"[^>]*hidden/);
   assert.match(html, /id="terminalVoiceDraft"[^>]*rows="1"[^>]*aria-label="终端输入"/);
   assert.match(html, /id="terminalVoiceCaptureButton"[^>]*aria-label="开始语音输入"[^>]*aria-pressed="false"/);
   assert.match(html, /id="sendTerminalVoiceButton"[^>]*type="submit"[^>]*aria-label="发送到终端"/);
   assert.doesNotMatch(html, /id="terminalVoiceDialog"/);
-  assert.match(css, /\.voice-input-trigger\s*\{[^}]*display:\s*none/s);
-  assert.match(css, /\.speech-input \.voice-input-trigger\s*\{[^}]*display:\s*inline-flex/s);
   assert.match(css, /\.terminal-voice-composer textarea\s*\{[^}]*font-size:\s*16px/s);
   assert.match(appJs, /createSpeechInput/);
   assert.match(appJs, /onStatus:\s*\(message\)\s*=>\s*setTerminalVoiceState/);
@@ -30,12 +29,11 @@ test('normal terminal voice input uses an inline Remote-style draft composer', (
 
 test('terminal voice input follows terminal access and browser support', () => {
   assert.match(appJs, /voiceInput\.supported/);
-  assert.match(appJs, /trigger\.hidden = !state\.canWrite \|\| composerOpen/);
-  assert.match(appJs, /trigger\.disabled = !connected/);
+  // 语音入口只剩输入条里的话筒按钮, 它跟着终端可写与连接状态走。
+  assert.match(appJs, /'#terminalVoiceCaptureButton'\)\.disabled = !connected/);
   assert.match(appJs, /voiceInput\.abort\(\)/);
   assert.match(appJs, /closeTerminalVoiceComposer\(\{ restoreFocus: false \}\)/);
-  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.terminal-actions \.voice-input-trigger\s*\{[^}]*display:\s*none/s);
-  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.mobile-voice-trigger\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(css, /\.terminal-voice-capture \{[^}]*background: transparent/s);
 });
 
 test('the terminal input bar is local by default and hands whitelisted keys to the CLI', () => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { endsTerminalHandoff, terminalComposerKeyAction } from '../public/terminal-compose.js';
+import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForHandoff, terminalDraftForSend } from '../public/terminal-compose.js';
 
 const press = (key, extra = {}) => ({ key, shiftKey: false, ctrlKey: false, metaKey: false, isComposing: false, ...extra });
 
@@ -96,4 +96,23 @@ test('only a bare Escape ends the handoff, never an arrow key', () => {
   assert.equal(endsTerminalHandoff('\x1b[Z'), false);
   assert.equal(endsTerminalHandoff('\r'), false, '回车在补全菜单里是选中, 不是退出');
   assert.equal(endsTerminalHandoff('a'), false);
+});
+
+test('@ only takes over at a word boundary, so an email address stays local', () => {
+  // CLI 的路径补全本来就只在词首触发。不分词就交权的话, 打 user@host 会在 @ 处
+  // 把人丢进逐字符模式, 而 CLI 那边根本没有补全菜单。
+  assert.equal(terminalComposerKeyAction(press('@'), { draft: '', caret: 0 }).type, 'handoff');
+  assert.equal(terminalComposerKeyAction(press('@'), { draft: '看下 ', caret: 3 }).type, 'handoff');
+  assert.equal(terminalComposerKeyAction(press('@'), { draft: 'look\n', caret: 5 }).type, 'handoff');
+  assert.equal(terminalComposerKeyAction(press('@'), { draft: 'user', caret: 4 }).type, 'insert');
+  assert.equal(terminalComposerKeyAction(press('@'), { draft: 'a', caret: 1 }).type, 'insert');
+});
+
+test('the draft handed to the CLI keeps the space the user typed before it', () => {
+  // 发送整行时首尾留白无意义, 但交权时被裁掉的正好是把 @ 和前一个词隔开的那个空格,
+  // 于是 CLI 收到 "看下@" —— 不在词首, 补全根本不会触发, 功能静默失效。
+  assert.equal(terminalDraftForHandoff('看下 '), '看下 ');
+  assert.equal(terminalDraftForHandoff('look at '), 'look at ');
+  assert.equal(terminalDraftForHandoff('a\r\nb'), 'a\nb');
+  assert.equal(terminalDraftForSend('  看下  '), '看下', '发送路径仍然裁剪');
 });

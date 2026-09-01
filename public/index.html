@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/fonts/jetbrains-mono/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=57">
+    <link rel="stylesheet" href="/styles.css?v=58">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -52,7 +52,7 @@
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button voice-input-trigger" id="terminalVoiceButton" type="button" data-terminal-action="voice" aria-label="语音输入" aria-controls="terminalVoiceComposer" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg><span>语音</span></button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
@@ -62,7 +62,7 @@
           <p class="terminal-voice-hint" id="terminalVoiceHint">回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI</p><span class="terminal-voice-status" id="terminalVoiceStatus" role="status" aria-live="polite"></span>
         </form>
         <div class="mobile-keybar" aria-label="移动终端快捷键">
-          <button type="button" data-terminal-key="escape">Esc</button><button type="button" data-terminal-key="tab">Tab</button><button type="button" data-terminal-key="ctrl-c">⌃C</button><button type="button" data-terminal-key="ctrl-d">⌃D</button><button type="button" data-terminal-key="ctrl-l">⌃L</button><button type="button" data-terminal-action="copy">复制屏幕</button><button type="button" data-terminal-action="paste">粘贴</button><button class="voice-input-trigger mobile-voice-trigger" type="button" data-terminal-action="voice" aria-label="语音输入" aria-controls="terminalVoiceComposer" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg><span>语音</span></button><button type="button" data-terminal-key="left" aria-label="向左">←</button><button type="button" data-terminal-key="up" aria-label="向上">↑</button><button type="button" data-terminal-key="down" aria-label="向下">↓</button><button type="button" data-terminal-key="right" aria-label="向右">→</button>
+          <button type="button" data-terminal-key="escape">Esc</button><button type="button" data-terminal-key="tab">Tab</button><button type="button" data-terminal-key="ctrl-c">⌃C</button><button type="button" data-terminal-key="ctrl-d">⌃D</button><button type="button" data-terminal-key="ctrl-l">⌃L</button><button type="button" data-terminal-action="copy">复制屏幕</button><button type="button" data-terminal-action="paste">粘贴</button><button type="button" data-terminal-key="left" aria-label="向左">←</button><button type="button" data-terminal-key="up" aria-label="向上">↑</button><button type="button" data-terminal-key="down" aria-label="向下">↓</button><button type="button" data-terminal-key="right" aria-label="向右">→</button>
         </div>
       </section>
     </main>
@@ -116,6 +116,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-    <script type="module" src="/app.js?v=91"></script>
+    <script type="module" src="/app.js?v=92"></script>
 </body>
 </html>
