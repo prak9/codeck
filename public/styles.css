@@ -128,19 +128,21 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .view-mode-button[aria-pressed="true"] { border-color: #ff6b3548; background: #ff6b3510; color: #ff9a78; }
 .terminal-frame { min-height: 0; flex: 1; padding: 14px 10px 10px 15px; overflow: hidden; border: 1px solid var(--line-strong); border-bottom: 0; border-radius: var(--terminal-radius) var(--terminal-radius) 0 0; background: var(--terminal); box-shadow: inset 0 1px #ffffff08; }
 .terminal-frame.drag-over { border-color: #ff8b6080; box-shadow: 0 0 0 3px #ff8b6026, 0 18px 45px #00000038, inset 0 1px #ffffff08; }
-.terminal-voice-composer { flex: none; min-height: 58px; padding: 6px; border: 1px solid var(--line-strong); border-top: 1px solid var(--line); border-radius: 0 0 var(--terminal-radius) var(--terminal-radius); background: var(--terminal); box-shadow: 0 18px 45px #00000038; display: grid; grid-template-columns: minmax(0, 1fr) 44px 44px; align-items: end; gap: 4px; }
+.terminal-voice-composer { flex: none; min-height: 58px; padding: 6px; border: 1px solid var(--line-strong); border-top: 1px solid var(--line); border-radius: 0 0 var(--terminal-radius) var(--terminal-radius); background: var(--terminal); box-shadow: 0 18px 45px #00000038; display: grid; grid-template-columns: 17px minmax(0, 1fr) 44px 44px; grid-template-areas: "prompt draft mic send" ". hint hint hint"; align-items: end; gap: 0 4px; }
 .terminal-voice-composer:focus-within { border-top-color: #ffffff3d; }
+.terminal-voice-prompt { grid-area: prompt; align-self: start; padding-top: 11px; color: var(--accent); font: 16px/1.45 "Courier New", "Noto Sans SC Variable", monospace; text-align: center; }
+.terminal-voice-hint { grid-area: hint; margin: 0; padding: 0 5px 3px; color: var(--subtle); font: 11px/1.5 "Courier New", "Noto Sans SC Variable", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-view:has(#terminalVoiceComposer[hidden]) .terminal-frame { border-bottom: 1px solid var(--line-strong); border-radius: var(--terminal-radius); box-shadow: 0 18px 45px #00000038, inset 0 1px #ffffff08; }
 .terminal-voice-capture, .terminal-voice-send { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 13px; display: grid; place-items: center; cursor: pointer; transition: transform 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease; }
 .terminal-voice-capture:hover { background: #ffffff08; color: var(--ink); }
-.terminal-voice-capture { background: transparent; color: var(--muted); }
+.terminal-voice-capture { grid-area: mic; background: transparent; color: var(--muted); }
 .terminal-voice-capture.listening { background: #ff6b351f; color: #ff9a76; box-shadow: inset 0 0 0 1px #ff6b354a; animation: voice-pulse 1.35s ease-in-out infinite; }
-.terminal-voice-send { background: var(--accent); box-shadow: 0 7px 18px #ff6b352a; color: white; }
+.terminal-voice-send { grid-area: send; background: var(--accent); box-shadow: 0 7px 18px #ff6b352a; color: white; }
 .terminal-voice-capture:disabled, .terminal-voice-send:disabled { opacity: .42; cursor: default; }
 .terminal-voice-send:disabled { background: #ffffff10; box-shadow: none; color: #696664; }
 .terminal-voice-capture:active, .terminal-voice-send:active { transform: scale(.95); }
 .terminal-voice-capture svg, .terminal-voice-send svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.terminal-voice-composer textarea { width: 100%; min-height: 44px; max-height: 96px; padding: 11px 5px 9px; resize: none; overflow-y: auto; border: 0; outline: 0; background: transparent; color: var(--ink); font-family: "Courier New", "Noto Sans SC Variable", monospace; font-size: 16px; line-height: 1.45; }
+.terminal-voice-composer textarea { grid-area: draft; width: 100%; min-height: 44px; max-height: 96px; padding: 11px 5px 9px; resize: none; overflow-y: auto; border: 0; outline: 0; background: transparent; color: var(--ink); font-family: "Courier New", "Noto Sans SC Variable", monospace; font-size: 16px; line-height: 1.45; }
 .terminal-voice-composer textarea::placeholder { color: var(--subtle); }
 .terminal-voice-status { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .mobile-keybar { display: none; min-width: 0; gap: 5px; padding-top: 7px; overflow-x: auto; scrollbar-width: none; }

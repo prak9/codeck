@@ -20,7 +20,8 @@ test('normal terminal voice input uses an inline Remote-style draft composer', (
   assert.match(css, /\.terminal-voice-composer textarea\s*\{[^}]*font-size:\s*16px/s);
   assert.match(appJs, /createSpeechInput/);
   assert.match(appJs, /onStatus:\s*\(message\)\s*=>\s*setTerminalVoiceState/);
-  assert.match(appJs, /if \(!draft\.value\) draft\.placeholder = message/);
+  // 语音状态写在常驻脚注行上, 不再借用 placeholder —— 那东西一有草稿就看不见了。
+  assert.match(appJs, /terminalVoiceHint'\)\.textContent = message \|\| TERMINAL_KEY_HINT/);
   assert.match(appJs, /terminalDraftForSend/);
   assert.match(appJs, /function submitTerminalVoiceDraft\(/);
   assert.match(appJs, /socket\.send\(JSON\.stringify\(\{ type: 'input', data: `\$\{text\}\\r` \}\)\)/);
@@ -46,7 +47,10 @@ test('the terminal input bar is local by default and hands whitelisted keys to t
   assert.match(appJs, /function handOffTerminalInput\(/);
   // 输入条常驻: 没有会改变终端高度的开关, 也就没有随之而来的重排与重绘问题。
   assert.doesNotMatch(html, /closeTerminalVoiceButton/);
-  assert.match(html, /placeholder="回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI"/);
+  // 参照 Codex CLI: 一个 › 提示符, 加一行常驻的暗色脚注, 而不是一个描边输入盒。
+  assert.match(html, /class="terminal-voice-prompt"[^>]*>›</);
+  assert.match(html, /id="terminalVoiceHint">回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI</);
+  assert.match(css, /grid-template-areas: "prompt draft mic send" "\. hint hint hint"/);
 });
 
 test('the input bar renders in the same face the terminal will echo it in', () => {
@@ -77,4 +81,9 @@ test('the terminal and its input bar are one box, and still one box when the bar
   assert.doesNotMatch(css, /\.terminal-voice-composer \{[^}]*margin-top/s);
   // 只读链接下输入条隐藏, 上半不能留一个没有底的平口。
   assert.match(css, /:has\(#terminalVoiceComposer\[hidden\]\) \.terminal-frame \{[^}]*border-radius: var\(--terminal-radius\)\)?[^}]*\}/s);
+});
+
+test('the prompt marker tracks the first line of a multi-line draft', () => {
+  // 输入条整体底对齐(收发按钮贴底), 所以 › 必须显式顶对齐, 否则草稿一换行它就掉到最后一行旁边。
+  assert.match(css, /\.terminal-voice-prompt \{[^}]*align-self: start/s);
 });

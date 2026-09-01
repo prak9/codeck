@@ -108,6 +108,8 @@ const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A
 let terminalVoiceBaseDraft = '';
 let terminalVoiceHadResult = false;
 
+const TERMINAL_KEY_HINT = '回车发送 · \u2303J 换行 · @ Tab Esc 直达 CLI';
+
 function setTerminalVoiceState(active, message = '') {
   for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]')) {
     trigger.classList.toggle('listening', active);
@@ -117,8 +119,7 @@ function setTerminalVoiceState(active, message = '') {
   capture.classList.toggle('listening', active);
   capture.setAttribute('aria-pressed', String(active));
   capture.setAttribute('aria-label', active ? '停止语音输入' : terminalVoiceHadResult ? '重新语音输入' : '开始语音输入');
-  const draft = $('#terminalVoiceDraft');
-  if (!draft.value) draft.placeholder = message || '回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI';
+  $('#terminalVoiceHint').textContent = message || TERMINAL_KEY_HINT;
   $('#terminalVoiceStatus').textContent = message;
 }
 
