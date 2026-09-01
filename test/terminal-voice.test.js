@@ -72,5 +72,16 @@ test('the always-on input bar rests in the frame neutral border, not the accent'
   // 用强调色描边, 那圈橙红就成了常亮状态, 比它包裹的终端还抢眼。
   assert.match(css, /\.terminal-voice-composer \{[^}]*border: 1px solid var\(--line-strong\)/s);
   // 中性 = 白色透明度; 强调色是暖橙 (#ff6b35 系), 两者都以 ff 开头, 所以直接断言前者。
-  assert.match(css, /\.terminal-voice-composer:focus-within \{[^}]*border-color:\s*#ffffff[0-9a-f]{2}/s);
+  // 输入条几乎总是持有焦点, 整圈强调色描边就等于常亮; 只提亮内部那条分隔线。
+  assert.match(css, /\.terminal-voice-composer:focus-within \{[^}]*border-top-color:\s*#ffffff[0-9a-f]{2}/s);
+});
+
+test('the terminal and its input bar are one box, and still one box when the bar is gone', () => {
+  // 两半各自硬编码圆角必然在某个断点上走散, 所以圆角只有一个来源。
+  assert.match(css, /--terminal-radius:\s*\d+px/);
+  assert.match(css, /\.terminal-frame \{[^}]*border-bottom: 0[^}]*border-radius: var\(--terminal-radius\) var\(--terminal-radius\) 0 0/s);
+  assert.match(css, /\.terminal-voice-composer \{[^}]*border-radius: 0 0 var\(--terminal-radius\) var\(--terminal-radius\)/s);
+  assert.doesNotMatch(css, /\.terminal-voice-composer \{[^}]*margin-top/s);
+  // 只读链接下输入条隐藏, 上半不能留一个没有底的平口。
+  assert.match(css, /:has\(#terminalVoiceComposer\[hidden\]\) \.terminal-frame \{[^}]*border-radius: var\(--terminal-radius\)\)?[^}]*\}/s);
 });
