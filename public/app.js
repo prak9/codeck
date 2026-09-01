@@ -214,8 +214,7 @@ function toggleTerminalVoiceComposer() {
   toggleTerminalVoiceInput();
 }
 
-function closeTerminalVoiceComposer({ restoreFocus = true, raw = false } = {}) {
-  state.rawTerminalInput = raw;
+function closeTerminalVoiceComposer({ restoreFocus = true } = {}) {
   voiceInput.abort();
   $('#terminalVoiceComposer').hidden = true;
   setTerminalVoiceState(false, '语音输入已关闭。');
@@ -805,8 +804,8 @@ function syncTerminalAccess() {
     control.disabled = !writable;
   }
   // 逐字符直通意味着每敲一个键都要一次往返, 跟手程度等于 RTT。默认把输入收到本地
-  // 输入条里, 回车才发一次。关闭输入条(×)即退回逐字符模式, 供全屏 TUI 使用。
-  if (writable && !state.rawTerminalInput) openTerminalComposer();
+  // 输入条里, 回车才发一次; 补全/中断等按键仍逐键直达 CLI, 见 terminal-compose.js。
+  if (writable) openTerminalComposer();
   syncTerminalVoiceControls();
 }
 
@@ -1323,10 +1322,6 @@ for (const trigger of document.querySelectorAll('[data-terminal-action="voice"]'
 }
 $('#terminalVoiceCaptureButton').addEventListener('pointerdown', (event) => event.preventDefault());
 $('#terminalVoiceCaptureButton').addEventListener('click', toggleTerminalVoiceInput);
-$('#closeTerminalVoiceButton').addEventListener('click', () => {
-  closeTerminalVoiceComposer({ raw: true });
-  setConnectionMessage('已切换到逐字符输入，按键直接发往终端');
-});
 $('#terminalVoiceComposer').addEventListener('submit', (event) => {
   event.preventDefault();
   submitTerminalVoiceDraft();

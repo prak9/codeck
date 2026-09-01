@@ -56,7 +56,6 @@
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
-          <button class="terminal-voice-close" id="closeTerminalVoiceButton" type="button" aria-label="切换到逐字符输入">×</button>
           <textarea id="terminalVoiceDraft" rows="1" aria-label="终端输入" maxlength="100000" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入后回车发送 · @ Tab Esc 直达 CLI"></textarea>
           <button class="terminal-voice-capture" id="terminalVoiceCaptureButton" type="button" aria-label="开始语音输入" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg></button>
           <button class="terminal-voice-send" id="sendTerminalVoiceButton" type="submit" aria-label="发送到终端"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-5 14-2.5-5.5L5 12Z"/></svg></button>
@@ -117,6 +116,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-    <script type="module" src="/app.js?v=85"></script>
+    <script type="module" src="/app.js?v=86"></script>
 </body>
 </html>

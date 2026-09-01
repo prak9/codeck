@@ -47,12 +47,12 @@ test('terminal voice input follows terminal access and browser support', () => {
 test('the terminal input bar is local by default and hands whitelisted keys to the CLI', () => {
   // 逐字符直通让打字延迟等于 RTT。默认收进本地输入条, 回车才发一次;
   // 而补全/切模式/中断必须逐键到达 CLI, 否则本地缓冲就把它们吃掉了。
-  assert.match(appJs, /if \(writable && !state\.rawTerminalInput\) openTerminalComposer\(\)/);
+  assert.match(appJs, /if \(writable\) openTerminalComposer\(\)/);
   assert.match(appJs, /terminalComposerKeyAction\(event, \{ draft: \$\('#terminalVoiceDraft'\)\.value \}\)/);
   assert.match(appJs, /action\.key === 'tab' && action\.shift.*TERMINAL_SHIFT_TAB/s);
   assert.match(appJs, /function handOffTerminalInput\(/);
-  // × 是退回逐字符模式的唯一出口, 供 vim/htop 这类全屏 TUI 使用。
-  assert.match(appJs, /closeTerminalVoiceComposer\(\{ raw: true \}\)/);
+  // 输入条常驻: 没有会改变终端高度的开关, 也就没有随之而来的重排与重绘问题。
+  assert.doesNotMatch(html, /closeTerminalVoiceButton/);
   assert.match(html, /placeholder="输入后回车发送 · @ Tab Esc 直达 CLI"/);
 });
 
