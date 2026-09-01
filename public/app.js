@@ -12,7 +12,7 @@ import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
-import { terminalComposerKeyAction, terminalDraftForSend } from './terminal-compose.js?v=3';
+import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForSend } from './terminal-compose.js?v=4';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -247,16 +247,29 @@ function sendTerminalInput(data) {
   return true;
 }
 
-// 交权: 输入条收起, 焦点回到终端, 之后每个按键都直通, 直到用户按回车(CLI 收下这一行)
-// 或按 Esc(放弃补全) —— 那时再把本地输入条收回来。
-function handOffTerminalInput(prefix) {
-  if (!sendTerminalInput(prefix)) return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
-  $('#terminalVoiceDraft').value = '';
+// 交权: 焦点交给终端, 之后每个按键逐个直达 CLI, 直到一个裸 Esc。输入条留在原地不收起
+// —— 收起会改变终端高度, 而终端重排正是 × 那个按钮闯的祸。
+function handOffTerminalInput(suffix) {
+  const draft = $('#terminalVoiceDraft');
+  if (!sendTerminalInput(`${terminalDraftForSend(draft.value)}${suffix}`)) {
+    return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
+  }
+  draft.value = '';
   resizeTerminalVoiceDraft();
   state.handoffTerminalInput = true;
-  closeTerminalVoiceComposer({ restoreFocus: false });
+  $('#terminalVoiceComposer').classList.add('handoff');
+  setTerminalVoiceState(false, 'CLI 接管输入中 · Esc 返回本地输入');
+  syncTerminalVoiceControls();
   state.terminal?.focus();
-  setConnectionMessage('已交给 CLI 补全，回车或 Esc 后恢复本地输入');
+}
+
+function endTerminalHandoff({ focus = true } = {}) {
+  if (!state.handoffTerminalInput) return;
+  state.handoffTerminalInput = false;
+  $('#terminalVoiceComposer').classList.remove('handoff');
+  setTerminalVoiceState(false, '');
+  syncTerminalVoiceControls();
+  if (focus) $('#terminalVoiceDraft').focus();
 }
 
 function submitTerminalVoiceDraft() {
@@ -1025,10 +1038,7 @@ function ensureTerminal() {
   terminal.onData((data) => {
     if (state.canWrite && state.terminalInputReady && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'input', data }));
-      if (state.handoffTerminalInput && /[\r\n\x1b]/.test(data)) {
-        state.handoffTerminalInput = false;
-        openTerminalComposer({ focus: true });
-      }
+      if (state.handoffTerminalInput && endsTerminalHandoff(data)) endTerminalHandoff();
     }
   });
   // Touch browsers have no dependable shortcut or native selection bubble for xterm's
@@ -1337,6 +1347,7 @@ $('#terminalVoiceComposer').addEventListener('submit', (event) => {
   event.preventDefault();
   submitTerminalVoiceDraft();
 });
+$('#terminalVoiceDraft').addEventListener('focus', () => endTerminalHandoff({ focus: false }));
 $('#terminalVoiceDraft').addEventListener('input', () => {
   resizeTerminalVoiceDraft();
   syncTerminalVoiceControls();
@@ -1353,8 +1364,7 @@ $('#terminalVoiceDraft').addEventListener('keydown', (event) => {
   if (action.type === 'send') return $('#terminalVoiceComposer').requestSubmit();
   if (action.type === 'newline') return insertDraftNewline(action.stripBackslash);
   if (action.type === 'passthrough') return sendTerminalInput(action.data);
-  // handoff: '@' 之后的补全需要 CLI 逐键接管, 先把已输入的原样送过去(不带回车)。
-  handOffTerminalInput(`${$('#terminalVoiceDraft').value}@`);
+  handOffTerminalInput(action.data);
 });
 
 // Neither clipboard direction has a touch gesture to hang off. `.xterm` sets

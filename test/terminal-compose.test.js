@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { terminalComposerKeyAction } from '../public/terminal-compose.js';
+import { endsTerminalHandoff, terminalComposerKeyAction } from '../public/terminal-compose.js';
 
 const press = (key, extra = {}) => ({ key, shiftKey: false, ctrlKey: false, metaKey: false, isComposing: false, ...extra });
 
@@ -26,7 +26,6 @@ test('interrupt, mode cycling and completion reach the CLI untouched', () => {
 test('any Ctrl combination the browser does not need goes to the CLI as its control byte', () => {
   // 白名单枚举不出 CLI 会绑什么。终端里 Ctrl+字母 本来就是原样送达, 所以默认直通,
   // 只把浏览器真正需要的几个留在本地。Ctrl+R 尤其重要 —— 不接管的话它会刷新整个页面。
-  assert.deepEqual(terminalComposerKeyAction(press('r', { ctrlKey: true })), { type: 'passthrough', data: '\x12' });
   assert.deepEqual(terminalComposerKeyAction(press('t', { ctrlKey: true })), { type: 'passthrough', data: '\x14' });
   assert.deepEqual(terminalComposerKeyAction(press('b', { ctrlKey: true })), { type: 'passthrough', data: '\x02' });
   assert.deepEqual(terminalComposerKeyAction(press('u', { ctrlKey: true })), { type: 'passthrough', data: '\x15' });
@@ -38,10 +37,6 @@ test('the browser keeps the editing shortcuts a textarea cannot do without', () 
   }
   // Ctrl+J 是我们自己的换行, 不该变成 \n 直通。
   assert.equal(terminalComposerKeyAction(press('j', { ctrlKey: true })).type, 'newline');
-});
-
-test('@ hands control to the CLI so its path completion can take over', () => {
-  assert.equal(terminalComposerKeyAction(press('@')).type, 'handoff');
 });
 
 test('arrow keys navigate history only when the draft is empty', () => {
@@ -81,4 +76,24 @@ test('Ctrl+C copies when something is selected, and interrupts when nothing is',
   assert.equal(terminalComposerKeyAction(press('c', { ctrlKey: true }), { hasSelection: true }).type, 'insert');
   assert.deepEqual(terminalComposerKeyAction(press('c', { ctrlKey: true }), { hasSelection: false }),
     { type: 'passthrough', data: '\x03' });
+});
+
+test('mode-entry keys hand control to the CLI, one-shot keys do not', () => {
+  // Ctrl+R 开启反向搜索: 之后每个按键都是查询串的一部分, 必须逐键到达 CLI,
+  // 否则 CLI 停在搜索态而字全被本地输入条吃掉。@ 的路径补全同理。
+  assert.deepEqual(terminalComposerKeyAction(press('@')), { type: 'handoff', data: '@' });
+  assert.deepEqual(terminalComposerKeyAction(press('r', { ctrlKey: true })), { type: 'handoff', data: '\x12' });
+  // Ctrl+L 清屏是一次性的, 不该抢走焦点。
+  assert.deepEqual(terminalComposerKeyAction(press('l', { ctrlKey: true })), { type: 'passthrough', data: '\x0c' });
+});
+
+test('only a bare Escape ends the handoff, never an arrow key', () => {
+  // 方向键是 \x1b[A —— 也含 \x1b。按字符匹配会让菜单里按一下方向键就被踢回本地模式,
+  // 而那恰恰是补全和搜索最需要停留的时候。
+  assert.equal(endsTerminalHandoff('\x1b'), true);
+  assert.equal(endsTerminalHandoff('\x1b[A'), false);
+  assert.equal(endsTerminalHandoff('\x1b[B'), false);
+  assert.equal(endsTerminalHandoff('\x1b[Z'), false);
+  assert.equal(endsTerminalHandoff('\r'), false, '回车在补全菜单里是选中, 不是退出');
+  assert.equal(endsTerminalHandoff('a'), false);
 });

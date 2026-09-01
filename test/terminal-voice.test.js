@@ -87,3 +87,14 @@ test('the prompt marker tracks the first line of a multi-line draft', () => {
   // 输入条整体底对齐(收发按钮贴底), 所以 › 必须显式顶对齐, 否则草稿一换行它就掉到最后一行旁边。
   assert.match(css, /\.terminal-voice-prompt \{[^}]*align-self: start/s);
 });
+
+test('handing input to the CLI never changes the terminal geometry', () => {
+  // 收起输入条会让终端长高并触发重排 —— 正是 × 那个按钮闯的祸。交权只改样式和焦点。
+  assert.match(appJs, /function handOffTerminalInput\(suffix\)/);
+  assert.doesNotMatch(appJs, /function handOffTerminalInput[\s\S]{0,600}?closeTerminalVoiceComposer/);
+  assert.match(appJs, /classList\.add\('handoff'\)/);
+  assert.match(appJs, /endsTerminalHandoff\(data\)\) endTerminalHandoff\(\)/);
+  // 点回输入条也要能脱离交权, 否则框在眼前却打不进字。
+  assert.match(appJs, /'#terminalVoiceDraft'\)\.addEventListener\('focus', \(\) => endTerminalHandoff/);
+  assert.match(css, /\.terminal-voice-composer\.handoff textarea \{[^}]*opacity/s);
+});
