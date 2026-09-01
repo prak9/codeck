@@ -66,3 +66,11 @@ test('the input bar renders in the same face the terminal will echo it in', () =
   // 16px 是 iOS 聚焦时不缩放页面的下限。
   assert.match(css, /\.terminal-voice-composer textarea\s*\{[^}]*font-size:\s*16px/s);
 });
+
+test('the always-on input bar rests in the frame neutral border, not the accent', () => {
+  // 强调色在这个应用里表示"动作"(发送按钮)。输入条常驻且默认持有焦点, 若聚焦态
+  // 用强调色描边, 那圈橙红就成了常亮状态, 比它包裹的终端还抢眼。
+  assert.match(css, /\.terminal-voice-composer \{[^}]*border: 1px solid var\(--line-strong\)/s);
+  // 中性 = 白色透明度; 强调色是暖橙 (#ff6b35 系), 两者都以 ff 开头, 所以直接断言前者。
+  assert.match(css, /\.terminal-voice-composer:focus-within \{[^}]*border-color:\s*#ffffff[0-9a-f]{2}/s);
+});
