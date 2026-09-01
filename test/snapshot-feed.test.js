@@ -297,3 +297,64 @@ test('the feed counts full and delta frames so the saving is measurable', async 
   stop();
   feed.close();
 });
+
+test('a watched resource falls back to a slow heartbeat instead of tight polling', async () => {
+  // 现在的延迟下限就是轮询间隔 (活跃 thread 350ms), 处理耗时再怎么压也改不了它。
+  // 能被订阅的资源 (transcript 文件可以 fs.watch) 应该改由事件驱动, 轮询退成兜底。
+  const scheduled = [];
+  let fire = null;
+  let disposed = 0;
+  const feed = createSnapshotFeed(async () => ({ n: 1 }), {
+    intervalMs: 350,
+    watchedIntervalMs: 8_000,
+    watch: (resource, onChange) => { fire = onChange; return () => { disposed += 1; }; },
+    schedule: (callback, delay) => { scheduled.push(delay); return scheduled.length; },
+    cancel: () => {},
+  });
+
+  const stop = feed.subscribeFrom('thread', null, () => {});
+  await feed.refresh('thread');
+  assert.ok(scheduled.includes(8_000), `被监听的资源应使用兜底心跳, 实际: ${scheduled}`);
+  assert.ok(!scheduled.includes(350), '不应再按紧凑间隔轮询');
+  assert.equal(typeof fire, 'function', '必须把变更回调交给监听方');
+
+  stop();
+  assert.equal(disposed, 1, '没有订阅者就要停掉监听');
+  feed.close();
+});
+
+test('an unwatchable resource keeps its original cadence', async () => {
+  // 找不到可监听的文件 (例如身份未确认) 时必须原样退回轮询, 不能变慢。
+  const scheduled = [];
+  const feed = createSnapshotFeed(async () => ({ n: 1 }), {
+    intervalMs: 350,
+    watchedIntervalMs: 8_000,
+    watch: () => null,
+    schedule: (callback, delay) => { scheduled.push(delay); return scheduled.length; },
+    cancel: () => {},
+  });
+  const stop = feed.subscribeFrom('thread', null, () => {});
+  await feed.refresh('thread');
+  assert.ok(scheduled.includes(350), `无法监听时应保持原节奏, 实际: ${scheduled}`);
+  stop();
+  feed.close();
+});
+
+test('a watch event refreshes immediately rather than waiting for the next tick', async () => {
+  let value = { n: 1 };
+  let fire = null;
+  const frames = [];
+  const feed = createSnapshotFeed(async () => structuredClone(value), {
+    intervalMs: 350,
+    watchedIntervalMs: 8_000,
+    watch: (resource, onChange) => { fire = onChange; return () => {}; },
+  });
+  const stop = feed.subscribeFrom('thread', null, (frame) => frames.push(frame));
+  await feed.refresh('thread');
+
+  value = { n: 2 };
+  await fire();
+  assert.ok(frames.some((f) => f.snapshot?.n === 2 || f.kind === 'delta'), '变更事件应立刻产出新帧');
+  stop();
+  feed.close();
+});

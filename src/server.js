@@ -15,6 +15,7 @@ import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
 import { createSessionSnapshotLoader } from './session-snapshot.js';
 import { createSnapshotFeed } from './snapshot-feed.js';
+import { findTranscriptFile, watchTranscript } from './transcript-watch.js';
 import {
   resolveSessionStatus,
   sessionSnapshotRefreshInterval,
@@ -358,6 +359,13 @@ const threadFeed = createSnapshotFeed(
       snapshot, sessionStatusByName.get(target.tmuxSession),
     ),
     resourceKey: ({ provider, threadId, tmuxSession }) => `${provider}:${threadId}:${tmuxSession || ''}`,
+    // transcript 文件是 CLI 自己在写的 —— 与其每 350ms 去读一遍, 不如让它通知我们。
+    // 找不到文件时返回 null, 该资源保持原有轮询节奏, 监听失败不会让它变慢。
+    watch: ({ provider, threadId }, onChange) => watchTranscript(
+      findTranscriptFile(provider, threadId), onChange,
+    ),
+    // 监听生效后轮询只作兜底: 覆盖 fs.watch 漏事件、文件被换掉等情况。
+    watchedIntervalMs: 8_000,
   },
 );
 const agentHub = new AgentHub(agentRegistry, {

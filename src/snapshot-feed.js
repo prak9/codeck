@@ -19,6 +19,10 @@ export function createSnapshotFeed(loadSnapshot, {
   retentionMs = 60_000,
   maxPatchOperations = 512,
   patchRatio = 0.9,
+  // 延迟下限就是轮询间隔, 处理耗时再压也改不了它。能被订阅的资源 (transcript
+  // 文件可以 fs.watch) 改由事件驱动, 轮询退成兜底心跳; 订阅不上的原样轮询。
+  watch = null,
+  watchedIntervalMs = 8_000,
   resourceKey = defaultResourceKey,
   serialize = JSON.stringify,
   schedule = defaultSchedule,
@@ -51,6 +55,7 @@ export function createSnapshotFeed(loadSnapshot, {
         idleTimer: null,
         invalidated: false,
         retainOnIdle: false,
+        unwatch: null,
       };
       entries.set(key, entry);
     }
@@ -78,6 +83,7 @@ export function createSnapshotFeed(loadSnapshot, {
 
   function retainOrDrop(entry) {
     if (entry.subscribers.size) return;
+    stopWatch(entry);
     clearScheduled(entry);
     if (!entry.retainOnIdle || !Number.isFinite(retentionMs) || retentionMs <= 0) {
       dropSnapshot(entry);
@@ -92,11 +98,28 @@ export function createSnapshotFeed(loadSnapshot, {
     }, retentionMs);
   }
 
+  function startWatch(entry) {
+    if (entry.unwatch || !watch || !entry.subscribers.size) return;
+    try {
+      entry.unwatch = watch(entry.resource, () => refresh(entry.resource).catch(() => {})) || null;
+    } catch {
+      entry.unwatch = null;
+    }
+  }
+
+  function stopWatch(entry) {
+    if (!entry.unwatch) return;
+    try { entry.unwatch(); } catch { /* The watcher is already gone. */ }
+    entry.unwatch = null;
+  }
+
   function scheduleNext(entry) {
     if (closed || !entry.subscribers.size || entry.timer != null || entry.inFlight) return;
-    const configuredInterval = typeof intervalMs === 'function'
-      ? intervalMs(entry.latest?.snapshot, entry.resource)
-      : intervalMs;
+    const configuredInterval = entry.unwatch
+      ? watchedIntervalMs
+      : (typeof intervalMs === 'function'
+        ? intervalMs(entry.latest?.snapshot, entry.resource)
+        : intervalMs);
     const delay = Number.isFinite(configuredInterval) && configuredInterval >= 0
       ? configuredInterval
       : 1_000;
@@ -222,6 +245,7 @@ export function createSnapshotFeed(loadSnapshot, {
     clearIdle(entry);
     const subscriber = { mode: 'snapshot', onSnapshot, onError };
     entry.subscribers.add(subscriber);
+    startWatch(entry);
     if (entry.latest) queueMicrotask(() => {
       if (!closed && entry.subscribers.has(subscriber)) onSnapshot(entry.latest);
     });
@@ -273,6 +297,7 @@ export function createSnapshotFeed(loadSnapshot, {
       mode: 'delta', onSnapshot, onError, ready: false, pending: [],
     };
     entry.subscribers.add(subscriber);
+    startWatch(entry);
     queueMicrotask(() => {
       if (closed || !entry.subscribers.has(subscriber)) return;
       let deliveredSequence = normalizedCursor(cursor)?.epoch === epoch
@@ -329,6 +354,7 @@ export function createSnapshotFeed(loadSnapshot, {
     if (closed) return;
     closed = true;
     for (const entry of entries.values()) {
+      stopWatch(entry);
       clearScheduled(entry);
       clearIdle(entry);
       entry.subscribers.clear();
