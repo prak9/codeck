@@ -319,10 +319,23 @@ const sessionFeed = createSnapshotFeed(
     const snapshot = await sessionSnapshotForAuth({ owner: true, session: null, canWrite: true });
     sessionStatusByName.clear();
     for (const session of snapshot.sessions) sessionStatusByName.set(session.name, session.status);
-    sessionPaneExcerpts.clear();
+    // pane 摘录挂在 thread 快照里, 但它是 tmux 侧的信号, 与 transcript 文件无关。
+    // thread feed 被 transcript 监听接管后轮询只剩 8s 兜底, 摘录不能跟着变慢 ——
+    // 这一轮扫描发现它变了, 就主动刷新对应会话的 thread 订阅。
+    const changedSessions = [];
     for (const session of raw) {
       const excerpt = session.agent?.liveOutput || session.liveOutput || '';
+      const previous = sessionPaneExcerpts.get(session.name) || '';
+      if (excerpt !== previous) changedSessions.push(session.name);
       if (excerpt) sessionPaneExcerpts.set(session.name, excerpt);
+      else sessionPaneExcerpts.delete(session.name);
+    }
+    for (const name of sessionPaneExcerpts.keys()) {
+      if (!raw.some((session) => session.name === name)) sessionPaneExcerpts.delete(name);
+    }
+    if (changedSessions.length) {
+      const names = new Set(changedSessions);
+      threadFeed.refreshSubscribed((resource) => names.has(resource.tmuxSession)).catch(() => {});
     }
     return snapshot;
   },
