@@ -1536,6 +1536,9 @@ $('#sessionList').addEventListener('keydown', (event) => {
 
 syncSessionVisibilityButton();
 if (state.token) refreshSessions().then(() => {
+  // 从对话模式切过来时带着会话名; 只认真实存在的那个, 别让 URL 里的任意字符串生效。
+  const requested = displayParams.get('session') || '';
+  if (requested && state.sessions.some((session) => session.name === requested)) return connect(requested);
   if (state.openedShareLink && state.sessions.length === 1) connect(state.sessions[0].name);
 }).catch((error) => {
   // A persisted token that the server no longer accepts has to go, or every reload

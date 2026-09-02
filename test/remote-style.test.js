@@ -283,7 +283,7 @@ test('the load-earlier control is styled', () => {
 
 test('remote carries the way back to terminal mode in the header, where a phone can reach it', () => {
   // 之前三个入口全在抽屉和设置弹层里; 普通模式那边是顶栏上一个常驻链接。两边对称。
-  assert.match(html, /<a class="header-button" href="\/" aria-label="切换到终端模式">/);
+  assert.match(html, /<a class="header-button" href="\/" data-terminal-mode aria-label="切换到终端模式">/);
   assert.match(css, /\.conversation-header \{[^}]*grid-template-columns: 44px minmax\(0, 1fr\) 132px/s);
 });
 
@@ -302,4 +302,13 @@ test('the terminal output card is cleared once it should no longer show, working
   // 是 done 状态, 于是没有任何东西来移除它, 那个框就一直留在对话里。
   assert.match(remoteJs, /if \(!visible\) \{[\s\S]{0,400}?if \(section\) scheduleThreadRender\(false\)/);
   assert.doesNotMatch(remoteJs, /if \(!visible\) \{[\s\S]{0,300}?if \(current\) scheduleThreadRender/);
+});
+
+test('leaving the conversation for the terminal keeps the session you were in', () => {
+  // 三个入口都是裸 href="/", 于是从某个会话的对话里出去会落到终端的默认页面。
+  assert.match(html, /href="\/" data-terminal-mode/);
+  assert.match(remoteJs, /a\[data-terminal-mode\]/);
+  assert.match(remoteJs, /\/\?session=\$\{encodeURIComponent\(name\)\}/);
+  // 终端页只认真实存在的会话名, 不让 URL 里的任意字符串生效。
+  assert.match(appJs, /state\.sessions\.some\(\(session\) => session\.name === requested\)\) return connect\(requested\)/);
 });

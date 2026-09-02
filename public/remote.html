@@ -25,7 +25,7 @@
     <button class="drawer-scrim" id="drawerScrim" type="button" aria-label="关闭会话列表" tabindex="-1"></button>
     <aside class="thread-drawer" id="threadDrawer" aria-label="Agent 会话">
       <div class="drawer-brand">
-        <a href="/" aria-label="回到 Codeck 终端"><span class="brand-mark">C/</span><span>CODECK</span></a>
+        <a href="/" data-terminal-mode aria-label="回到 Codeck 终端"><span class="brand-mark">C/</span><span>CODECK</span></a>
         <span class="remote-label">REMOTE</span>
       </div>
       <div class="drawer-heading">
@@ -40,7 +40,7 @@
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
         <span><i class="connection-dot" id="drawerConnectionDot"></i><span id="drawerConnectionText">正在连接</span></span>
-        <a href="/">终端模式</a>
+        <a href="/" data-terminal-mode>终端模式</a>
       </div>
     </aside>
 
@@ -59,7 +59,7 @@
           <button class="header-button" id="newThreadButton" type="button" aria-label="新建会话">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           </button>
-          <a class="header-button" href="/" aria-label="切换到终端模式">
+          <a class="header-button" href="/" data-terminal-mode aria-label="切换到终端模式">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7.5 9.5l2.5 2.5-2.5 2.5M12.5 15h4"/></svg>
           </a>
           <button class="header-button" id="settingsButton" type="button" aria-label="对话设置" aria-haspopup="dialog">
@@ -193,7 +193,7 @@
       <input id="cwdInput" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="/data/code/project">
       <p class="field-help">用于接下来新建的会话，必须是服务器上的绝对路径。</p>
       <p class="form-error" id="settingsError" role="alert"></p>
-      <div class="settings-links"><a href="/">打开终端模式</a><button id="forgetTokenButton" type="button">更换访问令牌</button></div>
+      <div class="settings-links"><a href="/" data-terminal-mode>打开终端模式</a><button id="forgetTokenButton" type="button">更换访问令牌</button></div>
       <button class="settings-danger-button" id="closeSessionButton" type="button" hidden>关闭当前会话</button>
       <div class="sheet-actions"><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存</button></div>
     </form>
@@ -210,6 +210,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=67"></script>
+  <script type="module" src="/remote.js?v=68"></script>
 </body>
 </html>

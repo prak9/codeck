@@ -2780,6 +2780,15 @@ $('#tokenForm').addEventListener('submit', async (event) => {
     $('#tokenError').textContent = error.message;
   }
 });
+// 切到终端模式时带上当前会话 —— 否则从一个会话的对话里出去, 落到的是终端的默认页面。
+document.addEventListener('click', (event) => {
+  const link = event.target?.closest?.('a[data-terminal-mode]');
+  if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return;
+  const name = state.thread?.tmux?.name;
+  if (!name) return;
+  event.preventDefault();
+  location.href = `/?session=${encodeURIComponent(name)}`;
+});
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeDrawer();
 });
