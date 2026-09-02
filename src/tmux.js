@@ -349,6 +349,21 @@ function qoderIdleOutput(rows) {
   return qoderLiveOutput(rows, end);
 }
 
+function claudeIdleOutput(rows) {
+  // A full disk can drop a completed transcript record even though Claude rendered the
+  // answer. Keep only the visible answer ending at Claude's explicit completion row;
+  // recap, composer and status rows below it are interface state, not model output.
+  const end = rows.findLastIndex((line) => (
+    /^[^\p{L}\d\n]{1,4}\p{L}+\s+for\s+(?:(?:\d+h|\d+m)\s*)*\d+s\b/iu.test(line.trim())
+  ));
+  if (end < 0) return '';
+  const searchStart = Math.max(0, end - 24);
+  const promptRow = rows.slice(searchStart, end)
+    .findLastIndex((line) => /^[❯>]\s+\S/u.test(line.trimStart()));
+  const start = promptRow >= 0 ? searchStart + promptRow + 1 : searchStart;
+  return compactLiveOutput(rows.slice(start, end + 1), 18).join('\n');
+}
+
 // Return the current action block exactly as it appears in the visible tmux pane. The
 // block is bounded to keep polling cheap and rendered with textContent in the browser.
 // `allowTail` covers a repainting modal that temporarily hides the normal busy marker.
@@ -392,6 +407,10 @@ export function resolveAgentLiveOutput(kind, output, { allowTail = false } = {})
 
 export function resolveAgentSessionLiveOutput(agent, hasRunningProcess, screenSignals, output) {
   if (!agent) return '';
+  if (agent.kind === 'claude' && !hasRunningProcess) {
+    const completed = claudeIdleOutput(cleanScreenRows(output));
+    if (completed) return completed;
+  }
   // Qoder history can lag or be unavailable when the CLI runs behind ssh, so keep its
   // bounded pane result after the spinner disappears instead of trusting the SDK alone.
   const keepVisible = agent.kind === 'qodercli';

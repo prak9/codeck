@@ -967,6 +967,36 @@ test('extracts the exact current activity block shown in the tmux pane', () => {
   assert.equal(resolveAgentLiveOutput('codex', '• Ran npm test\n› Follow up'), '');
 });
 
+test('keeps an idle Claude final answer available when its transcript did not catch up', () => {
+  const pane = [
+    '  已完成修复，服务已经恢复。',
+    '',
+    '  请重新打开 remote 页面验证。',
+    '',
+    '✻ Cogitated for 19s · done 9:20 AM',
+    '',
+    '※ recap: this is interface metadata, not the answer',
+    '  ✔ Update installed · Restart to…',
+    '────────────────────────────────────',
+    '❯ ',
+    '────────────────────────────────────',
+    '  ⏵⏵ bypass permissions on',
+  ].join('\n');
+
+  assert.equal(resolveAgentSessionLiveOutput(
+    { kind: 'claude', id: 'thread-1' },
+    false,
+    { busy: false, background: false, animating: false },
+    pane,
+  ), [
+    '  已完成修复，服务已经恢复。',
+    '',
+    '  请重新打开 remote 页面验证。',
+    '',
+    '✻ Cogitated for 19s · done 9:20 AM',
+  ].join('\n'));
+});
+
 test('extracts qoder thinking and tool use above its composer and status rows', () => {
   // Qoder renders pending history first, then its loading row, composer, and status
   // details. The latter can put the loading row more than six non-empty rows from

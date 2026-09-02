@@ -205,6 +205,7 @@ function renderedThreadMetadata(thread) {
     thread?.cwd,
     thread?.readOnly,
     thread?.status,
+    thread?.liveOutput,
   ]);
 }
 
@@ -451,7 +452,26 @@ export function shouldShowTerminalActivity(thread) {
   if (tmux.commandOutput?.text) return true;
   if (thread.provider === 'shell' || tmux.available === false) return true;
   if (latestRunningTurn(thread)) return false;
-  return tmux.status === 'working';
+  if (tmux.status === 'working') return true;
+  if (thread.provider !== 'claude' || !thread.liveOutput) return false;
+
+  // Claude may render a final answer that never reaches its JSONL transcript (for
+  // example after ENOSPC). Show that bounded pane fallback until the structured final
+  // answer contains the same text, then remove the terminal card to avoid duplication.
+  const lines = String(thread.liveOutput).split('\n');
+  const completion = lines.findIndex((line) => (
+    /^[^\p{L}\d\n]{1,4}\p{L}+\s+for\s+(?:(?:\d+h|\d+m)\s*)*\d+s\b/iu.test(line.trim())
+  ));
+  const answerLines = completion >= 0 ? lines.slice(0, completion) : lines;
+  const omitted = answerLines.findLastIndex((line) => line.trim() === '…');
+  const answer = (omitted >= 0 ? answerLines.slice(omitted + 1) : answerLines)
+    .join('').replace(/\s+/gu, '').toLowerCase();
+  if (!answer) return false;
+  const structured = [...asArray(thread.turns)].reverse().map((turn) => (
+    asArray(turn?.items).filter((item) => item?.type === 'agentMessage')
+      .map((item) => item.text || '').join('')
+  )).find(Boolean)?.replace(/\s+/gu, '').toLowerCase() || '';
+  return !structured.includes(answer);
 }
 
 export function agentActivityText(thread) {

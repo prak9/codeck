@@ -67,6 +67,25 @@ test('hides completed Qoder terminal output once structured history is available
   assert.equal(shouldShowTerminalActivity(thread), true);
 });
 
+test('shows an idle Claude pane only while its final answer is absent from history', () => {
+  const thread = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-old', status: 'completed',
+      items: [{ id: 'old-answer', type: 'agentMessage', text: 'Earlier answer' }],
+    }],
+    liveOutput: '最新回答已经生成。\n请重新打开页面验证。\n✻ Cogitated for 19s · done 9:20 AM',
+  });
+  thread.tmux = { name: 'claude', status: 'done', available: true };
+
+  assert.equal(shouldShowTerminalActivity(thread), true);
+  thread.turns.push({
+    id: 'turn-latest', status: 'completed',
+    items: [{ id: 'latest-answer', type: 'agentMessage', text: '最新回答已经生成。请重新打开页面验证。' }],
+  });
+  assert.equal(shouldShowTerminalActivity(thread), false);
+});
+
 test('keeps an explicit slash-command result across tmux polling while idle', () => {
   const thread = normalizeAgentThread('codex', { id: 'thread-1', turns: [] });
   thread.tmux = {
@@ -786,6 +805,26 @@ test('a thread keeps showing its pane excerpt once the thread payload supplies o
   applyTmuxSnapshot(thread, { ...thread.tmux, liveOutput: 'from thread channel' });
   assert.equal(thread.tmux.liveOutput, 'from thread channel');
   assert.equal(shouldShowTerminalActivity(thread), true);
+});
+
+test('reconciles pane-only live output updates without waiting for transcript turns', () => {
+  const turn = {
+    id: 'turn-1', status: 'completed',
+    items: [{ id: 'answer-1', type: 'agentMessage', text: 'Previous answer' }],
+  };
+  const current = normalizeAgentThread('claude', {
+    id: 'thread-1', turns: [turn], liveOutput: '正在查看文件',
+  });
+  current.tmux = { name: 'claude', status: 'working', available: true };
+  const refreshed = normalizeAgentThread('claude', {
+    id: 'thread-1', turns: [turn], liveOutput: '正在运行测试',
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, refreshed);
+
+  assert.notEqual(reconciled, current);
+  assert.equal(reconciled.liveOutput, '正在运行测试');
+  assert.deepEqual(reconciled.tmux, current.tmux);
 });
 
 test('a thread that already has live output from its own stream is not re-polled', () => {
