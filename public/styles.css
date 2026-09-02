@@ -165,6 +165,11 @@ label, legend { display: block; margin: 16px 0 7px; color: #dadade; font-size: 1
 label span { color: var(--subtle); font-weight: 400; }
 input[type="text"], input[type="password"], input:not([type]) { width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: #11111499; color: var(--ink); }
 fieldset { margin: 0; padding: 0; border: 0; }
+.setting-row { margin: 18px 0 4px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; display: flex; align-items: flex-start; gap: 11px; cursor: pointer; }
+.setting-row input { width: 18px; height: 18px; margin-top: 2px; flex: none; accent-color: var(--accent); }
+.setting-row > span { display: grid; gap: 5px; }
+.setting-row strong { color: var(--ink); font-size: 12px; font-weight: 650; }
+.setting-row span span { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .client-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
 .client-options label { margin: 0; cursor: pointer; }
 .client-options input { position: absolute; opacity: 0; }

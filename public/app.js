@@ -108,10 +108,10 @@ const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A
 let terminalVoiceBaseDraft = '';
 let terminalVoiceHadResult = false;
 
-const PURE_TERMINAL_STORAGE_KEY = 'codeck-terminal-pure';
+const LOCAL_INPUT_STORAGE_KEY = 'codeck-local-input';
 
-function pureTerminalEnabled() {
-  try { return localStorage.getItem(PURE_TERMINAL_STORAGE_KEY) === '1'; }
+function localInputEnabled() {
+  try { return localStorage.getItem(LOCAL_INPUT_STORAGE_KEY) === '1'; }
   catch { return false; }
 }
 
@@ -203,16 +203,6 @@ function closeTerminalVoiceComposer({ restoreFocus = true } = {}) {
 }
 
 // 本地输入条开着时它才是打字的落点; 逐字符模式下才把焦点给 xterm。
-function syncInputModeButton() {
-  const pure = pureTerminalEnabled();
-  const button = $('#inputModeButton');
-  button.textContent = pure ? '纯终端' : '本地输入';
-  button.setAttribute('aria-pressed', String(pure));
-  button.title = pure
-    ? '每个按键直达 CLI，延迟等于网络往返。点击回到本地输入。'
-    : '本地编辑，回车整行发送。点击切换为逐字符直达 CLI。';
-}
-
 function focusTerminalInput() {
   if (!$('#terminalVoiceComposer').hidden) return $('#terminalVoiceDraft').focus();
   state.terminal?.focus();
@@ -818,7 +808,7 @@ function syncTerminalAccess() {
   }
   // 逐字符直通意味着每敲一个键都要一次往返, 跟手程度等于 RTT。默认把输入收到本地
   // 输入条里, 回车才发一次; 补全/中断等按键仍逐键直达 CLI, 见 terminal-compose.js。
-  if (writable && !pureTerminalEnabled()) openTerminalComposer();
+  if (writable && localInputEnabled()) openTerminalComposer();
   syncTerminalVoiceControls();
 }
 
@@ -1277,18 +1267,21 @@ $('#menuButton').addEventListener('click', () => {
   $('#menuButton').setAttribute('aria-expanded', String(open));
 });
 
-$('#inputModeButton').addEventListener('click', () => {
-  const pure = !pureTerminalEnabled();
-  try { localStorage.setItem(PURE_TERMINAL_STORAGE_KEY, pure ? '1' : ''); } catch { /* 无痕模式下只影响本次会话 */ }
-  syncInputModeButton();
-  if (pure) {
+$('#settingsButton').addEventListener('click', () => {
+  $('#localInputToggle').checked = localInputEnabled();
+  $('#settingsDialog').showModal();
+});
+$('#localInputToggle').addEventListener('change', (event) => {
+  const on = event.target.checked;
+  try { localStorage.setItem(LOCAL_INPUT_STORAGE_KEY, on ? '1' : ''); } catch { /* 无痕模式下只影响本次会话 */ }
+  if (on) openTerminalComposer();
+  else {
     endTerminalHandoff({ focus: false });
     closeTerminalVoiceComposer({ restoreFocus: false });
-  } else openTerminalComposer();
-  // 输入条的显隐会改变终端高度; 这里显式重排, 不依赖 ResizeObserver 的时序。
+  }
+  // 输入条的显隐会改变终端高度; 显式重排, 不依赖 ResizeObserver 的时序。
   fitTerminalView();
   focusTerminalInput();
-  setConnectionMessage(pure ? '纯终端模式：按键直达 CLI' : '本地输入：回车整行发送');
 });
 
 $('#viewModeButton').addEventListener('click', () => {
@@ -1346,7 +1339,6 @@ $('#terminalVoiceComposer').addEventListener('submit', (event) => {
   event.preventDefault();
   submitTerminalVoiceDraft();
 });
-syncInputModeButton();
 $('#terminalVoiceDraft').addEventListener('focus', () => endTerminalHandoff({ focus: false }));
 $('#terminalVoiceDraft').addEventListener('input', () => {
   resizeTerminalVoiceDraft();

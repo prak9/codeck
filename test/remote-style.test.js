@@ -19,7 +19,9 @@ function rootBreakpoint(cssText, width) {
 test('remote keeps Courier New in the conversation and uses the normal Apple-style UI font in the sidebar', () => {
   assert.match(html, /\/fonts\/inter\/wght\.css/);
   assert.match(html, /\/fonts\/noto-sans-sc\/wght\.css/);
-  assert.match(rootCss, /font-family:\s*"Courier New",\s*Courier,\s*"Noto Sans SC Variable",\s*monospace/);
+  // 界面用 Inter、正文用等宽 —— 与终端页同样的分工, 切换模式不该换一套界面字体。
+  assert.match(rootCss, /font-family:\s*"Inter Variable",\s*"Noto Sans SC Variable",\s*sans-serif/);
+  assert.match(css, /\.turns \{[^}]*font-family: "Courier New"/s);
   assert.match(css, /\.thread-drawer\s*\{[^}]*font-family:\s*"Inter Variable",\s*"Noto Sans SC Variable",\s*sans-serif/s);
   assert.match(css, /\.terminal-live-output[^}]+"Courier New"/s);
 });

@@ -12,14 +12,14 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=61">
+    <link rel="stylesheet" href="/styles.css?v=62">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Codeck 首页"><span class="brand-mark">C/</span><span>CODECK</span></a>
-      <div class="topbar-actions"><a class="remote-entry" href="/remote.html">对话模式</a><div class="server-state"><span class="status-dot"></span><span id="serverLabel">本机服务器</span></div>
+      <div class="topbar-actions"><a class="remote-entry" href="/remote.html">对话模式</a><button class="icon-button" id="settingsButton" type="button" aria-label="终端设置" aria-haspopup="dialog" aria-controls="settingsDialog">⚙</button><div class="server-state"><span class="status-dot"></span><span id="serverLabel">本机服务器</span></div>
         <button class="icon-button mobile-only" id="menuButton" aria-label="打开会话列表" aria-controls="sidebar" aria-expanded="false">☰</button>
       </div>
     </header>
@@ -51,7 +51,7 @@
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button" id="inputModeButton" type="button" aria-pressed="false">本地输入</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
@@ -107,6 +107,17 @@
     </form>
   </dialog>
 
+  <dialog id="settingsDialog">
+    <form method="dialog">
+      <h2>终端设置</h2>
+      <label class="setting-row">
+        <input type="checkbox" id="localInputToggle">
+        <span><strong>本地输入</strong><span>先在输入框里编辑，回车整行发送。关闭则每个按键直达 CLI，跟原生终端一致。</span></span>
+      </label>
+      <div class="dialog-actions"><button class="primary-button" value="close" type="submit">完成</button></div>
+    </form>
+  </dialog>
+
   <dialog class="switch-dialog" id="switchDialog">
     <div class="switch-head"><div><p class="eyebrow">QUICK SWITCH</p><h2>切换会话</h2></div><form method="dialog"><button class="icon-button" aria-label="关闭">×</button></form></div>
     <div class="switch-list" id="switchList"></div>
@@ -115,6 +126,6 @@
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
-    <script type="module" src="/app.js?v=94"></script>
+    <script type="module" src="/app.js?v=95"></script>
 </body>
 </html>
