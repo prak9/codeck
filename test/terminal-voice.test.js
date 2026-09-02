@@ -39,7 +39,7 @@ test('terminal voice input follows terminal access and browser support', () => {
 test('the terminal input bar is local by default and hands whitelisted keys to the CLI', () => {
   // 逐字符直通让打字延迟等于 RTT。默认收进本地输入条, 回车才发一次;
   // 而补全/切模式/中断必须逐键到达 CLI, 否则本地缓冲就把它们吃掉了。
-  assert.match(appJs, /if \(writable\) openTerminalComposer\(\)/);
+  assert.match(appJs, /if \(writable && !pureTerminalEnabled\(\)\) openTerminalComposer\(\)/);
   assert.match(appJs, /terminalComposerKeyAction\(event, \{\s*draft: draft\.value,/s);
   assert.match(appJs, /action\.type === 'passthrough'\) return sendTerminalInput\(action\.data\)/);
   assert.match(appJs, /function handOffTerminalInput\(/);
@@ -95,4 +95,16 @@ test('handing input to the CLI never changes the terminal geometry', () => {
   // 点回输入条也要能脱离交权, 否则框在眼前却打不进字。
   assert.match(appJs, /'#terminalVoiceDraft'\)\.addEventListener\('focus', \(\) => endTerminalHandoff/);
   assert.match(css, /\.terminal-voice-composer\.handoff textarea \{[^}]*opacity/s);
+});
+
+test('pure terminal mode is a remembered setting, not a button that toggles layout mid-flow', () => {
+  // 每个按键直达 pty 就是普通终端软件的行为, 代价是延迟等于 RTT。这是一个明确的选择,
+  // 所以它落盘并在连接时生效, 而不是像之前那个 × 一样随手改变终端高度。
+  assert.match(html, /id="inputModeButton"[^>]*aria-pressed="false"/);
+  assert.match(appJs, /PURE_TERMINAL_STORAGE_KEY = 'codeck-terminal-pure'/);
+  assert.match(appJs, /if \(writable && !pureTerminalEnabled\(\)\) openTerminalComposer\(\)/);
+  // 无痕模式下 localStorage 会抛, 读写都不能让终端页挂掉。
+  assert.match(appJs, /try \{ return localStorage\.getItem\(PURE_TERMINAL_STORAGE_KEY\)[\s\S]{0,60}?catch \{ return false; \}/);
+  // 显隐输入条会改变终端高度, 必须显式重排, 不能指望 ResizeObserver 的时序。
+  assert.match(appJs, /openTerminalComposer\(\);\n  \/\/[^\n]*\n  fitTerminalView\(\)/);
 });

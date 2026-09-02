@@ -277,3 +277,9 @@ test('the load-earlier control is styled', () => {
   assert.match(css, /\.load-earlier\s*\{[^}]*display:\s*flex/s);
   assert.match(css, /\.load-earlier button:disabled/s);
 });
+
+test('remote carries the way back to terminal mode in the header, where a phone can reach it', () => {
+  // 之前三个入口全在抽屉和设置弹层里; 普通模式那边是顶栏上一个常驻链接。两边对称。
+  assert.match(html, /<a class="header-button" href="\/" aria-label="切换到终端模式">/);
+  assert.match(css, /\.conversation-header \{[^}]*grid-template-columns: 44px minmax\(0, 1fr\) 132px/s);
+});
