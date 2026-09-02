@@ -94,7 +94,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=30/);
+  assert.match(html, /\/remote\.css\?v=31/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -321,4 +321,32 @@ test('the session travels in both directions between the two modes', () => {
   // 对话页只认列表里真有的会话, 且只认一次 —— 用户手动切走后不该被拽回来。
   assert.match(remoteJs, /state\.threads\.find\(\(thread\) => thread\.tmux\?\.name === requestedTmuxSession\)/);
   assert.match(remoteJs, /requestedTmuxSession = '';/);
+});
+
+test('both modes are drawn from one palette, token for token', () => {
+  // 之前两套中性色一冷一暖 (#f5f5f7 vs #f6f4f2, #9b9ba1 vs #a4a09d), 差异落在每一处
+  // 文字和边框上 —— 切模式时整个产品像换了一套皮。共有的 token 必须逐字节相同。
+  const tokens = (sheet) => Object.fromEntries(
+    [...(sheet.match(/^:root \{[\s\S]*?^\}/m)?.[0] || '').matchAll(/(--[\w-]+):\s*([^;]+);/g)]
+      .map((m) => [m[1], m[2].trim()]),
+  );
+  const terminal = tokens(appCss);
+  const remote = tokens(css);
+  const shared = Object.keys(terminal).filter((key) => key in remote);
+  assert.ok(shared.length >= 10, `共有 token 太少, 守卫失效: ${shared.length}`);
+  for (const key of shared) {
+    assert.equal(remote[key], terminal[key], `${key} 在两个模式里不一致`);
+  }
+});
+
+test('the modal chrome and press feedback match across modes', () => {
+  // 弹层的圆角、底色、投影、毛玻璃, 以及按压回弹, 都与触摸尺寸无关 —— 两边不同
+  // 纯粹是漂移。(触摸目标 44px 是有意为之, 不在此列。)
+  const dialog = appCss.match(/^dialog \{([^}]*)\}/m)?.[1] || '';
+  const sheet = css.match(/^\.sheet \{([^}]*)\}/m)?.[1] || '';
+  for (const bit of ['background: #252529f2', 'box-shadow: 0 28px 80px #00000080', 'backdrop-filter: blur(28px) saturate(140%)']) {
+    assert.ok(dialog.includes(bit), `普通模式 dialog 缺少 ${bit}`);
+    assert.ok(sheet.includes(bit), `对话模式 sheet 缺少 ${bit}`);
+  }
+  assert.doesNotMatch(css, /transform: scale\(\.95\)/);
 });
