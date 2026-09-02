@@ -370,3 +370,36 @@ test('fails closed for unsupported Codex client requests', () => {
     message: 'Unsupported Codex server request: account/chatgptAuthTokens/refresh',
   }]);
 });
+
+test('a locked Codex thread store is retried instead of surfaced to the user', async () => {
+  // Codex 的 thread-store 是 SQLite; 它自己的 TUI 在写、codeck 在读, 撞上就是
+  // "(code: 5) database is locked"。这是瞬时的, 而读操作幂等, 重试一次通常就好 ——
+  // 直接把这句抛到界面上, 用户只能自己再点一次。
+  let attempts = 0;
+  const appServer = new FakeAppServer(async (method) => {
+    if (method === 'thread/read') {
+      attempts += 1;
+      if (attempts < 3) {
+        throw new Error('thread-store internal error: failed to read thread metadata for t1: error returned from database: (code: 5) database is locked');
+      }
+      return { thread: { id: 't1', turns: [] } };
+    }
+    if (method === 'thread/turns/list') return { data: [] };
+    return {};
+  });
+  const backend = new CodexAgentBackend(appServer, { wait: async () => {} });
+
+  const opened = await backend.openThread('t1', { readOnly: true });
+  assert.equal(attempts, 3);
+  assert.equal(opened.thread.id, 't1');
+});
+
+test('a lock that never clears still reports the real error', async () => {
+  const appServer = new FakeAppServer(async (method) => {
+    if (method === 'thread/read') throw new Error('error returned from database: (code: 5) database is locked');
+    if (method === 'thread/turns/list') return { data: [] };
+    return {};
+  });
+  const backend = new CodexAgentBackend(appServer, { wait: async () => {} });
+  await assert.rejects(() => backend.openThread('t1', { readOnly: true }), /database is locked/);
+});

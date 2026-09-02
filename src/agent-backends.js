@@ -101,6 +101,16 @@ function isActiveWriterError(error) {
   return /already has an active writer/i.test(error?.message || '');
 }
 
+// Codex 的 thread-store 是 SQLite。它自己的 TUI 在写、codeck 在读, 撞上就是 SQLITE_BUSY,
+// 而那是瞬时的 —— 读又是幂等的, 退让几毫秒再试通常就过了。原样抛给界面只会让用户
+// 自己再点一次。
+const LOCKED_STORE_RETRIES = 3;
+const LOCKED_STORE_DELAY_MS = 120;
+
+function isLockedStoreError(error) {
+  return /database is locked|SQLITE_BUSY|\(code: 5\)/i.test(error?.message || '');
+}
+
 function codexAnswers(answers) {
   return Object.fromEntries(Object.entries(answers || {}).map(([id, values]) => [id, {
     answers: Array.isArray(values) ? values.map(String) : [],
@@ -108,8 +118,11 @@ function codexAnswers(answers) {
 }
 
 export class CodexAgentBackend extends EventEmitter {
-  constructor(appServer = new CodexAppServer()) {
+  constructor(appServer = new CodexAppServer(), {
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {}) {
     super();
+    this.wait = wait;
     this.provider = 'codex';
     this.label = 'Codex';
     this.capabilities = {
@@ -135,8 +148,20 @@ export class CodexAgentBackend extends EventEmitter {
     });
   }
 
+  // 读操作幂等, 所以只有读走重试; 写不能重放。
+  async #readStore(method, params) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.appServer.request(method, params);
+      } catch (error) {
+        if (attempt >= LOCKED_STORE_RETRIES || !isLockedStoreError(error)) throw error;
+        await this.wait(LOCKED_STORE_DELAY_MS * (attempt + 1));
+      }
+    }
+  }
+
   listThreads() {
-    return this.appServer.request('thread/list', {
+    return this.#readStore('thread/list', {
       limit: 80,
       sortKey: 'updated_at',
       sortDirection: 'desc',
@@ -152,8 +177,8 @@ export class CodexAgentBackend extends EventEmitter {
         readOnly = true;
       }
     }
-    const read = this.appServer.request('thread/read', { threadId, includeTurns: false });
-    const summary = this.appServer.request('thread/turns/list', {
+    const read = this.#readStore('thread/read', { threadId, includeTurns: false });
+    const summary = this.#readStore('thread/turns/list', {
       threadId,
       limit: progressive ? CODEX_PROGRESSIVE_TURN_LIMIT : 80,
       sortDirection: 'desc',
