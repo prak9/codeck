@@ -7,7 +7,8 @@ import {
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=12';
+  wheelScrollLines,
+} from './terminal-utils.js?v=13';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
@@ -995,6 +996,17 @@ function ensureTerminal() {
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
   bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden });
+  // 桌面上滚轮原本滚的是 xterm 自己的缓冲, 而那对全屏 TUI 只是一帧帧重绘的残片:
+  // 往上翻是碎片, 翻回来只剩当前一帧, 看着就像"历史没了"。会话历史在 tmux 手里,
+  // 所以滚轮和触摸走同一条路 —— 交给 tmux 的 copy-mode。
+  $('#terminal').addEventListener('wheel', (event) => {
+    if (matchMedia('(pointer: coarse)').matches) return;
+    if (state.socket?.readyState !== WebSocket.OPEN) return;
+    const lines = wheelScrollLines(event, terminal._core?._renderService?.dimensions?.css?.cell?.height);
+    if (!lines) return;
+    event.preventDefault();
+    state.socket.send(JSON.stringify({ type: 'scroll', lines }));
+  }, { passive: false });
   state.cancelMobileScroll = bindMobileScroll($('#terminal'), terminal, (lines) => {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));

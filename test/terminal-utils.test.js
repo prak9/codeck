@@ -9,6 +9,7 @@ import {
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
+  wheelScrollLines,
 } from '../public/terminal-utils.js';
 
 function sizingHarness(width, height) {
@@ -306,4 +307,17 @@ test('a terminal without refresh() still fits', () => {
   const harness = sizingHarness(460, 18);
   delete harness.terminal.refresh;
   assert.doesNotThrow(() => fitTerminalGrid(harness.terminal, harness.fit, { baseFontSize: 16 }));
+});
+
+test('wheel deltas become tmux scroll amounts, in tmux\'s direction', () => {
+  // tmux 那边 lines > 0 表示往历史里翻。滚轮向上 deltaY 为负, 所以要反号。
+  assert.equal(wheelScrollLines({ deltaY: -100, deltaMode: 0 }, 20), 5);
+  assert.equal(wheelScrollLines({ deltaY: 100, deltaMode: 0 }, 20), -5);
+  // deltaMode 1 是行、2 是页。
+  assert.equal(wheelScrollLines({ deltaY: -3, deltaMode: 1 }, 20), 3);
+  assert.equal(wheelScrollLines({ deltaY: 1, deltaMode: 2 }, 20), -24);
+  // 极小的抖动不该产生指令, 否则触控板会刷屏。
+  assert.equal(wheelScrollLines({ deltaY: -4, deltaMode: 0 }, 20), 0);
+  // 单次手势也要有上限, 一甩不该请求上千行。
+  assert.equal(wheelScrollLines({ deltaY: -100000, deltaMode: 0 }, 20), 60);
 });

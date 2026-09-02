@@ -3,6 +3,19 @@ export const MIN_TERMINAL_COLS = 20;
 export const MIN_TERMINAL_ROWS = 6;
 const TERMINAL_WRITE_DISCARD_WATERMARK = 50_000_000;
 
+// tmux 才是会话历史的持有者; xterm 的本地缓冲对全屏 TUI 来说只是一帧帧重绘的残片。
+// 所以滚轮要翻的是 tmux 的历史, 不是 xterm 自己的。lines > 0 = 往历史里翻。
+const WHEEL_MAX_LINES = 60;
+
+export function wheelScrollLines(event, cellHeight = 20) {
+  const mode = event?.deltaMode ?? 0;
+  const raw = Number(event?.deltaY) || 0;
+  const rows = mode === 1 ? raw : mode === 2 ? raw * 24 : raw / Math.max(1, cellHeight);
+  const lines = -Math.trunc(rows);
+  if (!lines) return 0;
+  return Math.max(-WHEEL_MAX_LINES, Math.min(WHEEL_MAX_LINES, lines));
+}
+
 export function clampTerminalGrid(cols, rows) {
   return {
     cols: Math.max(MIN_TERMINAL_COLS, cols),
