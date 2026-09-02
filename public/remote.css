@@ -100,7 +100,7 @@ button { cursor: pointer; }
 .drawer-scrim { display: none; }
 
 .conversation-shell { min-width: 0; min-height: 0; height: 100%; display: grid; grid-template-rows: var(--header-height) minmax(0, 1fr) auto; background: radial-gradient(circle at 50% -20%, #29231f 0, #19191b 36%, var(--base) 72%); }
-.conversation-header { z-index: 4; min-width: 0; padding: 0 18px; border-bottom: 1px solid var(--line); background: #18181ad9; display: grid; grid-template-columns: 92px minmax(0, 1fr) 92px; align-items: center; gap: 12px; backdrop-filter: blur(24px) saturate(135%); -webkit-backdrop-filter: blur(24px) saturate(135%); }
+.conversation-header { z-index: 4; min-width: 0; padding: 0 18px; border-bottom: 1px solid var(--line); background: #1c1c1fda; display: grid; grid-template-columns: 92px minmax(0, 1fr) 92px; align-items: center; gap: 12px; backdrop-filter: blur(24px) saturate(135%); -webkit-backdrop-filter: blur(24px) saturate(135%); }
 .header-button { background: transparent; }
 a.header-button { text-decoration: none; }
 .header-button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

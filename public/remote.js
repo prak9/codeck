@@ -14,7 +14,7 @@ import {
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=32';
+} from './agent-model.js?v=33';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -1021,8 +1021,9 @@ async function refreshActiveThread({ force = false } = {}) {
   if (current?.provider === 'shell') return;
   const sessionName = current?.tmux?.name;
   if (!shouldRefreshTmuxThread(current, {
-    force, refreshUntil: state.threadRefreshUntil,
+    force, refreshUntil: state.threadRefreshUntil, lastRefreshAt: state.threadRefreshedAt || 0,
   })) return;
+  state.threadRefreshedAt = Date.now();
   const provider = state.provider;
   const threadId = current.id;
   const streamTarget = { provider, threadId, tmuxSession: sessionName || '' };

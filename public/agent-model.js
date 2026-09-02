@@ -431,8 +431,12 @@ export function applyTmuxSnapshot(thread, tmux) {
   return completed;
 }
 
+// 工作期间正文的补充节奏。完全不刷会让整段运行的正文一动不动, 跑完一次性全出现;
+// 而每 tick 都刷又白费往返 —— pane 卡片已经在显示实时输出了。
+export const WORKING_THREAD_REFRESH_MS = 1_500;
+
 export function shouldRefreshTmuxThread(thread, {
-  force = false, now = Date.now(), refreshUntil = 0,
+  force = false, now = Date.now(), refreshUntil = 0, lastRefreshAt = 0,
 } = {}) {
   const tmux = thread?.tmux;
   if (!thread?.id || !tmux?.name || tmux.available === false) return false;
@@ -442,7 +446,9 @@ export function shouldRefreshTmuxThread(thread, {
   // keying only on tmux.liveOutput would make this always poll once the session list
   // stopped carrying it, trading the bytes we saved for a round trip per tick.
   const liveOutput = thread.liveOutput || tmux.liveOutput;
-  if (working && (liveOutput || tmux.activity === '后台任务运行中')) return false;
+  if (working && (liveOutput || tmux.activity === '后台任务运行中')) {
+    return now - lastRefreshAt >= WORKING_THREAD_REFRESH_MS;
+  }
   return working || now < refreshUntil;
 }
 

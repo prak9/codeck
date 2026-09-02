@@ -117,8 +117,9 @@ test('refreshes a completed tmux Agent transcript even if its last live output i
     now: 10_000, refreshUntil: 12_000,
   }), true);
   thread.tmux.status = 'working';
+  // 工作中且刚刷过就不再刷; 隔一会儿仍要补一次, 否则正文整段运行都不更新。
   assert.equal(shouldRefreshTmuxThread(thread, {
-    now: 10_000, refreshUntil: 12_000,
+    now: 10_000, refreshUntil: 12_000, lastRefreshAt: 9_500,
   }), false);
 });
 
@@ -839,7 +840,7 @@ test('a thread that already has live output from its own stream is not re-polled
     'no live output yet: polling is the only way to get it');
 
   thread.liveOutput = 'pane text from the thread stream';
-  assert.equal(shouldRefreshTmuxThread(thread, { now: 10_000, refreshUntil: 0 }), false,
+  assert.equal(shouldRefreshTmuxThread(thread, { now: 10_000, refreshUntil: 0, lastRefreshAt: 9_600 }), false,
     'the thread stream already supplies it: do not poll on top of it');
 });
 
@@ -956,4 +957,18 @@ test('rendered markdown in the pane still matches the raw markdown in history', 
   });
   thread.tmux = { name: 'claude', status: 'done', available: true };
   assert.equal(shouldShowTerminalActivity(thread), false);
+});
+
+test('a working session still fills in its conversation, just less often', () => {
+  // 之前只要在工作且有 pane 实时输出就完全不刷新, 于是整段运行里正文一动不动,
+  // 跑完才一次性全部出现。省下的往返在 delta 协议下只有几百字节, 不值这个体验。
+  const thread = {
+    id: 't1',
+    tmux: { name: 's', available: true, status: 'working' },
+    liveOutput: '正在运行命令…',
+  };
+  const now = 1_000_000;
+  assert.equal(shouldRefreshTmuxThread(thread, { now, lastRefreshAt: now - 300 }), false, '刚刷过就不必再刷');
+  assert.equal(shouldRefreshTmuxThread(thread, { now, lastRefreshAt: now - 2_500 }), true, '隔一会儿要补一次');
+  assert.equal(shouldRefreshTmuxThread(thread, { now, lastRefreshAt: 0 }), true, '从没刷过要刷');
 });
