@@ -799,8 +799,10 @@ export async function ensureAgentInputSubmitted({
     for (let attempt = 0; attempt < SUBMIT_CONFIRM_ATTEMPTS; attempt += 1) {
       await waitForSubmit();
       const rows = cleanScreenRows(await capturePane(paneId));
-      const composer = rows.map((line) => /^\s*[›>❯]\s*(.*)$/u.exec(line)?.[1])
-        .filter((value) => value != null).join('').replace(/\s+/gu, '');
+      // 只看最下面那一行提示符 —— TUI 把已提交的消息也用同样的前缀渲染在上方,
+      // 全部拼起来找的话, 每发一条消息都会误判成"还没发出去"。
+      const composer = String(rows.findLast((line) => /^\s*[›>❯]/u.test(line)) || '')
+        .replace(/^\s*[›>❯]\s*/u, '').replace(/\s+/gu, '');
       if (!composer.includes(needle)) return attempt > 0;
       await execTmux(['send-keys', '-t', paneId, 'Enter']);
     }

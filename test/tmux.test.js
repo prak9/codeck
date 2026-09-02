@@ -1371,3 +1371,27 @@ test('a composer holding someone else\'s text is never given a stray Enter', asy
   assert.equal(submitted, false);
   assert.equal(calls, 0);
 });
+
+test('a submitted message echoed in the transcript is not mistaken for the composer', async () => {
+  // Claude Code 把已提交的消息也渲染成 "❯ hi", 和输入框同一个前缀。把所有前缀行拼起来
+  // 找的话, 每发一条消息都会误判成"还没发出去", 于是白白补发 Enter —— 而那可能替用户
+  // 确认某个对话框。输入框永远是最下面那一行。
+  const pane = [
+    '❯ 怎么样了',
+    '',
+    '  已经都提交推送了。',
+    '',
+    '❯ ',
+    '  ⏵⏵ bypass permissions on',
+  ].join('\n');
+  let enters = 0;
+  const submitted = await ensureAgentInputSubmitted({
+    paneId: '%0',
+    text: '怎么样了',
+    execTmux: async (args) => { if (args.includes('Enter')) enters += 1; },
+    capturePane: async () => pane,
+    waitForSubmit: async () => {},
+  });
+  assert.equal(submitted, false);
+  assert.equal(enters, 0, '消息已经发出去了, 不该再补 Enter');
+});
