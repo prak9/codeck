@@ -312,3 +312,13 @@ test('leaving the conversation for the terminal keeps the session you were in', 
   // 终端页只认真实存在的会话名, 不让 URL 里的任意字符串生效。
   assert.match(appJs, /state\.sessions\.some\(\(session\) => session\.name === requested\)\) return connect\(requested\)/);
 });
+
+test('the session travels in both directions between the two modes', () => {
+  // 终端 → 对话: 之前是裸链接, 切过去落在空的对话页, 还得再找一次会话。
+  assert.match(appHtml, /class="remote-entry" href="\/remote\.html"/);
+  assert.match(appJs, /a\.remote-entry/);
+  assert.match(appJs, /\/remote\.html\?session=\$\{encodeURIComponent\(state\.active\)\}/);
+  // 对话页只认列表里真有的会话, 且只认一次 —— 用户手动切走后不该被拽回来。
+  assert.match(remoteJs, /state\.threads\.find\(\(thread\) => thread\.tmux\?\.name === requestedTmuxSession\)/);
+  assert.match(remoteJs, /requestedTmuxSession = '';/);
+});

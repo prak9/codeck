@@ -1267,6 +1267,15 @@ $('#menuButton').addEventListener('click', () => {
   $('#menuButton').setAttribute('aria-expanded', String(open));
 });
 
+// 切到对话模式时带上当前会话 —— 否则从一个会话的终端出去, 落到的是空的对话页。
+document.addEventListener('click', (event) => {
+  const link = event.target?.closest?.('a.remote-entry');
+  if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return;
+  if (!state.active) return;
+  event.preventDefault();
+  location.href = `/remote.html?session=${encodeURIComponent(state.active)}`;
+});
+
 $('#settingsButton').addEventListener('click', () => {
   $('#localInputToggle').checked = localInputEnabled();
   $('#settingsDialog').showModal();

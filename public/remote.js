@@ -910,6 +910,10 @@ function handoffTmuxThread(thread) {
   return handoff.promise;
 }
 
+// 从终端模式切过来时带着会话名。首次列表就绪后打开它, 只认列表里真有的那个;
+// 之后清空, 免得用户手动切走后又被拽回来。
+let requestedTmuxSession = new URLSearchParams(location.search).get('session') || '';
+
 async function loadThreads({ quiet = false } = {}) {
   if (state.threadLoad) return state.threadLoad;
   const generation = state.threadListGeneration;
@@ -937,6 +941,11 @@ async function loadThreads({ quiet = false } = {}) {
       openPendingThread(replacement, { quiet: true, refresh: false });
     }
     else if (replacement) await handoffTmuxThread(replacement);
+    if (requestedTmuxSession && !state.thread) {
+      const target = state.threads.find((thread) => thread.tmux?.name === requestedTmuxSession);
+      requestedTmuxSession = '';
+      if (target) await openListedThread(target, { quiet: true });
+    }
     renderThreadList();
     updateTerminalActivity();
     renderComposerState();
