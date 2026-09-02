@@ -291,7 +291,6 @@ app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xte
 app.use('/vendor/fit', express.static(path.join(dirname, '../node_modules/@xterm/addon-fit/lib')));
 app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@fontsource-variable/inter')));
 app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
-app.use('/fonts/jetbrains-mono', express.static(path.join(dirname, '../node_modules/@fontsource-variable/jetbrains-mono')));
 app.use(express.static(publicDir));
 app.use((error, _req, res, _next) => {
   const status = error.type === 'entity.too.large'

@@ -36,7 +36,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .remote-entry { min-height: 34px; padding: 0 11px; border: 1px solid #ff6b353b; border-radius: 9px; background: #ff6b350d; color: #ff9874; display: inline-flex; align-items: center; text-decoration: none; font-size: 10px; font-weight: 650; }
 .remote-entry:hover { border-color: #ff6b355d; background: #ff6b3517; }
 .brand { height: 100%; padding: 0 18px; display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-size: 12px; font-weight: 700; letter-spacing: .14em; }
-.brand-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--accent); box-shadow: 0 5px 14px #ff6b3530; color: var(--accent-ink); font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; font-weight: 800; letter-spacing: -.1em; }
+.brand-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--accent); box-shadow: 0 5px 14px #ff6b3530; color: var(--accent-ink); font-family: "Courier New", Courier, "Noto Sans SC Variable", monospace; font-weight: 800; letter-spacing: -.1em; }
 .server-state { justify-self: end; margin-right: 18px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: #ffffff08; color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 7px; }
 .status-dot, .presence { width: 7px; height: 7px; border-radius: 50%; background: #ffca3a; }
 .status-dot { background: #66666b; }
@@ -81,9 +81,9 @@ h1 { margin-bottom: 0; font-size: 15px; line-height: 1.25; letter-spacing: -.01e
 .session-entry:hover .rename-session,
 .rename-session:focus-visible { opacity: 1; pointer-events: auto; }
 .rename-session:hover { background: #ffffff10; color: var(--ink); }
-.session-icon { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 8px; background: #ffffff07; color: #d9d9dc; font: 11px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
+.session-icon { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 8px; background: #ffffff07; color: #d9d9dc; font: 11px "Courier New", Courier, "Noto Sans SC Variable", monospace; }
 .session-row.active .session-icon { border-color: #ff6b3566; background: #ff6b3514; color: #ff8a61; }
-.session-index { color: var(--subtle); font-size: 9px; font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; text-align: right; }
+.session-index { color: var(--subtle); font-size: 9px; font-family: "Courier New", Courier, "Noto Sans SC Variable", monospace; text-align: right; }
 .session-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .session-copy b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 650; }
 .session-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
@@ -96,11 +96,11 @@ h1 { margin-bottom: 0; font-size: 15px; line-height: 1.25; letter-spacing: -.01e
 .sidebar footer { min-height: 46px; padding: 0 18px; border-top: 1px solid var(--line); display: flex; align-items: center; color: var(--subtle); font-size: 10px; }
 .sidebar footer button { padding: 8px 0; border: 0; background: transparent; color: inherit; display: flex; align-items: center; gap: 5px; cursor: pointer; }
 .sidebar footer button:hover { color: var(--ink); }
-kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px; background: #ffffff08; font: 9px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
+kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px; background: #ffffff08; font: 9px "Courier New", Courier, "Noto Sans SC Variable", monospace; }
 
 .workspace { min-width: 0; min-height: 0; height: 100%; overflow: hidden; position: relative; background: #19191c; }
 .empty-state { min-height: 100%; padding: 40px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
-.prompt-glyph { width: 68px; height: 68px; margin-bottom: 27px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 17px; background: #232327; box-shadow: 0 18px 48px #00000035; color: #ff8b64; font: 22px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
+.prompt-glyph { width: 68px; height: 68px; margin-bottom: 27px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 17px; background: #232327; box-shadow: 0 18px 48px #00000035; color: #ff8b64; font: 22px "Courier New", Courier, "Noto Sans SC Variable", monospace; }
 .empty-state h2 { margin-bottom: 16px; max-width: 620px; font-size: clamp(32px, 3.8vw, 50px); line-height: 1.08; letter-spacing: -.04em; font-weight: 600; }
 .empty-state > p:not(.eyebrow) { max-width: 460px; color: var(--muted); font-size: 14px; line-height: 1.65; }
 .primary-button, .secondary-button, .danger-button { min-height: 40px; padding: 0 16px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; font-weight: 650; font-size: 12px; transition: background 160ms ease, border-color 160ms ease, transform 160ms ease; }
@@ -146,7 +146,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-voice-status { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .mobile-keybar { display: none; min-width: 0; gap: 5px; padding-top: 7px; overflow-x: auto; scrollbar-width: none; }
 .mobile-keybar::-webkit-scrollbar { display: none; }
-.mobile-keybar button { flex: 0 0 42px; min-height: 38px; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); font: 11px "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
+.mobile-keybar button { flex: 0 0 42px; min-height: 38px; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); font: 11px "Courier New", Courier, "Noto Sans SC Variable", monospace; }
 .mobile-keybar button:active { border-color: #ff6b3555; background: #ff6b3514; color: var(--ink); }
 /* The 42px basis suits the single-glyph keys; word labels need to size to their text. */
 .mobile-keybar button[data-terminal-action] { flex: 0 0 auto; padding: 0 10px; }
@@ -180,7 +180,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .session-visibility-dialog { width: min(520px, calc(100vw - 30px)); }
 .session-prefix-input { width: 100%; min-height: 104px; padding: 11px 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: #11111499; color: var(--ink); font-size: 16px; line-height: 1.5; }
 .session-visibility-summary { min-height: 18px; margin: 9px 0 0; color: #d7d7da; }
-.session-visibility-note code { color: #ff9a76; font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; }
+.session-visibility-note code { color: #ff9a76; font-family: "Courier New", Courier, "Noto Sans SC Variable", monospace; }
 .show-all-sessions-button { margin-right: auto; }
 
 .switch-dialog { width: min(500px, calc(100vw - 30px)); padding: 16px; }
@@ -193,7 +193,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .switch-row.active { border-color: #ff6b3555; background: #ff6b3510; }
 .switch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 650; }
 .switch-row small { flex: none; color: var(--muted); font-size: 9px; }
-.switch-index { color: var(--muted); font-size: 9px; font-family: "JetBrains Mono Variable", "Noto Sans SC Variable", monospace; text-align: right; }
+.switch-index { color: var(--muted); font-size: 9px; font-family: "Courier New", Courier, "Noto Sans SC Variable", monospace; text-align: right; }
 .switch-help { margin: 13px 3px 0; color: var(--muted); font-size: 9px; }
 .mobile-only { display: none; }
 [hidden] { display: none !important; }

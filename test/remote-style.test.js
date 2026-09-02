@@ -8,6 +8,7 @@ const remoteJs = fs.readFileSync(new URL('../public/remote.js', import.meta.url)
 const speechJs = fs.readFileSync(new URL('../public/remote-speech.js', import.meta.url), 'utf8');
 const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const appCss = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+const appHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const rootCss = css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] || '';
 
 function rootBreakpoint(cssText, width) {
@@ -282,4 +283,14 @@ test('remote carries the way back to terminal mode in the header, where a phone 
   // 之前三个入口全在抽屉和设置弹层里; 普通模式那边是顶栏上一个常驻链接。两边对称。
   assert.match(html, /<a class="header-button" href="\/" aria-label="切换到终端模式">/);
   assert.match(css, /\.conversation-header \{[^}]*grid-template-columns: 44px minmax\(0, 1fr\) 132px/s);
+});
+
+test('both modes draw their chrome in the same face, so switching does not restyle the product', () => {
+  // 两边正文早就都是 Courier New、侧栏都是 Inter; 分歧只剩会话图标、kbd 这些小徽标 ——
+  // 终端页为它们单独拉了一份 JetBrains Mono。统一到正文那一款, 顺带省掉一个网络字体。
+  assert.doesNotMatch(appCss, /JetBrains/);
+  assert.doesNotMatch(appHtml, /jetbrains/);
+  for (const sheet of [appCss, css]) {
+    assert.match(sheet, /\.brand-mark[^}]*"Courier New"/s);
+  }
 });
