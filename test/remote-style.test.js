@@ -296,3 +296,10 @@ test('both modes draw their chrome in the same face, so switching does not resty
     assert.match(sheet, /\.brand-mark[^}]*"Courier New"/s);
   }
 });
+
+test('the terminal output card is cleared once it should no longer show, working or not', () => {
+  // 清理条件曾经挂在 .working 上, 而那个元素只在"正在工作"时存在。agent 收尾后面板
+  // 是 done 状态, 于是没有任何东西来移除它, 那个框就一直留在对话里。
+  assert.match(remoteJs, /if \(!visible\) \{[\s\S]{0,400}?if \(section\) scheduleThreadRender\(false\)/);
+  assert.doesNotMatch(remoteJs, /if \(!visible\) \{[\s\S]{0,300}?if \(current\) scheduleThreadRender/);
+});

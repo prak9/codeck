@@ -1692,7 +1692,10 @@ function updateTerminalActivity() {
   const visible = shouldShowTerminalActivity(state.thread);
   if (!visible) {
     syncCommandDialog(null);
-    if (current) scheduleThreadRender(false);
+    // 之前这里判断的是 .working —— 那个元素只在"正在工作"时存在。等 agent 收尾、
+    // 结构化回答追上 pane 内容之后, 面板已经是 done 状态、没有 .working 了, 于是
+    // 谁也不来重渲染, "终端当前输出"这个框就永远留在那儿。只要面板还在就该重渲染。
+    if (section) scheduleThreadRender(false);
     return;
   }
   if (content.kind === 'command') {
