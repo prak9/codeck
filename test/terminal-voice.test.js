@@ -108,3 +108,11 @@ test('pure terminal mode is a remembered setting, not a button that toggles layo
   // 显隐输入条会改变终端高度, 必须显式重排, 不能指望 ResizeObserver 的时序。
   assert.match(appJs, /openTerminalComposer\(\);\n  \/\/[^\n]*\n  fitTerminalView\(\)/);
 });
+
+test('the overview toggle stays reachable on a phone', () => {
+  // 基础规则必须是裸 .view-mode-button —— 特异度 (0,1,0)。移动断点用同特异度、更靠后的
+  // display:block 覆盖它; 只要基础规则多一个类, 手机上这个按钮就再也出不来。
+  assert.match(css, /^\.view-mode-button \{ display: none; \}$/m);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?^  \.view-mode-button \{ display: block; \}$/m);
+  assert.doesNotMatch(css, /^\.[\w-]+ \.view-mode-button \{[^}]*display: none/m);
+});
