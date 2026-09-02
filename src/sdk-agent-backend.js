@@ -214,6 +214,7 @@ export class SdkAgentBackend extends EventEmitter {
     getSessionMessages,
     transcriptFile = null,
     readTranscriptRange = null,
+    readTranscriptFile = null,
     // 增量读取要留着已解析的 messages 才能把新增部分接上去, 但它比 turns 还大
     // (实测单会话 3.7MB vs 1.3MB)。稳定的 transcript 走 revision 命中直接返回
     // turns, 根本不碰 messages —— 只有还在增长的才需要, 所以只给最近几个保留。
@@ -237,6 +238,7 @@ export class SdkAgentBackend extends EventEmitter {
     this.getSessionMessages = getSessionMessages;
     this.transcriptFile = transcriptFile;
     this.readTranscriptRange = readTranscriptRange;
+    this.readTranscriptFile = readTranscriptFile;
     this.rawMessageCacheEntries = rawMessageCacheEntries;
     this.idleTimeoutMs = idleTimeoutMs;
     this.runtimes = new Map();
@@ -404,6 +406,28 @@ export class SdkAgentBackend extends EventEmitter {
     }
   }
 
+  // SDK 的读取器遇到一行残缺的 JSON 就丢掉它之前的全部内容 —— 实测一份 5246 行的
+  // transcript 只剩 95 条消息, 97% 的历史在界面上直接消失。而写入方偶尔确实会留下
+  // 半行 (进程被杀、并发追加)。文件只是逐行 JSON, 我们自己读, 坏行只丢它自己。
+  async #ownTranscript(threadId, info) {
+    if (!this.transcriptFile || !this.readTranscriptFile) return null;
+    const file = this.transcriptFile(threadId, info, { requireSize: false });
+    if (!file) return null;
+    let text;
+    try { text = await this.readTranscriptFile(file); }
+    catch { return null; }
+    if (typeof text !== 'string' || !text) return null;
+    const messages = [];
+    let dropped = 0;
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try { messages.push(JSON.parse(line)); }
+      catch { dropped += 1; }
+    }
+    if (!messages.length) return null;
+    return { messages, turns: transcriptToTurns(messages), size: Buffer.byteLength(text), dropped };
+  }
+
   async #persistedTurns(threadId, info) {
     const revision = transcriptRevision(info);
     const cached = revision ? this.transcriptCache.get(threadId) : null;
@@ -419,6 +443,14 @@ export class SdkAgentBackend extends EventEmitter {
       this.transcriptCache.set(threadId, { revision, ...appended });
       this.#trimTranscriptCache();
       return appended.turns;
+    }
+
+    const own = await this.#ownTranscript(threadId, info);
+    if (own) {
+      this.transcriptCache.delete(threadId);
+      this.transcriptCache.set(threadId, { revision, ...own });
+      this.#trimTranscriptCache();
+      return own.turns;
     }
 
     const loadKey = revision ? `${threadId}\0${revision}` : null;

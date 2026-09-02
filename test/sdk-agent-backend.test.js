@@ -472,3 +472,27 @@ test('only the newest transcripts keep their raw messages in memory', async () =
   // 被裁掉 messages 的那个仍然可用: 只是下次增长时回落一次整份读取。
   assert.ok(backend.transcriptCache.get('a').turns, 'turns 必须保留, 否则缓存就白做了');
 });
+
+test('one malformed transcript line loses only itself, not the history before it', async () => {
+  // 实测: 一份 5246 行的 transcript 里第 5095 行 JSON 残缺(写入被截断), SDK 的读取器
+  // 只返回 95 条消息 —— 之前 97% 的对话在界面上直接消失。写入方偶尔确实会留下半行,
+  // 所以整份读取必须能跨过它。
+  const good = (id, text) => JSON.stringify({ type: 'user', uuid: id, message: { role: 'user', content: text } });
+  const text = [good('a', '第一句'), '{"type":"user","uuid":"broken"', good('c', '第三句')].join('\n');
+  let sdkCalls = 0;
+  const backend = new SdkAgentBackend({
+    provider: 'claude',
+    label: 'Claude Code',
+    query: () => new FakeQuery(''),
+    listSessions: async () => [],
+    getSessionInfo: async () => ({ sessionId: 'thread', cwd: '/srv', lastModified: 1, fileSize: text.length }),
+    getSessionMessages: async () => { sdkCalls += 1; return []; },
+    transcriptFile: () => '/transcripts/thread.jsonl',
+    readTranscriptFile: async () => text,
+  });
+  const thread = await backend.openThread('thread');
+  const rendered = JSON.stringify(thread.thread.turns);
+  assert.match(rendered, /第一句/, '坏行之前的内容必须保留');
+  assert.match(rendered, /第三句/);
+  assert.equal(sdkCalls, 0, '自己解析成功就不该再回落到会截断的 SDK 读取器');
+});
