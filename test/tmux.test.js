@@ -175,7 +175,7 @@ test('falls back to isolated pane captures when a batched capture cannot be pars
   assert.equal(calls.length, 3);
 });
 
-test('waits for an Agent to process bracketed paste before submitting with tmux 2.7-compatible commands', async () => {
+test('waits for an Agent to process bracketed paste before submitting from a detached pane', async () => {
   const calls = [];
   await sendSessionMessage({ provider: 'claude', sessionName: 'work', threadId: 'thread-1', text: 'Review\nmobile' }, {
     listTmuxSessions: async () => [{
@@ -193,10 +193,10 @@ test('waits for an Agent to process bracketed paste before submitting with tmux 
     { type: 'load', bufferName: 'codeck-test', text: 'Review\nmobile' },
     {
       type: 'exec',
-      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-test', '-t', '%7'],
+      args: ['copy-mode', '-q', '-t', '%7', ';', 'paste-buffer', '-p', '-d', '-b', 'codeck-test', '-t', '%7'],
     },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
   ]);
 });
 
@@ -214,9 +214,27 @@ test('submits single-line Agent input literally so Enter cannot overtake bracket
   });
 
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '提交'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '提交'] },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
+  ]);
+});
+
+test('exits detached copy mode atomically before sending Claude input', async () => {
+  const calls = [];
+  await sendSessionMessage({
+    provider: 'claude', sessionName: 'work', threadId: 'thread-1', text: 'Continue',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'claude', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push(args),
+    waitForPaste: async () => {},
+  });
+
+  assert.deepEqual(calls, [
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', 'Continue'],
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
   ]);
 });
 
@@ -267,9 +285,9 @@ test('releases Codex input queued behind a background terminal wait', async () =
 
   assert.deepEqual(result, { terminalWorking: true });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '怎么样了'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '怎么样了'] },
     { type: 'paste-wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
     { type: 'queue-wait' },
     { type: 'capture', paneId: '%7' },
     { type: 'queue-wait' },
@@ -326,10 +344,10 @@ test('keeps oversized single-line Agent input out of the tmux process argument l
     { type: 'load', bufferName: 'codeck-large-test', size: text.length },
     {
       type: 'exec',
-      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-large-test', '-t', '%7'],
+      args: ['copy-mode', '-q', '-t', '%7', ';', 'paste-buffer', '-p', '-d', '-b', 'codeck-large-test', '-t', '%7'],
     },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
   ]);
 });
 
@@ -361,9 +379,9 @@ test('captures the /status slash-command output after submitting it literally', 
     ].join('\n'),
   });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/status'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/status'] },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
     { type: 'output-wait' },
     { type: 'capture', paneId: '%7' },
   ]);
@@ -400,9 +418,9 @@ test('captures the /model slash-command output after submitting it literally', a
     ].join('\n'),
   });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/model gpt-5'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/model gpt-5'] },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
     { type: 'output-wait' },
     { type: 'capture', paneId: '%7' },
   ]);
@@ -446,9 +464,9 @@ test('bare /model bypasses slash completion and waits for the actual Codex picke
     'Press enter to confirm or esc to go back',
   ].join('\n'));
   assert.deepEqual(calls.slice(0, 3), [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/model '] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/model '] },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
   ]);
   assert.equal(calls.filter((call) => call.type === 'capture').length, 3);
 });
@@ -519,9 +537,9 @@ test('does not special-case slash commands other than /status and /model', async
 
   assert.deepEqual(result, {});
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', '/skills'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/skills'] },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
   ]);
 });
 
@@ -573,9 +591,9 @@ test('allows only the server-derived pending thread id before an Agent exposes i
   }, options), /匹配|刷新/);
 
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['send-keys', '-l', '-t', '%7', '--', 'Start work'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', 'Start work'] },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Escape'] },
   ]);
 });
@@ -644,10 +662,10 @@ test('sends shell input and Ctrl-C only to the exact verified shell pane', async
     { type: 'load', bufferName: 'codeck-shell-test', text: 'pwd' },
     {
       type: 'exec',
-      args: ['paste-buffer', '-p', '-d', '-b', 'codeck-shell-test', '-t', '%9'],
+      args: ['copy-mode', '-q', '-t', '%9', ';', 'paste-buffer', '-p', '-d', '-b', 'codeck-shell-test', '-t', '%9'],
     },
     { type: 'wait' },
-    { type: 'exec', args: ['send-keys', '-t', '%9', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%9', ';', 'send-keys', '-t', '%9', 'Enter'] },
     { type: 'exec', args: ['send-keys', '-t', '%9', 'C-c'] },
   ]);
 });
@@ -690,7 +708,8 @@ test('serializes concurrent input for the same tmux session', async () => {
       return [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }];
     },
     execTmux: async (args) => {
-      if (args[0] === 'send-keys' && args[1] === '-l') sent.push(args.at(-1));
+      const sendKeys = args.indexOf('send-keys');
+      if (sendKeys >= 0 && args[sendKeys + 1] === '-l') sent.push(args.at(-1));
     },
   };
 

@@ -804,6 +804,10 @@ function queueSessionInput(sessionName, operation) {
   );
 }
 
+function exitPaneModeThen(paneId, args) {
+  return ['copy-mode', '-q', '-t', paneId, ';', ...args];
+}
+
 export async function sendSessionMessage({ provider, sessionName, threadId, text }, overrides = {}) {
   if (typeof text !== 'string' || !text.trim() || text.length > 100_000) throw new Error('消息内容无效');
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
@@ -845,9 +849,12 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       && !/[\u0000-\u001f\u007f]/u.test(text);
     if (literalAgentInput) {
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
-      await execTmux(['send-keys', '-l', '-t', paneId, '--', bareCodexModel ? `${command} ` : text]);
+      await execTmux(exitPaneModeThen(
+        paneId,
+        ['send-keys', '-l', '-t', paneId, '--', bareCodexModel ? `${command} ` : text],
+      ));
       await waitForPaste();
-      await execTmux(['send-keys', '-t', paneId, 'Enter']);
+      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return finishAgentInput();
       const waitForSlashOutput = overrides.waitForSlashOutput
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
@@ -887,11 +894,14 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     try {
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same
       // tmux command, it can be consumed before the composer finishes applying the paste,
-      // leaving the text visible but unsent. Separate the portable tmux 2.7 commands and
-      // give the TUI one short processing window before submitting.
-      await execTmux(['paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId]);
+      // leaving the text visible but unsent. Leave any pane mode atomically before each
+      // input operation, and give the TUI one short processing window before submitting.
+      await execTmux(exitPaneModeThen(
+        paneId,
+        ['paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId],
+      ));
       await waitForPaste();
-      await execTmux(['send-keys', '-t', paneId, 'Enter']);
+      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
     } catch (error) {
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
       throw error;
