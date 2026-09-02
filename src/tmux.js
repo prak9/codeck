@@ -781,6 +781,33 @@ async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, w
   return false;
 }
 
+const SUBMIT_CONFIRM_ATTEMPTS = 3;
+const SUBMIT_CONFIRM_DELAY_MS = 120;
+// 输入框里还剩多少字就算"是我们刚发的那条" —— 太短容易撞上别的草稿。
+const SUBMIT_CONFIRM_MATCH_CHARS = 8;
+
+// Agent TUI 忙的时候, 那次 Enter 可能根本没被受理: 文字留在输入框里, 任务结束后也
+// 不会有人再按一次, 消息就永远停在那儿。实测 research 会话上就是这样丢的。
+// 所以发完回读一次屏幕, 只有确认看到自己发的内容还在输入框里才补一次 Enter ——
+// 不确认就补, 等于替用户提交别的草稿或在某个确认框上按回车。
+export async function ensureAgentInputSubmitted({
+  paneId, text, execTmux, capturePane, waitForSubmit,
+}) {
+  const needle = String(text || '').replace(/\s+/gu, '').slice(0, SUBMIT_CONFIRM_MATCH_CHARS);
+  if (!needle) return false;
+  try {
+    for (let attempt = 0; attempt < SUBMIT_CONFIRM_ATTEMPTS; attempt += 1) {
+      await waitForSubmit();
+      const rows = cleanScreenRows(await capturePane(paneId));
+      const composer = rows.map((line) => /^\s*[›>❯]\s*(.*)$/u.exec(line)?.[1])
+        .filter((value) => value != null).join('').replace(/\s+/gu, '');
+      if (!composer.includes(needle)) return attempt > 0;
+      await execTmux(['send-keys', '-t', paneId, 'Enter']);
+    }
+  } catch { /* 补发是尽力而为, 失败不该让这次发送报错。 */ }
+  return false;
+}
+
 function codexModelPicker(output) {
   const rows = cleanScreenRows(output);
   const start = rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line));
@@ -854,6 +881,18 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
           captureSessionPane: overrides.capturePane || capturePane,
           waitForQueuedInput: overrides.waitForQueuedInput
             || (() => new Promise((resolve) => setTimeout(resolve, QUEUED_INPUT_DELAY_MS))),
+        });
+      }
+      // Codex 自己排队了就别再补 Enter; 否则确认那次 Enter 真被受理了 —— TUI 忙时
+      // 它可能整个丢掉, 消息留在输入框里, 任务结束后也没人再按一次。
+      if (provider !== 'shell' && !terminalWorking) {
+        await ensureAgentInputSubmitted({
+          paneId,
+          text,
+          execTmux,
+          capturePane: overrides.capturePane || capturePane,
+          waitForSubmit: overrides.waitForSubmit
+            || (() => new Promise((resolve) => setTimeout(resolve, SUBMIT_CONFIRM_DELAY_MS))),
         });
       }
       return {

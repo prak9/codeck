@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_SCREEN_MARKERS, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -322,7 +322,8 @@ test('does not interrupt Codex when submitted input starts a normal turn', async
 
   assert.deepEqual(result, {});
   assert.equal(calls.some((call) => call.type === 'exec' && call.args.includes('Escape')), false);
-  assert.equal(calls.filter((call) => call.type === 'capture').length, 2);
+  // 两次是队列检查, 第三次是回读输入框确认 Enter 真被受理了。
+  assert.equal(calls.filter((call) => call.type === 'capture').length, 3);
 });
 
 test('keeps oversized single-line Agent input out of the tmux process argument list', async () => {
@@ -540,6 +541,8 @@ test('does not special-case slash commands other than /status and /model', async
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/skills'] },
     { type: 'wait' },
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
+    // 回读输入框: 这块屏幕上没有提示符行, 确认发出去了, 不补 Enter。
+    { type: 'capture', paneId: '%7' },
   ]);
 });
 
@@ -1318,4 +1321,53 @@ test('an ssh-only screen identity becomes a manageable pending Agent', () => {
 test('a cancel prompt without a timer is not a qodercli turn', () => {
   assert.equal(signals('⠋ Generating... (esc to cancel, 25s)', 'qodercli').busy, true);
   assert.equal(signals('Delete this file? (enter to confirm, esc to cancel)', 'qodercli').busy, false);
+});
+
+test('input left sitting in an agent composer gets its Enter again', async () => {
+  // research 会话上实测到的现象: Codex 在跑长任务时收到消息, 文字进了输入框, 但那次
+  // Enter 没生效 —— 任务结束后消息就一直停在 "› 怎么样了" 那一行, 永远不会被处理。
+  const sent = [];
+  let composer = '';
+  const screen = () => `─ Worked for 3s ───\n\n› ${composer}\n\n  gpt-5.6 · ~/py`;
+  const submitted = await ensureAgentInputSubmitted({
+    paneId: '%0',
+    text: '怎么样了',
+    execTmux: async (args) => {
+      sent.push(args.join(' '));
+      if (args.includes('Enter')) composer = '';
+    },
+    capturePane: async () => screen(),
+    waitForSubmit: async () => {},
+  });
+  assert.equal(submitted, false, '输入框本来就空, 不该补发');
+
+  composer = '怎么样了';
+  sent.length = 0;
+  const retried = await ensureAgentInputSubmitted({
+    paneId: '%0',
+    text: '怎么样了',
+    execTmux: async (args) => {
+      sent.push(args.join(' '));
+      if (args.includes('Enter')) composer = '';
+    },
+    capturePane: async () => screen(),
+    waitForSubmit: async () => {},
+  });
+  assert.equal(retried, true);
+  assert.deepEqual(sent, ['send-keys -t %0 Enter'], '只补一次, 且确认后不再重复');
+});
+
+test('a composer holding someone else\'s text is never given a stray Enter', async () => {
+  // 补发 Enter 只在确认看到自己发的内容时才做 —— 否则会替用户提交别的东西,
+  // 或者在某个确认框上按下回车。
+  let calls = 0;
+  const submitted = await ensureAgentInputSubmitted({
+    paneId: '%0',
+    text: '怎么样了',
+    execTmux: async () => { calls += 1; },
+    capturePane: async () => '› 另一段没发完的草稿\n\n  gpt-5.6 · ~/py',
+    waitForSubmit: async () => {},
+  });
+  assert.equal(submitted, false);
+  assert.equal(calls, 0);
 });
