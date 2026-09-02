@@ -188,7 +188,7 @@ test('normal sidebar matches the remote session hierarchy and restores its UI ty
 
 test('unchanged Agent transcript refreshes are reconciled without a full redraw', () => {
   assert.match(remoteJs, /reconcileAgentThreadRefresh/);
-  assert.match(remoteJs, /if \(reconciled === state\.thread\) return/);
+  assert.match(remoteJs, /if \(reconciled === current\) return false/);
 });
 
 test('remote streaming reuses unchanged turn nodes instead of rebuilding the whole transcript', () => {
@@ -196,6 +196,12 @@ test('remote streaming reuses unchanged turn nodes instead of rebuilding the who
   assert.match(remoteJs, /existingTurnNodes/);
   assert.match(remoteJs, /node\?\._codeckTurn === turn/);
   assert.doesNotMatch(remoteJs, /\$\('#turns'\)\.replaceChildren\(\.\.\.nodes\)/);
+});
+
+test('pane-only thread frames update the existing terminal card without redrawing the transcript', () => {
+  assert.match(remoteJs, /function applyRefreshedThread\(/);
+  assert.match(remoteJs, /reconciled\.turns === current\.turns/);
+  assert.match(remoteJs, /if \(paneOnly\) updateTerminalActivity\(\)/);
 });
 
 test('default terminal activity updates in place without scheduling a replacement render', () => {

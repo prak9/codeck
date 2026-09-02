@@ -806,6 +806,7 @@ test('reconciles pane-only live output updates without waiting for transcript tu
   const reconciled = reconcileAgentThreadRefresh(current, refreshed);
 
   assert.notEqual(reconciled, current);
+  assert.equal(reconciled.turns, current.turns, 'pane-only updates keep the rendered turn list stable');
   assert.equal(reconciled.liveOutput, '正在运行测试');
   assert.deepEqual(reconciled.tmux, current.tmux);
 });

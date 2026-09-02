@@ -58,6 +58,18 @@ function cleanStreamCursor(value) {
   return { epoch: value.epoch, sequence: value.sequence };
 }
 
+function threadRelativePatch(operations) {
+  if (!Array.isArray(operations)) return null;
+  const rebased = [];
+  for (const operation of operations) {
+    const path = operation?.path;
+    if (!Array.isArray(path) || path[0] !== 'thread'
+      || (operation.op === 'remove' && path.length === 1)) return null;
+    rebased.push({ ...operation, path: path.slice(1) });
+  }
+  return rebased;
+}
+
 function cleanAnswers(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Answers are required');
   const entries = Object.entries(value);
@@ -785,6 +797,10 @@ export class AgentHub {
       subscription.target.provider,
       subscription.target.threadId,
     );
+    // The feed diffs the backend result ({ thread }), while the wire snapshot exposes
+    // only that result's thread value. Rebase delta paths to the same root clients hold;
+    // otherwise every first delta fails and causes an endless full-resync loop.
+    const patch = frame.kind === 'delta' ? threadRelativePatch(frame.patch) : null;
     const sendFull = () => {
       if (!restored?.thread) return false;
       this.#deliverThreadMessage(socket, subscription, {
@@ -811,13 +827,13 @@ export class AgentHub {
       });
       return;
     }
-    if (frame.kind === 'delta' && subscription.deltaBaseSafe && !hasPendingReceipts) {
+    if (frame.kind === 'delta' && patch && subscription.deltaBaseSafe && !hasPendingReceipts) {
       this.#deliverThreadMessage(socket, subscription, {
         type: 'threadPatch', version: 2, target: subscription.target,
         stream: {
           epoch: frame.epoch, baseSequence: frame.baseSequence, sequence: frame.sequence,
         },
-        patch: frame.patch,
+        patch,
       });
       return;
     }

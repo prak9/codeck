@@ -246,7 +246,7 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   if (sameTurns && renderedThreadMetadata(current) === renderedThreadMetadata(refreshed)) return current;
   return {
     ...refreshed,
-    turns: retained.length ? [...retained, ...turns] : turns,
+    turns: sameTurns ? allCurrentTurns : retained.length ? [...retained, ...turns] : turns,
     ...(current?.tmux ? { tmux: { ...current.tmux } } : {}),
   };
 }

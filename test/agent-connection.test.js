@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { createSnapshotFeed } from '../src/snapshot-feed.js';
+import { applySnapshotPatch, createSnapshotPatch } from '../public/snapshot-patch.js';
 
 class FakeSocket extends EventEmitter {
   OPEN = 1;
@@ -307,6 +308,41 @@ test('a resumable V2 tmux thread skips another full backend load', async () => {
   const subscription = [...threadFeed.subscriptions][0];
   assert.equal(subscription.mode, 'delta');
   assert.deepEqual(subscription.cursor, cursor);
+});
+
+test('V2 thread patches apply directly to the thread snapshot exposed to clients', async () => {
+  const threadFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+  const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'research' };
+  send(socket, { type: 'openThread', id: 1, ...target, readOnly: true });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+
+  const before = {
+    thread: {
+      id: 'thread-1',
+      turns: [{
+        id: 'turn-1', status: 'inProgress',
+        items: [{ id: 'answer-1', type: 'agentMessage', text: 'partial' }],
+      }],
+    },
+  };
+  const after = structuredClone(before);
+  after.thread.turns[0].items[0].text += ' answer';
+  threadFeed.publish(target, {
+    kind: 'snapshot', epoch: 'test-epoch', sequence: 1, snapshot: before,
+  });
+  const full = socket.sent.at(-1);
+  threadFeed.publish(target, {
+    kind: 'delta', epoch: 'test-epoch', baseSequence: 1, sequence: 2,
+    patch: createSnapshotPatch(before, after), snapshot: after,
+  });
+  const delta = socket.sent.at(-1);
+
+  assert.equal(full.type, 'threadSnapshot');
+  assert.equal(delta.type, 'threadPatch');
+  assert.deepEqual(applySnapshotPatch(full.thread, delta.patch), after.thread);
 });
 
 test('thread snapshot streams stay bound to provider, thread and tmux session', async () => {

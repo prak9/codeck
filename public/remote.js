@@ -14,7 +14,7 @@ import {
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=34';
+} from './agent-model.js?v=35';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -251,6 +251,22 @@ function rememberOpenedThread(target, thread) {
   state.threadStreamCursor = null;
   state.threadStreamSnapshot = thread || null;
   state.threadStreamResyncing = false;
+}
+
+function applyRefreshedThread(provider, thread) {
+  const current = state.thread;
+  const refreshed = normalizeAgentThread(provider, thread);
+  const reconciled = reconcileAgentThreadRefresh(current, refreshed);
+  if (reconciled === current) return false;
+  const paneOnly = current
+    && reconciled.turns === current.turns
+    && reconciled.liveOutput !== current.liveOutput
+    && ['id', 'provider', 'name', 'preview', 'cwd', 'readOnly', 'status', 'truncated', 'oldestTurnId']
+      .every((key) => reconciled[key] === current[key]);
+  state.thread = reconciled;
+  if (paneOnly) updateTerminalActivity();
+  else scheduleThreadRender(false);
+  return true;
 }
 
 function releaseThreadStream() {
@@ -652,23 +668,14 @@ function handleSocketMessage(message) {
       state.threadStreamKey = streamTargetKey(message.target);
       state.threadStreamResyncing = false;
       state.threadStreamHealthy = true;
-      const refreshed = normalizeAgentThread(message.target.provider, message.thread);
-      const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
-      if (reconciled !== state.thread) {
-        state.thread = reconciled;
-        scheduleThreadRender(false);
-      }
+      applyRefreshedThread(message.target.provider, message.thread);
       return;
     }
     const accepted = acceptStreamCursor(state.threadStreamCursor, message.stream);
     state.threadStreamHealthy = Boolean(message.stream?.epoch && Number.isSafeInteger(message.stream?.sequence));
     if (!accepted.accepted || !message.thread) return;
     state.threadStreamCursor = accepted.cursor;
-    const refreshed = normalizeAgentThread(message.target.provider, message.thread);
-    const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
-    if (reconciled === state.thread) return;
-    state.thread = reconciled;
-    scheduleThreadRender(false);
+    applyRefreshedThread(message.target.provider, message.thread);
     return;
   }
   if (message.type === 'threadPatch') {
@@ -685,12 +692,7 @@ function handleSocketMessage(message) {
       state.threadStreamCursor = accepted.cursor;
       state.threadStreamResyncing = false;
       state.threadStreamHealthy = true;
-      const refreshed = normalizeAgentThread(message.target.provider, snapshot);
-      const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
-      if (reconciled !== state.thread) {
-        state.thread = reconciled;
-        scheduleThreadRender(false);
-      }
+      applyRefreshedThread(message.target.provider, snapshot);
     } catch {
       state.threadStreamSnapshot = null;
       resyncThreadStream(message.target);
@@ -1040,12 +1042,8 @@ async function refreshActiveThread({ force = false } = {}) {
       return;
     }
     rememberOpenedThread(streamTarget, result.thread);
-    const refreshed = normalizeAgentThread(provider, result.thread);
     state.threadStreamHealthy = Boolean(state.protocolEpoch);
-    const reconciled = reconcileAgentThreadRefresh(state.thread, refreshed);
-    if (reconciled === state.thread) return;
-    state.thread = reconciled;
-    scheduleThreadRender(false);
+    applyRefreshedThread(provider, result.thread);
   } finally {
     if (state.threadRefresh === load) state.threadRefresh = null;
   }
