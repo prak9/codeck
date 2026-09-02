@@ -452,12 +452,6 @@ export function shouldRefreshTmuxThread(thread, {
   return working || now < refreshUntil;
 }
 
-// pane 显示的是 TUI 渲染后的 markdown, transcript 存的是原文 —— 反引号、星号、方括号
-// 只在一边出现。只去空白比不出相等, 所以两边都只留字母数字再比。
-function comparableAnswer(text) {
-  return String(text || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
-}
-
 export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;
@@ -467,32 +461,12 @@ export function shouldShowTerminalActivity(thread) {
   if (tmux.status === 'working') return true;
   if (thread.provider !== 'claude' || !thread.liveOutput) return false;
 
-  // Claude may render a final answer that never reaches its JSONL transcript (for
-  // example after ENOSPC). Show that bounded pane fallback until the structured final
-  // answer contains the same text, then remove the terminal card to avoid duplication.
-  const lines = String(thread.liveOutput).split('\n');
-  // 回答下面还有 TUI 自己的东西: 完成行、输入框的横线、提示符、状态栏。它们永远不会
-  // 出现在 transcript 里, 所以只要有一样漏进来, 子串比较就再也不可能成立, 卡片也就
-  // 再也不会消失。按这几种结构标记里最早出现的一个截断。
-  const chrome = [
-    // "✻ Cogitated for 19s"、"· Architecting… (thought for 8s)" 这类完成行。
-    /^[^\p{L}\d\n]{0,4}\p{L}[^\n]*?\bfor\s+(?:(?:\d+h|\d+m)\s*)*\d+s\b/iu,
-    // 输入框的上下横线, 只认制表字符 —— markdown 的 --- 用的是 ASCII。
-    /^[─━]{3,}$/u,
-    // 输入提示符与它下面的模式状态栏。
-    /^[❯›>]\s/u,
-    /^\s*⏵/u,
-  ];
-  const completion = lines.findIndex((line) => chrome.some((re) => re.test(line.trim())));
-  const answerLines = completion >= 0 ? lines.slice(0, completion) : lines;
-  const omitted = answerLines.findLastIndex((line) => line.trim() === '…');
-  const answer = comparableAnswer((omitted >= 0 ? answerLines.slice(omitted + 1) : answerLines).join(''));
-  if (!answer) return false;
-  const structured = [...asArray(thread.turns)].reverse().map((turn) => (
-    asArray(turn?.items).filter((item) => item?.type === 'agentMessage')
-      .map((item) => item.text || '').join('')
-  )).find(Boolean);
-  return !comparableAnswer(structured).includes(answer);
+  // 这张卡片只是兜底: Claude 偶尔会渲染出一个从没写进 JSONL 的最终回答 (磁盘写满就会
+  // 这样)。判据因此是"这一轮有没有留下回答", 而不是"屏幕上的字和回答对不对得上" ——
+  // pane 上除了回答还有工具调用的代码和输出, 它们永远不会出现在 agent 消息里, 所以
+  // 那种比对注定不成立, 卡片也就永远不消失。修了两次都在补这个比对, 方向是错的。
+  const latest = asArray(thread.turns).at(-1);
+  return !asArray(latest?.items).some((item) => item?.type === 'agentMessage' && item.text);
 }
 
 export function agentActivityText(thread) {

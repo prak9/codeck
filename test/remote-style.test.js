@@ -94,7 +94,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=31/);
+  assert.match(html, /\/remote\.css\?v=32/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -349,4 +349,18 @@ test('the modal chrome and press feedback match across modes', () => {
     assert.ok(sheet.includes(bit), `对话模式 sheet 缺少 ${bit}`);
   }
   assert.doesNotMatch(css, /transform: scale\(\.95\)/);
+});
+
+test('the conversation surface is the terminal surface', () => {
+  // 正文区要读起来就是普通模式那块终端: 同一个底色、同一个前景、同一款字体。
+  // 之前它是一个暖色径向渐变, 和 #2e3436 完全两回事。
+  const terminalBg = appCss.match(/--terminal:\s*(#[0-9a-f]{6})/i)?.[1];
+  assert.equal(terminalBg, '#2e3436');
+  assert.match(css, new RegExp(`--terminal:\\s*${terminalBg}`, 'i'));
+  assert.match(css, /\.conversation-shell \{[^}]*background: var\(--terminal\)/s);
+  assert.doesNotMatch(css, /\.conversation-shell \{[^}]*radial-gradient/s);
+  assert.match(css, /\.turns \{[^}]*color: var\(--terminal-ink\)[^}]*"Courier New"/s);
+  // xterm 的前景色就是这个值, 两边必须同源。
+  assert.match(appJs, /foreground: '#d3d7cf'/);
+  assert.match(css, /--terminal-ink:\s*#d3d7cf/i);
 });

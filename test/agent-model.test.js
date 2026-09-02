@@ -67,24 +67,6 @@ test('hides completed Qoder terminal output once structured history is available
   assert.equal(shouldShowTerminalActivity(thread), true);
 });
 
-test('shows an idle Claude pane only while its final answer is absent from history', () => {
-  const thread = normalizeAgentThread('claude', {
-    id: 'thread-1',
-    turns: [{
-      id: 'turn-old', status: 'completed',
-      items: [{ id: 'old-answer', type: 'agentMessage', text: 'Earlier answer' }],
-    }],
-    liveOutput: '最新回答已经生成。\n请重新打开页面验证。\n✻ Cogitated for 19s · done 9:20 AM',
-  });
-  thread.tmux = { name: 'claude', status: 'done', available: true };
-
-  assert.equal(shouldShowTerminalActivity(thread), true);
-  thread.turns.push({
-    id: 'turn-latest', status: 'completed',
-    items: [{ id: 'latest-answer', type: 'agentMessage', text: '最新回答已经生成。请重新打开页面验证。' }],
-  });
-  assert.equal(shouldShowTerminalActivity(thread), false);
-});
 
 test('keeps an explicit slash-command result across tmux polling while idle', () => {
   const thread = normalizeAgentThread('codex', { id: 'thread-1', turns: [] });
@@ -913,36 +895,6 @@ test('sessions that do have a thread still leave the excerpt to that thread', ()
   assert.equal(ready.tmux.liveOutput, undefined);
 });
 
-test('an idle Claude pane stops showing once history catches up, TUI chrome and all', () => {
-  // 真实 pane 上回答下面还有输入框和状态栏。之前只按 "Cogitated for 19s" 这类完成行
-  // 截断, 而 Claude 现在写的是 "Architecting… (thought for 8s)" —— 截不到, 于是输入框
-  // 和状态栏被算进"回答", 永远不可能是 transcript 原文的子串, 卡片就再也不消失。
-  const pane = [
-    '最新回答已经生成。',
-    '请重新打开页面验证。',
-    '· Architecting… (thought for 8s)',
-    '────────────────────────────────',
-    '❯ ',
-    '────────────────────────────────',
-    '  ⏵⏵ bypass permissions on  · esc…',
-  ].join('\n');
-  const thread = normalizeAgentThread('claude', {
-    id: 'thread-1',
-    turns: [{
-      id: 'turn-old', status: 'completed',
-      items: [{ id: 'old', type: 'agentMessage', text: 'Earlier answer' }],
-    }],
-    liveOutput: pane,
-  });
-  thread.tmux = { name: 'claude', status: 'done', available: true };
-
-  assert.equal(shouldShowTerminalActivity(thread), true, '历史还没跟上时要显示');
-  thread.turns.push({
-    id: 'turn-latest', status: 'completed',
-    items: [{ id: 'latest', type: 'agentMessage', text: '最新回答已经生成。请重新打开页面验证。' }],
-  });
-  assert.equal(shouldShowTerminalActivity(thread), false, '历史跟上后必须消失');
-});
 
 test('rendered markdown in the pane still matches the raw markdown in history', () => {
   // pane 上是 TUI 渲染后的样子, transcript 里是原文 —— 反引号、星号只在一边出现。
@@ -971,4 +923,42 @@ test('a working session still fills in its conversation, just less often', () =>
   assert.equal(shouldRefreshTmuxThread(thread, { now, lastRefreshAt: now - 300 }), false, '刚刷过就不必再刷');
   assert.equal(shouldRefreshTmuxThread(thread, { now, lastRefreshAt: now - 2_500 }), true, '隔一会儿要补一次');
   assert.equal(shouldRefreshTmuxThread(thread, { now, lastRefreshAt: 0 }), true, '从没刷过要刷');
+});
+
+test('the idle pane card shows only when the run left no answer behind', () => {
+  // 这张卡片是兜底: Claude 偶尔渲染出一个没写进 JSONL 的最终回答(磁盘写满就会这样)。
+  // 旧判据是拿屏幕上的字去和最后一条 agent 消息做子串比对 —— 但 pane 上还有工具调用的
+  // 代码和输出, 它们永远不在 agent 消息里, 于是比对注定不成立, 卡片永远不消失。
+  const pane = [
+    '  已经都提交推送了。',
+    '· Architecting… (thought for 8s)',
+    '────────────────────────────────',
+    '❯ ',
+  ].join('\n');
+  const withAnswer = normalizeAgentThread('claude', {
+    id: 't1',
+    turns: [{ id: 'turn-1', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: '已经都提交推送了。' }] }],
+    liveOutput: pane,
+  });
+  withAnswer.tmux = { name: 'claude', status: 'done', available: true };
+  assert.equal(shouldShowTerminalActivity(withAnswer), false, '这一轮留下了回答, 卡片就该收起');
+
+  const withoutAnswer = normalizeAgentThread('claude', {
+    id: 't1',
+    turns: [{ id: 'turn-1', status: 'completed', items: [{ id: 'c', type: 'commandExecution', text: 'ls' }] }],
+    liveOutput: pane,
+  });
+  withoutAnswer.tmux = { name: 'claude', status: 'done', available: true };
+  assert.equal(shouldShowTerminalActivity(withoutAnswer), true, '没有留下回答才需要兜底');
+});
+
+test('pane text full of tool output no longer keeps the card alive forever', () => {
+  // 实际卡住的形态: 屏幕尾部是工具调用的代码, 和回答一个字都对不上。
+  const thread = normalizeAgentThread('claude', {
+    id: 't1',
+    turns: [{ id: 'turn-1', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: '修好了。' }] }],
+    liveOutput: "     const list = await\n     tmux.listSessions();\n\n✻ Cooked for 5s",
+  });
+  thread.tmux = { name: 'claude', status: 'done', available: true };
+  assert.equal(shouldShowTerminalActivity(thread), false);
 });
