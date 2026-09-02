@@ -446,6 +446,12 @@ export function shouldRefreshTmuxThread(thread, {
   return working || now < refreshUntil;
 }
 
+// pane 显示的是 TUI 渲染后的 markdown, transcript 存的是原文 —— 反引号、星号、方括号
+// 只在一边出现。只去空白比不出相等, 所以两边都只留字母数字再比。
+function comparableAnswer(text) {
+  return String(text || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+}
+
 export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;
@@ -459,19 +465,28 @@ export function shouldShowTerminalActivity(thread) {
   // example after ENOSPC). Show that bounded pane fallback until the structured final
   // answer contains the same text, then remove the terminal card to avoid duplication.
   const lines = String(thread.liveOutput).split('\n');
-  const completion = lines.findIndex((line) => (
-    /^[^\p{L}\d\n]{1,4}\p{L}+\s+for\s+(?:(?:\d+h|\d+m)\s*)*\d+s\b/iu.test(line.trim())
-  ));
+  // 回答下面还有 TUI 自己的东西: 完成行、输入框的横线、提示符、状态栏。它们永远不会
+  // 出现在 transcript 里, 所以只要有一样漏进来, 子串比较就再也不可能成立, 卡片也就
+  // 再也不会消失。按这几种结构标记里最早出现的一个截断。
+  const chrome = [
+    // "✻ Cogitated for 19s"、"· Architecting… (thought for 8s)" 这类完成行。
+    /^[^\p{L}\d\n]{0,4}\p{L}[^\n]*?\bfor\s+(?:(?:\d+h|\d+m)\s*)*\d+s\b/iu,
+    // 输入框的上下横线, 只认制表字符 —— markdown 的 --- 用的是 ASCII。
+    /^[─━]{3,}$/u,
+    // 输入提示符与它下面的模式状态栏。
+    /^[❯›>]\s/u,
+    /^\s*⏵/u,
+  ];
+  const completion = lines.findIndex((line) => chrome.some((re) => re.test(line.trim())));
   const answerLines = completion >= 0 ? lines.slice(0, completion) : lines;
   const omitted = answerLines.findLastIndex((line) => line.trim() === '…');
-  const answer = (omitted >= 0 ? answerLines.slice(omitted + 1) : answerLines)
-    .join('').replace(/\s+/gu, '').toLowerCase();
+  const answer = comparableAnswer((omitted >= 0 ? answerLines.slice(omitted + 1) : answerLines).join(''));
   if (!answer) return false;
   const structured = [...asArray(thread.turns)].reverse().map((turn) => (
     asArray(turn?.items).filter((item) => item?.type === 'agentMessage')
       .map((item) => item.text || '').join('')
-  )).find(Boolean)?.replace(/\s+/gu, '').toLowerCase() || '';
-  return !structured.includes(answer);
+  )).find(Boolean);
+  return !comparableAnswer(structured).includes(answer);
 }
 
 export function agentActivityText(thread) {

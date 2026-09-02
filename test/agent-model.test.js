@@ -911,3 +911,49 @@ test('sessions that do have a thread still leave the excerpt to that thread', ()
   assert.equal(ready.tmux.available, true);
   assert.equal(ready.tmux.liveOutput, undefined);
 });
+
+test('an idle Claude pane stops showing once history catches up, TUI chrome and all', () => {
+  // 真实 pane 上回答下面还有输入框和状态栏。之前只按 "Cogitated for 19s" 这类完成行
+  // 截断, 而 Claude 现在写的是 "Architecting… (thought for 8s)" —— 截不到, 于是输入框
+  // 和状态栏被算进"回答", 永远不可能是 transcript 原文的子串, 卡片就再也不消失。
+  const pane = [
+    '最新回答已经生成。',
+    '请重新打开页面验证。',
+    '· Architecting… (thought for 8s)',
+    '────────────────────────────────',
+    '❯ ',
+    '────────────────────────────────',
+    '  ⏵⏵ bypass permissions on  · esc…',
+  ].join('\n');
+  const thread = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-old', status: 'completed',
+      items: [{ id: 'old', type: 'agentMessage', text: 'Earlier answer' }],
+    }],
+    liveOutput: pane,
+  });
+  thread.tmux = { name: 'claude', status: 'done', available: true };
+
+  assert.equal(shouldShowTerminalActivity(thread), true, '历史还没跟上时要显示');
+  thread.turns.push({
+    id: 'turn-latest', status: 'completed',
+    items: [{ id: 'latest', type: 'agentMessage', text: '最新回答已经生成。请重新打开页面验证。' }],
+  });
+  assert.equal(shouldShowTerminalActivity(thread), false, '历史跟上后必须消失');
+});
+
+test('rendered markdown in the pane still matches the raw markdown in history', () => {
+  // pane 上是 TUI 渲染后的样子, transcript 里是原文 —— 反引号、星号只在一边出现。
+  // 实测就是这一处让卡片永远消不掉: 回答内容一字不差, 只差几个反引号。
+  const thread = normalizeAgentThread('claude', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-latest', status: 'completed',
+      items: [{ id: 'a', type: 'agentMessage', text: '两个新文件(`public/snapshot-patch.js` 和 `test/snapshot-patch.test.js`)已就绪。' }],
+    }],
+    liveOutput: '两个新文件(public/snapshot-patch.js 和 test/snapshot-patch.test.js)已就绪。\n✻ Cooked for 5s · done 6:43 PM',
+  });
+  thread.tmux = { name: 'claude', status: 'done', available: true };
+  assert.equal(shouldShowTerminalActivity(thread), false);
+});
