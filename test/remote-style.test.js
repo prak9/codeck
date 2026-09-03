@@ -94,7 +94,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=32/);
+  assert.match(html, /\/remote\.css\?v=33/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -204,6 +204,14 @@ test('pane-only thread frames update the existing terminal card without redrawin
   assert.match(remoteJs, /if \(paneOnly\) updateTerminalActivity\(\)/);
 });
 
+test('sending into pane-only work checkpoints the visible output before tmux replaces it', () => {
+  assert.match(remoteJs, /checkpointTerminalActivity/);
+  assert.match(remoteJs, /const priorLiveOutput = !running/);
+  assert.match(remoteJs, /checkpointTerminalActivity\(state\.thread, \{[\s\S]{0,120}priorLiveOutput/);
+  assert.match(remoteJs, /item\.type === 'terminalOutput'/);
+  assert.match(css, /\.terminal-checkpoint\s*\{/);
+});
+
 test('default terminal activity updates in place without scheduling a replacement render', () => {
   assert.match(remoteJs, /const shell = state\.thread\?\.provider === 'shell';[\s\S]*?return \{\s*kind: 'text',\s*status: working \? 'working' : 'done'/);
 });
@@ -230,7 +238,7 @@ test('remote sends stable command ids and preserves an uncertain draft for safe 
 });
 
 test('an accepted tmux message is echoed before an Agent turn exists', () => {
-  assert.match(remoteJs, /if \(stillActive\) \{[\s\S]{0,180}state\.thread = applyAcceptedUserMessage/);
+  assert.match(remoteJs, /if \(stillActive\) \{[\s\S]{0,420}state\.thread = applyAcceptedUserMessage/);
   assert.doesNotMatch(remoteJs, /if \(delivery\.turnId\) \{\s*state\.thread = applyAcceptedUserMessage/s);
   assert.match(remoteJs, /userMessageDeliveryBaseline\(state\.thread, text\)/);
   assert.match(remoteJs, /baselineUserMessageId:\s*delivery\.baselineUserMessageId/);

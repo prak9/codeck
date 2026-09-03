@@ -3,6 +3,7 @@ import {
   applyAcceptedUserMessage,
   applyAgentEvent,
   applyTmuxSnapshot,
+  checkpointTerminalActivity,
   findTmuxThreadTarget,
   findTmuxThreadReplacement,
   latestRunningTurn,
@@ -14,7 +15,7 @@ import {
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=35';
+} from './agent-model.js?v=36';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -1554,6 +1555,14 @@ function itemNode(item, turn) {
     const summary = Array.isArray(item.summary) ? item.summary.join('\n') : item.summary || item.text || '';
     return toolCard({ id: item.id, icon: '◌', title: '思考过程', body: summary, status: item.status || 'completed', className: 'reasoning-card' });
   }
+  if (item.type === 'terminalOutput') {
+    const node = element('div', 'terminal-checkpoint');
+    const output = element('pre', 'terminal-live-output', item.text || '');
+    output.tabIndex = 0;
+    output.setAttribute('aria-label', '打断前保留的 tmux 输出');
+    node.append(element('div', 'terminal-checkpoint-label', '打断前的终端输出'), output);
+    return node;
+  }
   if (item.type === 'commandExecution') {
     const command = Array.isArray(item.command) ? item.command.join(' ') : item.command || item.actions?.map((action) => action.command).filter(Boolean).join('\n') || '运行命令';
     const body = [command, item.aggregatedOutput || item.output || ''].filter(Boolean).join('\n\n');
@@ -2184,6 +2193,12 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       const targetProvider = state.provider;
       const targetThreadId = state.thread?.id || null;
       const targetSessionName = sessionName || null;
+      const priorLiveOutput = !running && active && targetProvider !== 'shell'
+        ? state.thread?.liveOutput || state.thread?.tmux?.liveOutput || ''
+        : '';
+      const priorTerminalTurnId = priorLiveOutput
+        ? [...(state.thread?.turns || [])].reverse().find((turn) => !turn.deliveryOnly)?.id || null
+        : null;
       const deliveryInput = {
         provider: targetProvider,
         threadId: targetThreadId,
@@ -2238,6 +2253,9 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           && state.thread?.id === targetThreadId
           && state.thread?.tmux?.name === sessionName;
         if (stillActive) {
+          if (priorLiveOutput) state.thread = checkpointTerminalActivity(state.thread, {
+            commandId: delivery.commandId, output: priorLiveOutput, turnId: priorTerminalTurnId,
+          });
           if (targetProvider !== 'shell' && !message.trimStart().startsWith('/')
             && (!result?.terminalOutput || result.terminalWorking)) {
             state.thread = applyAcceptedUserMessage(state.thread, {

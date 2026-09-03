@@ -57,42 +57,82 @@ function matchingUserAfterDeliveryBaseline(thread, deliveryItem) {
   return candidates.filter((entry) => userMessageText(entry.item) === userMessageText(deliveryItem))[ordinal]?.item || null;
 }
 
-function resolvedDeliveryIds(current, refreshed) {
-  const resolved = new Set();
+function resolvedDeliveryItems(current, refreshed) {
+  const resolved = new Map();
   for (const delivery of threadUserMessages(current).filter((item) => item.delivery)) {
-    if (matchingUserAfterDeliveryBaseline(refreshed, delivery)) resolved.add(delivery.id);
+    const actual = matchingUserAfterDeliveryBaseline(refreshed, delivery);
+    if (actual) resolved.set(delivery.id, actual);
   }
   return resolved;
 }
 
-function mergeTurnUserMessages(current, incoming, resolvedDeliveries = new Set()) {
-  const currentUsers = asArray(current?.items).filter((item) => (
-    item?.type === 'userMessage' && !resolvedDeliveries.has(item.id)
-  ));
-  if (!currentUsers.length) return incoming;
+function settleObservedItem(item, turnStatus) {
+  if (item?.type === 'userMessage'
+    || (item?.status !== 'inProgress' && item?.status !== 'running')
+    || turnStatus === 'inProgress' || turnStatus === 'running') return item;
+  return { ...item, status: turnStatus === 'failed' || turnStatus === 'errored' ? 'failed' : 'completed' };
+}
+
+function monotonicObservedValue(current, incoming) {
+  if (incoming == null) return current;
+  if (typeof current === 'string' && typeof incoming === 'string'
+    && current.startsWith(incoming)) return current;
+  if (Array.isArray(current) && Array.isArray(incoming)
+    && current.length >= incoming.length
+    && incoming.every((value, index) => value === current[index])) return current;
+  return incoming;
+}
+
+function mergeObservedItem(current, incoming) {
+  if (!current || current.type !== incoming?.type) return incoming;
+  const merged = { ...incoming };
+  for (const key of ['text', 'summary', 'aggregatedOutput', 'output']) {
+    if (current[key] != null) merged[key] = monotonicObservedValue(current[key], incoming[key]);
+  }
+  if (current.delivery && incoming.delivery) {
+    merged.delivery = { ...current.delivery, ...incoming.delivery };
+  }
+  return merged;
+}
+
+function mergeTurnItems(current, incoming, resolvedDeliveries = new Map()) {
+  const currentItems = asArray(current?.items);
   const incomingItems = asArray(incoming?.items);
-  const incomingUsers = incomingItems.filter((item) => item?.type === 'userMessage');
-  const used = new Set();
-  const users = currentUsers.map((currentItem) => {
-    const index = incomingUsers.findIndex((item, candidateIndex) => (
-      !used.has(candidateIndex) && currentItem.id && item.id === currentItem.id
-    ));
-    if (index < 0) return currentItem;
-    used.add(index);
-    const incomingItem = incomingUsers[index];
-    if (!currentItem.delivery || !incomingItem.delivery) return incomingItem;
-    return {
-      ...incomingItem,
-      delivery: { ...currentItem.delivery, ...incomingItem.delivery },
-    };
+  if (!currentItems.length) return incoming;
+  const currentById = new Map(currentItems.map((item) => [item.id, item]));
+  const deliveryByActualId = new Map([...resolvedDeliveries].map(([deliveryId, item]) => [item.id, deliveryId]));
+  const items = incomingItems.map((incomingItem) => {
+    const currentItem = currentById.get(incomingItem.id)
+      || currentById.get(deliveryByActualId.get(incomingItem.id));
+    return settleObservedItem(mergeObservedItem(currentItem, incomingItem), incoming?.status);
   });
-  incomingUsers.forEach((item, index) => {
-    if (!used.has(index)) users.push(item);
-  });
-  return {
-    ...incoming,
-    items: [...users, ...incomingItems.filter((item) => item?.type !== 'userMessage')],
-  };
+
+  const resolvedId = (item) => resolvedDeliveries.get(item.id)?.id || item.id;
+  for (let currentIndex = 0; currentIndex < currentItems.length; currentIndex += 1) {
+    const currentItem = currentItems[currentIndex];
+    if (resolvedDeliveries.has(currentItem.id)
+      || items.some((item) => item.id === currentItem.id)) continue;
+    let insertionIndex = -1;
+    for (let index = currentIndex - 1; index >= 0; index -= 1) {
+      const previous = items.findIndex((item) => item.id === resolvedId(currentItems[index]));
+      if (previous >= 0) {
+        insertionIndex = previous + 1;
+        break;
+      }
+    }
+    if (insertionIndex < 0) {
+      for (let index = currentIndex + 1; index < currentItems.length; index += 1) {
+        const next = items.findIndex((item) => item.id === resolvedId(currentItems[index]));
+        if (next >= 0) {
+          insertionIndex = next;
+          break;
+        }
+      }
+    }
+    items.splice(insertionIndex < 0 ? items.length : insertionIndex, 0,
+      settleObservedItem(currentItem, incoming?.status));
+  }
+  return { ...incoming, items };
 }
 
 function removeUserMessage(thread, itemId) {
@@ -221,7 +261,7 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   const retained = windowStart > 0 ? allCurrentTurns.slice(0, windowStart) : [];
   const currentTurns = retained.length ? allCurrentTurns.slice(windowStart) : allCurrentTurns;
   const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
-  const resolvedDeliveries = resolvedDeliveryIds(current, refreshed);
+  const resolvedDeliveries = resolvedDeliveryItems(current, refreshed);
   const refreshedItemIds = new Set(asArray(refreshed.turns).flatMap((turn) => (
     asArray(turn?.items).map((item) => item?.id).filter(Boolean)
   )));
@@ -229,12 +269,12 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   const turns = asArray(refreshed.turns).flatMap((turn) => {
     const existing = currentById.get(turn.id);
     if (!existing) return [turn];
-    const merged = mergeTurnUserMessages(existing, turn, resolvedDeliveries);
+    const merged = mergeTurnItems(existing, turn, resolvedDeliveries);
     if (merged.deliveryOnly && !asArray(merged.items).length) return [];
     return [JSON.stringify(existing) === JSON.stringify(merged) ? existing : merged];
   });
   for (const turn of currentTurns) {
-    if (!turn.deliveryOnly || refreshedTurnIds.has(turn.id)) continue;
+    if ((!turn.deliveryOnly && !turn.localOnly) || refreshedTurnIds.has(turn.id)) continue;
     const items = asArray(turn.items).filter((item) => (
       !resolvedDeliveries.has(item.id) && !refreshedItemIds.has(item.id)
     ));
@@ -270,7 +310,7 @@ export function normalizeInteractionQuestions(params) {
 function mergeTurn(current, incoming) {
   if (!current) return copyTurn(incoming);
   const incomingItems = asArray(incoming?.items);
-  return mergeTurnUserMessages(current, {
+  return mergeTurnItems(current, {
     ...current,
     ...(incoming || {}),
     items: incomingItems.length ? incomingItems.map(copyItem) : current.items,
@@ -420,6 +460,50 @@ export function applyAcceptedUserMessage(currentThread, {
 
 export function latestRunningTurn(thread) {
   return [...asArray(thread?.turns)].reverse().find((turn) => turn.status === 'inProgress') || null;
+}
+
+export function checkpointTerminalActivity(currentThread, { commandId, output, turnId } = {}) {
+  const capturedOutput = output != null;
+  if (!currentThread || currentThread.provider === 'shell' || !commandId
+    || (!capturedOutput
+      && (currentThread.tmux?.status !== 'working' || latestRunningTurn(currentThread)))) return currentThread;
+  const text = String(output ?? currentThread.liveOutput ?? currentThread.tmux?.liveOutput ?? '').trimEnd();
+  if (!text.trim()) return currentThread;
+  const turns = asArray(currentThread.turns);
+  const itemId = `terminal-checkpoint:${commandId}`;
+  if (turns.some((turn) => asArray(turn.items).some((item) => (
+    item.id === itemId
+  )))) return currentThread;
+  const item = {
+    id: itemId,
+    type: 'terminalOutput',
+    text,
+    status: 'completed',
+  };
+  const anchoredTurnIndex = turnId ? turns.findIndex((turn) => turn.id === turnId) : -1;
+  const turnIndex = anchoredTurnIndex >= 0
+    ? anchoredTurnIndex
+    : turns.findLastIndex((turn) => !turn.deliveryOnly && turn.status !== 'inProgress');
+  if (turnIndex < 0) {
+    const checkpointTurn = {
+      id: `terminal-checkpoint-turn:${commandId}`,
+      status: 'interrupted',
+      localOnly: true,
+      items: [item],
+    };
+    const nextTurnIndex = capturedOutput
+      ? turns.findIndex((turn) => turn.status === 'inProgress')
+      : -1;
+    const updated = [...turns];
+    updated.splice(nextTurnIndex < 0 ? turns.length : nextTurnIndex, 0, checkpointTurn);
+    return { ...currentThread, turns: updated };
+  }
+  const updated = [...turns];
+  updated[turnIndex] = {
+    ...turns[turnIndex],
+    items: [...asArray(turns[turnIndex].items), item],
+  };
+  return { ...currentThread, turns: updated };
 }
 
 export function applyTmuxSnapshot(thread, tmux) {

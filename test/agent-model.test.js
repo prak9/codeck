@@ -5,6 +5,7 @@ import {
   applyAcceptedUserMessage,
   applyTmuxSnapshot,
   applyAgentEvent,
+  checkpointTerminalActivity,
   findTmuxThreadTarget,
   findTmuxThreadReplacement,
   latestRunningTurn,
@@ -387,7 +388,7 @@ test('a changed transcript snapshot preserves unchanged turns for keyed renderin
   assert.deepEqual(reconciled.tmux, current.tmux);
 });
 
-test('a lightweight snapshot cannot delete a streamed user follow-up from the same turn', () => {
+test('a lightweight snapshot cannot delete streamed progress or a user follow-up from the same turn', () => {
   const first = {
     id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }],
   };
@@ -413,10 +414,134 @@ test('a lightweight snapshot cannot delete a streamed user follow-up from the sa
   const reconciled = reconcileAgentThreadRefresh(current, refreshed);
 
   assert.deepEqual(reconciled.turns[0].items.map((item) => item.type), [
-    'userMessage', 'userMessage', 'agentMessage',
+    'userMessage', 'reasoning', 'userMessage', 'agentMessage',
   ]);
-  assert.equal(userMessageText(reconciled.turns[0].items[1]), 'Also verify mobile');
+  assert.equal(userMessageText(reconciled.turns[0].items[2]), 'Also verify mobile');
   assert.equal(reconciled.turns[0].status, 'completed');
+});
+
+test('steering a working turn cannot erase progress already rendered from live events', () => {
+  const current = applyAcceptedUserMessage(normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [
+        { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] },
+        { id: 'reasoning-1', type: 'reasoning', summary: ['Inspecting the session'], status: 'completed' },
+        { id: 'command-1', type: 'commandExecution', command: 'npm test', status: 'inProgress' },
+      ],
+    }],
+  }), {
+    turnId: 'turn-1', text: 'Stop and check this first', commandId: 'command-steer',
+  });
+  const lagging = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'interrupted',
+      items: [
+        { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] },
+        { id: 'user-2', type: 'userMessage', content: [{ type: 'text', text: 'Stop and check this first' }] },
+      ],
+    }],
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, lagging);
+
+  assert.deepEqual(reconciled.turns[0].items.map((item) => item.id), [
+    'user-1', 'reasoning-1', 'command-1', 'user-2',
+  ]);
+  assert.equal(reconciled.turns[0].items[2].status, 'completed');
+});
+
+test('a lagging same-id snapshot cannot rewind streamed text or leave interrupted work spinning', () => {
+  const current = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'inProgress',
+      items: [
+        { id: 'answer-1', type: 'agentMessage', text: '分析完成一半' },
+        {
+          id: 'command-1', type: 'commandExecution', command: 'npm test',
+          aggregatedOutput: 'line 1\nline 2', status: 'inProgress',
+        },
+      ],
+    }],
+  });
+  const lagging = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'interrupted',
+      items: [
+        { id: 'answer-1', type: 'agentMessage', text: '分析' },
+        {
+          id: 'command-1', type: 'commandExecution', command: 'npm test',
+          aggregatedOutput: 'line 1', status: 'inProgress',
+        },
+      ],
+    }],
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, lagging);
+
+  assert.equal(reconciled.turns[0].items[0].text, '分析完成一半');
+  assert.equal(reconciled.turns[0].items[1].aggregatedOutput, 'line 1\nline 2');
+  assert.equal(reconciled.turns[0].items[1].status, 'completed');
+});
+
+test('a pane-only working turn is checkpointed before a follow-up replaces the live screen', () => {
+  const current = normalizeAgentThread('codex', {
+    id: 'thread-1', liveOutput: '• Explored\n  └ Read public/remote.js',
+    turns: [{
+      id: 'turn-old', status: 'completed',
+      items: [{ id: 'user-old', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] }],
+    }],
+  });
+  current.tmux = { name: 'codeck', status: 'working', available: true };
+
+  const checkpointed = checkpointTerminalActivity(current, { commandId: 'command-steer' });
+  const accepted = applyAcceptedUserMessage(checkpointed, {
+    text: 'Check this first', commandId: 'command-steer',
+  });
+  const refreshed = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      current.turns[0],
+      {
+        id: 'turn-new', status: 'inProgress',
+        items: [{ id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: 'Check this first' }] }],
+      },
+    ],
+  });
+  const reconciled = reconcileAgentThreadRefresh(accepted, refreshed);
+  const checkpoint = reconciled.turns[0].items.find((item) => item.type === 'terminalOutput');
+
+  assert.equal(current.turns[0].items.some((item) => item.type === 'terminalOutput'), false);
+  assert.equal(checkpoint.text, current.liveOutput);
+  assert.equal(reconciled.turns.some((turn) => turn.deliveryOnly), false);
+});
+
+test('a pane checkpoint stays on the interrupted turn when a new turn wins the send-response race', () => {
+  const current = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      {
+        id: 'turn-old', status: 'completed',
+        items: [{ id: 'user-old', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] }],
+      },
+      {
+        id: 'turn-new', status: 'inProgress',
+        items: [{ id: 'user-new', type: 'userMessage', content: [{ type: 'text', text: 'Check this' }] }],
+      },
+    ],
+  });
+  current.tmux = { name: 'codeck', status: 'working', available: true };
+
+  const checkpointed = checkpointTerminalActivity(current, {
+    commandId: 'command-steer', output: '• Explored\n  └ Read public/remote.js', turnId: 'turn-old',
+  });
+
+  assert.equal(checkpointed.turns[0].items.at(-1).type, 'terminalOutput');
+  assert.equal(checkpointed.turns[1].items.some((item) => item.type === 'terminalOutput'), false);
 });
 
 test('an accepted direct-tmux follow-up appears immediately in its active turn', () => {
