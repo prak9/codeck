@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CodexAppServer } from '../src/codex-app-server.js';
+import { CodexAppServer, codexAppServerEnvironment } from '../src/codex-app-server.js';
 
 class FakeProcess extends EventEmitter {
   constructor() {
@@ -52,6 +52,18 @@ async function initialize(appServer, process) {
   assert.deepEqual(process.messages[1], { method: 'initialized', params: {} });
   return { request };
 }
+
+test('scopes the configured memory temp directory to the Codex app-server', () => {
+  const environment = { TMPDIR: '/data/tmp', CODECK_CODEX_TMPDIR: '/run/codex-tmp' };
+
+  assert.deepEqual(codexAppServerEnvironment(environment), {
+    TMPDIR: '/run/codex-tmp',
+    TMP: '/run/codex-tmp',
+    TEMP: '/run/codex-tmp',
+    CODECK_CODEX_TMPDIR: '/run/codex-tmp',
+  });
+  assert.equal(codexAppServerEnvironment(environment).CODEX_HOME, undefined);
+});
 
 test('initializes once and exchanges JSON-RPC requests over stdio', async () => {
   const process = new FakeProcess();

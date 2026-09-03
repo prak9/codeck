@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 
+export function codexAppServerEnvironment(environment = process.env) {
+  const tmpdir = environment.CODECK_CODEX_TMPDIR;
+  if (!tmpdir) return environment;
+  return { ...environment, TMPDIR: tmpdir, TMP: tmpdir, TEMP: tmpdir };
+}
+
 function responseError(error) {
   if (typeof error === 'string') return new Error(error);
   const message = error?.message || 'Codex app-server request failed';
@@ -15,7 +21,7 @@ export class CodexAppServer extends EventEmitter {
     super();
     this.spawnProcess = spawnProcess || (() => spawn('codex', ['app-server'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: codexAppServerEnvironment(),
     }));
     this.process = null;
     this.ready = null;
