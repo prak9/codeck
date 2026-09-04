@@ -625,6 +625,51 @@ test('restores accepted no-turn tmux messages after reconnect until the transcri
     .filter((item) => item.delivery).length, 0);
 });
 
+test('a terminal identity reply appended to an accepted message settles its server receipt', async () => {
+  const anchor = {
+    id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }],
+  };
+  const { backends, hub } = setup({ sendTmuxMessage: async () => ({ terminalWorking: true }) });
+  backends.codex.turns = [{ id: 'turn-old', status: 'completed', items: [anchor] }];
+  const first = new FakeSocket();
+  hub.handleConnection(first);
+  send(first, {
+    type: 'openThread', id: 1, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'codeck', readOnly: true,
+  });
+  await waitFor(() => first.sent.some((message) => message.id === 1));
+  send(first, {
+    type: 'sendSessionMessage', id: 2, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'codeck', text: '提交并推送', commandId: 'command-terminal-reply',
+    baselineVersion: 2, baselineUserMessageId: 'user-anchor',
+    baselineTurnId: 'turn-old', baselineMatchingTextCount: 0,
+  });
+  await waitFor(() => first.sent.some((message) => message.id === 2));
+  first.close();
+
+  backends.codex.turns = [
+    { id: 'turn-old', status: 'completed', items: [anchor] },
+    {
+      id: 'turn-new', status: 'completed',
+      items: [{
+        id: 'user-actual', type: 'userMessage',
+        content: [{ type: 'text', text: '提交并推送0;276;0c' }],
+      }],
+    },
+  ];
+  const second = new FakeSocket();
+  hub.handleConnection(second);
+  send(second, {
+    type: 'openThread', id: 3, provider: 'codex', threadId: 'thread-1',
+    tmuxSession: 'codeck', readOnly: true,
+  });
+  await waitFor(() => second.sent.some((message) => message.id === 3));
+  const opened = second.sent.find((message) => message.id === 3).result.thread;
+
+  assert.equal(opened.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.delivery).length, 0);
+});
+
 test('keeps an absorbed Claude input ahead of the answer instead of as an unanswered tail turn', async () => {
   const anchor = {
     id: 'user-anchor', type: 'userMessage',

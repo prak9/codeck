@@ -200,7 +200,7 @@ test('waits for an Agent to process bracketed paste before submitting from a det
   ]);
 });
 
-test('submits single-line Agent input literally so Enter cannot overtake bracketed paste', async () => {
+test('submits ordinary single-line Agent input atomically so terminal replies cannot enter the draft', async () => {
   const calls = [];
   await sendSessionMessage({
     provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '提交',
@@ -208,15 +208,22 @@ test('submits single-line Agent input literally so Enter cannot overtake bracket
     listTmuxSessions: async () => [{
       name: 'research', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
     }],
+    bufferName: 'codeck-test',
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'wait' }),
   });
 
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '提交'] },
-    { type: 'wait' },
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
+    { type: 'load', bufferName: 'codeck-test', text: '提交' },
+    {
+      type: 'exec',
+      args: [
+        'copy-mode', '-q', '-t', '%7', ';',
+        'paste-buffer', '-d', '-b', 'codeck-test', '-t', '%7', ';',
+        'send-keys', '-t', '%7', 'Enter',
+      ],
+    },
   ]);
 });
 
@@ -228,13 +235,19 @@ test('exits detached copy mode atomically before sending Claude input', async ()
     listTmuxSessions: async () => [{
       name: 'work', agent: { kind: 'claude', id: 'thread-1', paneId: '%7' },
     }],
+    bufferName: 'codeck-claude-test',
+    loadBuffer: async (bufferName, text) => calls.push(['load-buffer', bufferName, text]),
     execTmux: async (args) => calls.push(args),
     waitForPaste: async () => {},
   });
 
   assert.deepEqual(calls, [
-    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', 'Continue'],
-    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
+    ['load-buffer', 'codeck-claude-test', 'Continue'],
+    [
+      'copy-mode', '-q', '-t', '%7', ';',
+      'paste-buffer', '-d', '-b', 'codeck-claude-test', '-t', '%7', ';',
+      'send-keys', '-t', '%7', 'Enter',
+    ],
   ]);
 });
 
@@ -246,6 +259,8 @@ test('reports when Claude input was submitted while the current turn was still r
       name: 'work', hasRunningProcess: true,
       agent: { kind: 'claude', id: 'thread-1', paneId: '%7' },
     }],
+    bufferName: 'codeck-claude-running-test',
+    loadBuffer: async () => {},
     execTmux: async () => {},
     waitForPaste: async () => {},
   });
@@ -274,6 +289,8 @@ test('releases Codex input queued behind a background terminal wait', async () =
         kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true,
       },
     }],
+    bufferName: 'codeck-queued-test',
+    loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'paste-wait' }),
     waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
@@ -285,9 +302,15 @@ test('releases Codex input queued behind a background terminal wait', async () =
 
   assert.deepEqual(result, { terminalWorking: true });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '怎么样了'] },
-    { type: 'paste-wait' },
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
+    { type: 'load', bufferName: 'codeck-queued-test', text: '怎么样了' },
+    {
+      type: 'exec',
+      args: [
+        'copy-mode', '-q', '-t', '%7', ';',
+        'paste-buffer', '-d', '-b', 'codeck-queued-test', '-t', '%7', ';',
+        'send-keys', '-t', '%7', 'Enter',
+      ],
+    },
     { type: 'queue-wait' },
     { type: 'capture', paneId: '%7' },
     { type: 'queue-wait' },
@@ -311,6 +334,8 @@ test('does not interrupt Codex when submitted input starts a normal turn', async
         kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true,
       },
     }],
+    bufferName: 'codeck-running-test',
+    loadBuffer: async () => {},
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'paste-wait' }),
     waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
@@ -594,9 +619,15 @@ test('allows only the server-derived pending thread id before an Agent exposes i
   }, options), /匹配|刷新/);
 
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', 'Start work'] },
-    { type: 'wait' },
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
+    { type: 'load', bufferName: 'codeck-pending-test', text: 'Start work' },
+    {
+      type: 'exec',
+      args: [
+        'copy-mode', '-q', '-t', '%7', ';',
+        'paste-buffer', '-d', '-b', 'codeck-pending-test', '-t', '%7', ';',
+        'send-keys', '-t', '%7', 'Enter',
+      ],
+    },
     { type: 'exec', args: ['send-keys', '-t', '%7', 'Escape'] },
   ]);
 });
@@ -714,6 +745,7 @@ test('serializes concurrent input for the same tmux session', async () => {
       const sendKeys = args.indexOf('send-keys');
       if (sendKeys >= 0 && args[sendKeys + 1] === '-l') sent.push(args.at(-1));
     },
+    loadBuffer: async (_bufferName, text) => sent.push(text),
   };
 
   const first = sendSessionMessage({

@@ -907,6 +907,24 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const literalAgentInput = provider !== 'shell'
       && Buffer.byteLength(text, 'utf8') <= LITERAL_AGENT_INPUT_MAX_BYTES
       && !/[\u0000-\u001f\u007f]/u.test(text);
+    const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
+    const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
+    if (literalAgentInput && !command) {
+      await loadBuffer(bufferName, text);
+      try {
+        // A normal line is raw terminal input, not an asynchronous bracketed paste.
+        // Paste its bytes and Enter in one tmux command queue so another attached
+        // terminal cannot insert a capability reply between the text and submission.
+        await execTmux(exitPaneModeThen(paneId, [
+          'paste-buffer', '-d', '-b', bufferName, '-t', paneId,
+          ';', 'send-keys', '-t', paneId, 'Enter',
+        ]));
+      } catch (error) {
+        await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
+        throw error;
+      }
+      return finishAgentInput();
+    }
     if (literalAgentInput) {
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
       await execTmux(exitPaneModeThen(
@@ -948,8 +966,6 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         return {};
       }
     }
-    const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
-    const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
     await loadBuffer(bufferName, text);
     try {
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same

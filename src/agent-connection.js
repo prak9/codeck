@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-receipts.js';
 import { resolveSessionStatus } from './session-status.js';
+import { stripTerminalInputResidue } from '../public/terminal-input.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
@@ -105,11 +106,13 @@ function cleanDeliveryBaseline(message) {
 }
 
 function sessionUserMessageText(item) {
-  if (typeof item?.content === 'string') return item.content;
-  return (Array.isArray(item?.content) ? item.content : [])
-    .filter((part) => typeof part?.text === 'string')
-    .map((part) => part.text)
-    .join('\n');
+  const text = typeof item?.content === 'string'
+    ? item.content
+    : (Array.isArray(item?.content) ? item.content : [])
+      .filter((part) => typeof part?.text === 'string')
+      .map((part) => part.text)
+      .join('\n');
+  return stripTerminalInputResidue(text);
 }
 
 function sessionUserMessageEntries(thread) {

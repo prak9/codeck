@@ -19,6 +19,7 @@ import {
 } from '@qoder-ai/qoder-agent-sdk';
 import { CodexAppServer } from './codex-app-server.js';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
+import { stripTerminalInputResidue } from '../public/terminal-input.js';
 
 const CODEX_APPROVAL_METHODS = new Set([
   'item/commandExecution/requestApproval',
@@ -36,11 +37,13 @@ function codexUserItems(turn) {
 }
 
 function codexUserItemText(item) {
-  if (typeof item?.content === 'string') return item.content;
-  return (Array.isArray(item?.content) ? item.content : [])
-    .filter((part) => typeof part?.text === 'string')
-    .map((part) => part.text)
-    .join('\n');
+  const text = typeof item?.content === 'string'
+    ? item.content
+    : (Array.isArray(item?.content) ? item.content : [])
+      .filter((part) => typeof part?.text === 'string')
+      .map((part) => part.text)
+      .join('\n');
+  return stripTerminalInputResidue(text);
 }
 
 function mergeCodexUserItems(current, incoming) {

@@ -1,3 +1,5 @@
+import { stripTerminalInputResidue } from './terminal-input.js';
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -577,7 +579,9 @@ export function threadTimestamp(thread) {
 }
 
 export function userMessageText(item) {
-  if (typeof item?.content === 'string') return item.content;
-  return asArray(item?.content).filter((part) => part?.type === 'text' || typeof part?.text === 'string')
-    .map((part) => part.text || '').join('\n');
+  const text = typeof item?.content === 'string'
+    ? item.content
+    : asArray(item?.content).filter((part) => part?.type === 'text' || typeof part?.text === 'string')
+      .map((part) => part.text || '').join('\n');
+  return stripTerminalInputResidue(text);
 }

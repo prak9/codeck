@@ -820,6 +820,46 @@ test('a live user item replaces its matching no-turn delivery without a duplicat
   assert.deepEqual(updated.turns.flatMap((turn) => turn.items).map((item) => item.id), ['user-new']);
 });
 
+test('an xterm identity reply leaked after Remote input resolves its delivery without changing visible text', () => {
+  const current = applyAcceptedUserMessage(normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-old', status: 'completed',
+      items: [{ id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] }],
+    }],
+  }), {
+    text: '提交并推送', commandId: 'command-12345678',
+    baselineVersion: 2, baselineUserMessageId: 'user-anchor', baselineTurnId: 'turn-old',
+    baselineMatchingTextCount: 0,
+  });
+  const refreshed = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [
+      current.turns[0],
+      {
+        id: 'turn-new', status: 'completed',
+        items: [{
+          id: 'user-new', type: 'userMessage',
+          content: [{ type: 'text', text: '提交并推送0;276;0c' }],
+        }],
+      },
+    ],
+  });
+
+  const reconciled = reconcileAgentThreadRefresh(current, refreshed);
+  const users = reconciled.turns.flatMap((turn) => turn.items)
+    .filter((item) => item.type === 'userMessage');
+
+  assert.deepEqual(users.map((item) => item.id), ['user-anchor', 'user-new']);
+  assert.deepEqual(users.map(userMessageText), ['Start', '提交并推送']);
+  assert.equal(userMessageText({
+    type: 'userMessage', content: [{ type: 'text', text: '解释 0;276;0c 的含义' }],
+  }), '解释 0;276;0c 的含义');
+  assert.equal(userMessageText({
+    type: 'userMessage', content: [{ type: 'text', text: '终端响应是 0;276;0c' }],
+  }), '终端响应是 0;276;0c');
+});
+
 test('an Agent update that wins the send-response race prevents a duplicate accepted bubble', () => {
   const actual = normalizeAgentThread('codex', {
     id: 'thread-1',
