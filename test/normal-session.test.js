@@ -3,6 +3,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const indexHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const serverJs = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+
+test('normal terminal replaces the slow DOM fallback with WebGL when the browser supports it', () => {
+  const xtermScript = indexHtml.indexOf('/vendor/xterm/xterm.js');
+  const webglScript = indexHtml.indexOf('/vendor/webgl/addon-webgl.js');
+  const appScript = indexHtml.indexOf('/app.js?');
+
+  assert.ok(xtermScript >= 0 && webglScript > xtermScript && appScript > webglScript,
+    'WebGL must load after xterm and before the application starts');
+  assert.match(serverJs, /app\.use\('\/vendor\/webgl', express\.static\([^\n]+@xterm\/addon-webgl\/lib/);
+  assert.match(appJs, /activateTerminalWebgl\(terminal, globalThis\.WebglAddon\?\.WebglAddon\)/);
+});
 
 test('normal mode enters a created session before refreshing the full session list', () => {
   const start = appJs.indexOf("$('#newForm').addEventListener('submit'");
@@ -75,6 +88,18 @@ test('normal mode drops stale terminal frames until the switched session reset b
   assert.match(connect, /let awaitingSwitchReset = reuseSocket;/);
   assert.match(connect, /if \(awaitingSwitchReset\) \{[\s\S]*?event\.data !== '\\x1bc'[\s\S]*?switchResetFrame = true;/);
   assert.match(connect, /terminalWrites\.write\(output, \(\) => \{[\s\S]*?if \(switchResetFrame\) \{[\s\S]*?state\.terminalInputReady = true;/);
+});
+
+test('normal mode acknowledges parsed terminal output within a per-screen flow epoch', () => {
+  const start = appJs.indexOf('async function connect(session)');
+  const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
+  const connect = appJs.slice(start, end);
+
+  assert.match(appJs, /createTerminalOutputAcknowledger/);
+  assert.match(connect, /flowControl:\s*'1',\s*flowId/);
+  assert.match(connect, /type: 'switch', session, cols: terminal\.cols, rows: terminal\.rows, flowId/);
+  assert.match(connect, /outputAcks\.acknowledge\(event\.data\.length\)/);
+  assert.match(connect, /state\.cancelTerminalOutputAck\?\.\(\);/);
 });
 
 test('normal mode does not forward an old terminal reply through a replacement socket', () => {

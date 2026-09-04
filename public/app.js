@@ -1,6 +1,8 @@
 import { bindMobileScroll } from './mobile-scroll.js';
 import {
+  activateTerminalWebgl,
   bindTerminalRenderWatchdog,
+  createTerminalOutputAcknowledger,
   createTerminalRevealGate,
   createTerminalResizeGate,
   createTerminalWriteQueue,
@@ -8,7 +10,7 @@ import {
   isTerminalCopyShortcut,
   resetTerminalInput,
   wheelScrollLines,
-} from './terminal-utils.js?v=13';
+} from './terminal-utils.js?v=15';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
@@ -83,6 +85,7 @@ const state = {
   terminalDropDepth: 0,
   cancelMobileScroll: null,
   cancelTerminalReveal: null,
+  cancelTerminalOutputAck: null,
   cancelTerminalWrite: null,
   terminalResizeGate: null,
   terminalInputReady: false,
@@ -995,6 +998,7 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
+  activateTerminalWebgl(terminal, globalThis.WebglAddon?.WebglAddon);
   bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden });
   // 桌面上滚轮原本滚的是 xterm 自己的缓冲, 而那对全屏 TUI 只是一帧帧重绘的残片:
   // 往上翻是碎片, 翻回来只剩当前一帧, 看着就像"历史没了"。会话历史在 tmux 手里,
@@ -1101,6 +1105,8 @@ async function connect(session) {
   const currentSocket = state.socket;
   state.cancelTerminalReveal?.();
   state.cancelTerminalReveal = null;
+  state.cancelTerminalOutputAck?.();
+  state.cancelTerminalOutputAck = null;
   state.cancelTerminalWrite?.();
   state.cancelTerminalWrite = null;
   state.terminalResizeGate = null;
@@ -1131,10 +1137,20 @@ async function connect(session) {
   // Report the viewport on the URL so the pty attaches at this size. Sending it only as
   // the first resize message races the attach, and a lost resize leaves the grid larger
   // than the visible area.
-  const query = new URLSearchParams({ session, cols: String(terminal.cols), rows: String(terminal.rows) });
+  const flowId = String(connectionId);
+  const query = new URLSearchParams({
+    session, cols: String(terminal.cols), rows: String(terminal.rows), flowControl: '1', flowId,
+  });
   const socket = reuseSocket
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
+  const outputAcks = createTerminalOutputAcknowledger((message) => {
+    if (state.connectionId !== connectionId || state.socket !== socket
+      || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(message));
+    return true;
+  }, flowId);
+  state.cancelTerminalOutputAck = outputAcks.cancel;
   const resizeGate = createTerminalResizeGate((cols, rows) => {
     if (state.connectionId !== connectionId || state.socket !== socket
       || socket.readyState !== WebSocket.OPEN) return false;
@@ -1183,11 +1199,15 @@ async function connect(session) {
       switchResetFrame = true;
     }
     const output = terminalOutputForSession(event.data, session);
-    if (!output) return;
+    if (!output) {
+      outputAcks.acknowledge(event.data.length);
+      return;
+    }
     // Preserve terminal byte order and capability-query replies, but keep older frames
     // cancellable instead of filling xterm's internal write buffer before a switch.
     terminalWrites.write(output, () => {
       if (state.connectionId !== connectionId) return;
+      outputAcks.acknowledge(event.data.length);
       if (switchResetFrame) {
         state.terminalInputReady = true;
         syncTerminalAccess();
@@ -1199,12 +1219,16 @@ async function connect(session) {
   };
   socket.onclose = (event) => {
     if (state.connectionId !== connectionId) return;
+    outputAcks.cancel();
+    state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
     $('#connectionState').textContent = event.reason || '连接已断开';
     syncTerminalAccess();
   };
   socket.onerror = () => {
     if (state.connectionId !== connectionId) return;
+    outputAcks.cancel();
+    state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
     $('#connectionState').textContent = '连接失败';
     syncTerminalAccess();
@@ -1212,7 +1236,7 @@ async function connect(session) {
 
   if (reuseSocket) {
     try {
-      socket.send(JSON.stringify({ type: 'switch', session, cols: terminal.cols, rows: terminal.rows }));
+      socket.send(JSON.stringify({ type: 'switch', session, cols: terminal.cols, rows: terminal.rows, flowId }));
       resizeGate.mark(terminal.cols, terminal.rows);
       return;
     } catch {

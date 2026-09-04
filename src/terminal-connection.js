@@ -34,6 +34,12 @@ const defaultDependencies = {
   validateSessionName,
 };
 
+const TERMINAL_OUTPUT_HIGH_WATERMARK = 256 * 1024;
+
+function validOutputFlowId(value) {
+  return typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value);
+}
+
 // node-pty can split one tmux repaint across adjacent data callbacks. Sending each
 // fragment as a WebSocket message lets xterm render a half-written screen between them.
 // A tiny bounded window joins those fragments while keeping terminal-query latency below
@@ -96,13 +102,24 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     readOnly = false,
     detachOtherClients = true,
     canSwitchSession = false,
+    outputFlowControl = false,
+    outputFlowId = null,
+    outputHighWaterMark = TERMINAL_OUTPUT_HIGH_WATERMARK,
     ...dependencyOverrides
   } = overrides;
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
+  const flowControlEnabled = outputFlowControl && validOutputFlowId(outputFlowId);
+  const highWaterMark = Number.isFinite(outputHighWaterMark)
+    ? Math.max(1, Math.floor(outputHighWaterMark))
+    : TERMINAL_OUTPUT_HIGH_WATERMARK;
   let activeSession = session;
+  let activeViewport = viewport;
+  let activeFlowId = flowControlEnabled ? outputFlowId : null;
   let terminal = null;
   let terminalOutput = null;
   let terminalGrid = '';
+  let unacknowledgedOutput = 0;
+  let resyncPending = false;
   let closed = ws.readyState !== ws.OPEN;
   let attachSequence = 0;
   let awaitingSessionActivity = false;
@@ -115,6 +132,33 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     terminalOutput = null;
     terminalGrid = '';
     attached?.kill();
+  };
+  const reattachAfterDrain = () => {
+    if (!resyncPending || unacknowledgedOutput || !isOpen()) return;
+    resyncPending = false;
+    attachTerminal(activeSession, activeViewport, true).catch((error) => {
+      if (isOpen()) ws.close(1011, error.message || 'tmux resynchronization failed');
+    });
+  };
+  const acknowledgeOutput = (message) => {
+    if (!flowControlEnabled || message.flowId !== activeFlowId
+      || !Number.isSafeInteger(message.chars) || message.chars <= 0) return;
+    unacknowledgedOutput = Math.max(0, unacknowledgedOutput - message.chars);
+    reattachAfterDrain();
+  };
+  const sendOutput = (data, attached) => {
+    if (!data || terminal !== attached || !isOpen()) return false;
+    ws.send(data);
+    if (!flowControlEnabled) return true;
+    unacknowledgedOutput += data.length;
+    if (unacknowledgedOutput > highWaterMark && !resyncPending) {
+      // Do not let an output-heavy TUI build an ever-growing browser queue. Detaching
+      // only this tmux client leaves the session and its history alive; once the browser
+      // parses what it already received, a fresh attach redraws the current screen.
+      resyncPending = true;
+      killTerminal();
+    }
+    return true;
   };
 
   // Register cancellation before the first await. A closed setup must never reach the
@@ -129,6 +173,10 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const handleMessage = (raw) => {
     try {
       const message = JSON.parse(raw.toString());
+      if (message.type === 'outputAck') {
+        acknowledgeOutput(message);
+        return;
+      }
       if (message.type === 'switch') {
         if (!canSwitchSession) {
           ws.close(1008, '当前凭据不能切换 tmux 会话');
@@ -139,8 +187,15 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
           ws.close(1008, '无效的 tmux 会话切换请求');
           return;
         }
+        if (flowControlEnabled && !validOutputFlowId(message.flowId)) {
+          ws.close(1008, '无效的终端流控标识');
+          return;
+        }
         pending.length = 0;
         awaitingSessionActivity = false;
+        unacknowledgedOutput = 0;
+        resyncPending = false;
+        if (flowControlEnabled) activeFlowId = message.flowId;
         const [width, height] = dependencies.clampViewport(message.cols, message.rows);
         attachTerminal(message.session, { width, height }, true).catch((error) => {
           if (isOpen()) ws.close(1011, error.message || 'tmux session switch failed');
@@ -216,11 +271,12 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     }
 
     terminal = attached;
+    activeViewport = attachSize;
     terminalGrid = `${attachSize.width}x${attachSize.height}`;
     terminalOutput = createTerminalOutputBatcher((data) => {
-      if (terminal === attached && isOpen()) ws.send(data);
+      sendOutput(data, attached);
     });
-    if (resetScreen) ws.send('\x1bc');
+    if (resetScreen) sendOutput('\x1bc', attached);
     attached.onData((data) => {
       if (terminal !== attached || !isOpen()) return;
       terminalOutput.write(data);

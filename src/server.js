@@ -20,7 +20,7 @@ import {
   sessionSnapshotRefreshInterval,
   threadSnapshotRefreshInterval,
 } from './session-status.js';
-import { AGENT_WEBSOCKET_OPTIONS } from './websocket-options.js';
+import { AGENT_WEBSOCKET_OPTIONS, TERMINAL_WEBSOCKET_OPTIONS } from './websocket-options.js';
 import {
   WEB_SESSION_TTL_SECONDS,
   authenticateWebSession,
@@ -289,6 +289,7 @@ app.use(requireWebSession);
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
 app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
 app.use('/vendor/fit', express.static(path.join(dirname, '../node_modules/@xterm/addon-fit/lib')));
+app.use('/vendor/webgl', express.static(path.join(dirname, '../node_modules/@xterm/addon-webgl/lib')));
 app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@fontsource-variable/inter')));
 app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
 app.use(express.static(publicDir));
@@ -303,7 +304,7 @@ app.use((error, _req, res, _next) => {
 
 const tls = loadTlsOptions();
 const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, ...TERMINAL_WEBSOCKET_OPTIONS });
 const agentWss = new WebSocketServer({ noServer: true, ...AGENT_WEBSOCKET_OPTIONS });
 const agentRegistry = new AgentRegistry(createAgentBackends(), {
   listTmuxSessions: listSessions,
@@ -406,9 +407,14 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const viewport = parseViewport(url.searchParams);
+  const outputFlowId = url.searchParams.get('flowId');
+  const outputFlowControl = url.searchParams.get('flowControl') === '1'
+    && /^[1-9]\d{0,15}$/.test(outputFlowId || '');
   const terminalAccess = {
     ...terminalAccessForAuth(auth),
     canSwitchSession: auth.owner,
+    outputFlowControl,
+    outputFlowId: outputFlowControl ? outputFlowId : null,
     onSessionActivity: () => invalidateSessionSnapshots().catch(() => {}),
   };
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, terminalAccess));

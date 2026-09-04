@@ -7,6 +7,23 @@ const TERMINAL_WRITE_DISCARD_WATERMARK = 50_000_000;
 // 所以滚轮要翻的是 tmux 的历史, 不是 xterm 自己的。lines > 0 = 往历史里翻。
 const WHEEL_MAX_LINES = 60;
 
+// xterm's built-in DOM renderer is its compatibility fallback and rebuilds DOM rows
+// during TUI repaints. Prefer the official GPU renderer when WebGL2 is available, but
+// preserve a working terminal on unsupported GPUs and after browser context loss.
+export function activateTerminalWebgl(terminal, WebglAddon) {
+  if (typeof WebglAddon !== 'function') return false;
+  let addon;
+  try {
+    addon = new WebglAddon();
+    addon.onContextLoss(() => addon.dispose());
+    terminal.loadAddon(addon);
+    return true;
+  } catch {
+    addon?.dispose?.();
+    return false;
+  }
+}
+
 export function wheelScrollLines(event, cellHeight = 20) {
   const mode = event?.deltaMode ?? 0;
   const raw = Number(event?.deltaY) || 0;
@@ -136,6 +153,54 @@ export function createTerminalRevealGate(onReveal, {
   };
 
   return { parsed, cancel: dispose };
+}
+
+// xterm's write callback means a chunk has left its parser queue. Coalesce those
+// acknowledgements so flow control costs at most one tiny upstream frame per display
+// frame, while a large repaint releases the server immediately after it is parsed.
+export function createTerminalOutputAcknowledger(send, flowId, {
+  maxDelayMs = 16,
+  immediateChars = 64 * 1024,
+  schedule = setTimeout,
+  cancel = clearTimeout,
+} = {}) {
+  let pendingChars = 0;
+  let timer = null;
+  let stopped = false;
+
+  const clearTimer = () => {
+    if (timer !== null) cancel(timer);
+    timer = null;
+  };
+  const flush = () => {
+    clearTimer();
+    if (stopped || !pendingChars) return false;
+    const chars = pendingChars;
+    pendingChars = 0;
+    try { return send({ type: 'outputAck', flowId, chars }) !== false; }
+    catch { stopped = true; return false; }
+  };
+  const acknowledge = (chars) => {
+    if (stopped || !Number.isSafeInteger(chars) || chars <= 0) return false;
+    pendingChars = Math.min(Number.MAX_SAFE_INTEGER, pendingChars + chars);
+    if (pendingChars >= immediateChars) return flush();
+    if (timer === null) {
+      const scheduled = schedule(() => {
+        if (timer !== scheduled) return;
+        timer = null;
+        flush();
+      }, maxDelayMs);
+      timer = scheduled;
+    }
+    return true;
+  };
+  const stop = () => {
+    stopped = true;
+    pendingChars = 0;
+    clearTimer();
+  };
+
+  return { acknowledge, flush, cancel: stop };
 }
 
 // xterm's internal write buffer cannot be cleared. Keep only one session chunk in that

@@ -1,16 +1,46 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  activateTerminalWebgl,
   bindTerminalRenderWatchdog,
   clampTerminalGrid,
   createTerminalRevealGate,
   createTerminalResizeGate,
+  createTerminalOutputAcknowledger,
   createTerminalWriteQueue,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
   wheelScrollLines,
 } from '../public/terminal-utils.js';
+
+test('terminal WebGL acceleration activates and disposes cleanly on context loss', () => {
+  let contextLost;
+  let disposed = 0;
+  let loaded;
+  class FakeWebglAddon {
+    onContextLoss(callback) { contextLost = callback; }
+    dispose() { disposed += 1; }
+  }
+  const terminal = { loadAddon: (addon) => { loaded = addon; } };
+
+  assert.equal(activateTerminalWebgl(terminal, FakeWebglAddon), true);
+  assert.ok(loaded instanceof FakeWebglAddon);
+  contextLost();
+  assert.equal(disposed, 1);
+});
+
+test('terminal WebGL acceleration falls back when unavailable or activation fails', () => {
+  let disposed = 0;
+  class BrokenWebglAddon {
+    onContextLoss() {}
+    dispose() { disposed += 1; }
+  }
+
+  assert.equal(activateTerminalWebgl({ loadAddon() {} }, null), false);
+  assert.equal(activateTerminalWebgl({ loadAddon() { throw new Error('WebGL disabled'); } }, BrokenWebglAddon), false);
+  assert.equal(disposed, 1);
+});
 
 function sizingHarness(width, height) {
   const sizes = [];
@@ -165,6 +195,34 @@ test('terminal writes coalesce a burst waiting behind the parser', () => {
   assert.deepEqual(callbacks, [1]);
   completions.shift()();
   assert.deepEqual(callbacks, [1, 2, 3]);
+});
+
+test('terminal output acknowledgements coalesce parser callbacks and flush large frames immediately', () => {
+  const scheduled = [];
+  const sent = [];
+  const acknowledgements = createTerminalOutputAcknowledger((message) => sent.push(message), '7', {
+    immediateChars: 10,
+    schedule: (callback, delay) => {
+      const task = { callback, delay, cancelled: false };
+      scheduled.push(task);
+      return task;
+    },
+    cancel: (task) => { task.cancelled = true; },
+  });
+
+  acknowledgements.acknowledge(3);
+  acknowledgements.acknowledge(4);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 16);
+  scheduled[0].callback();
+  assert.deepEqual(sent, [{ type: 'outputAck', flowId: '7', chars: 7 }]);
+
+  acknowledgements.acknowledge(10);
+  assert.deepEqual(sent.at(-1), { type: 'outputAck', flowId: '7', chars: 10 });
+  acknowledgements.acknowledge(2);
+  acknowledgements.cancel();
+  scheduled.at(-1).callback();
+  assert.equal(sent.length, 2, 'a superseded screen cannot acknowledge its replacement');
 });
 
 test('terminal render watchdog debounces parser bursts and forces at most one redraw per outage', () => {

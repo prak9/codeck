@@ -73,7 +73,7 @@ test('terminal output batches adjacent pty fragments into one repaint', () => {
   assert.equal(scheduled.length, 3);
   assert.equal(scheduled[0].delay, 2);
   assert.equal(scheduled[0].cancelled, true, 'the second fragment extends the quiet deadline');
-  assert.equal(scheduled[1].delay, 8, 'continuous output still has a bounded deadline');
+  assert.equal(scheduled[1].delay, 8, 'continuous output cannot hold an interactive repaint for a full display frame');
   assert.equal(scheduled[2].delay, 2);
   scheduled[2].callback();
   assert.deepEqual(sent, ['frame-aframe-b']);
@@ -205,6 +205,40 @@ test('a submitted terminal prompt wakes session detection once when output begin
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: '再检查\r' })), false);
   terminal.dataCallback('next spinner');
   assert.deepEqual(activity, ['shared', 'shared']);
+});
+
+test('a slow browser bounds stale output and reattaches at the current tmux screen', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+    outputFlowControl: true,
+    outputFlowId: '1',
+    outputHighWaterMark: 5,
+    createTerminal: (session, size) => {
+      const terminal = fakeTerminal();
+      created.push({ session, size, terminal });
+      return terminal;
+    },
+  }));
+
+  created[0].terminal.dataCallback('123456');
+  await waitForTerminalOutput();
+  assert.equal(created[0].terminal.killed, true, 'the stale attach stops producing an unbounded backlog');
+  assert.deepEqual(ws.sent, ['123456']);
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'kept input' })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'outputAck', flowId: 'stale', chars: 6 })), false);
+  await Promise.resolve();
+  assert.equal(created.length, 1, 'an acknowledgement from another screen cannot release this stream');
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'outputAck', flowId: '1', chars: 6 })), false);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(created.map(({ session, size }) => ({ session, size })), [
+    { session: 'shared', size: { width: 80, height: 24 } },
+    { session: 'shared', size: { width: 80, height: 24 } },
+  ]);
+  assert.deepEqual(ws.sent, ['123456', '\x1bc'], 'the replacement attach starts at an explicit screen reset');
+  assert.deepEqual(created[1].terminal.writes, ['kept input'], 'input received during recovery is delivered once');
 });
 
 test('an owner can switch the attached tmux session without replacing the socket', async () => {
