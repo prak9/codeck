@@ -210,12 +210,12 @@ function matchCodexHistorySession(output, history, acceptId = () => true) {
     if (!candidates) candidates = new Set(promptCandidates);
     else if (candidates.size > 1) {
       const overlap = new Set([...candidates].filter((id) => promptCandidates.has(id)));
-      if (!overlap.size) return { id: null, matched };
+      if (!overlap.size) return { id: null, matched, candidates: overlap };
       candidates = overlap;
     }
-    if (candidates.size === 1) return { id: candidates.values().next().value, matched };
+    if (candidates.size === 1) return { id: candidates.values().next().value, matched, candidates };
   }
-  return { id: null, matched };
+  return { id: null, matched, candidates: candidates || new Set() };
 }
 
 export function findCodexHistorySessionId(output, history, acceptId = () => true) {
@@ -636,6 +636,26 @@ export function uniqueCodexStartMatch(process, codex, claimed = new Set()) {
   return rollouts[0].id;
 }
 
+// A bare resume reopens an old rollout, so its filename time cannot match this process.
+// The newly acquired writer lock can, but only when the ambiguous visible text and cwd
+// already include that thread and no second matching writer started alongside it.
+function uniqueCodexResumeWriterMatch(process, codex, candidates, claimed = new Set()) {
+  const startedAt = process?.startedAt;
+  if (!Number.isFinite(startedAt)
+    || !/\bresume(?:\s|$)/i.test(process?.command || '')
+    || !candidates?.size) return null;
+  const rolloutIds = new Set((codex?.starts || []).map((item) => item.id));
+  const locks = (codex?.writers || []).filter((item) => (
+    Math.abs(item.startedAt - startedAt) <= UNIQUE_START_MATCH_WINDOW_MS
+    && candidates.has(item.id)
+    && rolloutIds.has(item.id)
+  ));
+  // Count before removing claimed ids: another pane claiming one candidate must not
+  // turn two simultaneous resumes into an apparently unique match.
+  if (locks.length !== 1 || claimed.has(locks[0].id)) return null;
+  return locks[0].id;
+}
+
 export function resolveCodexSessionId(process, codex) {
   const resumed = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1];
   if (resumed) return resumed;
@@ -974,6 +994,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       let id = explicitId || verifiedVisibleId || rememberedId
         || (visibleMatch.matched
           ? uniqueCodexStartMatch(process, codex, claimedCodexIds)
+            || uniqueCodexResumeWriterMatch(
+              process, codex, visibleMatch.candidates, claimedCodexIds,
+            )
           : resolveCodexSessionId(process, codex));
       if (explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
       let name = codex.names.get(id) || codexPreview(id, codex);

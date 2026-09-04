@@ -171,6 +171,63 @@ test('a prompt shared by multiple Codex threads is ambiguous', () => {
   assert.equal(findCodexHistorySessionId('› 提交并推送', history, (id) => id === codeckId), codeckId);
 });
 
+test('an old Codex thread resumed from an ambiguous prompt needs one fresh writer lock', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-old-resume-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const cwd = path.join(root, 'workspace');
+  const resumedId = '01a04003-1111-7111-8111-111111111111';
+  const otherId = '01a04004-2222-7222-8222-222222222222';
+  const processStartedAt = new Date('2026-09-04T17:53:16').getTime();
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: 'node /usr/bin/codex --yolo resume', cwd,
+    });
+    const sessions = path.join(codexHome, 'sessions', '2026', '08', '22');
+    fs.mkdirSync(sessions, { recursive: true });
+    const transcript = (id) => JSON.stringify({ type: 'session_meta', payload: { id, cwd } });
+    fs.writeFileSync(
+      path.join(sessions, `rollout-2026-08-22T10-00-00-${resumedId}.jsonl`),
+      transcript(resumedId),
+    );
+    fs.writeFileSync(
+      path.join(sessions, `rollout-2026-08-22T11-00-00-${otherId}.jsonl`),
+      transcript(otherId),
+    );
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [
+      JSON.stringify({ session_id: resumedId, ts: 100, text: '怎么样了' }),
+      JSON.stringify({ session_id: otherId, ts: 200, text: '怎么样了' }),
+    ].join('\n'));
+    const locks = path.join(codexHome, 'thread-writer-locks');
+    fs.mkdirSync(locks, { recursive: true });
+    const resumedLock = path.join(locks, `${resumedId}.lock`);
+    const otherLock = path.join(locks, `${otherId}.lock`);
+    fs.writeFileSync(resumedLock, '');
+    fs.writeFileSync(otherLock, '');
+    fs.utimesSync(resumedLock, (processStartedAt + 4_000) / 1_000, (processStartedAt + 4_000) / 1_000);
+    fs.utimesSync(otherLock, (processStartedAt + 6_000) / 1_000, (processStartedAt + 6_000) / 1_000);
+    const detect = () => detectPaneAgents(
+      [{ session: 'research', pid: 10, paneId: '%1' }],
+      { CODEX_HOME: codexHome },
+      {
+        procRoot, clockTicks: 100,
+        now: processStartedAt + 10_000, uptimeMs: 100_000,
+        readCodexPaneOutput: async () => '› 怎么样了\n• 已完成',
+      },
+    );
+
+    assert.equal((await detect()).get('research')?.id, null, 'two matching live writers stay ambiguous');
+    fs.rmSync(otherLock);
+    fs.appendFileSync(path.join(codexHome, 'history.jsonl'), '\n');
+    assert.equal((await detect()).get('research')?.id, resumedId);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Codex rollout cwd disambiguates identical prompts in different tmux panes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-cwd-'));
   const procRoot = path.join(root, 'proc');
