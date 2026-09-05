@@ -5,6 +5,8 @@ import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { createSnapshotFeed } from '../src/snapshot-feed.js';
 import { applySnapshotPatch, createSnapshotPatch } from '../public/snapshot-patch.js';
 import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
+import { CodexAgentBackend } from '../src/agent-backends.js';
+import { isUserMessageDeliveryConfirmed, normalizeAgentThread } from '../public/agent-model.js';
 
 class FakeSocket extends EventEmitter {
   OPEN = 1;
@@ -698,6 +700,141 @@ test('restores accepted no-turn tmux messages after reconnect until the transcri
     .filter((item) => item.delivery).length, 0);
 });
 
+for (const [provider, submissionStatus] of [
+  ['codex', 'submitted'], ['codex', 'unconfirmed'], ['codex', undefined], ['codex', 'unknown'],
+  ['claude', undefined], ['qodercli', undefined],
+]) {
+  test(`${provider} retains ${submissionStatus ?? 'missing'} submission status across cold reconnect without another tmux injection`, async () => {
+    const threadFeed = new FakeSnapshotFeed();
+    const messages = [];
+    const { backends, hub } = setup({
+      threadFeed,
+      sendTmuxMessage: async (params) => {
+        messages.push(params);
+        return { terminalWorking: true, submissionStatus };
+      },
+    });
+    const expectedStatus = provider !== 'codex' && submissionStatus === undefined
+      ? undefined : submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed';
+    const backend = backends[provider];
+    const anchor = {
+      id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }],
+    };
+    backend.turns = [{ id: 'turn-1', status: 'completed', items: [anchor] }];
+    const target = { provider, threadId: 'thread-1', tmuxSession: 'skills' };
+    const request = {
+      type: 'sendSessionMessage', ...target, text: 'Check the skills implementation',
+      commandId: 'command-submission-1', baselineVersion: 2,
+      baselineUserMessageId: 'user-anchor', baselineTurnId: 'turn-1', baselineMatchingTextCount: 0,
+    };
+    const first = new FakeSocket();
+    hub.handleConnection(first, { streamVersion: 2 });
+    send(first, { ...request, id: 1 });
+    await waitFor(() => first.sent.some((message) => message.id === 1));
+    const accepted = first.sent.find((message) => message.id === 1);
+    assert.equal(accepted.ok, true);
+    assert.equal(accepted.result.command.status, 'accepted', 'transport acceptance is not transcript confirmation');
+    first.close();
+
+    const second = new FakeSocket();
+    hub.handleConnection(second, { streamVersion: 2 });
+    send(second, { type: 'openThread', ...target, readOnly: true, id: 2 });
+    await waitFor(() => second.sent.some((message) => message.id === 2));
+    const opened = second.sent.find((message) => message.id === 2).result.thread;
+    const pending = opened.turns.flatMap((turn) => turn.items).filter((item) => item.delivery);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].delivery.status, 'accepted');
+    assert.equal(pending[0].delivery.submissionStatus, expectedStatus);
+
+    send(second, { ...request, id: 3 });
+    await waitFor(() => second.sent.some((message) => message.id === 3));
+    assert.deepEqual(second.sent.find((message) => message.id === 3).result, accepted.result);
+    assert.equal(messages.length, 1, 'a retry must not paste or submit again');
+    const recorded = backend.calls.filter((call) => call.method === 'recordSessionMessage');
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].params.submissionStatus, expectedStatus);
+
+    threadFeed.publish(target, {
+      kind: 'snapshot', epoch: 'test-epoch', sequence: 1,
+      snapshot: { thread: { id: 'thread-1', turns: backend.turns } },
+    });
+    assert.equal(second.sent.at(-1).thread.turns.flatMap((turn) => turn.items)
+      .find((item) => item.delivery).delivery.submissionStatus, expectedStatus);
+
+    backend.turns = [{ id: 'turn-1', status: 'completed', items: [anchor, {
+      id: 'user-actual', type: 'userMessage', content: [{ type: 'text', text: request.text }],
+    }] }];
+    threadFeed.publish(target, {
+      kind: 'snapshot', epoch: 'test-epoch', sequence: 2,
+      snapshot: { thread: { id: 'thread-1', turns: backend.turns } },
+    });
+    assert.equal(second.sent.at(-1).thread.turns.flatMap((turn) => turn.items)
+      .some((item) => item.delivery), false, 'only the actual user message clears the pending marker');
+    assert.equal(hub.sessionMessageReceipts.size, 0);
+    send(second, { ...request, id: 4 });
+    await waitFor(() => second.sent.some((message) => message.id === 4));
+    assert.deepEqual(second.sent.find((message) => message.id === 4).result, accepted.result);
+    assert.equal(messages.length, 1, 'a retry after transcript confirmation must not inject again');
+    assert.equal(hub.sessionMessageReceipts.size, 0, 'replaying the command cannot recreate a settled receipt');
+    second.close();
+  });
+}
+
+test('Codex cold reconnect clears an unconfirmed old-turn delivery only after a matching real user in a new turn', async () => {
+  const text = 'Check the skills implementation';
+  const user = (id) => ({ id, type: 'userMessage', content: [{ type: 'text', text }] });
+  let turns = [{ id: 'turn-old', status: 'inProgress', items: [user('user-anchor')] }];
+  const appServer = new EventEmitter();
+  appServer.request = async (method, params) => method === 'thread/read'
+    ? { thread: { id: 'thread-1' } }
+    : { data: [...turns].reverse().slice(0, params.limit), nextCursor: null };
+  appServer.close = () => {};
+  const backend = new CodexAgentBackend(appServer);
+  let injections = 0;
+  const registry = new AgentRegistry({ codex: backend }, {
+    sendTmuxMessage: async () => { injections += 1; return { submissionStatus: 'unconfirmed' }; },
+  });
+  const hub = new AgentHub(registry);
+  const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'skills' };
+  const request = {
+    type: 'sendSessionMessage', ...target, text, turnId: 'turn-old', mode: 'steer',
+    commandId: 'command-cross-turn', baselineVersion: 2,
+    baselineUserMessageId: 'user-anchor', baselineTurnId: 'turn-old', baselineMatchingTextCount: 0,
+  };
+  const first = new FakeSocket();
+  hub.handleConnection(first);
+  send(first, { type: 'openThread', ...target, readOnly: true, id: 1 });
+  await waitFor(() => first.sent.some((message) => message.id === 1));
+  send(first, { ...request, id: 2 });
+  await waitFor(() => first.sent.some((message) => message.id === 2));
+  const pending = (await backend.openThread('thread-1', { readOnly: true })).thread.turns
+    .flatMap((turn) => turn.items).filter((item) => item.delivery);
+  assert.equal(pending.length, 1, 'identical text at the original baseline is not confirmation');
+  assert.equal(pending[0].delivery.baselineUserMessageId, 'user-anchor');
+  first.close();
+
+  turns = [
+    { ...turns[0], status: 'completed' },
+    { id: 'turn-new', status: 'inProgress', items: [user('user-actual')] },
+  ];
+  appServer.emit('notification', {
+    method: 'turn/started', params: { threadId: 'thread-1', turn: turns[1] },
+  });
+  const second = new FakeSocket();
+  hub.handleConnection(second);
+  send(second, { type: 'openThread', ...target, readOnly: true, id: 3 });
+  await waitFor(() => second.sent.some((message) => message.id === 3));
+  const opened = normalizeAgentThread('codex', second.sent.find((message) => message.id === 3).result.thread);
+  assert.equal(opened.turns.flatMap((turn) => turn.items).some((item) => item.delivery), false);
+  assert.equal(isUserMessageDeliveryConfirmed(opened, request), true);
+  assert.deepEqual([...backend.userMessages.get('thread-1').get('turn-old')].map((item) => item.id), ['user-anchor']);
+  send(second, { ...request, id: 4 });
+  await waitFor(() => second.sent.some((message) => message.id === 4));
+  assert.equal(injections, 1);
+  second.close();
+  backend.close();
+});
+
 test('a terminal identity reply appended to an accepted message settles its server receipt', async () => {
   const anchor = {
     id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }],
@@ -1112,6 +1249,22 @@ test('a delivery receipt whose anchor scrolled out of the window is treated as d
 
   assert.equal(resolvedForTest(windowed, receipt), true, '窗口外的锚点视为已送达');
   assert.equal(resolvedForTest(full, receipt), false, '锚点在窗口内且没有匹配消息 → 仍未送达');
+});
+
+test('an unconfirmed submission is not confirmed merely because its anchor left the transcript window', async () => {
+  const { resolvedForTest } = await import('../src/agent-connection.js');
+  const thread = { truncated: true, turns: [{ id: 'turn-new', items: [] }] };
+  for (const anchor of [
+    { baselineUserMessageId: 'user-old', baselineTurnId: 'turn-old' },
+    { baselineUserMessageId: null, baselineTurnId: 'turn-old' },
+  ]) {
+    const receipt = {
+      baselineVersion: 2, baselineMatchingTextCount: 0, text: 'still in the CLI draft',
+      submissionStatus: 'unconfirmed', ...anchor,
+    };
+    assert.equal(resolvedForTest(thread, receipt), false);
+    assert.equal(resolvedForTest(thread, { ...receipt, submissionStatus: 'submitted' }), true);
+  }
 });
 
 test('openThread returns only the recent turns and says more exist', async () => {

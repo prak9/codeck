@@ -6,6 +6,7 @@ import {
   checkpointTerminalActivity,
   findTmuxThreadTarget,
   findTmuxThreadReplacement,
+  isUserMessageDeliveryConfirmed,
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
@@ -15,9 +16,9 @@ import {
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=37';
+} from './agent-model.js?v=38';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
-import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=6';
+import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=3';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
@@ -66,6 +67,7 @@ const SESSION_LIST_FALLBACK_MS = 30_000;
 const THREAD_REFRESH_FALLBACK_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
+const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
 let viewportFrame = 0;
 
 const state = {
@@ -266,9 +268,21 @@ function applyRefreshedThread(provider, thread) {
     && ['id', 'provider', 'name', 'preview', 'cwd', 'readOnly', 'status', 'truncated', 'oldestTurnId']
       .every((key) => reconciled[key] === current[key]);
   state.thread = reconciled;
+  settleConfirmedDeliveries();
   if (paneOnly) updateTerminalActivity();
   else scheduleThreadRender(false);
   return true;
+}
+
+function settleConfirmedDeliveries() {
+  for (const [key, attempt] of state.pendingDeliveries) {
+    if (attempt.blockReason !== 'submissionUnconfirmed'
+      || attempt.provider !== state.provider || attempt.threadId !== state.thread?.id
+      || attempt.tmuxSession !== state.thread?.tmux?.name
+      || !isUserMessageDeliveryConfirmed(state.thread, attempt)) continue;
+    state.pendingDeliveries.delete(key);
+    if (state.liveMessage === SUBMISSION_UNCONFIRMED_MESSAGE) setLiveMessage('');
+  }
 }
 
 function releaseThreadStream() {
@@ -739,6 +753,7 @@ function handleSocketMessage(message) {
         delete state.thread.tmux.commandOutput;
       }
       state.thread = applyAgentEvent(state.thread, message.method, message.params);
+      settleConfirmedDeliveries();
       if (message.method === 'turn/completed') {
         clearPendingForTurn(message.provider, message.params?.threadId, message.params?.turn?.id, message.tmuxSession);
         setLiveMessage('');
@@ -904,6 +919,7 @@ function handoffTmuxThread(thread) {
       state.thread = normalizeAgentThread(provider, result.thread);
     }
     state.thread.tmux = { ...thread.tmux };
+    settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = Date.now() + 2_500;
     setLiveMessage('已同步对话记录，可直接参与。');
@@ -1009,6 +1025,7 @@ async function openThread(threadId, {
       state.thread = normalizeAgentThread(provider, result.thread);
     }
     if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
+    settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
     setLiveMessage(directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : '');
@@ -1556,7 +1573,15 @@ function syncCommandDialog(commandOutput) {
 }
 
 function itemNode(item, turn) {
-  if (item.type === 'userMessage') return element('div', 'message user-message', userMessageText(item));
+  if (item.type === 'userMessage') {
+    const node = element('div', 'message user-message', userMessageText(item));
+    if (item.delivery?.status === 'accepted') {
+      node.append(element('small', 'message-delivery-status', item.delivery.submissionStatus === 'unconfirmed'
+        ? '等待 Agent 确认 · 提交未确认，请检查终端，勿重复发送'
+        : '等待 Agent 确认'));
+    }
+    return node;
+  }
   if (item.type === 'agentMessage') {
     const node = element('div', 'message assistant-message', item.text || '');
     if (turn.status === 'inProgress' && item === turn.items.at(-1)) node.classList.add('streaming');
@@ -2171,6 +2196,7 @@ function resizeComposer() {
 
 async function submitComposer({ explicitInterrupt = false } = {}) {
   if (composerRequestGate.pending || state.threadOpening) return;
+  settleConfirmedDeliveries();
   abortSpeechInput();
   const input = $('#composerInput');
   const draft = input.value;
@@ -2252,6 +2278,10 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       });
       state.pendingDeliveries.set(deliveryKey, delivery);
       if (delivery.blocked) {
+        if (delivery.blockReason === 'submissionUnconfirmed') {
+          setLiveMessage(SUBMISSION_UNCONFIRMED_MESSAGE);
+          return;
+        }
         const reason = delivery.blockReason === 'receiptExpired'
           ? '安全重试时限已过'
           : delivery.blockReason === 'unsupported' ? '当前服务不支持安全重试' : '服务器已重启';
@@ -2266,6 +2296,21 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       ) throw new Error('会话已切换，附件未发送');
       const message = attachmentMessage({ provider: targetProvider, text, paths });
       if (!message) throw new Error('请输入要发送的内容');
+      const unconfirmedItem = state.thread.turns?.flatMap((turn) => turn.items || []).find((item) => (
+        item.delivery?.submissionStatus === 'unconfirmed'
+        && userMessageText(item) === message
+        && !isUserMessageDeliveryConfirmed(state.thread, { text: message, ...item.delivery })
+      ));
+      if (unconfirmedItem) {
+        state.pendingDeliveries.set(deliveryKey, {
+          ...delivery, ...unconfirmedItem.delivery,
+          commandId: unconfirmedItem.id?.startsWith('delivery:') ? unconfirmedItem.id.slice(9) : delivery.commandId,
+          provider: targetProvider, threadId: targetThreadId, tmuxSession: targetSessionName, text: message,
+          blocked: true, blockReason: 'submissionUnconfirmed',
+        });
+        setLiveMessage(SUBMISSION_UNCONFIRMED_MESSAGE);
+        return;
+      }
       if (attachments.length) setLiveMessage('附件已上传，正在发送…');
       if (sessionName) {
         const previousStatus = state.thread.tmux.status;
@@ -2282,6 +2327,12 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           baselineUserMessageId: delivery.baselineUserMessageId,
           baselineTurnId: delivery.baselineTurnId,
           baselineMatchingTextCount: delivery.baselineMatchingTextCount,
+        });
+        const unconfirmed = result?.submissionStatus === 'unconfirmed';
+        if (unconfirmed) state.pendingDeliveries.set(deliveryKey, {
+          ...delivery, provider: targetProvider, threadId: targetThreadId,
+          tmuxSession: targetSessionName, text: message,
+          blocked: true, blockReason: 'submissionUnconfirmed',
         });
         const nextStatus = sessionStatusAfterSend({ previousStatus, result });
         const workingAfterSend = nextStatus === 'working';
@@ -2303,6 +2354,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
               baselineTurnId: delivery.baselineTurnId,
               baselineMatchingTextCount: delivery.baselineMatchingTextCount,
               inputWasQueued: result?.inputWasQueued === true,
+              submissionStatus: result?.submissionStatus,
             });
           }
           delete state.thread.tmux.commandOutput;
@@ -2334,6 +2386,13 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           if (sentPendingSession || targetProvider === 'shell') loadThreads({ quiet: true }).catch(() => {});
           else if (workingAfterSend) refreshActiveThread({ force: true }).catch(() => {});
         }
+        if (unconfirmed) {
+          if (stillActive) {
+            setLiveMessage(SUBMISSION_UNCONFIRMED_MESSAGE);
+            settleConfirmedDeliveries();
+          }
+          return;
+        }
       } else {
         await agentRequest('sendMessage', {
           provider: targetProvider,
@@ -2346,6 +2405,8 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
         scheduleThreadRender(true);
       }
       if (state.pendingDeliveries.get(deliveryKey) === delivery) state.pendingDeliveries.delete(deliveryKey);
+      if (state.provider !== targetProvider || state.thread?.id !== targetThreadId
+        || (state.thread?.tmux?.name || null) !== targetSessionName) return;
       input.value = draftAfterSuccessfulSend(input.value, draft);
       clearAttachments(attachments);
       resizeComposer();

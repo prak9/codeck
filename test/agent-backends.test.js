@@ -385,6 +385,41 @@ test('a lagging Codex full refresh cannot delete an accepted tmux follow-up', as
     .map((item) => item.id), ['user-1', 'user-2']);
 });
 
+for (const submissionStatus of ['submitted', 'unconfirmed', undefined, 'unknown']) {
+  test(`Codex delivery retains ${submissionStatus ?? 'missing'} submission status until a real user message arrives`, async () => {
+    const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+    const text = 'Check the skills implementation';
+    let users = [first];
+    const appServer = new FakeAppServer(async (method) => (
+      method === 'thread/read'
+        ? { thread: { id: 'thread-1' } }
+        : { data: [{ id: 'turn-1', status: 'inProgress', items: users }] }
+    ));
+    const backend = new CodexAgentBackend(appServer);
+    await backend.openThread('thread-1', { readOnly: true });
+    backend.recordSessionMessage({
+      threadId: 'thread-1', turnId: 'turn-1', text, commandId: 'command-submission-1',
+      submissionStatus,
+    });
+
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      const opened = await backend.openThread('thread-1', { readOnly: true });
+      const pending = opened.thread.turns[0].items.filter((item) => item.delivery);
+      assert.equal(pending.length, 1, 'a lagging full view must retain the optimistic message');
+      assert.deepEqual(pending[0].delivery, {
+        status: 'accepted',
+        submissionStatus: submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed',
+      });
+    }
+
+    users = [first, { id: 'user-actual', type: 'userMessage', content: [{ type: 'text', text }] }];
+    const confirmed = await backend.openThread('thread-1', { readOnly: true });
+    assert.deepEqual(confirmed.thread.turns[0].items.map((item) => item.id), ['user-1', 'user-actual']);
+    assert.equal(confirmed.thread.turns[0].items.some((item) => item.delivery), false);
+    backend.close();
+  });
+}
+
 test('keeps a resumed Codex thread writable', async () => {
   const appServer = new FakeAppServer(async (method) => (
     method === 'thread/resume'

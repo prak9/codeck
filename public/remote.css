@@ -132,6 +132,7 @@ a.header-button { text-decoration: none; }
 .turn { display: flow-root; margin-bottom: 31px; }
 .message { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .user-message { max-width: min(76%, 620px); margin: 0 0 22px auto; padding: 12px 15px; border: 1px solid #ff8c6340; border-radius: 18px 18px 5px 18px; background: linear-gradient(145deg, #ff6b3529, #ff6b3518); color: #fff7f3; box-shadow: 0 8px 24px #00000016; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+.message-delivery-status { display: block; margin-top: 7px; color: #f0c9b9; font: 12px/1.55 "Inter Variable", "Noto Sans SC Variable", sans-serif; white-space: normal; }
 .assistant-message { max-width: 78ch; margin: 0 0 15px; color: #ebe8e5; font-size: 14px; line-height: 1.72; white-space: pre-wrap; }
 .assistant-message.streaming::after { content: ''; width: 6px; height: 16px; margin-left: 3px; background: #ff8b64; display: inline-block; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
 .agent-message-actions { min-height: 34px; margin: -6px 0 5px; display: flex; align-items: center; }
@@ -412,6 +413,7 @@ a.header-button { text-decoration: none; }
 :root[data-theme="light"] .provider-trigger i { background: #aaa5a1; }
 :root[data-theme="light"] .welcome-mark { border-color: #00000010; background: #f7f7f8; box-shadow: 0 18px 48px #00000010, inset 0 1px #fff; color: #a83a10; }
 :root[data-theme="light"] .user-message { border-color: #00000008; background: #f4f4f4; box-shadow: none; color: #111; }
+:root[data-theme="light"] .message-delivery-status { color: #7c4026; }
 :root[data-theme="light"] .assistant-message { color: #111; }
 :root[data-theme="light"] .turn-error { border-color: #b4231838; background: #b423180a; color: #8f1d14; }
 :root[data-theme="light"] .tool-icon { border: 1px solid #0000000b; background: #fff; }

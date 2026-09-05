@@ -59,6 +59,12 @@ function matchingUserAfterDeliveryBaseline(thread, deliveryItem) {
   return candidates.filter((entry) => userMessageText(entry.item) === userMessageText(deliveryItem))[ordinal]?.item || null;
 }
 
+export function isUserMessageDeliveryConfirmed(thread, { text, ...delivery }) {
+  return Boolean(matchingUserAfterDeliveryBaseline(thread, {
+    content: [{ type: 'text', text }], delivery,
+  }));
+}
+
 function resolvedDeliveryItems(current, refreshed) {
   const resolved = new Map();
   for (const delivery of threadUserMessages(current).filter((item) => item.delivery)) {
@@ -338,7 +344,12 @@ export function applyAgentEvent(currentThread, method, params = {}) {
   if (method === 'turn/started' || method === 'turn/completed') {
     const incoming = params.turn || { id: params.turnId };
     const turnId = incoming.id || params.turnId;
-    return updateTurn(currentThread, turnId, (turn, exists) => (
+    const observed = updateTurn(currentThread, turnId, () => copyTurn({ ...incoming, id: turnId }));
+    let thread = currentThread;
+    for (const id of resolvedDeliveryItems(currentThread, observed).keys()) {
+      thread = removeUserMessage(thread, id);
+    }
+    return updateTurn(thread, turnId, (turn, exists) => (
       exists ? mergeTurn(turn, incoming) : copyTurn({ ...incoming, id: turnId })
     ));
   }
@@ -415,7 +426,7 @@ export function applyAgentEvent(currentThread, method, params = {}) {
 
 export function applyAcceptedUserMessage(currentThread, {
   turnId, text, commandId, baselineVersion, baselineUserMessageId, baselineTurnId,
-  baselineMatchingTextCount, inputWasQueued = false,
+  baselineMatchingTextCount, inputWasQueued = false, submissionStatus,
 } = {}) {
   if (!currentThread || !commandId || typeof text !== 'string' || !text.trim()) {
     return currentThread;
@@ -433,6 +444,9 @@ export function applyAcceptedUserMessage(currentThread, {
       && baselineMatchingTextCount >= 0 ? baselineMatchingTextCount : 0,
     ...(inputWasQueued ? { inputWasQueued: true } : {}),
   } : { status: 'accepted', ...fallback };
+  if (submissionStatus === 'submitted' || submissionStatus === 'unconfirmed') {
+    delivery.submissionStatus = submissionStatus;
+  }
   const acceptedItem = {
     id,
     type: 'userMessage',

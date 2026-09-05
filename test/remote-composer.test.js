@@ -91,3 +91,9 @@ test('Shell attachments require a command and preserve the normal stop action', 
     active: true, attachmentCount: 0, provider: 'shell', text: '', explicitInterrupt: true,
   }), 'interrupt');
 });
+
+test('unconfirmed submission does not invent a working session', () => {
+  for (const previousStatus of ['done', 'background', 'working']) {
+    assert.equal(sessionStatusAfterSend({ previousStatus, result: { submissionStatus: 'unconfirmed' } }), previousStatus);
+  }
+});

@@ -42,6 +42,7 @@ export function composerSubmitAction({ active, attachmentCount, explicitInterrup
 }
 
 export function sessionWorkingAfterSend({ wasWorking, result }) {
+  if (result?.submissionStatus === 'unconfirmed') return Boolean(wasWorking);
   return Boolean(wasWorking || !result?.terminalOutput || result.terminalWorking);
 }
 

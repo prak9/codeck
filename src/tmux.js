@@ -476,9 +476,10 @@ function screenHash(output) {
   return createHash('sha1').update(String(output || '')).digest('hex');
 }
 
-function capturePane(paneId, execTmux = exec) {
+function capturePane(paneId, execTmux = exec, joinWrapped = false) {
   if (!paneId) return Promise.resolve('');
-  return execTmux('tmux', ['capture-pane', '-p', '-t', paneId]).then(({ stdout }) => stdout).catch(() => '');
+  return execTmux('tmux', ['capture-pane', '-p', ...(joinWrapped ? ['-J'] : []), '-t', paneId])
+    .then(({ stdout }) => stdout).catch(() => '');
 }
 
 function parsePaneCaptureBatch(output, markers) {
@@ -754,6 +755,8 @@ async function verifiedSessionTarget({ provider, sessionName, threadId }, listTm
 let inputBufferSequence = 0;
 const sessionInputQueues = new Map();
 const PASTE_SUBMIT_DELAY_MS = 80;
+// Codex 0.153.2 treats Enter within its 120 ms paste-burst window as a newline.
+const CODEX_PASTE_SUBMIT_DELAY_MS = 200;
 const LITERAL_AGENT_INPUT_MAX_BYTES = 64 * 1024;
 const SLASH_OUTPUT_DELAY_MS = 150;
 const QUEUED_INPUT_DELAY_MS = 60;
@@ -785,32 +788,72 @@ async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, w
 }
 
 const SUBMIT_CONFIRM_ATTEMPTS = 3;
-const SUBMIT_CONFIRM_DELAY_MS = 120;
-// 输入框里还剩多少字就算"是我们刚发的那条" —— 太短容易撞上别的草稿。
-const SUBMIT_CONFIRM_MATCH_CHARS = 8;
+const SUBMIT_CONFIRM_DELAY_MS = 200;
 
-// Agent TUI 忙的时候, 那次 Enter 可能根本没被受理: 文字留在输入框里, 任务结束后也
-// 不会有人再按一次, 消息就永远停在那儿。实测 research 会话上就是这样丢的。
-// 所以发完回读一次屏幕, 只有确认看到自己发的内容还在输入框里才补一次 Enter ——
-// 不确认就补, 等于替用户提交别的草稿或在某个确认框上按回车。
+function agentComposerState(output, text) {
+  const rows = cleanScreenRows(output);
+  const prompt = /^(\s*)[»›>❯](?: (.*))?$/u;
+  const start = rows.findLastIndex((line) => prompt.test(line));
+  if (start < 0) return 'unknown';
+  if (rows.slice(Math.max(0, start - 2)).some((line) => (
+    CODEX_MODEL_PICKER_TITLE.test(line) || /press enter to confirm/iu.test(line)
+  ))) return 'other';
+  const endOffset = rows.slice(start + 1).findIndex((line) => (
+    SCREEN_SEPARATOR.test(line.trim()) || /^\s*(?:gpt-\S+.*·|⏵⏵)/u.test(line)
+  ));
+  // A transcript prompt, clipped composer, or collapsed paste is not enough evidence
+  // to press Enter. Require its visible lower boundary and the entire matching draft.
+  if (endOffset < 0) return 'unknown';
+  const match = prompt.exec(rows[start]);
+  const indent = ' '.repeat(match[1].length + 2);
+  const content = [match[2] || ''];
+  for (const row of rows.slice(start + 1, start + 1 + endOffset)) {
+    if (!row) content.push('');
+    else if (row.startsWith(indent)) content.push(row.slice(indent.length));
+    else return 'unknown';
+  }
+  const composer = content.join('\n').trimEnd();
+  if (!composer) return 'empty';
+  if (composer === 'Ask Codex to do anything' && composer !== text.trimEnd()) return 'empty';
+  if (/^\[Pasted (?:Content|content)\b/u.test(composer)) return 'unknown';
+  return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
+}
+
+// Only retry Enter, never the message text. Screen confirmation means the TUI no
+// longer holds the draft, not that the Agent has executed it or persisted a turn.
 export async function ensureAgentInputSubmitted({
-  paneId, text, execTmux, capturePane, waitForSubmit,
+  paneId, text, provider = 'codex', allowBusy = true,
+  execTmux, capturePane, waitForSubmit, verifyPane,
 }) {
-  const needle = String(text || '').replace(/\s+/gu, '').slice(0, SUBMIT_CONFIRM_MATCH_CHARS);
-  if (!needle) return false;
+  if (!PANE_ID.test(paneId || '') || typeof text !== 'string' || !text.trim()) return 'unconfirmed';
+  let retries = 0;
+  let emptyCaptures = 0;
   try {
-    for (let attempt = 0; attempt < SUBMIT_CONFIRM_ATTEMPTS; attempt += 1) {
-      await waitForSubmit();
-      const rows = cleanScreenRows(await capturePane(paneId));
-      // 只看最下面那一行提示符 —— TUI 把已提交的消息也用同样的前缀渲染在上方,
-      // 全部拼起来找的话, 每发一条消息都会误判成"还没发出去"。
-      const composer = String(rows.findLast((line) => /^\s*[›>❯]/u.test(line)) || '')
-        .replace(/^\s*[›>❯]\s*/u, '').replace(/\s+/gu, '');
-      if (!composer.includes(needle)) return attempt > 0;
-      await execTmux(['send-keys', '-t', paneId, 'Enter']);
+    for (let attempt = 0; attempt < SUBMIT_CONFIRM_ATTEMPTS + 2; attempt += 1) {
+      await waitForSubmit(SUBMIT_CONFIRM_DELAY_MS);
+      const screen = await capturePane(paneId, { joinWrapped: true });
+      if (!String(screen || '').trim()) return 'unconfirmed';
+      const state = agentComposerState(screen, text);
+      if (state === 'other') return 'unconfirmed';
+      if (state !== 'draft' && ((provider === 'codex' && hasCodexQueuedInput(screen))
+        || (allowBusy && resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]).busy))) {
+        return await verifyPane?.() ? 'submitted' : 'unconfirmed';
+      }
+      // A slow asynchronous paste may not have rendered during the first capture.
+      if (state === 'empty') {
+        emptyCaptures += 1;
+        if (emptyCaptures >= 2) return await verifyPane?.() ? 'submitted' : 'unconfirmed';
+        continue;
+      }
+      emptyCaptures = 0;
+      if (state !== 'draft' || retries >= SUBMIT_CONFIRM_ATTEMPTS) return 'unconfirmed';
+      if (!await verifyPane?.()) return 'unconfirmed';
+      if (agentComposerState(await capturePane(paneId, { joinWrapped: true }), text) !== 'draft') return 'unconfirmed';
+      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      retries += 1;
     }
-  } catch { /* 补发是尽力而为, 失败不该让这次发送报错。 */ }
-  return false;
+  } catch { /* Text may already have arrived; never invite an automatic resend. */ }
+  return 'unconfirmed';
 }
 
 function codexModelPicker(output) {
@@ -913,14 +956,22 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
-    const waitForPaste = overrides.waitForPaste
-      || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
     const command = text.startsWith('/') ? text.trim().match(/^\/\S+/)?.[0] || '' : '';
+    const pasteDelay = provider === 'codex' && !command ? CODEX_PASTE_SUBMIT_DELAY_MS : PASTE_SUBMIT_DELAY_MS;
+    const waitForPaste = overrides.waitForPaste
+      || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+    const verifyPane = async () => {
+      try {
+        const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+        return current.paneId === paneId;
+      } catch { return false; }
+    };
     const inputWasQueued = provider !== 'shell' && Boolean(session.hasRunningProcess);
     const shouldCheckQueuedInput = provider === 'codex' && !command
       && Boolean(session.hasRunningProcess || session.agent?.hasBackgroundProcess);
     const finishAgentInput = async () => {
       let terminalWorking = false;
+      let submissionStatus = 'submitted';
       if (shouldCheckQueuedInput) {
         terminalWorking = await releaseCodexQueuedInput({
           paneId,
@@ -933,16 +984,21 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       // Codex 自己排队了就别再补 Enter; 否则确认那次 Enter 真被受理了 —— TUI 忙时
       // 它可能整个丢掉, 消息留在输入框里, 任务结束后也没人再按一次。
       if (provider !== 'shell' && !terminalWorking) {
-        await ensureAgentInputSubmitted({
+        submissionStatus = await ensureAgentInputSubmitted({
           paneId,
           text,
+          provider,
+          allowBusy: !inputWasQueued,
           execTmux,
-          capturePane: overrides.capturePane || capturePane,
+          verifyPane,
+          capturePane: overrides.capturePane
+            || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped)),
           waitForSubmit: overrides.waitForSubmit
-            || (() => new Promise((resolve) => setTimeout(resolve, SUBMIT_CONFIRM_DELAY_MS))),
+            || ((delay) => new Promise((resolve) => setTimeout(resolve, delay))),
         });
       }
       return {
+        ...(provider === 'codex' ? { submissionStatus } : {}),
         ...(terminalWorking ? { terminalWorking: true } : {}),
         ...(inputWasQueued ? { inputWasQueued: true } : {}),
       };
@@ -954,7 +1010,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       && !/[\u0000-\u001f\u007f]/u.test(text);
     const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
-    if (literalAgentInput && !command) {
+    if (literalAgentInput && !command && provider !== 'codex') {
       await loadBuffer(bufferName, text);
       try {
         // A normal line is raw terminal input, not an asynchronous bracketed paste.
@@ -970,13 +1026,13 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       }
       return finishAgentInput();
     }
-    if (literalAgentInput) {
+    if (literalAgentInput && command) {
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
       await execTmux(exitPaneModeThen(
         paneId,
         ['send-keys', '-l', '-t', paneId, '--', bareCodexModel ? `${command} ` : text],
       ));
-      await waitForPaste();
+      await waitForPaste(pasteDelay);
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return finishAgentInput();
       const waitForSlashOutput = overrides.waitForSlashOutput
@@ -1012,6 +1068,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       }
     }
     await loadBuffer(bufferName, text);
+    let pasted = false;
     try {
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same
       // tmux command, it can be consumed before the composer finishes applying the paste,
@@ -1021,10 +1078,17 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         paneId,
         ['paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId],
       ));
-      await waitForPaste();
+      pasted = true;
+      await waitForPaste(pasteDelay);
+      if (provider === 'codex' && !await verifyPane()) {
+        return { submissionStatus: 'unconfirmed', ...(inputWasQueued ? { inputWasQueued: true } : {}) };
+      }
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
     } catch (error) {
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
+      if (provider === 'codex' && pasted) {
+        return { submissionStatus: 'unconfirmed', ...(inputWasQueued ? { inputWasQueued: true } : {}) };
+      }
       throw error;
     }
     return finishAgentInput();

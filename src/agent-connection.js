@@ -131,7 +131,9 @@ function sessionMessageReceiptResolved(thread, receipt) {
   // thread 流只推尾部窗口时, 锚点可能已经滚出窗口。那意味着此后又发生了整整一个
   // 窗口的对话 —— 这条消息要么早就送达, 要么早已无从补救; 继续判为"未送达"只会
   // 让那条乐观回显永远挂着, 表现为一条重复的待发消息。
-  const outOfWindow = Boolean(thread?.truncated);
+  // A missing anchor cannot prove that an input whose submission was unconfirmed
+  // ever left the CLI draft. Keep its receipt until the transcript can confirm it.
+  const outOfWindow = Boolean(thread?.truncated) && receipt.submissionStatus !== 'unconfirmed';
   if (receipt.baselineUserMessageId) {
     const anchorIndex = users.findIndex(({ item }) => item.id === receipt.baselineUserMessageId);
     if (anchorIndex < 0) return outOfWindow;
@@ -156,6 +158,7 @@ function sessionMessageReceiptItem(receipt) {
     content: [{ type: 'text', text: receipt.text }],
     delivery: {
       status: 'accepted',
+      submissionStatus: receipt.submissionStatus,
       baselineVersion: receipt.baselineVersion,
       baselineUserMessageId: receipt.baselineUserMessageId,
       baselineTurnId: receipt.baselineTurnId,
@@ -565,15 +568,20 @@ export class AgentHub {
       };
       return this.#runCommand(message, provider, payload, async () => {
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text });
+        const submission = provider === 'codex' || result?.submissionStatus != null
+          ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
+          : {};
         this.registry.recordSessionMessage(provider, {
           threadId, turnId, text,
           commandId,
+          ...submission,
           ...baseline,
         });
         const receiptRecorded = !turnId && provider !== 'shell' && commandId
           && !text.startsWith('/') && (!result?.terminalOutput || result.terminalWorking)
           && this.#recordSessionMessageReceipt(provider, {
             threadId, text, commandId,
+            ...submission,
             inputWasQueued: result?.inputWasQueued === true,
             ...baseline,
           });
