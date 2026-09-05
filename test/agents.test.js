@@ -70,6 +70,83 @@ test('recovers an interactive Codex resume selection from its writer lock time',
   }, { writers: [{ id: selectedId, startedAt: startedAt - 300_000 }], starts: codex.starts }), newRolloutId);
 });
 
+test('a Codex process follows its open thread after an explicit resume forks', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-forked-resume-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const cwd = path.join(root, 'workspace');
+  const parentId = '01a04160-1111-7111-8111-111111111111';
+  const childId = '01a04161-2222-7222-8222-222222222222';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, {
+      pid: 11, ppid: 10, startTicks: 9_000,
+      command: `node /usr/bin/codex --yolo resume ${parentId}`, cwd,
+    });
+
+    const sessions = path.join(codexHome, 'sessions', '2026', '09', '05');
+    const locks = path.join(codexHome, 'thread-writer-locks');
+    const fdRoot = path.join(procRoot, '11', 'fd');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.mkdirSync(locks, { recursive: true });
+    fs.mkdirSync(fdRoot, { recursive: true });
+    const parentRollout = path.join(sessions, `rollout-2026-09-04T21-20-29-${parentId}.jsonl`);
+    const childRollout = path.join(sessions, `rollout-2026-09-05T11-00-36-${childId}.jsonl`);
+    fs.writeFileSync(parentRollout, JSON.stringify({
+      type: 'session_meta', payload: { id: parentId, session_id: parentId, cwd },
+    }));
+    fs.writeFileSync(childRollout, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { id: childId, session_id: childId, forked_from_id: parentId, cwd },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '子分支的新消息' }] },
+      }),
+    ].join('\n'));
+    const parentLock = path.join(locks, `${parentId}.lock`);
+    const childLock = path.join(locks, `${childId}.lock`);
+    fs.writeFileSync(parentLock, '');
+    fs.writeFileSync(childLock, '');
+    const writerFd = path.join(fdRoot, '35');
+    const rolloutFd = path.join(fdRoot, '46');
+    fs.symlinkSync(parentLock, writerFd);
+    fs.symlinkSync(parentRollout, rolloutFd);
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), JSON.stringify({
+      session_id: childId, ts: 100, text: '子分支的新消息',
+    }));
+
+    const pane = [{ session: 'codeck', pid: 10, paneId: '%1' }];
+    const identityCache = new Map();
+    const processTreeCache = new Map();
+    const detect = (now) => detectPaneAgents(pane, { CODEX_HOME: codexHome }, {
+      procRoot, clockTicks: 100, now, uptimeMs: 100_000,
+      identityCache, identityCacheTtlMs: 5_000, processTreeCache,
+      readCodexPaneOutput: async () => '› 子分支的新消息\n• 正在分析',
+    });
+
+    assert.equal((await detect(1_000_000)).get('codeck')?.id, parentId);
+    fs.rmSync(writerFd);
+    fs.rmSync(rolloutFd);
+    fs.symlinkSync(childLock, writerFd);
+    assert.equal(
+      (await detect(1_001_000)).get('codeck')?.id,
+      parentId,
+      'a writer lock without an open rollout is not enough to expose the child',
+    );
+    fs.symlinkSync(childRollout, rolloutFd);
+    assert.equal(
+      (await detect(1_002_000)).get('codeck')?.id,
+      childId,
+      'open descriptors invalidate the cached parent before its TTL',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('does not expose a fresh Codex writer before its first rollout exists', () => {
   const freshId = '01a028e8-3750-7050-98d2-27078915be46';
   const otherId = '01a028e6-3604-7350-943b-e1455dc6dfd1';

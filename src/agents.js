@@ -748,6 +748,48 @@ function pathPartsWithin(root, target) {
   return relative.split(path.sep);
 }
 
+export function findCodexOpenSessionId(processes, codexHome, { procRoot = '/proc' } = {}) {
+  if (!processes?.length || !codexHome) return null;
+  let locksRoot;
+  let sessionsRoot;
+  try {
+    locksRoot = fs.realpathSync(path.join(codexHome, 'thread-writer-locks'));
+    sessionsRoot = fs.realpathSync(path.join(codexHome, 'sessions'));
+  } catch { return null; }
+
+  const lockIds = new Set();
+  const rolloutIds = new Set();
+  for (const process of processes) {
+    const fdRoot = path.join(procRoot, String(process.pid), 'fd');
+    let descriptors;
+    try { descriptors = fs.readdirSync(fdRoot); }
+    catch { continue; }
+    for (const descriptor of descriptors) {
+      let target;
+      try {
+        const link = fs.readlinkSync(path.join(fdRoot, descriptor));
+        target = fs.realpathSync(path.isAbsolute(link) ? link : path.resolve(fdRoot, link));
+      } catch { continue; }
+
+      const lockParts = pathPartsWithin(locksRoot, target);
+      const lockMatch = lockParts?.length === 1
+        ? lockParts[0].match(new RegExp(`^(${UUID})\\.lock$`, 'i'))
+        : null;
+      if (lockMatch) lockIds.add(lockMatch[1]);
+
+      if (!pathPartsWithin(sessionsRoot, target)) continue;
+      const rollout = parseRolloutFilename(target);
+      if (rollout) rolloutIds.add(rollout.id);
+    }
+  }
+
+  // The writer lock identifies ownership and the rollout confirms app-server can
+  // already open the thread. During a fork both descriptors move to the child,
+  // while the original `codex resume <id>` argument necessarily stays unchanged.
+  const ids = [...lockIds].filter((id) => rolloutIds.has(id));
+  return ids.length === 1 ? ids[0] : null;
+}
+
 function qoderTranscriptMatches(file, id, cwd) {
   let descriptor;
   try {
@@ -902,14 +944,16 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     const explicitId = kind === 'claude' || kind === 'qodercli'
       ? parseResumedSessionId(agentProcess.command)
       : null;
-    const openSessionId = kind === 'qodercli' && !registered?.id && !explicitId
-      ? findQoderOpenSessionId(tree, qoderHome, registered?.cwd || cwd, { procRoot })
-      : null;
+    const openSessionId = kind === 'codex'
+      ? findCodexOpenSessionId(tree, codexHome, { procRoot })
+      : kind === 'qodercli' && !registered?.id && !explicitId
+        ? findQoderOpenSessionId(tree, qoderHome, registered?.cwd || cwd, { procRoot })
+        : null;
     const providerIdentity = registered
       ? ['registry', registered.pid, registered.id, registered.cwd]
       : explicitId
         ? ['command', explicitId]
-        : openSessionId ? ['qoder-fd', openSessionId] : null;
+        : openSessionId ? [`${kind}-fd`, openSessionId] : null;
     const fingerprint = agentIdentityFingerprint(
       pane, agentProcess, cwd, configSignature, providerIdentity,
     );
@@ -978,7 +1022,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
       const paneCwd = normalizedPath(runtime.cwd);
       const cwdMatches = new Map();
-      const visibleMatch = explicitId ? { id: null, matched: false } : matchCodexHistorySession(paneOutput, codex.history, (id) => {
+      const visibleMatch = openSessionId || explicitId ? { id: null, matched: false } : matchCodexHistorySession(paneOutput, codex.history, (id) => {
         if (!paneCwd) return true;
         if (!cwdMatches.has(id)) cwdMatches.set(id, normalizedPath(codexSessionCwd(id, codex)) === paneCwd);
         return cwdMatches.get(id);
@@ -991,14 +1035,14 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
         && remembered.startedAt === process.startedAt
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
-      let id = explicitId || verifiedVisibleId || rememberedId
+      let id = openSessionId || explicitId || verifiedVisibleId || rememberedId
         || (visibleMatch.matched
           ? uniqueCodexStartMatch(process, codex, claimedCodexIds)
             || uniqueCodexResumeWriterMatch(
               process, codex, visibleMatch.candidates, claimedCodexIds,
             )
           : resolveCodexSessionId(process, codex));
-      if (explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
+      if (openSessionId || explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
       let name = codex.names.get(id) || codexPreview(id, codex);
       if (!name) {
         const paneIdentity = parseCodexRename(paneOutput);
