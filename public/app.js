@@ -12,6 +12,7 @@ import {
   wheelScrollLines,
 } from './terminal-utils.js?v=15';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
+import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
@@ -75,9 +76,15 @@ const state = {
   sessionFeedSocket: null,
   sessionFeedGeneration: 0,
   sessionFeedReconnectTimer: null,
+  sessionFeedReady: false,
+  sessionFeedRequests: new Map(),
+  nextSessionFeedRequestId: 1,
   sessionStreamCursor: null,
   sessionStreamSnapshot: null,
   sessionStreamHealthy: false,
+  agentOutputCache: new Map(),
+  agentOutputRequestSeq: 0,
+  agentOutputFeedbackTimer: null,
   terminal: null,
   fit: null,
   sessionsRefreshSeq: 0,
@@ -686,6 +693,152 @@ async function refreshSessions() {
   if (state.canManage) connectSessionFeed();
 }
 
+function activeAgentOutputTarget() {
+  if (!state.canManage) return null;
+  const session = state.sessions.find((item) => item.name === state.active);
+  const provider = session?.agent?.kind;
+  const threadId = session?.agent?.id;
+  if (!provider || provider === 'shell' || !threadId) return null;
+  const status = resolveSessionStatus(session);
+  return {
+    provider,
+    threadId,
+    status,
+    key: `${provider}:${threadId}`,
+    refreshKey: status === 'done' ? `${status}:${session.activityAt || 0}` : status,
+  };
+}
+
+function syncAgentOutputCopyButtons() {
+  const target = activeAgentOutputTarget();
+  const entry = target ? state.agentOutputCache.get(target.key) : null;
+  for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
+    button.hidden = !target;
+    if (!target) continue;
+    if (button.dataset.copyTarget !== target.key) {
+      delete button.dataset.copyState;
+      button.dataset.copyTarget = target.key;
+    }
+    if (button.dataset.copyState) continue;
+    const hasText = Boolean(entry?.text);
+    const retry = !hasText && entry?.state === 'error';
+    button.dataset.outputState = entry?.state || 'waiting';
+    button.disabled = !hasText && !retry;
+    button.textContent = hasText ? '复制回复'
+      : retry ? '重试读取'
+        : entry?.state === 'empty' ? '暂无回复'
+          : entry?.state === 'loading' ? '读取中…' : '等待连接';
+    button.setAttribute('aria-label', hasText ? '复制最新模型输出'
+      : retry ? '重新读取最新模型输出'
+        : entry?.state === 'empty' ? '暂无可复制的模型输出' : '正在读取最新模型输出');
+    button.title = hasText ? '复制最新一条已完成的模型回复' : '';
+  }
+}
+
+function rejectSessionFeedRequests(message) {
+  for (const pending of state.sessionFeedRequests.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error(message));
+  }
+  state.sessionFeedRequests.clear();
+}
+
+function sessionFeedRequest(type, payload = {}) {
+  const socket = state.sessionFeedSocket;
+  if (!state.sessionFeedReady || socket?.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('Agent 尚未连接，请稍后重试'));
+  }
+  const id = state.nextSessionFeedRequestId++;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.sessionFeedRequests.delete(id);
+      reject(new Error('Agent 请求超时'));
+    }, 60_000);
+    state.sessionFeedRequests.set(id, { resolve, reject, timeout });
+    try {
+      socket.send(JSON.stringify({ type, id, ...payload }));
+    } catch (error) {
+      clearTimeout(timeout);
+      state.sessionFeedRequests.delete(id);
+      reject(error);
+    }
+  });
+}
+
+// Keep structured output warm so the click can start its clipboard write synchronously;
+// waiting for this request inside the handler loses the user gesture in Safari/iOS.
+async function refreshActiveAgentOutput({ force = false } = {}) {
+  const target = activeAgentOutputTarget();
+  syncAgentOutputCopyButtons();
+  if (!target || !state.sessionFeedReady) return;
+  const current = state.agentOutputCache.get(target.key);
+  if (!force && current?.refreshKey === target.refreshKey) return;
+  const requestSeq = ++state.agentOutputRequestSeq;
+  const text = target.status === 'working' || current?.refreshKey === target.refreshKey
+    ? current?.text || ''
+    : '';
+  state.agentOutputCache.set(target.key, {
+    ...current, text, state: 'loading', refreshKey: target.refreshKey, requestSeq,
+  });
+  syncAgentOutputCopyButtons();
+  try {
+    const result = await sessionFeedRequest('loadThreadHistory', {
+      provider: target.provider,
+      threadId: target.threadId,
+      limit: 20,
+    });
+    if (state.agentOutputCache.get(target.key)?.requestSeq !== requestSeq) return;
+    const text = latestAgentOutputText(result?.turns);
+    state.agentOutputCache.set(target.key, {
+      text, state: text ? 'ready' : 'empty', refreshKey: target.refreshKey, requestSeq,
+    });
+  } catch (error) {
+    const latest = state.agentOutputCache.get(target.key);
+    if (latest?.requestSeq !== requestSeq) return;
+    state.agentOutputCache.set(target.key, {
+      ...latest, state: 'error', error: error.message,
+    });
+  } finally {
+    syncAgentOutputCopyButtons();
+  }
+}
+
+function setAgentOutputCopyFeedback(targetKey, stateName, label) {
+  if (activeAgentOutputTarget()?.key !== targetKey) return;
+  clearTimeout(state.agentOutputFeedbackTimer);
+  for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
+    button.dataset.copyState = stateName;
+    button.dataset.copyTarget = targetKey;
+    button.textContent = label;
+    button.setAttribute('aria-label', label);
+  }
+  state.agentOutputFeedbackTimer = setTimeout(() => {
+    for (const button of document.querySelectorAll('[data-agent-output-copy]')) delete button.dataset.copyState;
+    syncAgentOutputCopyButtons();
+  }, 1_600);
+}
+
+async function copyLatestAgentOutput() {
+  const target = activeAgentOutputTarget();
+  if (!target) return;
+  const entry = state.agentOutputCache.get(target.key);
+  if (!entry?.text) {
+    if (entry?.state === 'error') {
+      setConnectionMessage('正在重新读取最新模型输出…');
+      void refreshActiveAgentOutput({ force: true });
+    }
+    return;
+  }
+  try {
+    await writeAgentOutputToClipboard(entry.text);
+    setAgentOutputCopyFeedback(target.key, 'success', '已复制');
+    setConnectionMessage('已复制最新模型输出');
+  } catch (error) {
+    setAgentOutputCopyFeedback(target.key, 'error', '复制失败');
+    setConnectionMessage(error.message);
+  }
+}
+
 function applySessionSnapshot(data, previousActiveSession = state.sessions.find((item) => item.name === state.active)) {
   state.sessions = data.sessions;
   const activeSession = state.sessions.find((item) => item.name === state.active);
@@ -704,6 +857,7 @@ function applySessionSnapshot(data, previousActiveSession = state.sessions.find(
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
+  void refreshActiveAgentOutput();
   return activeGridChanged;
 }
 
@@ -723,12 +877,23 @@ function connectSessionFeed() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}/agent?streamVersion=2`, `codeck.${websocketProtocolToken(state.token)}`);
   state.sessionFeedSocket = socket;
+  state.sessionFeedReady = false;
   socket.addEventListener('message', (event) => {
     if (generation !== state.sessionFeedGeneration) return;
     let message;
     try { message = JSON.parse(event.data); }
     catch { return; }
+    if (message.id != null) {
+      const pending = state.sessionFeedRequests.get(message.id);
+      if (!pending) return;
+      state.sessionFeedRequests.delete(message.id);
+      clearTimeout(pending.timeout);
+      if (message.ok) pending.resolve(message.result);
+      else pending.reject(new Error(message.error || 'Agent 请求失败'));
+      return;
+    }
     if (message.type === 'ready') {
+      state.sessionFeedReady = true;
       if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) {
         state.sessionStreamCursor = null;
         state.sessionStreamSnapshot = null;
@@ -740,6 +905,7 @@ function connectSessionFeed() {
           cursor: state.sessionStreamSnapshot ? state.sessionStreamCursor : null,
         }));
       }
+      void refreshActiveAgentOutput({ force: true });
       return;
     }
     const applyFeedSnapshot = (snapshot, cursor) => {
@@ -792,7 +958,10 @@ function connectSessionFeed() {
   socket.addEventListener('close', () => {
     if (generation !== state.sessionFeedGeneration) return;
     state.sessionFeedSocket = null;
+    state.sessionFeedReady = false;
     state.sessionStreamHealthy = false;
+    rejectSessionFeedRequests('Agent 连接已断开');
+    syncAgentOutputCopyButtons();
     scheduleSessionFeedReconnect();
   });
   socket.addEventListener('error', () => {
@@ -1117,6 +1286,7 @@ async function connect(session) {
   if (!reuseSocket) state.socket = null;
   state.active = session;
   markActiveSession(session);
+  void refreshActiveAgentOutput();
   $('#emptyState').hidden = true;
   $('#terminalView').hidden = false;
   $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
@@ -1336,6 +1506,10 @@ $('#viewModeButton').addEventListener('click', () => {
   fitTerminalView();
   focusTerminalInput();
 });
+
+for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
+  button.addEventListener('click', copyLatestAgentOutput);
+}
 
 // Held keys repeat, the way a physical keyboard does. Without it the arrows move one
 // column per tap, so putting the cursor anywhere useful on a phone means tapping a dozen

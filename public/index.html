@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=62">
+    <link rel="stylesheet" href="/styles.css?v=63">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -51,7 +51,7 @@
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
@@ -61,7 +61,7 @@
           <p class="terminal-voice-hint" id="terminalVoiceHint">回车发送 · ⌃J 换行 · @ Tab Esc 直达 CLI</p><span class="terminal-voice-status" id="terminalVoiceStatus" role="status" aria-live="polite"></span>
         </form>
         <div class="mobile-keybar" aria-label="移动终端快捷键">
-          <button type="button" data-terminal-key="escape">Esc</button><button type="button" data-terminal-key="tab">Tab</button><button type="button" data-terminal-key="ctrl-c">⌃C</button><button type="button" data-terminal-key="ctrl-d">⌃D</button><button type="button" data-terminal-key="ctrl-l">⌃L</button><button type="button" data-terminal-action="copy">复制屏幕</button><button type="button" data-terminal-action="paste">粘贴</button><button type="button" data-terminal-key="left" aria-label="向左">←</button><button type="button" data-terminal-key="up" aria-label="向上">↑</button><button type="button" data-terminal-key="down" aria-label="向下">↓</button><button type="button" data-terminal-key="right" aria-label="向右">→</button>
+          <button type="button" data-terminal-key="escape">Esc</button><button type="button" data-terminal-key="tab">Tab</button><button type="button" data-terminal-key="ctrl-c">⌃C</button><button type="button" data-terminal-key="ctrl-d">⌃D</button><button type="button" data-terminal-key="ctrl-l">⌃L</button><button class="mobile-agent-copy" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button type="button" data-terminal-action="copy">复制屏幕</button><button type="button" data-terminal-action="paste">粘贴</button><button type="button" data-terminal-key="left" aria-label="向左">←</button><button type="button" data-terminal-key="up" aria-label="向上">↑</button><button type="button" data-terminal-key="down" aria-label="向下">↓</button><button type="button" data-terminal-key="right" aria-label="向右">→</button>
         </div>
       </section>
     </main>
@@ -127,6 +127,6 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
-  <script type="module" src="/app.js?v=100"></script>
+  <script type="module" src="/app.js?v=101"></script>
 </body>
 </html>

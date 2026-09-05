@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentOutputText, writeAgentOutputToClipboard } from '../public/remote-copy.js';
+import { agentOutputText, latestAgentOutputText, writeAgentOutputToClipboard } from '../public/remote-copy.js';
 
 test('collects only the visible model text from one turn', () => {
   assert.equal(agentOutputText({ items: [
@@ -10,6 +10,20 @@ test('collects only the visible model text from one turn', () => {
     { type: 'agentMessage', text: 'Final answer' },
   ] }), 'First line\ncontinued\n\nFinal answer');
   assert.equal(agentOutputText({ items: [] }), '');
+});
+
+test('finds the latest complete model reply without copying a streaming turn', () => {
+  assert.equal(latestAgentOutputText([
+    { status: 'completed', items: [{ type: 'agentMessage', text: 'Earlier answer' }] },
+    { status: 'completed', items: [{ type: 'reasoning', text: 'No visible answer' }] },
+    { status: 'completed', items: [{ type: 'agentMessage', text: 'Latest complete answer' }] },
+    { status: 'inProgress', items: [{ type: 'agentMessage', text: 'Still streaming' }] },
+  ]), 'Latest complete answer');
+
+  assert.equal(latestAgentOutputText([
+    { status: 'running', items: [{ type: 'agentMessage', text: 'Partial' }] },
+  ]), '');
+  assert.equal(latestAgentOutputText([]), '');
 });
 
 test('copies model output without changing whitespace', async () => {

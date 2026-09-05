@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const indexHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const stylesCss = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const serverJs = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 
 test('normal terminal replaces the slow DOM fallback with WebGL when the browser supports it', () => {
@@ -155,4 +156,19 @@ test('normal mode suppresses Codex shared-daemon background counts', () => {
 test('normal terminal output does not wait for input focus to repaint', () => {
   assert.match(appJs, /bindTerminalRenderWatchdog\(terminal, \{ isVisible: \(\) => !document\.hidden \}\)/);
   assert.match(appJs, /if \(!document\.hidden && state\.terminal\) state\.terminal\.refresh\(0, state\.terminal\.rows - 1\)/);
+});
+
+test('normal mode exposes one-click copy for the latest completed model reply', () => {
+  assert.equal([...indexHtml.matchAll(/data-agent-output-copy/g)].length, 2,
+    'desktop and mobile controls both expose the action');
+  assert.match(indexHtml, /data-agent-output-copy[^>]+aria-label="复制最新模型输出"/);
+  assert.match(appJs, /latestAgentOutputText/);
+  assert.match(appJs, /sessionFeedRequest\('loadThreadHistory'/);
+  assert.match(appJs, /message\.id/,
+    'the existing owner Agent socket must route request responses as well as session events');
+  assert.match(appJs, /writeAgentOutputToClipboard\([^)]*\.text/,
+    'the click copies prefetched structured output rather than scraping terminal rows');
+  assert.match(appJs, /entry\?\.state === 'empty' \? '暂无回复'/);
+  assert.match(stylesCss, /\.mobile-agent-copy[^}]*min-height:\s*44px/s,
+    'the mobile copy action keeps a full touch target');
 });
