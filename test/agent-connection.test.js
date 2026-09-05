@@ -6,6 +6,7 @@ import { createSnapshotFeed } from '../src/snapshot-feed.js';
 import { applySnapshotPatch, createSnapshotPatch } from '../public/snapshot-patch.js';
 import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
 import { CodexAgentBackend } from '../src/agent-backends.js';
+import { sendSessionMessage } from '../src/tmux.js';
 import { isUserMessageDeliveryConfirmed, normalizeAgentThread } from '../public/agent-model.js';
 
 class FakeSocket extends EventEmitter {
@@ -834,6 +835,130 @@ test('Codex cold reconnect clears an unconfirmed old-turn delivery only after a 
   second.close();
   backend.close();
 });
+
+for (const [draftState, turnId] of [['existing', null], ['existing', 'turn-old'], ['unknown', null]]) {
+  test(`Codex ${draftState} composer rejection creates no ${turnId ? 'backend' : 'Hub'} delivery and a fresh command can send after clearing it`, async (t) => {
+    const text = '怎么样了';
+    const oldDraft = '分析下BABA当前投资价值 推送到notion';
+    const user = (id, content) => ({ id, type: 'userMessage', content: [{ type: 'text', text: content }] });
+    const turns = [{
+      id: 'turn-old', status: 'completed',
+      items: [user('user-earlier', text), user('user-anchor', 'Previous task')],
+    }];
+    const appServer = new EventEmitter();
+    appServer.request = async (method, params) => method === 'thread/read'
+      ? { thread: { id: 'thread-1' } }
+      : { data: [...turns].reverse().slice(0, params.limit), nextCursor: null };
+    appServer.close = () => {};
+    const backend = new CodexAgentBackend(appServer);
+    t.after(() => backend.close());
+    const recorded = [];
+    const recordSessionMessage = backend.recordSessionMessage.bind(backend);
+    backend.recordSessionMessage = (params) => { recorded.push(params); return recordSessionMessage(params); };
+
+    let composer = oldDraft;
+    let unknown = draftState === 'unknown';
+    let attempts = 0;
+    const buffers = new Map();
+    const inputs = [];
+    const registry = new AgentRegistry({ codex: backend }, {
+      sendTmuxMessage: (params) => {
+        attempts += 1;
+        return sendSessionMessage(params, {
+          listTmuxSessions: async () => [{
+            name: 'draft-fixture', hasRunningProcess: false,
+            agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+          }],
+          capturePane: async () => unknown ? 'unrecognized screen' : `» ${composer}\n\n  gpt-6-astra · /project`,
+          loadBuffer: async (name, value) => { buffers.set(name, value); },
+          execTmux: async (args) => {
+            if (args.includes('paste-buffer')) {
+              inputs.push('paste');
+              const name = args[args.indexOf('-b') + 1];
+              composer += buffers.get(name);
+              buffers.delete(name);
+            }
+            if (args.includes('send-keys')) {
+              inputs.push('key');
+              if (args.at(-1) === 'Enter') composer = '';
+            }
+            if (args[0] === 'delete-buffer') buffers.delete(args[args.indexOf('-b') + 1]);
+            return { stdout: '' };
+          },
+          waitForPaste: async () => {}, waitForSubmit: async () => {},
+          invalidatePaneSnapshot: () => {},
+        });
+      },
+    });
+    const hub = new AgentHub(registry);
+    const connect = () => {
+      const socket = new FakeSocket();
+      hub.handleConnection(socket);
+      t.after(() => socket.close());
+      return socket;
+    };
+    const rpc = async (socket, message) => {
+      send(socket, message);
+      await waitFor(() => socket.sent.some((reply) => reply.id === message.id));
+      return socket.sent.find((reply) => reply.id === message.id);
+    };
+    const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'draft-fixture' };
+    const request = {
+      type: 'sendSessionMessage', ...target, text,
+      ...(turnId ? { turnId, mode: 'steer' } : {}),
+      commandId: 'command-existing-draft', baselineVersion: 2,
+      baselineUserMessageId: 'user-anchor', baselineTurnId: 'turn-old', baselineMatchingTextCount: 0,
+    };
+    const first = connect();
+    const retry = connect();
+    const [rejected, duplicate] = await Promise.all([
+      rpc(first, { ...request, id: 1 }), rpc(retry, { ...request, id: 2 }),
+    ]);
+    assert.equal(rejected.ok, false, 'do not append the new message to a pre-existing or unobservable draft');
+    assert.match(rejected.error, /未发送/);
+    assert.equal(duplicate.error, rejected.error);
+    assert.equal(attempts, 1, 'concurrent command retries share the original rejection');
+    assert.deepEqual(inputs, []);
+    assert.equal(composer, oldDraft, 'rejection neither clears nor submits the old draft');
+    assert.equal(buffers.size, 0, 'a rejected preflight cannot leave a loaded tmux buffer');
+    assert.deepEqual(recorded, []);
+    assert.equal(hub.sessionMessageReceipts.size, 0);
+    const opened = (await rpc(retry, { type: 'openThread', ...target, readOnly: true, id: 3 })).result.thread;
+    assert.equal(opened.turns.flatMap((turn) => turn.items).some((item) => item.delivery), false);
+
+    // Clearing happens outside Remote; replaying the old command must still fail.
+    composer = '';
+    unknown = false;
+    assert.equal((await rpc(retry, { ...request, id: 4 })).error, rejected.error);
+    assert.equal(attempts, 1);
+    assert.deepEqual(inputs, []);
+    const freshRequest = { ...request, commandId: 'command-after-clearing' };
+    const accepted = await rpc(retry, { ...freshRequest, id: 5 });
+    assert.equal(accepted.ok, true);
+    assert.equal(accepted.result.submissionStatus, 'submitted');
+    assert.deepEqual(inputs, ['paste', 'key']);
+    assert.equal(recorded.length, 1);
+    assert.equal(buffers.size, 0);
+    assert.deepEqual((await rpc(retry, { ...freshRequest, id: 6 })).result, accepted.result);
+    assert.equal(attempts, 2, 'only a new command can make another delivery attempt');
+
+    // A later quotation/combined message is not proof of the exact requested input.
+    turns.push({ id: 'turn-combined', status: 'completed', items: [user('user-combined', `${oldDraft}\n${text}`)] });
+    const cold = connect();
+    const combined = normalizeAgentThread('codex',
+      (await rpc(cold, { type: 'openThread', ...target, readOnly: true, id: 7 })).result.thread);
+    assert.equal(combined.turns.flatMap((turn) => turn.items).filter((item) => item.delivery).length, 1);
+    assert.equal(isUserMessageDeliveryConfirmed(combined, freshRequest), false);
+
+    turns.push({ id: 'turn-actual', status: 'completed', items: [user('user-actual', text)] });
+    const confirmed = normalizeAgentThread('codex',
+      (await rpc(cold, { type: 'openThread', ...target, readOnly: true, id: 8 })).result.thread);
+    assert.equal(confirmed.turns.flatMap((turn) => turn.items).some((item) => item.delivery), false);
+    assert.equal(isUserMessageDeliveryConfirmed(confirmed, freshRequest), true);
+    assert.equal(hub.sessionMessageReceipts.size, 0);
+    assert.deepEqual(inputs, ['paste', 'key']);
+  });
+}
 
 test('a terminal identity reply appended to an accepted message settles its server receipt', async () => {
   const anchor = {

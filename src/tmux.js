@@ -793,14 +793,19 @@ const SUBMIT_CONFIRM_DELAY_MS = 200;
 function agentComposerState(output, text) {
   const rows = cleanScreenRows(output);
   const prompt = /^(\s*)[»›>❯](?: (.*))?$/u;
-  const start = rows.findLastIndex((line) => prompt.test(line));
+  const start = rows.findLastIndex((line) => prompt.test(line) && (text !== '' || /^\S/u.test(line)));
   if (start < 0) return 'unknown';
   if (rows.slice(Math.max(0, start - 2)).some((line) => (
     CODEX_MODEL_PICKER_TITLE.test(line) || /press enter to confirm/iu.test(line)
   ))) return 'other';
-  const endOffset = rows.slice(start + 1).findIndex((line) => (
-    SCREEN_SEPARATOR.test(line.trim()) || /^\s*(?:gpt-\S+.*·|⏵⏵)/u.test(line)
-  ));
+  const lastRow = rows.findLastIndex((line) => line.trim());
+  // Empty preflight must include every draft row, even an indented prompt or a
+  // separator/model-like line typed by the user. Only the final Codex footer ends it.
+  const endOffset = text === ''
+    ? (AGENT_SCREEN_IDENTITY.codex.some((pattern) => pattern.test(rows[lastRow]?.trim() || '')) ? lastRow - start - 1 : -1)
+    : rows.slice(start + 1).findIndex((line) => (
+      SCREEN_SEPARATOR.test(line.trim()) || /^\s*(?:gpt-\S+.*·|⏵⏵)/u.test(line)
+    ));
   // A transcript prompt, clipped composer, or collapsed paste is not enough evidence
   // to press Enter. Require its visible lower boundary and the entire matching draft.
   if (endOffset < 0) return 'unknown';
@@ -966,6 +971,18 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         return current.paneId === paneId;
       } catch { return false; }
     };
+    const captureInputPane = overrides.capturePane
+      || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped));
+    const requireEmptyCodexComposer = async () => {
+      let state = 'unknown';
+      try {
+        if (await verifyPane()) state = agentComposerState(await captureInputPane(paneId, { joinWrapped: true }), '');
+      } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
+      if (state === 'empty') return;
+      throw new Error(state === 'other' || state === 'draft'
+        ? 'Codex 终端中已有草稿，消息未发送。请先在终端处理草稿后重试。'
+        : '无法安全确认 Codex 输入框为空，消息未发送。请先在终端检查后重试。');
+    };
     const inputWasQueued = provider !== 'shell' && Boolean(session.hasRunningProcess);
     const shouldCheckQueuedInput = provider === 'codex' && !command
       && Boolean(session.hasRunningProcess || session.agent?.hasBackgroundProcess);
@@ -991,8 +1008,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
           allowBusy: !inputWasQueued,
           execTmux,
           verifyPane,
-          capturePane: overrides.capturePane
-            || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped)),
+          capturePane: captureInputPane,
           waitForSubmit: overrides.waitForSubmit
             || ((delay) => new Promise((resolve) => setTimeout(resolve, delay))),
         });
@@ -1027,6 +1043,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       return finishAgentInput();
     }
     if (literalAgentInput && command) {
+      if (provider === 'codex') await requireEmptyCodexComposer();
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
       await execTmux(exitPaneModeThen(
         paneId,
@@ -1070,6 +1087,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     await loadBuffer(bufferName, text);
     let pasted = false;
     try {
+      if (provider === 'codex') await requireEmptyCodexComposer();
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same
       // tmux command, it can be consumed before the composer finishes applying the paste,
       // leaving the text visible but unsent. Leave any pane mode atomically before each

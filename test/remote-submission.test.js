@@ -32,9 +32,16 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
     abortSpeechInput() {}, commandPendingMessage: () => '正在发送…',
     setLiveMessage(message) { liveMessage = message; state.liveMessage = message; },
     uploadAttachments: async () => [], attachmentMessage: ({ text }) => text,
-    clearAttachments() {}, resizeComposer() {}, renderThreadList() {}, renderComposerState() {},
+    clearAttachments(attachments) {
+      const sentIds = new Set(attachments.map((attachment) => attachment.id));
+      state.attachments = state.attachments.filter((attachment) => !sentIds.has(attachment.id));
+    },
+    resizeComposer() {}, renderThreadList() {}, renderComposerState() {},
     scheduleThreadRender() {}, loadThreads: async () => {}, refreshActiveThread: async () => {},
-    agentRequest: async (type, payload) => { sent.push({ type, ...payload }); return await result; },
+    agentRequest: async (type, payload) => {
+      sent.push({ type, ...payload });
+      return typeof result === 'function' ? await result() : await result;
+    },
     element(tag, className, text) {
       return { tag, className, textContent: text, children: [], append(...nodes) { this.children.push(...nodes); } };
     },
@@ -63,6 +70,35 @@ test('unconfirmed submission preserves the draft and original command without cl
   assert.equal(f.input.value, draft);
   assert.match(f.message, /提交未确认.*勿重复发送/);
 });
+
+for (const message of [
+  'Codex 终端中已有草稿，消息未发送。请先在终端处理草稿后重试。',
+  '无法安全确认 Codex 输入框为空，消息未发送。请先在终端检查后重试。',
+]) {
+  test(`pre-paste rejection preserves the draft and attachments without successful feedback: ${message}`, async () => {
+    const f = fixture(() => { throw new Error(message); });
+    const originalDraft = `  ${draft}\n保留后续说明  `;
+    const attachment = { id: 'attachment-1', path: '/uploads/report.txt', status: 'uploaded' };
+    f.input.value = originalDraft;
+    f.state.attachments = [attachment];
+    f.state.threads = [structuredClone(f.state.thread)];
+    const originalThread = structuredClone(f.state.thread);
+    const originalListedThreads = structuredClone(f.state.threads);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await f.context.submitComposer();
+      assert.equal(f.sent.length, attempt, 'a definitely unsent request may be attempted again');
+      assert.equal(f.input.value, originalDraft);
+      assert.deepEqual(f.state.attachments, [attachment]);
+      assert.equal(f.state.attachments[0], attachment);
+      assert.equal(f.state.pendingDeliveries.size, 0);
+      assert.equal(f.context.composerRequestGate.pending, false);
+      assert.equal(f.message, message);
+      assert.deepEqual(f.state.thread, originalThread, 'no accepted message, checkpoint, or working state');
+      assert.deepEqual(f.state.threads, originalListedThreads);
+      assert.equal(f.state.thread.turns.flatMap((turn) => turn.items).filter((item) => item.delivery).length, 0);
+    }
+  });
+}
 
 for (const result of [{ submissionStatus: 'submitted' }, {}]) {
   test(`confirmed and legacy responses clear only the submitted draft: ${JSON.stringify(result)}`, async () => {

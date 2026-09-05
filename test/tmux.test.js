@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AGENT_SCREEN_MARKERS, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
+const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
+
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
     name: 'agent-one', windows: 2, attached: 1, createdAt: 100000, activityAt: 200000, width: 180, height: 49,
@@ -211,7 +213,7 @@ test('submits ordinary Codex input with bracketed paste and a separate delayed E
       name: 'research', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
     }],
     bufferName: 'codeck-test',
-    capturePane: async () => '',
+    capturePane: async () => EMPTY_CODEX_COMPOSER,
     waitForSubmit: async () => {},
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
@@ -304,6 +306,7 @@ test('releases Codex input queued behind a background terminal wait', async () =
     waitForPaste: async () => calls.push({ type: 'paste-wait' }),
     waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
     capturePane: async (paneId) => {
+      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return screens.shift();
     },
@@ -334,7 +337,7 @@ test('does not interrupt Codex when submitted input starts a normal turn', async
   const screens = [
     '• Waiting for background terminal (2h 04m)\n› Write tests for @filename',
     '◦ Working (1s • esc to interrupt)\n› Write tests for @filename',
-    '◦ Working (1s • esc to interrupt)\n» \n\n  gpt-6-astra · project',
+    '◦ Working (1s • esc to interrupt)\n» \n\n  gpt-6-astra · /project',
   ];
   const result = await sendSessionMessage({
     provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '继续检查',
@@ -352,6 +355,7 @@ test('does not interrupt Codex when submitted input starts a normal turn', async
     waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
     waitForSubmit: async () => {},
     capturePane: async (paneId) => {
+      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return screens.shift();
     },
@@ -373,7 +377,7 @@ test('keeps oversized single-line Agent input out of the tmux process argument l
       name: 'research', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
     }],
     bufferName: 'codeck-large-test',
-    capturePane: async () => '',
+    capturePane: async () => EMPTY_CODEX_COMPOSER,
     waitForSubmit: async () => {},
     loadBuffer: async (bufferName, value) => calls.push({ type: 'load', bufferName, size: value.length }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
@@ -404,6 +408,7 @@ test('captures the /status slash-command output after submitting it literally', 
     waitForPaste: async () => calls.push({ type: 'wait' }),
     waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
     capturePane: async (paneId) => {
+      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return Array.from({ length: 34 }, (_, index) => (
         index === 33 ? '  gpt-5 · /data/code/codeck' : `status row ${index + 1}`
@@ -439,6 +444,7 @@ test('captures the /model slash-command output after submitting it literally', a
     waitForPaste: async () => calls.push({ type: 'wait' }),
     waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
     capturePane: async (paneId) => {
+      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return [
         '• Current model',
@@ -492,6 +498,7 @@ test('bare /model bypasses slash completion and waits for the actual Codex picke
     waitForPaste: async () => calls.push({ type: 'wait' }),
     waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
     capturePane: async (paneId) => {
+      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return screens.shift();
     },
@@ -570,6 +577,7 @@ test('does not special-case slash commands other than /status and /model', async
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'wait' }),
     capturePane: async (paneId) => {
+      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return '╭────────────────────────╮\n│ Model: gpt-5           │\n╰────────────────────────╯';
     },
@@ -612,7 +620,7 @@ test('allows only the server-derived pending thread id before an Agent exposes i
   const options = {
     listTmuxSessions: async () => [{ name: 'codeck', agent }],
     bufferName: 'codeck-pending-test',
-    capturePane: async () => '',
+    capturePane: async () => EMPTY_CODEX_COMPOSER,
     waitForSubmit: async () => {},
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
     execTmux: async (args) => calls.push({ type: 'exec', args }),
@@ -763,7 +771,7 @@ test('serializes concurrent input for the same tmux session', async () => {
       if (sendKeys >= 0 && args[sendKeys + 1] === '-l') sent.push(args.at(-1));
     },
     loadBuffer: async (_bufferName, text) => sent.push(text),
-    capturePane: async () => '',
+    capturePane: async () => EMPTY_CODEX_COMPOSER,
     waitForPaste: async () => {},
     waitForSubmit: async () => {},
   };
@@ -1517,7 +1525,7 @@ test('submission confirmation recognizes every supported composer prefix and ver
     let draft = '分析下BABA当前投资价值 推送到notion';
     const status = await ensureAgentInputSubmitted({
       paneId: '%7', text: draft,
-      capturePane: async () => { calls.push('capture'); return `${prefix} ${draft}\n\n  gpt-6-astra · project`; },
+      capturePane: async () => { calls.push('capture'); return `${prefix} ${draft}\n\n  gpt-6-astra · /project`; },
       verifyPane: async () => { calls.push('verify'); return true; },
       waitForSubmit: async () => {},
       execTmux: async (args) => { calls.push(args); draft = ''; },
@@ -1533,13 +1541,13 @@ test('submission confirmation recognizes every supported composer prefix and ver
 test('submission confirmation never presses Enter for a partial match, changed draft, modal, or unknown screen', async () => {
   const text = 'Review the complete draft';
   for (const screen of [
-    `» ${text} but do not submit this edit\n\n  gpt-6-astra · project`,
-    '» Review the other draft\n\n  gpt-6-astra · project',
-    '» Reviewthe complete draft\n\n  gpt-6-astra · project',
-    `» ${text}\n  an additional line\n\n  gpt-6-astra · project`,
+    `» ${text} but do not submit this edit\n\n  gpt-6-astra · /project`,
+    '» Review the other draft\n\n  gpt-6-astra · /project',
+    '» Reviewthe complete draft\n\n  gpt-6-astra · /project',
+    `» ${text}\n  an additional line\n\n  gpt-6-astra · /project`,
     `Select Model and Effort\n› ${text}\nPress enter to confirm or esc to go back`,
     `» ${text}\n\nSome transcript output without a visible composer`,
-    '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · project',
+    '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
     '', 'redrawing',
   ]) {
     let enters = 0;
@@ -1562,7 +1570,7 @@ test('submission confirmation rechecks both identity and the full draft immediat
       capturePane: async () => {
         captures += 1;
         if (change === 'capture-error' && captures > 1) throw new Error('pane unavailable');
-        return `» ${change === 'draft' && captures > 1 ? 'Another draft' : 'Original draft'}\n\n  gpt-6-astra · project`;
+        return `» ${change === 'draft' && captures > 1 ? 'Another draft' : 'Original draft'}\n\n  gpt-6-astra · /project`;
       },
       verifyPane: async () => change !== 'pane', waitForSubmit: async () => {},
       execTmux: async () => { enters += 1; },
@@ -1576,7 +1584,7 @@ test('submission confirmation bounds Enter retries and reports a permanently stu
   let enters = 0;
   const status = await ensureAgentInputSubmitted({
     paneId: '%7', text: 'Still pending',
-    capturePane: async () => '» Still pending\n\n  gpt-6-astra · project',
+    capturePane: async () => '» Still pending\n\n  gpt-6-astra · /project',
     verifyPane: async () => true, waitForSubmit: async () => {},
     execTmux: async () => { enters += 1; },
   });
@@ -1589,7 +1597,7 @@ test('submission confirmation matches the complete multiline composer, including
   let enters = 0;
   const status = await ensureAgentInputSubmitted({
     paneId: '%7', text: draft,
-    capturePane: async () => `» ${draft.replaceAll('\n', '\n  ')}\n\n  gpt-6-astra · project`,
+    capturePane: async () => `» ${draft.replaceAll('\n', '\n  ')}\n\n  gpt-6-astra · /project`,
     verifyPane: async () => true, waitForSubmit: async () => {},
     execTmux: async () => { enters += 1; draft = ''; },
   });
@@ -1614,7 +1622,7 @@ test('Codex paste and Enter are separated beyond its paste-burst window, even wh
       waitForSubmit: async (delay) => { assert.ok(delay >= 200); clock += delay; },
       capturePane: async () => {
         if (pastedAt !== null && clock >= pastedAt + pasteDelay) { draft = loaded; pastedAt = null; }
-        return `» ${draft.replaceAll('\n', '\n  ')}\n\n  gpt-6-astra · project`;
+        return `» ${draft.replaceAll('\n', '\n  ')}\n\n  gpt-6-astra · /project`;
       },
       execTmux: async (args) => {
         if (args.includes('paste-buffer')) {
@@ -1637,15 +1645,17 @@ test('Codex paste and Enter are separated beyond its paste-burst window, even wh
 });
 
 test('Codex reports a stuck or unobservable submission rather than treating terminal delivery as confirmation', async () => {
-  for (const screen of ['» Still pending\n\n  gpt-6-astra · project', '', 'redrawing']) {
+  for (const screen of ['» Still pending\n\n  gpt-6-astra · /project', '', 'redrawing']) {
     let loads = 0;
+    let pasted = false;
     const result = await sendSessionMessage({
       provider: 'codex', sessionName: 'unconfirmed', threadId: 'thread-1', text: 'Still pending',
     }, {
       listTmuxSessions: async () => [{ name: 'unconfirmed', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
-      loadBuffer: async () => { loads += 1; }, execTmux: async () => {},
+      loadBuffer: async () => { loads += 1; },
+      execTmux: async (args) => { if (args.includes('paste-buffer')) pasted = true; },
       waitForPaste: async () => {}, waitForSubmit: async () => {},
-      capturePane: async () => screen,
+      capturePane: async () => pasted ? screen : EMPTY_CODEX_COMPOSER,
     });
     assert.deepEqual(result, { submissionStatus: 'unconfirmed' });
     assert.equal(loads, 1, 'an uncertain submission never replays its text');
@@ -1654,16 +1664,17 @@ test('Codex reports a stuck or unobservable submission rather than treating term
 
 test('Codex does not send its initial delayed Enter after its pane or Agent identity changes', async () => {
   for (const change of [{ paneId: '%8' }, { kind: 'claude' }, { id: 'other-thread' }]) {
-    let lists = 0;
+    let pasted = false;
     const commands = [];
     const result = await sendSessionMessage({
       provider: 'codex', sessionName: 'changed', threadId: 'thread-1', text: 'Do not execute elsewhere',
     }, {
       listTmuxSessions: async () => [{
-        name: 'changed', agent: { kind: 'codex', id: 'thread-1', paneId: '%7', ...(lists++ ? change : {}) },
+        name: 'changed', agent: { kind: 'codex', id: 'thread-1', paneId: '%7', ...(pasted ? change : {}) },
       }],
-      loadBuffer: async () => {}, execTmux: async (args) => commands.push(args),
-      waitForPaste: async () => {}, waitForSubmit: async () => {}, capturePane: async () => '',
+      loadBuffer: async () => {},
+      execTmux: async (args) => { commands.push(args); if (args.includes('paste-buffer')) pasted = true; },
+      waitForPaste: async () => {}, waitForSubmit: async () => {}, capturePane: async () => EMPTY_CODEX_COMPOSER,
     });
     assert.deepEqual(result, { submissionStatus: 'unconfirmed' });
     assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1);
@@ -1679,14 +1690,14 @@ test('Codex returns unconfirmed if Enter fails after the text was already pasted
     listTmuxSessions: async () => [{ name: 'enter-failure', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
     loadBuffer: async () => { loads += 1; },
     execTmux: async (args) => { if (args.includes('Enter')) throw new Error('tmux failed after paste'); },
-    waitForPaste: async () => {}, waitForSubmit: async () => {}, capturePane: async () => '',
+    waitForPaste: async () => {}, waitForSubmit: async () => {}, capturePane: async () => EMPTY_CODEX_COMPOSER,
   });
   assert.deepEqual(result, { submissionStatus: 'unconfirmed' });
   assert.equal(loads, 1);
 });
 
 test('submission confirmation revalidates identity before accepting another screen as submitted', async () => {
-  for (const screen of ['» \n\n  gpt-6-astra · project', '◦ Working (1s • esc to interrupt)']) {
+  for (const screen of ['» \n\n  gpt-6-astra · /project', '◦ Working (1s • esc to interrupt)']) {
     let enters = 0;
     const status = await ensureAgentInputSubmitted({
       paneId: '%7', text: 'Original draft', capturePane: async () => screen,
@@ -1702,8 +1713,8 @@ test('submission confirmation distinguishes new activity from an old busy turn w
   for (const [screen, allowBusy, expected] of [
     ['◦ Working (1s • esc to interrupt)', true, 'submitted'],
     ['◦ Working (1s • esc to interrupt)', false, 'unconfirmed'],
-    ['◦ Working (1s • esc to interrupt)\n» Another draft\n\n  gpt-6-astra · project', true, 'unconfirmed'],
-    ['◦ Working (1s • esc to interrupt)\n» [Pasted Content 1234 chars]\n\n  gpt-6-astra · project', true, 'submitted'],
+    ['◦ Working (1s • esc to interrupt)\n» Another draft\n\n  gpt-6-astra · /project', true, 'unconfirmed'],
+    ['◦ Working (1s • esc to interrupt)\n» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project', true, 'submitted'],
   ]) {
     let enters = 0;
     const status = await ensureAgentInputSubmitted({
@@ -1724,7 +1735,7 @@ test('submission confirmation recognizes the real idle Codex placeholder without
     let enters = 0;
     const status = await ensureAgentInputSubmitted({
       paneId: '%7', text,
-      capturePane: async () => '» Ask Codex to do anything\n\n  gpt-6-astra ultra fast · project',
+      capturePane: async () => '» Ask Codex to do anything\n\n  gpt-6-astra ultra fast · /project',
       verifyPane: async () => true, waitForSubmit: async () => {},
       execTmux: async () => { enters += 1; },
     });
@@ -1740,11 +1751,101 @@ test('submission confirmation requests tmux soft-wrap joining without erasing ha
     paneId: '%7', text,
     capturePane: async (_paneId, { joinWrapped } = {}) => {
       const draft = enters ? '' : joinWrapped ? text : '分析下BABA当前投资价值\n 推送到notion';
-      return `» ${draft}\n\n  gpt-6-astra · project`;
+      return `» ${draft}\n\n  gpt-6-astra · /project`;
     },
     verifyPane: async () => true, waitForSubmit: async () => {},
     execTmux: async () => { enters += 1; },
   });
   assert.equal(status, 'submitted');
   assert.equal(enters, 1);
+});
+
+test('Codex preflight rejects occupied or unreadable composers without sending any pane input', async () => {
+  const screens = [
+    '» 分析下BABA当前投资价值 推送到notion\n\n  gpt-6-astra · /project',
+    '› 怎么样了\n\n  gpt-6-astra · /project',
+    '» Existing draft\n  second line\n\n  gpt-6-astra · /project',
+    '» Existing wrapped draft\ncontinuation\n\n  gpt-6-astra · /project',
+    '» \n  Existing second line\n\n  gpt-6-astra · /project',
+    '» Existing draft\n  › \n\n  gpt-6-astra · /project',
+    '» \n  ----------\n  Existing second line\n\n  gpt-6-astra · /project',
+    '» \n  gpt-fake · /pretend-footer\n  Existing second line\n\n  gpt-6-astra · /project',
+    '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',
+    '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
+    'Select Model and Effort\n› 1. gpt-6-astra\nPress enter to confirm or esc to go back',
+    '', 'redrawing', null,
+  ];
+  for (const text of ['怎么样了', '/status', '/model']) {
+    for (const screen of screens) {
+      const commands = [];
+      let loads = 0;
+      await assert.rejects(sendSessionMessage({
+        provider: 'codex', sessionName: 'preflight', threadId: 'thread-1', text,
+      }, {
+        listTmuxSessions: async () => [{ name: 'preflight', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+        loadBuffer: async () => { loads += 1; },
+        execTmux: async (args) => commands.push(args),
+        waitForPaste: async () => {}, waitForSubmit: async () => {}, waitForSlashOutput: async () => {},
+        capturePane: async () => { if (screen === null) throw new Error('capture failed'); return screen; },
+      }), /消息未发送.*终端|终端.*消息未发送/, `${text}: ${screen}`);
+      assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys') || args.includes('copy-mode')), false);
+      assert.equal(commands.filter((args) => args[0] === 'delete-buffer').length, loads, 'only the unused temporary buffer is cleaned up');
+    }
+  }
+});
+
+test('Codex preflight allows a complete empty or placeholder composer even during a running turn', async () => {
+  for (const composer of ['» ', '› ', '» Ask Codex to do anything', '› Ask Codex to do anything']) {
+    const commands = [];
+    const result = await sendSessionMessage({
+      provider: 'codex', sessionName: 'preflight-empty', threadId: 'thread-1', text: 'Follow up',
+    }, {
+      listTmuxSessions: async () => [{ name: 'preflight-empty', hasRunningProcess: true, agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      loadBuffer: async () => {}, execTmux: async (args) => commands.push(args),
+      waitForPaste: async () => {}, waitForSubmit: async () => {}, waitForQueuedInput: async () => {},
+      capturePane: async () => `◦ Working (1s • esc to interrupt)\n${composer}\n\n  gpt-6-astra · /project`,
+    });
+    assert.deepEqual(result, { inputWasQueued: true, submissionStatus: 'submitted' });
+    assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1);
+    assert.equal(commands.filter((args) => args.includes('Enter')).length, 1);
+  }
+});
+
+test('Codex preflight checks the draft and pane identity after the asynchronous buffer load', async () => {
+  for (const change of ['draft', 'pane', 'agent', 'thread']) {
+    let loaded = false;
+    const commands = [];
+    await assert.rejects(sendSessionMessage({
+      provider: 'codex', sessionName: 'preflight-race', threadId: 'thread-1', text: 'New message',
+    }, {
+      listTmuxSessions: async () => [{
+        name: 'preflight-race', agent: {
+          kind: loaded && change === 'agent' ? 'claude' : 'codex',
+          id: loaded && change === 'thread' ? 'thread-2' : 'thread-1',
+          paneId: loaded && change === 'pane' ? '%8' : '%7',
+        },
+      }],
+      loadBuffer: async () => { loaded = true; }, execTmux: async (args) => commands.push(args),
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+      capturePane: async () => `» ${loaded && change === 'draft' ? 'Typed locally while loading' : ''}\n\n  gpt-6-astra · /project`,
+    }), /消息未发送.*终端|终端.*消息未发送/, change);
+    assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false, change);
+    assert.equal(commands.filter((args) => args[0] === 'delete-buffer').length, 1, change);
+  }
+});
+
+test('Codex preflight recognizes the existing o3 and codex-mini footer identities', async () => {
+  for (const model of ['o3', 'codex-mini']) {
+    const commands = [];
+    await sendSessionMessage({
+      provider: 'codex', sessionName: 'preflight-model', threadId: 'thread-1', text: 'Follow up',
+    }, {
+      listTmuxSessions: async () => [{ name: 'preflight-model', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      loadBuffer: async () => {}, execTmux: async (args) => commands.push(args),
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+      capturePane: async () => `› Ask Codex to do anything\n\n  ${model} high · /project`,
+    });
+    assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1, model);
+    assert.equal(commands.filter((args) => args.includes('Enter')).length, 1, model);
+  }
 });
