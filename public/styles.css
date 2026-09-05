@@ -113,12 +113,15 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .danger-button:hover { background: #ff696115; border-color: #ff696148; }
 
 .terminal-view { height: 100%; padding: 16px 18px 18px; display: flex; flex-direction: column; }
-.terminal-header { min-height: 52px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; }
+.terminal-header { position: relative; min-height: 52px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; }
 .terminal-header .eyebrow { margin-bottom: 4px; }
 .terminal-header h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
 .terminal-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; }
-.terminal-disconnect { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; margin-bottom: 8px; border: 1px solid var(--line-strong); border-radius: 8px; color: #ffbdab; font-size: 12px; }
-.terminal-disconnect span { min-width: 0; overflow-wrap: anywhere; }
+/* Recovery replaces the header in-place: resizing a disconnected alternate screen
+   would discard rows that the server can no longer redraw. */
+.terminal-header:has(.terminal-disconnect:not([hidden])) > :not(.terminal-disconnect) { visibility: hidden; }
+.terminal-disconnect { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--base); color: #ffbdab; font-size: 12px; }
+.terminal-disconnect span { min-width: 0; max-height: 100%; overflow-y: auto; overflow-wrap: anywhere; }
 .terminal-disconnect button { flex: none; min-height: 44px; }
 .terminal-tool-button, .view-mode-button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); cursor: pointer; }
 .terminal-tool-button:disabled { opacity: .55; cursor: wait; }

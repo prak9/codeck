@@ -1,4 +1,4 @@
-import { bindMobileScroll } from './mobile-scroll.js';
+import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import {
   activateTerminalWebgl,
   bindTerminalRenderWatchdog,
@@ -88,6 +88,7 @@ const state = {
   terminal: null,
   fit: null,
   sessionsRefreshSeq: 0,
+  newDialogGeneration: 0,
   connectionId: 0,
   terminalDropDepth: 0,
   cancelMobileScroll: null,
@@ -97,6 +98,9 @@ const state = {
   cancelTerminalWrite: null,
   terminalResizeGate: null,
   terminalInputReady: false,
+  terminalSubmitSupported: false,
+  terminalSubmitPending: null,
+  nextTerminalSubmitId: 0,
   // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
   // legible size and actually resizes the tmux window to the viewport instead of cramming
   // the desktop pane's full grid onto a phone screen. Bookmarking a link with this plus
@@ -170,8 +174,9 @@ function resizeTerminalVoiceDraft() {
 function syncTerminalVoiceControls() {
   const connected = state.canWrite && state.terminalInputReady
     && state.socket?.readyState === WebSocket.OPEN;
-  $('#terminalVoiceCaptureButton').disabled = !connected;
-  $('#sendTerminalVoiceButton').disabled = !connected || !terminalDraftForSend($('#terminalVoiceDraft').value);
+  $('#terminalVoiceCaptureButton').disabled = !connected || Boolean(state.terminalSubmitPending);
+  $('#sendTerminalVoiceButton').disabled = !connected || Boolean(state.terminalSubmitPending)
+    || !terminalDraftForSend($('#terminalVoiceDraft').value);
   if (!connected && voiceInput.active) {
     voiceInput.abort();
     setTerminalVoiceState(false, '终端连接已断开，语音草稿仍保留。');
@@ -242,6 +247,7 @@ function sendTerminalInput(data) {
 // 交权: 焦点交给终端, 之后每个按键逐个直达 CLI, 直到一个裸 Esc。输入条留在原地不收起
 // —— 收起会改变终端高度, 而终端重排正是 × 那个按钮闯的祸。
 function handOffTerminalInput(suffix) {
+  if (state.terminalSubmitPending) return setTerminalVoiceState(false, '上一笔输入仍在发送，请稍后再交给 CLI。');
   const draft = $('#terminalVoiceDraft');
   if (!sendTerminalInput(`${terminalDraftForHandoff(draft.value)}${suffix}`)) {
     return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
@@ -264,25 +270,61 @@ function endTerminalHandoff({ focus = true } = {}) {
   if (focus) $('#terminalVoiceDraft').focus();
 }
 
-function submitTerminalVoiceDraft() {
-  const socket = state.socket;
-  const text = terminalDraftForSend($('#terminalVoiceDraft').value);
+function rejectTerminalSubmit(message) {
+  state.terminalSubmitPending?.reject(new Error(message));
+}
+
+function requestTerminalSubmit(target, data) {
+  if (state.terminalSubmitPending) throw new Error('上一笔输入仍在发送，请稍后重试');
+  const message = { type: 'input', data, submit: true };
+  // New static assets can reach an old running server. Its raw-input contract still
+  // works; only request a receipt when that server advertises support for it.
+  if (!state.terminalSubmitSupported) {
+    target.socket.send(JSON.stringify(message));
+    return Promise.resolve();
+  }
+  let pending;
+  const receipt = new Promise((resolve, reject) => {
+    pending = { inputId: `${target.connectionId}:${++state.nextTerminalSubmitId}`, resolve, reject };
+    state.terminalSubmitPending = pending;
+    pending.timeout = setTimeout(() => reject(new Error('发送结果未确认')), 15_000);
+    target.socket.send(JSON.stringify({ ...message, inputId: pending.inputId }));
+  });
+  return receipt.finally(() => {
+    clearTimeout(pending.timeout);
+    if (state.terminalSubmitPending === pending) state.terminalSubmitPending = null;
+  });
+}
+
+async function submitTerminalVoiceDraft() {
+  if (state.terminalSubmitPending) return;
+  const target = captureTerminalTarget();
+  const draft = $('#terminalVoiceDraft').value;
+  const text = terminalDraftForSend(draft);
   if (!text) return setTerminalVoiceState(false, '请先说话或输入文字。');
   if (!state.canWrite) return setTerminalVoiceState(false, '当前分享链接为只读。');
-  if (socket?.readyState !== WebSocket.OPEN) return setTerminalVoiceState(false, '终端连接已断开，草稿仍保留在这里。');
-  try {
-    socket.send(JSON.stringify({ type: 'input', data: `${text}\r` }));
-  } catch {
-    return setTerminalVoiceState(false, '发送失败，终端连接可能已断开。');
-  }
+  if (!isCurrentTerminalTarget(target)) return setTerminalVoiceState(false, '终端尚未连接，草稿仍保留在这里。');
   voiceInput.abort();
-  terminalVoiceBaseDraft = '';
-  terminalVoiceHadResult = false;
-  $('#terminalVoiceDraft').value = '';
-  resizeTerminalVoiceDraft();
-  setTerminalVoiceState(false, '已发送到终端。');
-  syncTerminalVoiceControls();
-  setConnectionMessage('语音文字已发送到终端');
+  try {
+    const receipt = requestTerminalSubmit(target, `${text}\r`);
+    setTerminalVoiceState(false, '正在发送到终端…');
+    syncTerminalVoiceControls();
+    await receipt;
+    if (!isCurrentTerminalTarget(target)) return;
+    terminalVoiceBaseDraft = '';
+    terminalVoiceHadResult = false;
+    // A receipt acknowledges the captured draft, not edits made while it was in flight.
+    if ($('#terminalVoiceDraft').value === draft) $('#terminalVoiceDraft').value = '';
+    resizeTerminalVoiceDraft();
+    setTerminalVoiceState(false, '已发送到终端。');
+    setConnectionMessage('文字已发送到终端');
+  } catch (error) {
+    if (state.connectionId === target.connectionId) {
+      setTerminalVoiceState(false, `${error.message}，草稿已保留，请检查终端后再重试。`);
+    }
+  } finally {
+    syncTerminalVoiceControls();
+  }
 }
 
 async function api(path, options = {}) {
@@ -856,6 +898,7 @@ function applySessionSnapshot(data, previousActiveSession = state.sessions.find(
   state.canManage = data.capabilities?.canManage !== false;
   state.canWrite = data.capabilities?.canWrite ?? state.canManage;
   state.canSwitchSession = data.capabilities?.canSwitchSession === true;
+  state.terminalSubmitSupported = data.capabilities?.terminalSubmit === true;
   syncTerminalAccess();
   // A sole tmux 2.7 client can still resize through the pty. The missing window-size
   // option only affects arbitration between clients, so it must not disable readable mode.
@@ -1306,6 +1349,7 @@ async function connect(session) {
     return;
   }
   closeTerminalVoiceComposer({ restoreFocus: false });
+  rejectTerminalSubmit('会话已切换，发送结果未确认');
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
   const needsReset = Boolean(state.terminal);
@@ -1355,6 +1399,7 @@ async function connect(session) {
   const socket = reuseSocket
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
+  socket.binaryType = 'arraybuffer';
   const outputAcks = createTerminalOutputAcknowledger((message) => {
     if (state.connectionId !== connectionId || state.socket !== socket
       || socket.readyState !== WebSocket.OPEN) return false;
@@ -1406,6 +1451,19 @@ async function connect(session) {
   };
   socket.onmessage = (event) => {
     if (state.connectionId !== connectionId) return;
+    // PTY output is text; binary frames are receipts requested by this client, never
+    // terminal content. Keep them outside both the renderer and output flow accounting.
+    if (typeof event.data !== 'string') {
+      let message;
+      try { message = JSON.parse(new TextDecoder().decode(event.data)); }
+      catch { return; }
+      const pending = state.terminalSubmitPending;
+      if (message.type === 'inputResult' && pending?.inputId === message.inputId) {
+        if (message.ok) pending.resolve();
+        else pending.reject(new Error(message.error || '终端提交失败'));
+      }
+      return;
+    }
     let switchResetFrame = false;
     if (awaitingSwitchReset) {
       if (event.data !== '\x1bc') return;
@@ -1435,6 +1493,7 @@ async function connect(session) {
   socket.onclose = (event) => {
     if (state.connectionId !== connectionId) return;
     disconnected = true;
+    rejectTerminalSubmit('连接已断开，发送结果未确认');
     outputAcks.cancel();
     state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
@@ -1445,6 +1504,7 @@ async function connect(session) {
   socket.onerror = () => {
     if (state.connectionId !== connectionId) return;
     disconnected = true;
+    rejectTerminalSubmit('连接失败，发送结果未确认');
     outputAcks.cancel();
     state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
@@ -1472,6 +1532,9 @@ async function connect(session) {
 }
 
 function openNewDialog() {
+  state.newDialogGeneration += 1;
+  $('#createButton').disabled = false;
+  $('#createButton').textContent = '创建会话';
   $('#newError').textContent = '';
   $('#nameInput').value = `agent-${new Date().toISOString().slice(11, 16).replace(':', '')}`;
   $('#resumeSessionInput').checked = false;
@@ -1685,8 +1748,17 @@ $('.mobile-keybar').addEventListener('click', async (event) => {
       // shows its own confirmation before handing the text over.
       const text = await navigator.clipboard.readText();
       if (!isCurrentTerminalTarget(target)) return setConnectionMessage('会话已切换或断开，未粘贴剪贴板内容');
-      if (text) target.socket.send(JSON.stringify({ type: 'input', data: text }));
-    } catch { setConnectionMessage('粘贴失败：浏览器拒绝了剪贴板访问'); }
+      if (text) {
+        const receipt = requestTerminalSubmit(target, text);
+        syncTerminalVoiceControls();
+        await receipt;
+        if (isCurrentTerminalTarget(target)) setConnectionMessage('已粘贴到终端');
+      }
+    } catch (error) {
+      if (state.connectionId === target.connectionId) setConnectionMessage(`粘贴失败：${error.message}`);
+    } finally {
+      syncTerminalVoiceControls();
+    }
   }
 });
 
@@ -1714,6 +1786,8 @@ $('#newForm').addEventListener('submit', async (event) => {
   if (event.submitter?.value === 'cancel') return;
   event.preventDefault();
   if ($('#createButton').disabled) return;
+  const generation = state.newDialogGeneration;
+  const isCurrentDialog = () => generation === state.newDialogGeneration && $('#newDialog').open;
   const form = new FormData(event.currentTarget);
   const payload = Object.fromEntries(form);
   payload.mode = payload.client === 'shell' ? 'new' : payload.mode || 'new';
@@ -1722,11 +1796,21 @@ $('#newForm').addEventListener('submit', async (event) => {
   $('#createButton').textContent = '正在创建…';
   try {
     await api('/api/sessions', { method: 'POST', body: JSON.stringify(payload) });
-    $('#newDialog').close();
-    connect(payload.name);
+    // Closing the form does not undo a server-side creation. Keep the list current,
+    // but a late response must not dismiss a newer form or change its session.
+    if (isCurrentDialog()) {
+      $('#newDialog').close();
+      connect(payload.name);
+    }
     await refreshSessions();
-  } catch (error) { $('#newError').textContent = error.message; }
-  finally { $('#createButton').disabled = false; $('#createButton').textContent = '创建会话'; }
+  } catch (error) {
+    if (isCurrentDialog()) $('#newError').textContent = error.message;
+  } finally {
+    if (generation === state.newDialogGeneration) {
+      $('#createButton').disabled = false;
+      $('#createButton').textContent = '创建会话';
+    }
+  }
 });
 
 $('#killButton').addEventListener('click', async () => {

@@ -5,6 +5,7 @@ import {
   getSessionSize,
   preferLatestClientSize,
   scrollSession,
+  submitTerminalInput,
   validateSessionName,
   withoutTmuxEnvironment,
 } from './tmux.js';
@@ -31,6 +32,7 @@ const defaultDependencies = {
   getSessionSize,
   preferLatestClientSize,
   scrollSession,
+  submitTerminalInput,
   validateSessionName,
 };
 
@@ -123,8 +125,43 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   let closed = ws.readyState !== ws.OPEN;
   let attachSequence = 0;
   let awaitingSessionActivity = false;
+  let inputGeneration = 0;
+  let inputOperation = null;
+  let pendingScroll = Promise.resolve();
   const pending = [];
   const isOpen = () => !closed && ws.readyState === ws.OPEN;
+  const sendInputResult = (message, error) => {
+    if (!isOpen()) return;
+    if (typeof message.inputId !== 'string' || !message.inputId.length || message.inputId.length > 128) {
+      if (error) ws.close(1011, '终端输入未发送，请重新连接后检查草稿');
+      return;
+    }
+    // Terminal output remains text. Only opted-in submission clients receive these
+    // binary acknowledgements, so old xterm clients never render protocol JSON.
+    ws.send(Buffer.from(JSON.stringify({
+      type: 'inputResult', inputId: message.inputId, ok: !error,
+      ...(error ? { error: error.message || '终端输入未发送' } : {}),
+    })));
+  };
+  const drainPending = () => {
+    while (pending.length && terminal && !inputOperation && isOpen()) handleMessage(pending.shift());
+  };
+  const submitInput = (message) => {
+    const generation = inputGeneration;
+    const targetSession = activeSession;
+    const operation = {};
+    inputOperation = operation;
+    const isCurrent = () => isOpen() && generation === inputGeneration;
+    pendingScroll.then(async () => {
+      if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
+      if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
+      await dependencies.submitTerminalInput(targetSession, message.data, { isCurrent });
+    }).then(() => sendInputResult(message), (error) => sendInputResult(message, error)).finally(() => {
+      if (inputOperation !== operation) return;
+      inputOperation = null;
+      drainPending();
+    });
+  };
   const killTerminal = () => {
     const attached = terminal;
     terminal = null;
@@ -166,13 +203,14 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   ws.on('close', () => {
     closed = true;
     attachSequence += 1;
+    inputGeneration += 1;
+    inputOperation = null;
     pending.length = 0;
     killTerminal();
   });
 
-  const handleMessage = (raw) => {
+  const handleMessage = (message) => {
     try {
-      const message = JSON.parse(raw.toString());
       if (message.type === 'outputAck') {
         acknowledgeOutput(message);
         return;
@@ -191,6 +229,14 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
           ws.close(1008, '无效的终端流控标识');
           return;
         }
+        inputGeneration += 1;
+        inputOperation = null;
+        pendingScroll = Promise.resolve();
+        for (const queued of pending) {
+          if (queued.type === 'input' && queued.submit === true) {
+            sendInputResult(queued, new Error('终端会话已切换，排队输入未发送'));
+          }
+        }
         pending.length = 0;
         awaitingSessionActivity = false;
         unacknowledgedOutput = 0;
@@ -202,13 +248,27 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         });
         return;
       }
-      if (!terminal) {
-        pending.push(raw);
+      if (message.type === 'input' && message.submit === true) {
+        if (message.inputId !== undefined && (typeof message.inputId !== 'string'
+          || !message.inputId.length || message.inputId.length > 128)) {
+          ws.close(1008, '无效的终端输入标识');
+          return;
+        }
+        if (readOnly || typeof message.data !== 'string' || !message.data.length || message.data.length > 100_001) {
+          sendInputResult(message, new Error(readOnly ? '当前终端为只读，输入未发送' : '输入内容为空或过长'));
+          return;
+        }
+      }
+      if (!terminal || (inputOperation && (message.type === 'input' || message.type === 'scroll'))) {
+        pending.push(message);
         return;
       }
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
-        terminal.write(message.data);
-        if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
+        if (message.submit === true) submitInput(message);
+        else {
+          terminal.write(message.data);
+          if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
+        }
       }
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
         const [cols, rows] = dependencies.clampViewport(message.cols, message.rows);
@@ -220,13 +280,14 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         }
       }
       if (message.type === 'scroll' && Number.isInteger(message.lines)) {
-        dependencies.scrollSession(activeSession, message.lines).catch(() => {});
+        pendingScroll = dependencies.scrollSession(activeSession, message.lines).catch(() => {});
       }
     } catch { /* Ignore malformed terminal frames. */ }
   };
   ws.on('message', (raw, binary) => {
     if (binary || closed) return;
-    handleMessage(raw);
+    try { handleMessage(JSON.parse(raw.toString())); }
+    catch { /* Ignore malformed terminal frames. */ }
   });
 
   async function attachTerminal(nextSession, nextViewport, resetScreen = false) {
@@ -298,7 +359,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     // Modern tmux receives the exact pty dimensions at spawn and follows the newest
     // client. Older servers need one explicit SIGWINCH after attaching.
     if (!usesLatestClientSize) attached.resize(attachSize.width, attachSize.height);
-    while (pending.length && terminal === attached) handleMessage(pending.shift());
+    drainPending();
   }
 
   await attachTerminal(session, viewport);

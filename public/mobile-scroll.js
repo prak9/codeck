@@ -3,18 +3,29 @@ export function bindMobileScroll(container, terminal, requestScroll, options = {
   const getViewportScale = options.getViewportScale || (() => globalThis.visualViewport?.scale ?? 1);
   const log = options.log || (() => {});
   const longPressMs = options.longPressMs ?? 450;
+  const isMac = ['Macintosh', 'MacIntel', 'MacPPC', 'Mac68K'].includes(globalThis.navigator?.platform);
   const TOUCH_DEADZONE_PX = 12;
   let pressTimer = 0;
   let selecting = false;
-  const sendMouse = (type, target, x, y) => target?.dispatchEvent(new MouseEvent(type, {
+  const sendMouse = (type, target, x, y, modifiers = {}) => target?.dispatchEvent(new MouseEvent(type, {
     bubbles: true, cancelable: true, view: window, button: 0, buttons: type === 'mouseup' ? 0 : 1, detail: 1, clientX: x, clientY: y,
+    ...modifiers,
   }));
   const beginSelection = (x, y) => {
     selecting = true;
     terminal.clearSelection?.();
     const target = container.querySelector('.xterm');
     log(`long-press fired, target=${target ? '.xterm' : 'MISSING'} mobile=${isMobile()}`);
-    sendMouse('mousedown', target, x, y);
+    const tracking = terminal.modes?.mouseTrackingMode && terminal.modes.mouseTrackingMode !== 'none';
+    const macOption = terminal.options.macOptionClickForcesSelection;
+    // xterm forces local selection with Shift, or Option on Mac. Scope the Mac
+    // option to this event, and never put Alt on mouseup (it can move the CLI cursor).
+    if (tracking && isMac) terminal.options.macOptionClickForcesSelection = true;
+    try {
+      sendMouse('mousedown', target, x, y, { shiftKey: tracking && !isMac, altKey: tracking && isMac });
+    } finally {
+      if (tracking && isMac) terminal.options.macOptionClickForcesSelection = macOption;
+    }
     log(`after mousedown hasSelection=${terminal.hasSelection()}`);
   };
   const endSelection = (x, y) => {

@@ -31,6 +31,7 @@ const CODEX_APPROVAL_METHODS = new Set([
 ]);
 const CODEX_RECENT_USER_TURN_LIMIT = 10;
 const CODEX_PROGRESSIVE_TURN_LIMIT = 20;
+const CODEX_HISTORY_POSITION_LIMIT = 1_024;
 
 function codexUserItems(turn) {
   return (Array.isArray(turn?.items) ? turn.items : [])
@@ -141,6 +142,7 @@ export class CodexAgentBackend extends EventEmitter {
     this.userMessages = new Map();
     this.userMessageLoads = new Map();
     this.hydratedUserMessages = new Set();
+    this.historyPositions = new Map();
     appServer.on('notification', (message) => {
       this.#observeNotification(message);
       this.emit('notification', message);
@@ -196,6 +198,67 @@ export class CodexAgentBackend extends EventEmitter {
     return { text: '' };
   }
 
+  #rememberHistoryPosition(threadId, turnId, position) {
+    if (!turnId) return;
+    const key = JSON.stringify([threadId, turnId]);
+    this.historyPositions.delete(key);
+    this.historyPositions.set(key, position);
+    if (this.historyPositions.size > CODEX_HISTORY_POSITION_LIMIT) {
+      this.historyPositions.delete(this.historyPositions.keys().next().value);
+    }
+  }
+
+  async loadThreadHistory(threadId, { beforeTurnId = '', limit = CODEX_PROGRESSIVE_TURN_LIMIT } = {}) {
+    // Cache positions, not transcript contents. A null cursor is the known end;
+    // partial pages keep their page cursor plus the turn to seek past within it.
+    const key = JSON.stringify([threadId, beforeTurnId]);
+    const position = this.historyPositions.get(key);
+    let cursor = position?.cursor;
+    let anchor = position ? position.anchor : beforeTurnId;
+    const collected = [];
+    const visited = new Set();
+    let truncated = false;
+    while (cursor !== null) {
+      if (visited.has(cursor)) throw new Error('Thread history cursor did not advance');
+      visited.add(cursor);
+      const page = await this.#readStore('thread/turns/list', {
+        threadId, limit: CODEX_PROGRESSIVE_TURN_LIMIT, sortDirection: 'desc', itemsView: 'summary',
+        ...(cursor ? { cursor } : {}),
+      }).catch((error) => {
+        // A store restart can invalidate an opaque cursor. A retry must locate the
+        // anchor again instead of repeatedly submitting the same stale position.
+        this.historyPositions.delete(key);
+        throw error;
+      });
+      const turns = Array.isArray(page?.data) ? page.data : [];
+      const nextCursor = page?.nextCursor || null;
+      this.#rememberHistoryPosition(threadId, turns.at(-1)?.id, { cursor: nextCursor, anchor: '' });
+      const index = anchor ? turns.findIndex((turn) => turn.id === anchor) : -1;
+      if (anchor && index < 0) {
+        cursor = nextCursor;
+        continue;
+      }
+      anchor = '';
+      const available = turns.slice(index + 1);
+      const taken = available.slice(0, limit - collected.length);
+      collected.push(...taken);
+      truncated = taken.length < available.length || Boolean(nextCursor);
+      if (taken.length) {
+        this.#rememberHistoryPosition(threadId, taken.at(-1).id,
+          taken.length < available.length
+            ? { cursor, anchor: taken.at(-1).id }
+            : { cursor: nextCursor, anchor: '' });
+      }
+      if (collected.length >= limit) break;
+      cursor = nextCursor;
+    }
+    if (anchor) throw new Error('Thread history anchor is no longer present');
+    await this.#hydrateUserMessages(threadId);
+    const cachedUsers = this.userMessages.get(threadId);
+    const turns = collected.reverse().map((turn) => mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id)));
+    return { turns, truncated, oldestTurnId: turns[0]?.id || null };
+  }
+
   async openThread(threadId, { readOnly = false, progressive = false } = {}) {
     if (!readOnly) {
       try {
@@ -215,6 +278,7 @@ export class CodexAgentBackend extends EventEmitter {
     const hydration = this.#hydrateUserMessages(threadId);
     const [result, turnPage] = await Promise.all([read, summary]);
     const summaryTurns = Array.isArray(turnPage?.data) ? [...turnPage.data].reverse() : [];
+    this.#rememberHistoryPosition(threadId, summaryTurns[0]?.id, { cursor: turnPage?.nextCursor || null, anchor: '' });
     const latestSummaryTurn = summaryTurns.at(-1);
     const latestFull = !progressive && readOnly && codexTurnNeedsFullItems(latestSummaryTurn)
       ? this.#readLatestFullTurn(threadId, latestSummaryTurn.id)
@@ -232,6 +296,7 @@ export class CodexAgentBackend extends EventEmitter {
       thread: {
         ...result.thread,
         turns,
+        truncated: Boolean(turnPage?.nextCursor),
         readOnly,
         ...(readOnly ? { readOnlyReason: 'activeWriter' } : {}),
       },
@@ -298,6 +363,7 @@ export class CodexAgentBackend extends EventEmitter {
     this.userMessages.clear();
     this.userMessageLoads.clear();
     this.hydratedUserMessages.clear();
+    this.historyPositions.clear();
     this.appServer.close();
   }
 

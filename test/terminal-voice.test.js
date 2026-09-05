@@ -23,7 +23,7 @@ test('normal terminal voice input uses an inline Remote-style draft composer', (
   assert.match(appJs, /terminalVoiceHint'\)\.textContent = message \|\| TERMINAL_KEY_HINT/);
   assert.match(appJs, /terminalDraftForSend/);
   assert.match(appJs, /function submitTerminalVoiceDraft\(/);
-  assert.match(appJs, /socket\.send\(JSON\.stringify\(\{ type: 'input', data: `\$\{text\}\\r` \}\)\)/);
+  assert.match(appJs, /requestTerminalSubmit\(target, `\$\{text\}\\r`\)/);
   assert.doesNotMatch(appJs, /onTranscript:[\s\S]{0,500}socket\.send/);
 });
 

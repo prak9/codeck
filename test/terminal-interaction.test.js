@@ -40,19 +40,19 @@ function fixture() {
   const listeners = new Map();
   $('.mobile-keybar').addEventListener = (type, handler) => listeners.set(type, handler);
   const context = vm.createContext({
-    state, $, WebSocket: { OPEN: 1 }, URLSearchParams, setTimeout, clearTimeout,
+    state, $, WebSocket: { OPEN: 1 }, URLSearchParams, TextDecoder, setTimeout, clearTimeout,
     location: { protocol: 'http:', host: 'localhost' },
     ...terminalUtils,
     ensureTerminal: () => state.terminal,
     resetTerminalInput: async () => {},
     closeTerminalVoiceComposer() {}, markActiveSession() {}, refreshActiveAgentOutput() {},
-    stopKeyRepeat() {}, fitTerminalView() {}, focusTerminalInput() {}, syncTerminalAccess() {},
+    stopKeyRepeat() {}, fitTerminalView() {}, focusTerminalInput() {}, syncTerminalAccess() {}, syncTerminalVoiceControls() {},
     connectedStateLabel: () => '已连接', terminalOutputForSession: (output) => output,
     setConnectionMessage: (message) => messages.push(message),
     shellQuotePath: (path) => `'${path}'`, hasFileDrag: () => true,
     navigator: { clipboard: {} },
   });
-  for (const name of ['captureTerminalTarget', 'isCurrentTerminalTarget', 'showTerminalDisconnect', 'pasteImages', 'handleTerminalDrop', 'connect']) {
+  for (const name of ['captureTerminalTarget', 'isCurrentTerminalTarget', 'rejectTerminalSubmit', 'requestTerminalSubmit', 'showTerminalDisconnect', 'pasteImages', 'handleTerminalDrop', 'connect']) {
     vm.runInContext(functionSource(name), context);
   }
   const clickStart = source.indexOf("$('.mobile-keybar').addEventListener('click', async");
@@ -76,8 +76,8 @@ function mobileKeyFixture() {
   const start = source.indexOf('const TERMINAL_KEYS =');
   const end = source.indexOf("$('#terminalVoiceCaptureButton').addEventListener", start);
   vm.runInContext(source.slice(start, end), f.context);
-  const press = () => f.listeners.get('pointerdown')({
-    target: { closest: () => ({ dataset: { terminalKey: 'enter' } }) },
+  const press = (name = 'enter') => f.listeners.get('pointerdown')({
+    target: { closest: () => ({ dataset: { terminalKey: name } }) },
   });
   return { ...f, timers, press };
 }
@@ -91,6 +91,21 @@ test('mobile Enter confirms in the terminal without sending or clearing a local 
   assert.deepEqual(f.sent, [{ type: 'input', data: '\r' }]);
   assert.equal(f.$('#terminalVoiceDraft').value, 'unsent draft');
   assert.deepEqual(f.timers, [], 'holding Enter must not confirm subsequent prompts');
+});
+
+test('mobile navigation follows Enter and exposes a non-repeating Ctrl+C shortcut', () => {
+  const keys = [...html.matchAll(/data-terminal-key="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(keys.slice(0, 7), ['escape', 'enter', 'left', 'up', 'down', 'right', 'ctrl-c']);
+  assert.match(html, /data-terminal-key="ctrl-c"[^>]*>Ctrl\+C<\/button><button[^>]*data-terminal-action="paste"/);
+  assert.equal(new Set(keys).size, keys.length);
+  assert.match(html, /data-terminal-key="ctrl-c"[^>]*>Ctrl\+C<\/button>/);
+  const f = mobileKeyFixture();
+  f.press('ctrl-c');
+  assert.deepEqual(f.sent, [{ type: 'input', data: '\x03' }]);
+  assert.deepEqual(f.timers, []);
+  f.state.canWrite = false;
+  f.press('ctrl-c');
+  assert.equal(f.sent.length, 1);
 });
 
 for (const blocked of ['readonly', 'connecting', 'disconnected']) {
@@ -178,12 +193,28 @@ test('clipboard paste and file upload still send once to an unchanged writable s
   f.context.uploadFileBlob = async () => ({ path: '/tmp/directory/file' });
   await f.context.handleTerminalDrop({ preventDefault() {}, stopPropagation() {}, dataTransfer: {} });
   assert.deepEqual(f.sent, [
-    { type: 'input', data: 'paste text' },
+    { type: 'input', data: 'paste text', submit: true },
     { type: 'input', data: "'/tmp/directory/file'" },
   ]);
 });
 
-test('disconnection exposes a manual recovery control outside the narrow-screen header', async () => {
+test('clipboard paste exits history mode through the submission path without appending Enter', async () => {
+  const f = fixture();
+  f.state.terminalSubmitSupported = true;
+  f.state.nextTerminalSubmitId = 0;
+  f.context.syncTerminalVoiceControls = () => {};
+  f.context.navigator.clipboard.readText = async () => 'paste without Enter';
+  const pending = f.listeners.get('click')({ target: { closest: () => ({ dataset: { terminalAction: 'paste' } }) } });
+  await new Promise(setImmediate);
+  assert.equal(f.sent[0].submit, true);
+  assert.equal(f.sent[0].data, 'paste without Enter');
+  f.state.terminalSubmitPending.resolve();
+  await pending;
+  assert.equal(f.$('#terminalVoiceDraft').value, 'unsent draft');
+  assert.equal(f.state.terminalSubmitPending, null);
+});
+
+test('disconnection exposes a manual recovery control even on narrow screens', async () => {
   const f = fixture();
   f.state.active = 'a';
   await f.context.connect('b');

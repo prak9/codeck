@@ -70,6 +70,7 @@ let viewportFrame = 0;
 
 const state = {
   loadingEarlier: false,
+  historyGeneration: 0,
   token: localStorage.getItem('codeck-token') || '',
   theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   provider: localStorage.getItem('codeck-remote-provider') || 'codex',
@@ -826,6 +827,7 @@ function timeAgo(rawTimestamp) {
 
 function openPendingThread(thread, { quiet = false, refresh = true } = {}) {
   if (!thread?.tmux?.name || thread.tmux.available !== false) return;
+  resetThreadHistory();
   state.threadHandoff = null;
   state.threadOpening = null;
   releaseThreadStream();
@@ -852,6 +854,7 @@ function openPendingThread(thread, { quiet = false, refresh = true } = {}) {
 
 function openShellThread(thread, { quiet = false } = {}) {
   if (thread?.provider !== 'shell' || !thread.tmux?.name) return;
+  resetThreadHistory();
   state.threadHandoff = null;
   state.threadOpening = null;
   releaseThreadStream();
@@ -873,6 +876,7 @@ function openShellThread(thread, { quiet = false } = {}) {
 
 function handoffTmuxThread(thread) {
   if (state.threadHandoff) return state.threadHandoff.promise;
+  resetThreadHistory();
   const previousThreadId = state.thread?.id;
   const provider = thread.provider;
   const sessionName = thread.tmux.name;
@@ -967,6 +971,7 @@ async function loadThreads({ quiet = false } = {}) {
 async function openThread(threadId, {
   provider = state.provider, quiet = false, readOnly = false, tmuxSession = null,
 } = {}) {
+  resetThreadHistory();
   state.threadHandoff = null;
   const opening = {};
   state.threadOpening = opening;
@@ -1051,6 +1056,7 @@ async function refreshActiveThread({ force = false } = {}) {
 }
 
 function startNewThread({ focus = true } = {}) {
+  resetThreadHistory();
   state.threadHandoff = null;
   state.threadOpening = null;
   releaseThreadStream();
@@ -1071,6 +1077,7 @@ function startNewThread({ focus = true } = {}) {
 
 async function switchProvider(provider) {
   if (!state.providers.includes(provider)) return;
+  resetThreadHistory();
   state.threadHandoff = null;
   state.threadOpening = null;
   releaseThreadStream();
@@ -1916,37 +1923,62 @@ function loadEarlierNode() {
   return node;
 }
 
+function resetThreadHistory() {
+  // Also invalidate queued scroll work when reopening the same target (A → B → A).
+  state.historyGeneration += 1;
+  const wasLoading = state.loadingEarlier;
+  state.loadingEarlier = false;
+  if (wasLoading) scheduleThreadRender(false);
+}
+
 async function loadEarlierTurns() {
   const thread = state.thread;
-  if (!thread?.truncated || state.loadingEarlier) return;
+  if (!thread?.truncated || state.loadingEarlier || state.threadOpening || state.threadHandoff || state.sessionClosePending) return;
   const anchor = thread.oldestTurnId || thread.turns?.[0]?.id;
   if (!anchor) return;
+  const generation = ++state.historyGeneration;
+  const provider = state.provider;
+  const sessionName = thread.tmux?.name || '';
+  const currentRequest = () => state.historyGeneration === generation
+    && state.provider === provider && state.thread?.id === thread.id
+    && (state.thread?.tmux?.name || '') === sessionName;
   state.loadingEarlier = true;
   scheduleThreadRender(false);
   const transcript = $('#transcript');
-  const heightBefore = transcript.scrollHeight;
   try {
     const result = await agentRequest('loadThreadHistory', {
-      provider: state.provider,
+      provider,
       threadId: thread.id,
-      tmuxSession: thread.tmux?.name || '',
+      tmuxSession: sessionName,
       beforeTurnId: anchor,
     });
-    if (state.thread !== thread) return;
+    if (!currentRequest()) return;
+    const current = state.thread;
+    if (!(current.turns || []).some((turn) => turn.id === anchor)) return;
     const earlier = Array.isArray(result?.turns) ? result.turns : [];
-    thread.turns = [...earlier, ...(thread.turns || [])];
-    thread.truncated = Boolean(result?.truncated);
-    thread.oldestTurnId = result?.oldestTurnId || null;
+    const ids = new Set((current.turns || []).map((turn) => turn.id));
+    const missing = earlier.filter((turn) => {
+      if (ids.has(turn.id)) return false;
+      ids.add(turn.id);
+      return true;
+    });
+    const heightBefore = transcript.scrollHeight;
+    current.turns = [...missing, ...(current.turns || [])];
+    current.truncated = Boolean(result?.truncated);
+    current.oldestTurnId = result?.oldestTurnId || null;
     scheduleThreadRender(false);
     // 在顶部插入内容会把已读位置整体下推, 补回滚动量, 否则视线会跳。
     requestAnimationFrame(() => {
+      if (!currentRequest()) return;
       transcript.scrollTop += transcript.scrollHeight - heightBefore;
     });
   } catch (error) {
-    setLiveMessage(error.message || '加载更早的对话失败');
+    if (currentRequest()) setLiveMessage(error.message || '加载更早的对话失败');
   } finally {
-    state.loadingEarlier = false;
-    scheduleThreadRender(false);
+    if (currentRequest()) {
+      state.loadingEarlier = false;
+      scheduleThreadRender(false);
+    }
   }
 }
 

@@ -287,6 +287,17 @@ export class AgentRegistry extends EventEmitter {
     const result = await backend.openThread(threadId, { readOnly: true });
     return { text: latestAgentOutputText(result?.thread?.turns) };
   }
+  async loadThreadHistory(provider, threadId, { beforeTurnId, limit }) {
+    const backend = this.backend(provider);
+    if (backend.loadThreadHistory) return backend.loadThreadHistory(threadId, { beforeTurnId, limit });
+    const result = await backend.openThread(threadId, { readOnly: true });
+    const turns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
+    const end = beforeTurnId ? turns.findIndex((turn) => turn.id === beforeTurnId) : turns.length;
+    if (end < 0) throw new Error('Thread history anchor is no longer present');
+    const start = Math.max(0, end - limit);
+    const slice = turns.slice(start, end);
+    return { turns: slice, truncated: start > 0, oldestTurnId: slice[0]?.id || null };
+  }
   sendSessionMessage(provider, params) {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
@@ -496,17 +507,7 @@ export class AgentHub {
       const limit = Number.isSafeInteger(message.limit) && message.limit > 0
         ? Math.min(message.limit, 200)
         : this.threadTurnWindow;
-      const result = await this.registry.openThread(provider, threadId, { readOnly: true });
-      const turns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
-      const end = beforeTurnId ? turns.findIndex((turn) => turn.id === beforeTurnId) : turns.length;
-      if (end < 0) throw new Error('Thread history anchor is no longer present');
-      const start = Math.max(0, end - limit);
-      const slice = turns.slice(start, end);
-      return {
-        turns: slice,
-        truncated: start > 0,
-        oldestTurnId: slice[0]?.id || null,
-      };
+      return this.registry.loadThreadHistory(provider, threadId, { beforeTurnId, limit });
     }
     if (message.type === 'listThreads') return this.registry.listThreads(provider);
     if (message.type === 'openThread') {

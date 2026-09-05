@@ -48,6 +48,198 @@ function dependencies(overrides = {}) {
 }
 
 const waitForTerminalOutput = () => new Promise((resolve) => setTimeout(resolve, 12));
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+const inputResults = (ws) => ws.sent.filter(Buffer.isBuffer).map((data) => JSON.parse(data.toString()));
+const sendFrame = (ws, message) => ws.emit('message', Buffer.from(JSON.stringify(message)), false);
+
+test('whole terminal submissions leave copy mode without changing raw key semantics', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  const submissions = [];
+  let finish;
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: async (session, data, { isCurrent }) => {
+      assert.equal(isCurrent(), true);
+      submissions.push({ session, data });
+      await new Promise((resolve) => { finish = resolve; });
+    },
+  }));
+  sendFrame(ws, { type: 'input', data: 'echo 完整\r', submit: true, inputId: '1:1' });
+  await nextTurn();
+  sendFrame(ws, { type: 'input', data: '\r' });
+  assert.deepEqual(submissions, [{ session: 'work', data: 'echo 完整\r' }]);
+  assert.deepEqual(terminal.writes, [], 'later raw Enter cannot overtake the complete submission');
+  assert.deepEqual(inputResults(ws), [], 'a draft is not acknowledged before tmux accepts it');
+  finish();
+  await nextTurn();
+  assert.deepEqual(terminal.writes, ['\r'], 'raw keys retain their exact bytes');
+  assert.deepEqual(inputResults(ws), [{ type: 'inputResult', inputId: '1:1', ok: true }]);
+});
+
+test('submission failure is acknowledged and does not block later raw input', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: async () => { throw new Error('pane changed'); },
+  }));
+  sendFrame(ws, { type: 'input', data: 'keep draft\r', submit: true, inputId: '1:2' });
+  sendFrame(ws, { type: 'input', data: '\x1b' });
+  await nextTurn();
+  assert.deepEqual(terminal.writes, ['\x1b']);
+  assert.deepEqual(inputResults(ws), [{ type: 'inputResult', inputId: '1:2', ok: false, error: 'pane changed' }]);
+});
+
+test('read-only and oversized submissions fail without touching tmux', async () => {
+  for (const [readOnly, data, inputId] of [[true, 'id\r', 'readonly'], [false, 'x'.repeat(100_002), 'large']]) {
+    const ws = new FakeSocket();
+    const terminal = fakeTerminal();
+    let submitted = 0;
+    await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+      readOnly,
+      createTerminal: () => terminal,
+      submitTerminalInput: async () => { submitted += 1; },
+    }));
+    sendFrame(ws, { type: 'input', data, submit: true, inputId });
+    await nextTurn();
+    assert.equal(submitted, 0);
+    assert.deepEqual(terminal.writes, []);
+    assert.equal(inputResults(ws)[0]?.ok, false);
+    assert.equal(inputResults(ws)[0]?.inputId, inputId);
+  }
+});
+
+test('legacy submissions without input ids receive no binary control frames', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  const submissions = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: async (_session, data) => { submissions.push(data); },
+  }));
+  sendFrame(ws, { type: 'input', data: 'legacy\r', submit: true });
+  await nextTurn();
+  assert.deepEqual(submissions, ['legacy\r']);
+  assert.deepEqual(ws.sent, []);
+});
+
+test('submission permits a maximum-sized draft plus Enter but rejects oversized receipt ids', async () => {
+  const ws = new FakeSocket();
+  const submissions = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    submitTerminalInput: async (_session, data) => { submissions.push(data); },
+  }));
+  const data = `${'x'.repeat(100_000)}\r`;
+  sendFrame(ws, { type: 'input', data, submit: true, inputId: 'maximum' });
+  await nextTurn();
+  assert.deepEqual(submissions, [data]);
+  assert.equal(inputResults(ws)[0]?.ok, true);
+  sendFrame(ws, { type: 'input', data: 'never sent\r', submit: true, inputId: 'x'.repeat(129) });
+  await nextTurn();
+  assert.equal(ws.closes[0]?.code, 1008);
+  assert.equal(submissions.length, 1);
+});
+
+test('closing a socket cancels an in-flight submission and never drains its later input', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  let finish;
+  let delivered = false;
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: async (_session, _data, { isCurrent }) => {
+      await new Promise((resolve) => { finish = resolve; });
+      if (!isCurrent()) throw new Error('closed');
+      delivered = true;
+    },
+  }));
+  sendFrame(ws, { type: 'input', data: 'old connection\r', submit: true, inputId: 'close' });
+  await nextTurn();
+  sendFrame(ws, { type: 'input', data: 'queued raw' });
+  ws.close(1000, 'browser left');
+  finish();
+  await nextTurn();
+  assert.equal(delivered, false);
+  assert.deepEqual(terminal.writes, []);
+  assert.deepEqual(ws.sent, []);
+});
+
+test('a submission waits for earlier scroll commands before leaving copy mode', async () => {
+  const ws = new FakeSocket();
+  const events = [];
+  let finishScroll;
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    scrollSession: async () => {
+      events.push('scroll');
+      await new Promise((resolve) => { finishScroll = resolve; });
+    },
+    submitTerminalInput: async () => { events.push('submit'); },
+  }));
+  sendFrame(ws, { type: 'scroll', lines: 3 });
+  sendFrame(ws, { type: 'input', data: 'pwd\r', submit: true, inputId: '2:1' });
+  await nextTurn();
+  assert.deepEqual(events, ['scroll']);
+  finishScroll();
+  await nextTurn();
+  assert.deepEqual(events, ['scroll', 'submit']);
+  assert.equal(inputResults(ws)[0]?.ok, true);
+});
+
+test('switch cancels pending submissions instead of sending them into another session', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  const delivered = [];
+  let finish;
+  await handleTerminalConnection(ws, 'first', { width: 80, height: 24 }, dependencies({
+    canSwitchSession: true,
+    createTerminal: (session) => { const terminal = fakeTerminal(); created.push({ session, terminal }); return terminal; },
+    submitTerminalInput: async (session, data, { isCurrent }) => {
+      await new Promise((resolve) => { finish = resolve; });
+      if (!isCurrent()) throw new Error('session changed');
+      delivered.push({ session, data });
+    },
+  }));
+  sendFrame(ws, { type: 'input', data: 'first\r', submit: true, inputId: '3:1' });
+  await nextTurn();
+  sendFrame(ws, { type: 'input', data: 'queued\r', submit: true, inputId: '3:2' });
+  sendFrame(ws, { type: 'switch', session: 'second', cols: 80, rows: 24 });
+  sendFrame(ws, { type: 'input', data: 'second raw' });
+  await nextTurn();
+  finish();
+  await nextTurn();
+  assert.deepEqual(delivered, []);
+  assert.deepEqual(created[1].terminal.writes, ['second raw']);
+  assert.deepEqual(inputResults(ws).map(({ inputId, ok }) => ({ inputId, ok })).sort((a, b) => a.inputId.localeCompare(b.inputId)), [
+    { inputId: '3:1', ok: false }, { inputId: '3:2', ok: false },
+  ]);
+});
+
+test('submissions queued during setup or flow recovery are delivered exactly once', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  const submitted = [];
+  let releaseLinks;
+  const setup = handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    outputFlowControl: true, outputFlowId: '1', outputHighWaterMark: 5,
+    getLinkedWindowSessions: () => created.length ? Promise.resolve([]) : new Promise((resolve) => { releaseLinks = resolve; }),
+    createTerminal: () => { const terminal = fakeTerminal(); created.push(terminal); return terminal; },
+    submitTerminalInput: async (_session, data) => { submitted.push(data); },
+  }));
+  sendFrame(ws, { type: 'input', data: 'setup\r', submit: true, inputId: '4:1' });
+  releaseLinks([]);
+  await setup;
+  await nextTurn();
+  created[0].dataCallback('123456');
+  await waitForTerminalOutput();
+  sendFrame(ws, { type: 'input', data: 'recovery\r', submit: true, inputId: '4:2' });
+  sendFrame(ws, { type: 'outputAck', flowId: '1', chars: 6 });
+  await nextTurn();
+  assert.deepEqual(submitted, ['setup\r', 'recovery\r']);
+  assert.deepEqual(inputResults(ws).map(({ inputId, ok }) => ({ inputId, ok })), [
+    { inputId: '4:1', ok: true }, { inputId: '4:2', ok: true },
+  ]);
+});
 
 test('read-only clients attach without detaching the session owner', () => {
   assert.deepEqual(terminalAttachArgs('shared', { readOnly: true }), ['attach-session', '-r', '-t', 'shared']);

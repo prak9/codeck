@@ -26,7 +26,7 @@ function fixture() {
   };
   const $ = (selector) => nodes[selector];
   const context = vm.createContext({
-    $, Date,
+    $, Date, state: { newDialogGeneration: 0 },
     FormData: function (form) {
       const entries = [
         ['name', $('#nameInput').value], ['cwd', $('#cwdInput').value], ['client', form.elements.client.value],

@@ -210,6 +210,7 @@ async function sessionSnapshotForAuth(auth) {
       canManage: auth.owner,
       canWrite: auth.canWrite,
       canSwitchSession: auth.owner,
+      terminalSubmit: true,
     },
   };
 }

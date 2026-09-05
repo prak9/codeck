@@ -806,12 +806,13 @@ test('starts Codeck-managed Codex sessions without the interactive update check'
   const calls = [];
   await createSession({ name: 'ainfra', client: 'codex', cwd: '/data/code/codeck' }, async (command, args) => {
     calls.push([command, args]);
+    return { stdout: '%17\n' };
   });
 
   assert.deepEqual(calls, [
-    ['tmux', ['new-session', '-d', '-s', 'ainfra', '-c', '/data/code/codeck']],
-    ['tmux', ['send-keys', '-l', '-t', 'ainfra:0.0', 'codex -c check_for_update_on_startup=false']],
-    ['tmux', ['send-keys', '-t', 'ainfra:0.0', 'Enter']],
+    ['tmux', ['new-session', '-d', '-s', 'ainfra', '-P', '-F', '#{pane_id}', '-c', '/data/code/codeck']],
+    ['tmux', ['send-keys', '-l', '-t', '%17', 'codex -c check_for_update_on_startup=false']],
+    ['tmux', ['send-keys', '-t', '%17', 'Enter']],
   ]);
 });
 
@@ -824,12 +825,13 @@ test('starts each Agent in its native resume picker inside the requested tmux di
     const calls = [];
     await createSession({ name: 'restore', client, mode: 'resume', cwd: '/srv/project' }, async (...args) => {
       calls.push(args);
+      return { stdout: '%23\n' };
     });
 
     assert.deepEqual(calls, [
-      ['tmux', ['new-session', '-d', '-s', 'restore', '-c', '/srv/project']],
-      ['tmux', ['send-keys', '-l', '-t', 'restore:0.0', command]],
-      ['tmux', ['send-keys', '-t', 'restore:0.0', 'Enter']],
+      ['tmux', ['new-session', '-d', '-s', 'restore', '-P', '-F', '#{pane_id}', '-c', '/srv/project']],
+      ['tmux', ['send-keys', '-l', '-t', '%23', command]],
+      ['tmux', ['send-keys', '-t', '%23', 'Enter']],
     ], client);
   }
 });
@@ -840,7 +842,23 @@ test('creates plain shell sessions without sending an Agent command', async () =
     await createSession({ name: 'shell-work', client: 'shell', mode }, async (...args) => {
       calls.push(args);
     });
-    assert.deepEqual(calls, [['tmux', ['new-session', '-d', '-s', 'shell-work']]]);
+    assert.deepEqual(calls, [['tmux', ['new-session', '-d', '-s', 'shell-work', '-P', '-F', '#{pane_id}']]]);
+  }
+});
+
+test('keeps a created session recoverable and explains a partial Agent launch failure', async () => {
+  for (const failure of ['pane', 'literal', 'enter']) {
+    const calls = [];
+    await assert.rejects(createSession({ name: 'recover', client: 'codex' }, async (_command, args) => {
+      calls.push(args);
+      if (args[0] === 'new-session') return { stdout: failure === 'pane' ? 'recover:1.1\n' : '%31\n' };
+      if ((failure === 'literal' && args.includes('-l')) || (failure === 'enter' && args.includes('Enter'))) {
+        throw new Error('injected tmux failure');
+      }
+      return { stdout: '' };
+    }), /recover.*已创建.*手动/);
+    assert.equal(calls.some((args) => args[0] === 'kill-session'), false, 'a partial launch never deletes the user session');
+    if (failure === 'pane') assert.equal(calls.length, 1, 'an invalid returned pane is never used as a target');
   }
 });
 

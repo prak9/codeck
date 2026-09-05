@@ -859,6 +859,48 @@ function exitPaneModeThen(paneId, args) {
   return ['copy-mode', '-q', '-t', paneId, ';', ...args];
 }
 
+// Local textarea submissions are raw terminal bytes, including their final Enter.
+// Unlike individual keys, they must not be interpreted by tmux's copy-mode key table.
+export async function submitTerminalInput(sessionName, data, overrides = {}) {
+  if (!validateSessionName(sessionName)) throw new Error('无效的会话名');
+  if (typeof data !== 'string' || !data.length || data.length > 100_001) {
+    throw new Error('输入内容为空或过长');
+  }
+  return queueSessionInput(sessionName, async () => {
+    const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    const isCurrent = overrides.isCurrent || (() => true);
+    const checkConnection = () => {
+      if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
+    };
+    const currentPane = async () => {
+      checkConnection();
+      const { stdout } = await execTmux([
+        'display-message', '-p', '-t', `=${sessionName}:`, '#{session_name}\t#{pane_id}',
+      ]);
+      const [name, paneId, ...extra] = stdout.trim().split('\t');
+      if (name !== sessionName || !PANE_ID.test(paneId) || extra.length) {
+        throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+      }
+      checkConnection();
+      return paneId;
+    };
+    const paneId = await currentPane();
+    const bufferName = overrides.bufferName || `codeck_local_${process.pid}_${++inputBufferSequence}`;
+    const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
+    try {
+      await loadBuffer(bufferName, data);
+      if (await currentPane() !== paneId) throw new Error('终端会话 pane 已变化，输入未发送');
+      checkConnection();
+      await execTmux(exitPaneModeThen(paneId, [
+        'paste-buffer', '-r', '-d', '-b', bufferName, '-t', paneId,
+      ]));
+    } catch (error) {
+      await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
+      throw error;
+    }
+  });
+}
+
 export async function sendSessionMessage({ provider, sessionName, threadId, text }, overrides = {}) {
   if (typeof text !== 'string' || !text.trim() || text.length > 100_000) throw new Error('消息内容无效');
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
@@ -1055,13 +1097,18 @@ export async function createSession({ name, client = 'shell', cwd, mode = 'new' 
   if (!validateClient(client)) throw new Error('未知的终端类型');
   const command = resolveSessionClientCommand(client, mode);
 
-  const args = ['new-session', '-d', '-s', name];
+  const args = ['new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}'];
   if (cwd) args.push('-c', cwd);
-  await execCommand('tmux', args);
+  const created = await execCommand('tmux', args);
   if (client !== 'shell') {
-    const target = `${name}:0.0`;
-    await execCommand('tmux', ['send-keys', '-l', '-t', target, command]);
-    await execCommand('tmux', ['send-keys', '-t', target, 'Enter']);
+    try {
+      const target = created?.stdout?.trim();
+      if (!PANE_ID.test(target)) throw new Error('tmux 未返回有效的 pane');
+      await execCommand('tmux', ['send-keys', '-l', '-t', target, command]);
+      await execCommand('tmux', ['send-keys', '-t', target, 'Enter']);
+    } catch (error) {
+      throw new Error(`会话 ${name} 已创建，但 Agent 启动失败；请从会话列表连接后手动启动，勿重复新建。${error.message}`, { cause: error });
+    }
   }
 }
 
