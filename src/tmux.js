@@ -108,8 +108,11 @@ export function validateClient(client) {
   return CLIENTS.includes(client);
 }
 
-export function resolveSessionClientCommand(client) {
-  return client === 'codex' ? 'codex -c check_for_update_on_startup=false' : client;
+export function resolveSessionClientCommand(client, mode = 'new') {
+  if (mode !== 'new' && mode !== 'resume') throw new Error('未知的会话启动方式');
+  if (mode === 'resume' && client === 'shell') throw new Error('Shell 会话不支持恢复模式');
+  const command = client === 'codex' ? 'codex -c check_for_update_on_startup=false' : client;
+  return mode === 'resume' ? `${command} ${client === 'codex' ? 'resume' : '--resume'}` : command;
 }
 
 export function supportsWindowSizeOption(version) {
@@ -1047,16 +1050,17 @@ export async function interruptSession({ provider, sessionName, threadId }, over
   });
 }
 
-export async function createSession({ name, client = 'shell', cwd }, execCommand = exec) {
+export async function createSession({ name, client = 'shell', cwd, mode = 'new' }, execCommand = exec) {
   if (!validateSessionName(name)) throw new Error('会话名只能包含字母、数字、点、短横线或下划线，最长 64 个字符');
   if (!validateClient(client)) throw new Error('未知的终端类型');
+  const command = resolveSessionClientCommand(client, mode);
 
   const args = ['new-session', '-d', '-s', name];
   if (cwd) args.push('-c', cwd);
   await execCommand('tmux', args);
   if (client !== 'shell') {
     const target = `${name}:0.0`;
-    await execCommand('tmux', ['send-keys', '-l', '-t', target, resolveSessionClientCommand(client)]);
+    await execCommand('tmux', ['send-keys', '-l', '-t', target, command]);
     await execCommand('tmux', ['send-keys', '-t', target, 'Enter']);
   }
 }

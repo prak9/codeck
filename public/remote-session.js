@@ -1,12 +1,14 @@
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const CLIENTS = new Set(['shell', 'codex', 'claude', 'qodercli']);
 
-export function createRemoteSessionPayload({ name, provider, cwd }) {
+export function createRemoteSessionPayload({ name, provider, cwd, mode = 'new' }) {
   const sessionName = typeof name === 'string' ? name.trim() : '';
   if (!SESSION_NAME.test(sessionName)) {
     throw new Error('会话名只能包含字母、数字、点、短横线或下划线，最长 64 个字符');
   }
   if (!CLIENTS.has(provider)) throw new Error('未知的 Agent 类型');
+  if (mode !== 'new' && mode !== 'resume') throw new Error('未知的启动模式');
+  if (provider === 'shell' && mode === 'resume') throw new Error('Shell 不支持 resume 模式');
   const workingDirectory = typeof cwd === 'string' ? cwd.trim() : '';
   if (workingDirectory && !workingDirectory.startsWith('/')) {
     throw new Error('请输入服务器上的绝对路径');
@@ -14,6 +16,7 @@ export function createRemoteSessionPayload({ name, provider, cwd }) {
   return {
     name: sessionName,
     client: provider,
+    ...(mode === 'resume' ? { mode } : {}),
     ...(workingDirectory ? { cwd: workingDirectory } : {}),
   };
 }

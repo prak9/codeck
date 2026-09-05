@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=63">
+    <link rel="stylesheet" href="/styles.css?v=64">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -53,6 +53,10 @@
           <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
           <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
         </header>
+        <div class="terminal-disconnect" id="terminalDisconnect" hidden>
+          <span id="terminalDisconnectMessage" role="status" aria-live="polite"></span>
+          <button class="secondary-button" id="reconnectTerminalButton" type="button">重新连接</button>
+        </div>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
           <span class="terminal-voice-prompt" aria-hidden="true">›</span><textarea id="terminalVoiceDraft" rows="1" aria-label="终端输入" maxlength="100000" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入指令，回车发送"></textarea>
@@ -88,6 +92,10 @@
         <label><input type="radio" name="client" value="qodercli"><span><b>Qoder</b><small>Qoder CLI</small></span></label>
         <label><input type="radio" name="client" value="shell"><span><b>Shell</b><small>空白终端</small></span></label>
       </div></fieldset>
+      <label class="setting-row" id="resumeSessionOption">
+        <input type="checkbox" id="resumeSessionInput" name="mode" value="resume">
+        <span><strong>继续历史会话</strong><span>启动后在终端中选择要继续的历史会话。</span></span>
+      </label>
       <p class="form-error" id="newError" role="alert"></p>
       <div class="dialog-actions"><button class="secondary-button" value="cancel" formnovalidate>取消</button><button class="primary-button" id="createButton" value="default">创建会话</button></div>
     </form>
@@ -127,6 +135,6 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
-  <script type="module" src="/app.js?v=101"></script>
+  <script type="module" src="/app.js?v=104"></script>
 </body>
 </html>

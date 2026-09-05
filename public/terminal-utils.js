@@ -24,13 +24,70 @@ export function activateTerminalWebgl(terminal, WebglAddon) {
   }
 }
 
-export function wheelScrollLines(event, cellHeight = 20) {
+function wheelRows(event, cellHeight = 20, pageRows = 24) {
   const mode = event?.deltaMode ?? 0;
   const raw = Number(event?.deltaY) || 0;
-  const rows = mode === 1 ? raw : mode === 2 ? raw * 24 : raw / Math.max(1, cellHeight);
-  const lines = -Math.trunc(rows);
+  return -(mode === 1 ? raw : mode === 2 ? raw * pageRows : raw / Math.max(1, cellHeight));
+}
+
+export function wheelScrollLines(event, cellHeight = 20) {
+  const lines = Math.trunc(wheelRows(event, cellHeight));
   if (!lines) return 0;
   return Math.max(-WHEEL_MAX_LINES, Math.min(WHEEL_MAX_LINES, lines));
+}
+
+// Own wheel events before xterm converts them into arrow/mouse input. Return true even
+// for a fraction of a row; letting those events through would send unintended CLI keys.
+export function createTerminalWheelScroller(requestScroll, {
+  schedule = requestAnimationFrame,
+  cancel = cancelAnimationFrame,
+} = {}) {
+  let remainder = 0;
+  let pending = 0;
+  let direction = 0;
+  let frame = null;
+
+  const clearFrame = () => {
+    if (frame !== null) cancel(frame);
+    frame = null;
+  };
+  const flush = () => {
+    clearFrame();
+    const lines = pending;
+    pending = 0;
+    if (lines) requestScroll(lines);
+  };
+  const scroll = (event, cellHeight = 20, pageRows = 24) => {
+    if (event?.ctrlKey || event?.metaKey || event?.shiftKey) return false;
+    const rows = wheelRows(event, cellHeight, pageRows);
+    if (!Number.isFinite(rows) || !rows) return false;
+    const nextDirection = Math.sign(rows);
+    if (direction && direction !== nextDirection) {
+      // tmux ignores down outside copy mode, so down then up must not cancel to zero.
+      flush();
+      remainder = 0;
+    }
+    direction = nextDirection;
+    remainder += Math.max(-WHEEL_MAX_LINES, Math.min(WHEEL_MAX_LINES, rows));
+    const lines = Math.trunc(remainder);
+    remainder -= lines;
+    // Match the server's per-session scroll queue limit for unusually large bursts.
+    pending = Math.max(-500, Math.min(500, pending + lines));
+    if (pending && frame === null) {
+      const scheduled = schedule(() => {
+        if (frame !== scheduled) return;
+        frame = null;
+        flush();
+      });
+      frame = scheduled;
+    }
+    return true;
+  };
+  const reset = () => {
+    clearFrame();
+    remainder = pending = direction = 0;
+  };
+  return { scroll, cancel: reset };
 }
 
 export function clampTerminalGrid(cols, rows) {
@@ -282,18 +339,40 @@ export function createTerminalResizeGate(sendResize) {
   return { mark, send };
 }
 
-export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null }) {
+const terminalFitCache = new WeakMap();
+
+export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = null, layout = null }) {
+  // The caller supplies actual container dimensions, DPR and a revision incremented on
+  // font loading. Without that evidence, keep measuring as before. Cache one result per
+  // terminal; external font/grid changes or a replacement FitAddon also invalidate it.
+  // WebGL context loss can switch to DOM cells with different fractional dimensions.
+  const cell = terminal._core?._renderService?.dimensions?.css?.cell;
+  const cacheable = layout && [layout.width, layout.height, layout.dpr].every((value) => Number.isFinite(value) && value > 0)
+    && Number.isSafeInteger(layout.fontRevision) && layout.fontRevision >= 0;
+  const key = cacheable ? JSON.stringify([
+    layout.width, layout.height, layout.dpr, layout.fontRevision,
+    baseFontSize, overviewSize?.cols, overviewSize?.rows,
+    terminal.options.fontFamily, terminal.options.fontWeight, terminal.options.fontWeightBold,
+    terminal.options.lineHeight, terminal.options.letterSpacing, terminal.options.scrollback,
+  ]) : null;
+  const cached = terminalFitCache.get(terminal);
+  if (key && cached?.key === key && cached.fit === fit && cached.fontSize === terminal.options.fontSize
+    && cached.cellWidth === cell?.width && cached.cellHeight === cell?.height
+    && cached.result.cols === terminal.cols && cached.result.rows === terminal.rows) return { ...cached.result };
+  terminalFitCache.delete(terminal);
+
   // Measure while searching for a font size; never resize. Each terminal.resize() rewraps
   // the buffer, and rewrapping is lossy — widen then narrow back and the original line
   // breaks are gone. The search ran fit.fit() up to five times, so it could land back on
   // the grid the server already had: the resize gate then sent nothing, tmux never
   // repainted, and the rewrap damage stayed on screen. Toggling the input bar in overview
   // mode does exactly that, because there the fit moves the font size, not the grid.
+  let measured = true;
   const measure = () => {
     const proposed = fit.proposeDimensions?.();
-    return Number.isFinite(proposed?.cols) && Number.isFinite(proposed?.rows)
-      ? proposed
-      : { cols: terminal.cols, rows: terminal.rows };
+    if (Number.isFinite(proposed?.cols) && Number.isFinite(proposed?.rows)) return proposed;
+    measured = false;
+    return { cols: terminal.cols, rows: terminal.rows };
   };
   terminal.options.fontSize = baseFontSize;
   let available = measure();
@@ -326,7 +405,12 @@ export function fitTerminalGrid(terminal, fit, { baseFontSize, overviewSize = nu
   // FitAddon 的 fit() 会在 resize 前清一次渲染缓存, 不走它就少了那一步; 而全览模式下
   // 变的是字号、网格不动, 那条路径上连 resize 都没有, 屏幕不会自己跟上。统一重绘一次。
   terminal.refresh?.(0, Math.max(0, terminal.rows - 1));
-  return { ...viewport, overview };
+  const result = { ...viewport, overview };
+  if (key && measured) terminalFitCache.set(terminal, {
+    key, fit, fontSize: terminal.options.fontSize, result,
+    cellWidth: cell?.width, cellHeight: cell?.height,
+  });
+  return result;
 }
 
 // xterm's synchronous reset() leaves already queued writes alive. An in-band RIS is

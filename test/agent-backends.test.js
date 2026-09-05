@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CodexAgentBackend } from '../src/agent-backends.js';
+import { latestAgentOutputText } from '../public/remote-copy.js';
 
 class FakeAppServer extends EventEmitter {
   constructor(request) {
@@ -16,6 +17,98 @@ class FakeAppServer extends EventEmitter {
   async respondError(id, code, message) { this.errors.push({ id, code, message }); }
   close() {}
 }
+
+test('reads only Codex summaries to select the latest non-streaming output', async () => {
+  for (const status of ['completed', 'failed']) {
+    const turns = [
+      { id: 'old', status: 'completed', items: [{ type: 'agentMessage', text: 'Old reply' }] },
+      { id: 'selected', status, items: [
+        { type: 'agentMessage', text: 'First paragraph\n  indentation' },
+        { type: 'reasoning', text: 'Do not copy' },
+        { type: 'agentMessage', text: 'Second paragraph' },
+      ] },
+      { id: 'empty', status: 'completed', items: [{ type: 'userMessage', content: [] }] },
+      { id: 'running', status: 'running', items: [{ type: 'agentMessage', text: 'Partial' }] },
+      { id: 'active', status: 'inProgress', items: [{ type: 'agentMessage', text: 'Partial' }] },
+    ];
+    const calls = [];
+    const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+      calls.push({ method, params });
+      assert.equal(method, 'thread/turns/list');
+      assert.equal(params.itemsView, 'summary', 'copying cannot hydrate full tool history');
+      return { data: [...turns].reverse(), nextCursor: null };
+    }));
+
+    assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), {
+      text: latestAgentOutputText(turns),
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].params.threadId, 'thread-1');
+    assert.equal(calls[0].params.sortDirection, 'desc');
+  }
+});
+
+test('latest interrupted Codex output retains the exact full-turn fallback', async () => {
+  const earlier = { id: 'earlier', status: 'completed', items: [{ type: 'agentMessage', text: 'Earlier reply' }] };
+  const summary = { id: 'latest', status: 'interrupted', items: [{ type: 'userMessage', content: [] }] };
+  const full = { ...summary, items: [
+    ...summary.items,
+    { type: 'agentMessage', text: 'Checking' },
+    { type: 'commandExecution', aggregatedOutput: 'tool output' },
+    { type: 'agentMessage', text: 'Final visible text' },
+  ] };
+  const calls = [];
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    assert.equal(method, 'thread/turns/list');
+    return { data: params.itemsView === 'full' ? [full] : [summary, earlier] };
+  }));
+
+  assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), {
+    text: latestAgentOutputText([earlier, full]),
+  });
+  full.items.push({ type: 'agentMessage', text: 'Appended after the first read' });
+  assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), {
+    text: latestAgentOutputText([earlier, full]),
+  });
+  assert.deepEqual(calls.filter(({ params }) => params.itemsView === 'full').map(({ params }) => params), [
+    { threadId: 'thread-1', limit: 1, sortDirection: 'desc', itemsView: 'full' },
+    { threadId: 'thread-1', limit: 1, sortDirection: 'desc', itemsView: 'full' },
+  ]);
+});
+
+test('latest Codex output follows history cursors without changing a forked thread identity', async () => {
+  const calls = [];
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    assert.equal(method, 'thread/turns/list');
+    assert.equal(params.itemsView, 'summary');
+    if (!params.cursor) return {
+      data: [{ id: 'child-empty', status: 'completed', items: [] }], nextCursor: 'inherited-history',
+    };
+    return {
+      data: [{ id: 'parent-turn', status: 'completed', items: [{ type: 'agentMessage', text: 'Inherited reply' }] }],
+      nextCursor: null,
+    };
+  }));
+
+  assert.deepEqual(await backend.readLatestAgentOutput('child-thread'), { text: 'Inherited reply' });
+  assert.deepEqual(calls.map(({ params }) => [params.threadId, params.cursor]), [
+    ['child-thread', undefined], ['child-thread', 'inherited-history'],
+  ]);
+});
+
+test('latest Codex output retries locked reads and reports an empty history as empty text', async () => {
+  let attempts = 0;
+  const backend = new CodexAgentBackend(new FakeAppServer(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('database is locked');
+    return { data: [], nextCursor: null };
+  }), { wait: async () => {} });
+
+  assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), { text: '' });
+  assert.equal(attempts, 2);
+});
 
 test('opens a Codex thread read-only when a terminal already owns its writer', async () => {
   const calls = [];

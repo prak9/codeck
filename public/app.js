@@ -6,11 +6,11 @@ import {
   createTerminalRevealGate,
   createTerminalResizeGate,
   createTerminalWriteQueue,
+  createTerminalWheelScroller,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-  wheelScrollLines,
-} from './terminal-utils.js?v=15';
+} from './terminal-utils.js?v=17';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
@@ -91,6 +91,7 @@ const state = {
   connectionId: 0,
   terminalDropDepth: 0,
   cancelMobileScroll: null,
+  cancelTerminalWheel: null,
   cancelTerminalReveal: null,
   cancelTerminalOutputAck: null,
   cancelTerminalWrite: null,
@@ -109,6 +110,7 @@ const state = {
     : displayParams.get('view') !== 'readable' && !displayParams.has('fontSize'),
   baseFontSize: parseFontSizeParam(displayParams.get('fontSize')) ?? 16,
   fitting: false,
+  fontRevision: 0,
   canManage: true,
   canWrite: true,
   canSwitchSession: false,
@@ -782,13 +784,18 @@ async function refreshActiveAgentOutput({ force = false } = {}) {
   });
   syncAgentOutputCopyButtons();
   try {
-    const result = await sessionFeedRequest('loadThreadHistory', {
-      provider: target.provider,
-      threadId: target.threadId,
-      limit: 20,
-    });
+    const payload = { provider: target.provider, threadId: target.threadId };
+    let text;
+    try {
+      const result = await sessionFeedRequest('readLatestAgentOutput', payload);
+      text = typeof result?.text === 'string' ? result.text : '';
+    } catch (error) {
+      // Static assets may be refreshed before the running server is restarted.
+      if (error.message !== 'Unknown agent message type: readLatestAgentOutput') throw error;
+      const result = await sessionFeedRequest('loadThreadHistory', { ...payload, limit: 20 });
+      text = latestAgentOutputText(result?.turns);
+    }
     if (state.agentOutputCache.get(target.key)?.requestSeq !== requestSeq) return;
-    const text = latestAgentOutputText(result?.turns);
     state.agentOutputCache.set(target.key, {
       text, state: text ? 'ready' : 'empty', refreshKey: target.refreshKey, requestSeq,
     });
@@ -1069,6 +1076,23 @@ function setConnectionMessage(message, restore = true) {
   }, 1800);
 }
 
+function captureTerminalTarget() {
+  return { socket: state.socket, session: state.active, connectionId: state.connectionId };
+}
+
+function isCurrentTerminalTarget(target) {
+  return state.socket === target.socket && state.active === target.session
+    && state.connectionId === target.connectionId && state.terminalInputReady
+    && state.canWrite && target.socket?.readyState === WebSocket.OPEN;
+}
+
+function showTerminalDisconnect(message) {
+  $('#connectionState').textContent = message;
+  $('#terminalDisconnectMessage').textContent = message;
+  $('#terminalDisconnect').hidden = false;
+  $('#reconnectTerminalButton').disabled = false;
+}
+
 async function pasteImages(event) {
   const images = [...(event.clipboardData?.items || [])]
     .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
@@ -1079,16 +1103,16 @@ async function pasteImages(event) {
   if (!state.canManage) {
     return setConnectionMessage(state.canWrite ? '协作链接暂不支持上传图片' : '当前分享链接为只读');
   }
-  const socket = state.socket;
-  if (socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
+  const target = captureTerminalTarget();
+  if (!isCurrentTerminalTarget(target)) return setConnectionMessage('终端尚未连接');
   setConnectionMessage(images.length > 1 ? `正在上传 ${images.length} 张图片…` : '正在上传图片…', false);
   try {
     const uploads = await Promise.all(images.map((file) => api('/api/uploads/images', {
       method: 'POST', headers: { 'Content-Type': file.type }, body: file,
     })));
-    if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
+    if (!isCurrentTerminalTarget(target)) throw new Error('会话已切换或断开，未插入上传路径');
     const paths = uploads.map((upload) => shellQuotePath(upload.path)).join(' ');
-    socket.send(JSON.stringify({ type: 'input', data: paths }));
+    target.socket.send(JSON.stringify({ type: 'input', data: paths }));
     setConnectionMessage(images.length > 1 ? `已粘贴 ${images.length} 张图片` : '图片已粘贴');
     state.terminal.focus();
   } catch (error) {
@@ -1105,16 +1129,17 @@ async function handleTerminalDrop(event) {
   if (!state.canManage) {
     return setConnectionMessage(state.canWrite ? '协作链接暂不支持上传文件' : '当前分享链接为只读');
   }
-  const socket = state.socket;
-  const files = await collectDroppedFilesFromDataTransfer(event.dataTransfer);
-  if (!files.length) return;
-  if (!socket || socket.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
-  setConnectionMessage(files.length > 1 ? `正在上传 ${files.length} 个文件…` : '正在上传文件…', false);
+  const target = captureTerminalTarget();
+  if (!isCurrentTerminalTarget(target)) return setConnectionMessage('终端尚未连接');
   try {
+    const files = await collectDroppedFilesFromDataTransfer(event.dataTransfer);
+    if (!files.length) return;
+    if (!isCurrentTerminalTarget(target)) throw new Error('会话已切换或断开，未上传文件');
+    setConnectionMessage(files.length > 1 ? `正在上传 ${files.length} 个文件…` : '正在上传文件…', false);
     const uploads = await Promise.all(files.map((entry) => uploadFileBlob(entry.file, entry.relativePath)));
-    if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('会话已切换');
+    if (!isCurrentTerminalTarget(target)) throw new Error('会话已切换或断开，未插入上传路径');
     const paths = uploads.map((upload) => shellQuotePath(upload.path)).join(' ');
-    if (paths) socket.send(JSON.stringify({ type: 'input', data: paths }));
+    if (paths) target.socket.send(JSON.stringify({ type: 'input', data: paths }));
     setConnectionMessage(files.length > 1 ? `已上传 ${files.length} 个文件` : '文件已上传');
     state.terminal?.focus();
   } catch (error) {
@@ -1172,14 +1197,24 @@ function ensureTerminal() {
   // 桌面上滚轮原本滚的是 xterm 自己的缓冲, 而那对全屏 TUI 只是一帧帧重绘的残片:
   // 往上翻是碎片, 翻回来只剩当前一帧, 看着就像"历史没了"。会话历史在 tmux 手里,
   // 所以滚轮和触摸走同一条路 —— 交给 tmux 的 copy-mode。
+  const wheelScroller = createTerminalWheelScroller((lines) => {
+    if (state.terminalInputReady && state.socket?.readyState === WebSocket.OPEN) {
+      state.socket.send(JSON.stringify({ type: 'scroll', lines }));
+    }
+  });
+  state.cancelTerminalWheel = wheelScroller.cancel;
   $('#terminal').addEventListener('wheel', (event) => {
-    if (matchMedia('(pointer: coarse)').matches) return;
-    if (state.socket?.readyState !== WebSocket.OPEN) return;
-    const lines = wheelScrollLines(event, terminal._core?._renderService?.dimensions?.css?.cell?.height);
-    if (!lines) return;
-    event.preventDefault();
-    state.socket.send(JSON.stringify({ type: 'scroll', lines }));
-  }, { passive: false });
+    // Capture before xterm turns alternate-screen wheels into keys or mouse reports.
+    // Unlike its custom hook, this also leaves Ctrl+wheel zoom uncancelled in mouse mode.
+    event.stopPropagation();
+    if (!state.terminalInputReady || state.socket?.readyState !== WebSocket.OPEN) {
+      wheelScroller.cancel();
+      return;
+    }
+    if (wheelScroller.scroll(event, terminal._core?._renderService?.dimensions?.css?.cell?.height, terminal.rows)) {
+      event.preventDefault();
+    }
+  }, { capture: true, passive: false });
   state.cancelMobileScroll = bindMobileScroll($('#terminal'), terminal, (lines) => {
     if (state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));
@@ -1235,6 +1270,10 @@ function fitTerminalView({ suppressResize = false } = {}) {
   const session = state.sessions.find((item) => item.name === state.active);
   const result = fitTerminalGrid(terminal, state.fit, {
     baseFontSize: state.baseFontSize,
+    layout: {
+      width: $('#terminal').clientWidth, height: $('#terminal').clientHeight,
+      dpr: window.devicePixelRatio || 1, fontRevision: state.fontRevision,
+    },
     overviewSize: mobileOverview && session?.width > 0 && session?.height > 0
       ? { cols: session.width, rows: session.height }
       : null,
@@ -1281,6 +1320,7 @@ async function connect(session) {
   state.terminalResizeGate = null;
   state.terminalInputReady = false;
   state.cancelMobileScroll?.();
+  state.cancelTerminalWheel?.();
   stopKeyRepeat();
   if (!reuseSocket) state.socket?.close();
   if (!reuseSocket) state.socket = null;
@@ -1292,6 +1332,7 @@ async function connect(session) {
   $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
   $('#terminalTitle').title = sessionDetails?.agent ? `tmux: ${session}` : '';
   $('#connectionState').textContent = '正在连接';
+  $('#terminalDisconnect').hidden = true;
   $('#sidebar').classList.remove('open');
   $('#menuButton').setAttribute('aria-expanded', 'false');
 
@@ -1330,25 +1371,28 @@ async function connect(session) {
   if (!reuseSocket) resizeGate.mark(terminal.cols, terminal.rows);
   state.terminalResizeGate = resizeGate;
   let displayReady = false;
+  let disconnected = false;
   let awaitingSwitchReset = reuseSocket;
   let terminalResetReady = !needsReset;
   state.socket = socket;
   syncTerminalAccess();
   const enableTerminalInput = () => {
-    if (reuseSocket || !terminalResetReady || state.connectionId !== connectionId
+    if (reuseSocket || disconnected || !terminalResetReady || state.connectionId !== connectionId
       || state.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
     state.terminalInputReady = true;
     syncTerminalAccess();
   };
   const markConnected = () => {
-    if (state.connectionId !== connectionId) return;
+    if (disconnected || state.connectionId !== connectionId || socket.readyState !== WebSocket.OPEN) return;
     $('#connectionState').textContent = connectedStateLabel();
     syncTerminalAccess();
     if (displayReady) focusTerminalInput();
   };
   const revealGate = createTerminalRevealGate(() => {
     if (state.connectionId !== connectionId || state.active !== session
-      || state.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+      || state.socket !== socket) return;
+    // A short-lived PTY can close before xterm parses its last frame. Reveal that
+    // current-session output, but never restore connected status or enable input.
     displayReady = true;
     state.cancelTerminalReveal = null;
     terminalElement.style.visibility = '';
@@ -1379,6 +1423,7 @@ async function connect(session) {
       if (state.connectionId !== connectionId) return;
       outputAcks.acknowledge(event.data.length);
       if (switchResetFrame) {
+        if (disconnected || socket.readyState !== WebSocket.OPEN) return;
         state.terminalInputReady = true;
         syncTerminalAccess();
         return;
@@ -1389,18 +1434,22 @@ async function connect(session) {
   };
   socket.onclose = (event) => {
     if (state.connectionId !== connectionId) return;
+    disconnected = true;
     outputAcks.cancel();
     state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
-    $('#connectionState').textContent = event.reason || '连接已断开';
+    state.cancelTerminalWheel?.();
+    showTerminalDisconnect(event.reason || '连接已断开');
     syncTerminalAccess();
   };
   socket.onerror = () => {
     if (state.connectionId !== connectionId) return;
+    disconnected = true;
     outputAcks.cancel();
     state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
-    $('#connectionState').textContent = '连接失败';
+    state.cancelTerminalWheel?.();
+    showTerminalDisconnect('连接失败，请检查网络或访问令牌后重试');
     syncTerminalAccess();
   };
 
@@ -1425,8 +1474,18 @@ async function connect(session) {
 function openNewDialog() {
   $('#newError').textContent = '';
   $('#nameInput').value = `agent-${new Date().toISOString().slice(11, 16).replace(':', '')}`;
+  $('#resumeSessionInput').checked = false;
+  syncNewSessionMode();
   $('#newDialog').showModal();
   $('#nameInput').select();
+}
+
+function syncNewSessionMode() {
+  const shell = $('#newForm').elements.client.value === 'shell';
+  const resume = $('#resumeSessionInput');
+  $('#resumeSessionOption').hidden = shell;
+  resume.disabled = shell;
+  if (shell) resume.checked = false;
 }
 
 async function renameSession(currentName) {
@@ -1505,6 +1564,17 @@ $('#viewModeButton').addEventListener('click', () => {
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   fitTerminalView();
   focusTerminalInput();
+});
+
+$('#reconnectTerminalButton').addEventListener('click', () => {
+  if (!state.active) return;
+  // Reconnect only on an explicit click: tmux attach can detach another client.
+  // Never automatically replay a draft or take over again after a normal detach.
+  $('#reconnectTerminalButton').disabled = true;
+  const socket = state.socket;
+  state.socket = null;
+  socket?.close();
+  void connect(state.active);
 });
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
@@ -1608,12 +1678,14 @@ $('.mobile-keybar').addEventListener('click', async (event) => {
   }
   if (button.dataset.terminalAction === 'paste') {
     if (!state.canWrite) return;
-    if (state.socket?.readyState !== WebSocket.OPEN) return setConnectionMessage('终端尚未连接');
+    const target = captureTerminalTarget();
+    if (!isCurrentTerminalTarget(target)) return setConnectionMessage('终端尚未连接');
     try {
       // Reading the clipboard needs the user gesture this click provides; iOS additionally
       // shows its own confirmation before handing the text over.
       const text = await navigator.clipboard.readText();
-      if (text) state.socket.send(JSON.stringify({ type: 'input', data: text }));
+      if (!isCurrentTerminalTarget(target)) return setConnectionMessage('会话已切换或断开，未粘贴剪贴板内容');
+      if (text) target.socket.send(JSON.stringify({ type: 'input', data: text }));
     } catch { setConnectionMessage('粘贴失败：浏览器拒绝了剪贴板访问'); }
   }
 });
@@ -1635,11 +1707,16 @@ $('#shareButton').addEventListener('click', async () => {
   }
 });
 
+$('#newForm').addEventListener('change', (event) => {
+  if (event.target.name === 'client') syncNewSessionMode();
+});
 $('#newForm').addEventListener('submit', async (event) => {
   if (event.submitter?.value === 'cancel') return;
   event.preventDefault();
+  if ($('#createButton').disabled) return;
   const form = new FormData(event.currentTarget);
   const payload = Object.fromEntries(form);
+  payload.mode = payload.client === 'shell' ? 'new' : payload.mode || 'new';
   if (!payload.cwd) delete payload.cwd;
   $('#createButton').disabled = true;
   $('#createButton').textContent = '正在创建…';
@@ -1770,8 +1847,11 @@ else $('#tokenDialog').showModal();
 setInterval(() => {
   if (state.token && (!state.canManage || !state.sessionStreamHealthy)) refreshSessions().catch(() => {});
 }, SESSION_LIST_FALLBACK_MS);
-document.fonts?.ready.then(() => {
+function terminalFontsChanged() {
+  state.fontRevision += 1;
   if (!state.terminal) return;
   state.terminal.refresh(0, state.terminal.rows - 1);
   fitTerminalView();
-});
+}
+document.fonts?.ready.then(terminalFontsChanged);
+document.fonts?.addEventListener('loadingdone', terminalFontsChanged);

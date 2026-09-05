@@ -207,6 +207,46 @@ test('a submitted terminal prompt wakes session detection once when output begin
   assert.deepEqual(activity, ['shared', 'shared']);
 });
 
+test('a natural terminal exit flushes its final batch before closing the socket', async () => {
+  for (const outputFlowControl of [false, true]) {
+    const ws = new FakeSocket();
+    const terminal = fakeTerminal();
+    let sentAtClose;
+    ws.on('close', () => { sentAtClose = [...ws.sent]; });
+    await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+      outputFlowControl,
+      outputFlowId: '1',
+      outputHighWaterMark: 5,
+      createTerminal: () => terminal,
+    }));
+
+    terminal.dataCallback('final ');
+    terminal.dataCallback('output');
+    terminal.exitCallback({ exitCode: 0 });
+
+    assert.deepEqual(sentAtClose, ['final output']);
+    assert.deepEqual(ws.closes, [{ code: 1000, reason: 'terminal exited (0)' }]);
+    await waitForTerminalOutput();
+    assert.deepEqual(ws.sent, ['final output'], 'cancelled timers cannot duplicate the flushed batch');
+  }
+});
+
+test('a closed socket discards pending terminal output instead of flushing it', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+  }));
+
+  terminal.dataCallback('stale final output');
+  ws.close(1000, 'browser left');
+  terminal.exitCallback({ exitCode: 0 });
+  await waitForTerminalOutput();
+
+  assert.deepEqual(ws.sent, []);
+  assert.deepEqual(ws.closes, [{ code: 1000, reason: 'browser left' }]);
+});
+
 test('a slow browser bounds stale output and reattaches at the current tmux screen', async () => {
   const ws = new FakeSocket();
   const created = [];
@@ -241,6 +281,42 @@ test('a slow browser bounds stale output and reattaches at the current tmux scre
   assert.deepEqual(created[1].terminal.writes, ['kept input'], 'input received during recovery is delivered once');
 });
 
+test('flow recovery retains the latest resize including one queued during recovery', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  await handleTerminalConnection(ws, 'shared', { width: 80, height: 24 }, dependencies({
+    outputFlowControl: true,
+    outputFlowId: '1',
+    outputHighWaterMark: 5,
+    createTerminal: (_session, size) => {
+      const terminal = fakeTerminal();
+      created.push({ size, terminal });
+      return terminal;
+    },
+  }));
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 120, rows: 40 })), false);
+  created[0].terminal.dataCallback('123456');
+  await waitForTerminalOutput();
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: 'queued input' })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 132, rows: 44 })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'outputAck', flowId: '1', chars: 6 })), false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(created[1].size, { width: 120, height: 40 });
+  assert.deepEqual(created[1].terminal.sizes, [[132, 44]]);
+  assert.deepEqual(created[1].terminal.writes, ['queued input']);
+
+  created[1].terminal.dataCallback('123456');
+  await waitForTerminalOutput();
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'outputAck', flowId: '1', chars: 8 })), false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(created[2].size, { width: 132, height: 44 });
+  assert.deepEqual(created[2].terminal.writes, [], 'recovery does not replay input from an earlier attach');
+  ws.close(1000, 'done');
+});
+
 test('an owner can switch the attached tmux session without replacing the socket', async () => {
   const ws = new FakeSocket();
   const created = [];
@@ -253,6 +329,7 @@ test('an owner can switch the attached tmux session without replacing the socket
     },
   }));
 
+  created[0].terminal.dataCallback('stale pending output');
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'switch', session: 'second', cols: 120, rows: 36 })), false);
   await waitForTerminalOutput();
 

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { createSnapshotFeed } from '../src/snapshot-feed.js';
 import { applySnapshotPatch, createSnapshotPatch } from '../public/snapshot-patch.js';
+import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
 
 class FakeSocket extends EventEmitter {
   OPEN = 1;
@@ -132,6 +133,78 @@ function setup({
   });
   return { backends, registry, hub };
 }
+
+test('latest-output requests neither create nor replace a thread subscription', async () => {
+  const threadFeed = new FakeSnapshotFeed();
+  const { backends, hub } = setup({ threadFeed });
+  backends.codex.readLatestAgentOutput = async (threadId) => {
+    backends.codex.calls.push({ method: 'readLatestAgentOutput', threadId });
+    return { text: 'Complete reply\n  with whitespace' };
+  };
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+
+  send(socket, { type: 'readLatestAgentOutput', id: 1, provider: 'codex', threadId: ' thread-1 ' });
+  await waitFor(() => socket.sent.some((message) => message.id === 1));
+  assert.deepEqual(socket.sent.find((message) => message.id === 1), {
+    id: 1, ok: true, result: { text: 'Complete reply\n  with whitespace' },
+  });
+  assert.equal(threadFeed.subscriptions.size, 0);
+
+  send(socket, { type: 'openThread', id: 2, provider: 'claude', threadId: 'existing', readOnly: true });
+  await waitFor(() => socket.sent.some((message) => message.id === 2));
+  const subscription = [...threadFeed.subscriptions][0];
+  send(socket, { type: 'readLatestAgentOutput', id: 3, provider: 'codex', threadId: 'thread-1' });
+  await waitFor(() => socket.sent.some((message) => message.id === 3));
+  assert.deepEqual([...threadFeed.subscriptions], [subscription]);
+  assert.deepEqual(backends.codex.calls, [
+    { method: 'readLatestAgentOutput', threadId: 'thread-1' },
+    { method: 'readLatestAgentOutput', threadId: 'thread-1' },
+  ]);
+  socket.close();
+});
+
+test('latest-output RPC uses existing read-only SDK history without starting a query', async () => {
+  for (const provider of ['claude', 'qodercli']) {
+    const backend = new SdkAgentBackend({
+      provider, label: provider,
+      query: () => { assert.fail('a read request cannot start an Agent query'); },
+      getSessionInfo: async (sessionId) => ({ sessionId, cwd: '/srv/project' }),
+      getSessionMessages: async () => [
+        { type: 'user', uuid: 'user-1', message: { content: 'Question' } },
+        { type: 'assistant', uuid: 'agent-1', message: { content: [
+          { type: 'text', text: 'First part' },
+          { type: 'tool_use', id: 'tool-1', input: { secret: 'tool payload' } },
+          { type: 'text', text: 'Second part' },
+        ] } },
+        { type: 'user', uuid: 'user-2', message: { content: 'No reply yet' } },
+      ],
+    });
+    const hub = new AgentHub(new AgentRegistry({ [provider]: backend }));
+    const socket = new FakeSocket();
+    hub.handleConnection(socket, { streamVersion: 2 });
+    send(socket, { type: 'readLatestAgentOutput', id: 1, provider, threadId: 'thread-1' });
+    await waitFor(() => socket.sent.some((message) => message.id === 1));
+    assert.deepEqual(socket.sent.find((message) => message.id === 1), {
+      id: 1, ok: true, result: { text: 'First part\n\nSecond part' },
+    });
+    socket.close();
+    backend.close();
+  }
+});
+
+test('latest-output requests validate provider and thread identity', async () => {
+  const { hub } = setup();
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  send(socket, { type: 'readLatestAgentOutput', id: 1, provider: 'unknown', threadId: 'thread-1' });
+  send(socket, { type: 'readLatestAgentOutput', id: 2, provider: 'codex', threadId: ' ' });
+  await waitFor(() => socket.sent.some((message) => message.id === 1)
+    && socket.sent.some((message) => message.id === 2));
+  assert.match(socket.sent.find((message) => message.id === 1).error, /Unknown provider/);
+  assert.match(socket.sent.find((message) => message.id === 2).error, /Thread is required/);
+  socket.close();
+});
 
 test('lists only the selected provider sessions that still exist in tmux', async () => {
   const listTmuxSessions = async () => [

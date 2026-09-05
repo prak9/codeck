@@ -8,12 +8,15 @@ const exec = promisify(execFile);
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const AGENT_SESSION_ENV = new Set(['CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'QODER_SESSION_ID']);
 const CODEX_HISTORY_READ_LIMIT = 2 * 1024 * 1024;
+const CODEX_METADATA_READ_LIMIT = 64 * 1024;
+const CODEX_METADATA_CACHE_LIMIT = 256;
 const QODER_TRANSCRIPT_READ_LIMIT = 128 * 1024;
 const AGENT_IDENTITY_CACHE_TTL_MS = 5_000;
 const DETACHED_PROCESS_CACHE_TTL_MS = 5_000;
 const CLAUDE_TRANSCRIPT_MISS_TTL_MS = 5_000;
 let codexCache = { expires: 0, names: new Map(), starts: [], writers: [], history: [], historySignature: '', cwds: new Map(), previews: new Map() };
 const codexPaneSessions = new Map();
+const codexRolloutMetadata = new Map();
 const claudeTranscriptIndexes = new Map();
 const codexHistoryIndexes = new WeakMap();
 let clockTicksPromise;
@@ -748,17 +751,48 @@ function pathPartsWithin(root, target) {
   return relative.split(path.sep);
 }
 
+function codexRolloutIsSubagent(file, id) {
+  let descriptor;
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) return false;
+    const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    const cached = codexRolloutMetadata.get(file);
+    if (cached?.signature === signature) return cached.subagent;
+    descriptor = fs.openSync(file, 'r');
+    const buffer = Buffer.alloc(Math.min(stat.size, CODEX_METADATA_READ_LIMIT));
+    const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const entry = JSON.parse(buffer.subarray(0, bytesRead).toString('utf8').split('\n', 1)[0]);
+    const metadata = entry?.type === 'session_meta' ? entry.payload : null;
+    if ((metadata?.id || metadata?.session_id) !== id) return false;
+    const subagent = metadata.thread_source != null
+      ? metadata.thread_source === 'subagent'
+      : Boolean(metadata.source?.subagent);
+    if (codexRolloutMetadata.size >= CODEX_METADATA_CACHE_LIMIT) {
+      codexRolloutMetadata.delete(codexRolloutMetadata.keys().next().value);
+    }
+    codexRolloutMetadata.set(file, { signature, subagent });
+    return subagent;
+  } catch {
+    // An unreadable or partial header remains a candidate; never guess its role.
+    codexRolloutMetadata.delete(file);
+    return false;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
 export function findCodexOpenSessionId(processes, codexHome, { procRoot = '/proc' } = {}) {
   if (!processes?.length || !codexHome) return null;
   let locksRoot;
   let sessionsRoot;
   try {
-    locksRoot = fs.realpathSync(path.join(codexHome, 'thread-writer-locks'));
-    sessionsRoot = fs.realpathSync(path.join(codexHome, 'sessions'));
+    locksRoot = fs.realpathSync.native(path.join(codexHome, 'thread-writer-locks'));
+    sessionsRoot = fs.realpathSync.native(path.join(codexHome, 'sessions'));
   } catch { return null; }
 
   const lockIds = new Set();
-  const rolloutIds = new Set();
+  const rollouts = new Map();
   for (const process of processes) {
     const fdRoot = path.join(procRoot, String(process.pid), 'fd');
     let descriptors;
@@ -768,7 +802,8 @@ export function findCodexOpenSessionId(processes, codexHome, { procRoot = '/proc
       let target;
       try {
         const link = fs.readlinkSync(path.join(fdRoot, descriptor));
-        target = fs.realpathSync(path.isAbsolute(link) ? link : path.resolve(fdRoot, link));
+        if (/^(?:pipe|socket):\[|^anon_inode:/.test(link)) continue;
+        target = fs.realpathSync.native(path.isAbsolute(link) ? link : path.resolve(fdRoot, link));
       } catch { continue; }
 
       const lockParts = pathPartsWithin(locksRoot, target);
@@ -779,14 +814,18 @@ export function findCodexOpenSessionId(processes, codexHome, { procRoot = '/proc
 
       if (!pathPartsWithin(sessionsRoot, target)) continue;
       const rollout = parseRolloutFilename(target);
-      if (rollout) rolloutIds.add(rollout.id);
+      if (rollout) rollouts.set(rollout.id, target);
     }
   }
 
   // The writer lock identifies ownership and the rollout confirms app-server can
   // already open the thread. During a fork both descriptors move to the child,
   // while the original `codex resume <id>` argument necessarily stays unchanged.
-  const ids = [...lockIds].filter((id) => rolloutIds.has(id));
+  // Parallel subagents share the CLI process and own their own pairs. Only exclude
+  // roles confirmed by metadata; unknown headers and multiple roots stay ambiguous.
+  const ids = [...lockIds].filter((id) => (
+    rollouts.has(id) && !codexRolloutIsSubagent(rollouts.get(id), id)
+  ));
   return ids.length === 1 ? ids[0] : null;
 }
 

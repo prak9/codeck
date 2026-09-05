@@ -157,8 +157,13 @@
       <label for="sessionNameInput">会话名称</label>
       <input id="sessionNameInput" name="name" type="text" inputmode="text" autocomplete="off" autocapitalize="none" spellcheck="false" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}" maxlength="64" placeholder="feature-auth" required>
       <p class="field-help">用于 tmux 和左侧会话列表，可使用字母、数字、点、短横线和下划线。</p>
-      <label for="sessionProvider">Agent</label>
+      <label for="sessionProvider">运行方式</label>
       <select id="sessionProvider"></select>
+      <div id="sessionModeFields">
+        <label for="sessionMode">启动模式</label>
+        <select id="sessionMode" aria-describedby="sessionModeHint"><option value="new">新建对话</option><option value="resume">继续历史会话（resume）</option></select>
+        <p class="field-help" id="sessionModeHint" hidden>创建后进入终端，在 CLI 的历史列表中选择会话；选好后可切回 Remote。</p>
+      </div>
       <label for="sessionCwdInput">服务器工作目录</label>
       <input id="sessionCwdInput" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="/data/code/project">
       <p class="field-help">必须是服务器上的绝对路径。</p>
@@ -210,6 +215,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=74"></script>
+  <script type="module" src="/remote.js?v=75"></script>
 </body>
 </html>

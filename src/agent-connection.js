@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-receipts.js';
 import { resolveSessionStatus } from './session-status.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
+import { latestAgentOutputText } from '../public/remote-copy.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
@@ -280,6 +281,12 @@ export class AgentRegistry extends EventEmitter {
     return { ...(result || {}), data: tmuxThreads(provider, sessions, result?.data) };
   }
   openThread(provider, threadId, options) { return this.backend(provider).openThread(threadId, options); }
+  async readLatestAgentOutput(provider, threadId) {
+    const backend = this.backend(provider);
+    if (backend.readLatestAgentOutput) return backend.readLatestAgentOutput(threadId);
+    const result = await backend.openThread(threadId, { readOnly: true });
+    return { text: latestAgentOutputText(result?.thread?.turns) };
+  }
   sendSessionMessage(provider, params) {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
@@ -479,6 +486,9 @@ export class AgentHub {
       const subscription = this.#beginThreadSubscription(socket, target, null);
       this.#activateThreadSubscription(socket, subscription);
       return {};
+    }
+    if (message.type === 'readLatestAgentOutput') {
+      return this.registry.readLatestAgentOutput(provider, cleanId(message.threadId, 'Thread'));
     }
     if (message.type === 'loadThreadHistory') {
       const threadId = cleanId(message.threadId, 'Thread');

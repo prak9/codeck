@@ -163,6 +163,7 @@ test('normal mode exposes one-click copy for the latest completed model reply', 
     'desktop and mobile controls both expose the action');
   assert.match(indexHtml, /data-agent-output-copy[^>]+aria-label="复制最新模型输出"/);
   assert.match(appJs, /latestAgentOutputText/);
+  assert.match(appJs, /sessionFeedRequest\('readLatestAgentOutput'/);
   assert.match(appJs, /sessionFeedRequest\('loadThreadHistory'/);
   assert.match(appJs, /message\.id/,
     'the existing owner Agent socket must route request responses as well as session events');

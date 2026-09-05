@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agentKindFromCommand, detectPaneAgents, findCodexHistorySessionId, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexHistory, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId, uniqueCodexStartMatch } from '../src/agents.js';
+import { agentKindFromCommand, detectPaneAgents, findCodexHistorySessionId, findCodexOpenSessionId, findDetachedAgentSessionIds, findDetachedAgentSessionIdsFromProc, findQoderOpenSessionId, isQoderResumeCommand, paneProcessTree, parseCodexHistory, parseCodexPreview, parseCodexRename, parseCodexSessionIndex, parseProcessList, parseResumedSessionId, parseRolloutFilename, parseRuntimeSessionRegistry, PS_ARGUMENTS, readPaneProcessTrees, resolveCodexSessionId, uniqueCodexStartMatch } from '../src/agents.js';
 
 function writeProcProcess(root, {
   pid, ppid, pgrp = pid, session = pid, startTicks = 0, command = '', children = [], environment = '', cwd = null,
@@ -17,6 +17,22 @@ function writeProcProcess(root, {
   fs.writeFileSync(path.join(processRoot, 'environ'), environment);
   fs.writeFileSync(path.join(taskRoot, 'children'), children.join(' '));
   if (cwd) fs.symlinkSync(cwd, path.join(processRoot, 'cwd'));
+}
+
+function writeCodexOpenSession({ codexHome, procRoot, id, firstFd = 35, metadata = {} }) {
+  const sessions = path.join(codexHome, 'sessions', '2026', '09', '05');
+  const locks = path.join(codexHome, 'thread-writer-locks');
+  const fdRoot = path.join(procRoot, '11', 'fd');
+  for (const directory of [sessions, locks, fdRoot]) fs.mkdirSync(directory, { recursive: true });
+  const rollout = path.join(sessions, `rollout-2026-09-05T11-00-36-${id}.jsonl`);
+  const lock = path.join(locks, `${id}.lock`);
+  const lockFd = path.join(fdRoot, String(firstFd));
+  const rolloutFd = path.join(fdRoot, String(firstFd + 1));
+  fs.writeFileSync(rollout, `${JSON.stringify({ type: 'session_meta', payload: { id, ...metadata } })}\n`);
+  fs.writeFileSync(lock, '');
+  fs.symlinkSync(lock, lockFd);
+  fs.symlinkSync(rollout, rolloutFd);
+  return { rollout, lock, lockFd, rolloutFd };
 }
 
 test('latest Codex session name wins for a renamed thread', () => {
@@ -142,7 +158,157 @@ test('a Codex process follows its open thread after an explicit resume forks', a
       childId,
       'open descriptors invalidate the cached parent before its TTL',
     );
+    writeCodexOpenSession({
+      codexHome, procRoot, id: '01a04162-3333-7333-8333-333333333333', firstFd: 50,
+      metadata: { thread_source: 'subagent', parent_thread_id: childId },
+    });
+    writeCodexOpenSession({
+      codexHome, procRoot, id: '01a04163-4444-7444-8444-444444444444', firstFd: 60,
+      metadata: { source: { subagent: { thread_spawn: { parent_thread_id: childId } } } },
+    });
+    assert.equal(
+      (await detect(1_003_000)).get('codeck')?.id,
+      childId,
+      'parallel subagents must not make the current fork fall back to its old resume argument',
+    );
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Codex open-session detection keeps unknown metadata and multiple roots ambiguous', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-open-metadata-'));
+  const codexHome = path.join(root, 'codex');
+  const procRoot = path.join(root, 'proc');
+  const rootId = '01a04164-1111-7111-8111-111111111111';
+  const otherId = '01a04165-2222-7222-8222-222222222222';
+  const detect = () => findCodexOpenSessionId([{ pid: 11 }], codexHome, { procRoot });
+  const originalOpen = fs.openSync;
+  try {
+    const main = writeCodexOpenSession({ codexHome, procRoot, id: rootId, metadata: { thread_source: 'user' } });
+    const other = writeCodexOpenSession({ codexHome, procRoot, id: otherId, firstFd: 50 });
+    const metadata = (payload) => `${JSON.stringify({ type: 'session_meta', payload })}\n`;
+    assert.equal(detect(), null, 'an unknown candidate cannot be assumed to be a subagent');
+    fs.writeFileSync(other.rollout, metadata({ id: otherId, thread_source: 'user' }));
+    assert.equal(detect(), null, 'two user threads must remain ambiguous');
+    fs.writeFileSync(other.rollout, metadata({ id: rootId, thread_source: 'subagent' }));
+    assert.equal(detect(), null, 'metadata for a different thread cannot exclude this candidate');
+    const subagent = metadata({ id: otherId, thread_source: 'subagent', parent_thread_id: rootId });
+    fs.writeFileSync(other.rollout, subagent.slice(0, -5));
+    assert.equal(detect(), null, 'a partially written header cannot exclude a candidate');
+    fs.appendFileSync(other.rollout, subagent.slice(-5));
+    assert.equal(detect(), rootId, 'a completed header is retried immediately');
+    let headerReads = 0;
+    fs.openSync = function countedHeader(file, ...args) {
+      if (file === main.rollout || file === other.rollout) headerReads += 1;
+      return originalOpen.call(this, file, ...args);
+    };
+    assert.equal(detect(), rootId);
+    assert.equal(headerReads, 0, 'unchanged metadata is reused while FDs are still checked');
+    fs.openSync = originalOpen;
+
+    const replacement = `${other.rollout}.replacement`;
+    const previous = fs.statSync(other.rollout);
+    fs.writeFileSync(replacement, metadata({
+      id: otherId, thread_source: 'user', parent_thread_id: rootId,
+    }).padEnd(subagent.length));
+    fs.utimesSync(replacement, previous.atimeMs / 1000, previous.mtimeMs / 1000);
+    fs.renameSync(replacement, other.rollout);
+    assert.equal(detect(), null, 'a replaced rollout invalidates cached subagent metadata');
+    fs.writeFileSync(other.rollout, metadata({
+      id: otherId, base_instructions: 'x'.repeat(128 * 1024), thread_source: 'subagent',
+    }));
+    assert.equal(detect(), null, 'a header beyond the bounded read stays ambiguous');
+    fs.writeFileSync(other.rollout, metadata({
+      id: otherId, thread_source: 'user', source: { subagent: {} },
+    }));
+    assert.equal(detect(), null, 'a user role cannot be excluded by conflicting source metadata');
+    fs.writeFileSync(other.rollout, subagent);
+    assert.equal(detect(), rootId, 'an in-place metadata change also invalidates the cache');
+    fs.rmSync(main.lockFd);
+    fs.rmSync(main.rolloutFd);
+    assert.equal(detect(), null, 'a sole subagent is not the pane root');
+  } finally {
+    fs.openSync = originalOpen;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Codex open-session detection tolerates unreadable metadata and closing descriptors', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-open-races-'));
+  const codexHome = path.join(root, 'codex');
+  const procRoot = path.join(root, 'proc');
+  const rootId = '01a04166-1111-7111-8111-111111111111';
+  const otherId = '01a04167-2222-7222-8222-222222222222';
+  const originalOpen = fs.openSync;
+  const originalReadlink = fs.readlinkSync;
+  const originalReaddir = fs.readdirSync;
+  try {
+    writeCodexOpenSession({ codexHome, procRoot, id: rootId, metadata: { thread_source: 'user' } });
+    const other = writeCodexOpenSession({
+      codexHome, procRoot, id: otherId, firstFd: 50, metadata: { thread_source: 'subagent' },
+    });
+    const detect = () => findCodexOpenSessionId([{ pid: 11 }, { pid: 12 }], codexHome, { procRoot });
+    fs.openSync = function deniedMetadata(file, ...args) {
+      if (file === other.rollout) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return originalOpen.call(this, file, ...args);
+    };
+    fs.readdirSync = function deniedProcess(directory, ...args) {
+      if (directory === path.join(procRoot, '12', 'fd')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return originalReaddir.call(this, directory, ...args);
+    };
+    assert.equal(detect(), null, 'unreadable metadata stays ambiguous');
+    fs.openSync = originalOpen;
+    assert.equal(detect(), rootId, 'a transient read failure must not be cached');
+    fs.readlinkSync = function closedDescriptor(file, ...args) {
+      if (file === other.rolloutFd) throw Object.assign(new Error('descriptor closed'), { code: 'ENOENT' });
+      return originalReadlink.call(this, file, ...args);
+    };
+    assert.equal(detect(), rootId, 'an FD closing during the scan is ignored');
+  } finally {
+    fs.openSync = originalOpen;
+    fs.readlinkSync = originalReadlink;
+    fs.readdirSync = originalReaddir;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Codex FD scans preserve symlink aliases without resolving pipe and socket targets', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-open-paths-'));
+  const codexHome = path.join(root, 'codex');
+  const procRoot = path.join(root, 'proc');
+  const sessionId = '01a04168-1111-7111-8111-111111111111';
+  const originalRealpath = fs.realpathSync;
+  const attemptedPseudoPaths = [];
+  try {
+    const main = writeCodexOpenSession({ codexHome, procRoot, id: sessionId });
+    const homeAlias = path.join(root, 'codex-alias');
+    const rolloutAlias = path.join(root, 'transcript-alias');
+    fs.symlinkSync(codexHome, homeAlias);
+    fs.symlinkSync(main.rollout, rolloutAlias);
+    fs.rmSync(main.rolloutFd);
+    fs.symlinkSync(path.relative(path.dirname(main.rolloutFd), rolloutAlias), main.rolloutFd);
+    for (const [index, target] of ['pipe:[100]', 'socket:[200]', 'anon_inode:[eventpoll]'].entries()) {
+      fs.symlinkSync(target, path.join(procRoot, '11', 'fd', String(60 + index)));
+    }
+    const counted = (resolve) => function observedPath(file, ...args) {
+      if (/pipe:\[|socket:\[|anon_inode:/.test(String(file))) attemptedPseudoPaths.push(file);
+      return resolve.call(this, file, ...args);
+    };
+    fs.realpathSync = Object.assign(counted(originalRealpath), { native: counted(originalRealpath.native) });
+    assert.equal(findCodexOpenSessionId([{ pid: 11 }], homeAlias, { procRoot }), sessionId);
+    assert.deepEqual(attemptedPseudoPaths, [], 'non-file descriptors do not need canonicalization');
+    const outside = path.join(root, path.basename(main.rollout));
+    fs.writeFileSync(outside, '{}\n');
+    fs.rmSync(main.rollout);
+    fs.symlinkSync(outside, main.rollout);
+    assert.equal(
+      findCodexOpenSessionId([{ pid: 11 }], homeAlias, { procRoot }),
+      null,
+      'a symlink escaping the configured sessions directory is not a valid rollout',
+    );
+  } finally {
+    fs.realpathSync = originalRealpath;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -8,6 +8,7 @@ import {
   createTerminalResizeGate,
   createTerminalOutputAcknowledger,
   createTerminalWriteQueue,
+  createTerminalWheelScroller,
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
@@ -378,4 +379,160 @@ test('wheel deltas become tmux scroll amounts, in tmux\'s direction', () => {
   assert.equal(wheelScrollLines({ deltaY: -4, deltaMode: 0 }, 20), 0);
   // 单次手势也要有上限, 一甩不该请求上千行。
   assert.equal(wheelScrollLines({ deltaY: -100000, deltaMode: 0 }, 20), 60);
+});
+
+function wheelHarness() {
+  const scheduled = [];
+  const sent = [];
+  const scroller = createTerminalWheelScroller((lines) => sent.push(lines), {
+    schedule(callback) {
+      const task = { callback, cancelled: false };
+      scheduled.push(task);
+      return task;
+    },
+    cancel(task) { task.cancelled = true; },
+  });
+  return { scroller, sent, scheduled };
+}
+
+test('wheel scrolling accumulates small pixel deltas and batches one display frame', () => {
+  const { scroller, sent, scheduled } = wheelHarness();
+  for (let index = 0; index < 20; index += 1) {
+    assert.equal(scroller.scroll({ deltaY: -4, deltaMode: 0 }, 20), true);
+  }
+  assert.equal(scheduled.length, 1);
+  assert.deepEqual(sent, []);
+  scheduled[0].callback();
+  assert.deepEqual(sent, [4], '80px of continuous movement must scroll four 20px rows');
+});
+
+test('wheel scrolling retains line and page units and caps extreme single events', () => {
+  const { scroller, sent, scheduled } = wheelHarness();
+  scroller.scroll({ deltaY: -3, deltaMode: 1 }, 20, 40);
+  scroller.scroll({ deltaY: -1, deltaMode: 2 }, 20, 40);
+  scheduled.at(-1).callback();
+  assert.deepEqual(sent, [43]);
+  scroller.scroll({ deltaY: -100000, deltaMode: 0 }, 20);
+  scheduled.at(-1).callback();
+  assert.deepEqual(sent, [43, 60]);
+});
+
+test('wheel reversal preserves ordered scrolls without carrying the old fractional direction', () => {
+  const { scroller, sent, scheduled } = wheelHarness();
+  scroller.scroll({ deltaY: 30 }, 20);
+  scroller.scroll({ deltaY: -12 }, 20);
+  scroller.scroll({ deltaY: -8 }, 20);
+  scheduled.at(-1).callback();
+  assert.deepEqual(sent, [-1, 1], 'down then up cannot cancel before tmux sees the copy-mode transitions');
+});
+
+test('wheel cancellation drops pending frames and partial rows before another session', () => {
+  const { scroller, sent, scheduled } = wheelHarness();
+  scroller.scroll({ deltaY: -30 }, 20);
+  const stale = scheduled[0];
+  scroller.cancel();
+  assert.equal(stale.cancelled, true);
+  stale.callback();
+  scroller.scroll({ deltaY: -10 }, 20);
+  assert.equal(scheduled.length, 1, 'half of an old session row must not carry to the next session');
+  scroller.scroll({ deltaY: -10 }, 20);
+  scheduled.at(-1).callback();
+  assert.deepEqual(sent, [1]);
+});
+
+test('wheel zoom and horizontal gestures stay with the browser', () => {
+  const { scroller, sent, scheduled } = wheelHarness();
+  for (const event of [
+    { deltaY: -100, ctrlKey: true },
+    { deltaY: -100, metaKey: true },
+    { deltaY: -100, shiftKey: true },
+    { deltaY: 0, deltaX: 100 },
+    { deltaY: Number.NaN },
+    { deltaY: Infinity },
+  ]) assert.equal(scroller.scroll(event, 20), false);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(scheduled, []);
+});
+
+test('unchanged explicit fit layout reuses the grid without remeasuring or changing fonts', () => {
+  const harness = sizingHarness(390, 600);
+  harness.terminal._core = { _renderService: { dimensions: { css: { cell: {
+    get width() { return harness.terminal.options.fontSize * 0.6; },
+    get height() { return harness.terminal.options.fontSize * 1.2; },
+  } } } } };
+  const options = { baseFontSize: 16, overviewSize: { cols: 160, rows: 50 }, layout: { width: 390, height: 600, dpr: 1, fontRevision: 0 } };
+  const first = fitTerminalGrid(harness.terminal, harness.fit, options);
+  const firstFontSize = harness.terminal.options.fontSize;
+  harness.fit.proposeDimensions = () => { throw new Error('unchanged layout was measured again'); };
+  assert.deepEqual(fitTerminalGrid(harness.terminal, harness.fit, options), first);
+  assert.equal(harness.terminal.options.fontSize, firstFontSize);
+  assert.equal(harness.repaints.length, 1);
+  assert.equal(harness.sizes.length, 1);
+});
+
+test('fit cache remeasures changed renderer cells after WebGL falls back to DOM', () => {
+  const harness = sizingHarness(1000, 600);
+  const cell = { width: 9, height: 21 };
+  harness.terminal._core = { _renderService: { dimensions: { css: { cell } } } };
+  let measures = 0;
+  harness.fit.proposeDimensions = () => {
+    measures += 1;
+    return { cols: Math.floor(983 / cell.width), rows: Math.floor(600 / cell.height) };
+  };
+  const options = { baseFontSize: 16, layout: { width: 1000, height: 600, dpr: 1, fontRevision: 0 } };
+  assert.deepEqual(fitTerminalGrid(harness.terminal, harness.fit, options), { cols: 109, rows: 28, overview: false });
+
+  // The DOM renderer keeps fractional character widths that WebGL floors.
+  cell.width = 9.6055;
+  assert.deepEqual(fitTerminalGrid(harness.terminal, harness.fit, options), { cols: 102, rows: 28, overview: false });
+  assert.ok(harness.terminal.cols * cell.width <= 1000, 'the fallback grid must stay inside its container');
+  fitTerminalGrid(harness.terminal, harness.fit, options);
+  assert.equal(measures, 2, 'unchanged fallback metrics can still reuse the cache');
+});
+
+test('fit cache invalidates size, scale, loaded fonts, target grid and font settings', () => {
+  const changes = [
+    (options) => { options.layout.width += 1; },
+    (options) => { options.layout.height += 1; },
+    (options) => { options.layout.dpr = 2; },
+    (options) => { options.layout.fontRevision += 1; },
+    (options) => { options.baseFontSize = 18; },
+    (options) => { options.overviewSize.cols += 1; },
+    (options) => { options.overviewSize.rows += 1; },
+    (options, terminal) => { terminal.options.fontFamily = 'different font'; },
+    (options, terminal) => { terminal.options.lineHeight = 1.4; },
+    (options, terminal) => { terminal.options.letterSpacing = 1; },
+    (options, terminal) => { terminal.options.fontSize = 10; },
+    (options, terminal) => { terminal.resize(80, 24); },
+  ];
+  for (const change of changes) {
+    const harness = sizingHarness(390, 600);
+    const options = { baseFontSize: 16, overviewSize: { cols: 160, rows: 50 }, layout: { width: 390, height: 600, dpr: 1, fontRevision: 0 } };
+    fitTerminalGrid(harness.terminal, harness.fit, options);
+    const propose = harness.fit.proposeDimensions;
+    let measures = 0;
+    harness.fit.proposeDimensions = () => { measures += 1; return propose(); };
+    change(options, harness.terminal);
+    fitTerminalGrid(harness.terminal, harness.fit, options);
+    assert.ok(measures > 0, String(change));
+    assert.equal(harness.repaints.length, 2, String(change));
+  }
+});
+
+test('fit cache never reuses unmeasured, hidden, or unspecified layouts', () => {
+  for (const layout of [undefined, { width: 0, height: 600, dpr: 1, fontRevision: 0 }]) {
+    const harness = sizingHarness(390, 600);
+    const options = { baseFontSize: 16, overviewSize: { cols: 160, rows: 50 }, layout };
+    fitTerminalGrid(harness.terminal, harness.fit, options);
+    fitTerminalGrid(harness.terminal, harness.fit, options);
+    assert.equal(harness.repaints.length, 2);
+  }
+  const harness = sizingHarness(390, 600);
+  const options = { baseFontSize: 16, layout: { width: 390, height: 600, dpr: 1, fontRevision: 0 } };
+  const propose = harness.fit.proposeDimensions;
+  harness.fit.proposeDimensions = () => undefined;
+  fitTerminalGrid(harness.terminal, harness.fit, options);
+  harness.fit.proposeDimensions = propose;
+  fitTerminalGrid(harness.terminal, harness.fit, options);
+  assert.equal(harness.repaints.length, 2, 'fallback dimensions before font measurement cannot seed a cache');
 });

@@ -815,6 +815,48 @@ test('starts Codeck-managed Codex sessions without the interactive update check'
   ]);
 });
 
+test('starts each Agent in its native resume picker inside the requested tmux directory', async () => {
+  for (const [client, command] of [
+    ['codex', 'codex -c check_for_update_on_startup=false resume'],
+    ['claude', 'claude --resume'],
+    ['qodercli', 'qodercli --resume'],
+  ]) {
+    const calls = [];
+    await createSession({ name: 'restore', client, mode: 'resume', cwd: '/srv/project' }, async (...args) => {
+      calls.push(args);
+    });
+
+    assert.deepEqual(calls, [
+      ['tmux', ['new-session', '-d', '-s', 'restore', '-c', '/srv/project']],
+      ['tmux', ['send-keys', '-l', '-t', 'restore:0.0', command]],
+      ['tmux', ['send-keys', '-t', 'restore:0.0', 'Enter']],
+    ], client);
+  }
+});
+
+test('creates plain shell sessions without sending an Agent command', async () => {
+  for (const mode of [undefined, 'new']) {
+    const calls = [];
+    await createSession({ name: 'shell-work', client: 'shell', mode }, async (...args) => {
+      calls.push(args);
+    });
+    assert.deepEqual(calls, [['tmux', ['new-session', '-d', '-s', 'shell-work']]]);
+  }
+});
+
+test('rejects unsupported session launch modes before creating a tmux session', async () => {
+  const calls = [];
+  const execCommand = async (...args) => { calls.push(args); };
+  for (const mode of ['', null, 1, 'continue', 'resume; pwd']) {
+    await assert.rejects(createSession({ name: 'work', client: 'codex', mode }, execCommand), /启动方式/);
+  }
+  await assert.rejects(
+    createSession({ name: 'work', client: 'shell', mode: 'resume' }, execCommand),
+    /Shell.*恢复/,
+  );
+  assert.deepEqual(calls, []);
+});
+
 test('accepts safe session names and known clients', () => {
   assert.equal(validateSessionName('feature_auth-2.0'), true);
   assert.equal(validateClient('codex'), true);

@@ -37,7 +37,7 @@ import {
   findCreatedRemoteSession,
   nextThreadAfterClose,
   suggestedRemoteSessionName,
-} from './remote-session.js?v=2';
+} from './remote-session.js?v=3';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
   SESSION_FOLDER_PREFIXES_STORAGE_KEY,
@@ -1110,13 +1110,17 @@ function renderProviderControls() {
   $('#providerOptions').replaceChildren(...options);
 
   for (const select of [$('#settingsProvider'), $('#sessionProvider')]) {
-    select.replaceChildren(...state.providers.map((provider) => {
-      const option = element('option', '', providerDetails(provider).name);
+    const creating = select === $('#sessionProvider');
+    const providers = creating ? [...state.providers, 'shell'] : state.providers;
+    const selected = creating && $('#newSessionDialog').open ? select.value : selectedProvider;
+    select.replaceChildren(...providers.map((provider) => {
+      const option = element('option', '', provider === 'shell' ? 'Shell（纯终端）' : providerDetails(provider).name);
       option.value = provider;
       return option;
     }));
-    select.value = selectedProvider;
+    select.value = providers.includes(selected) ? selected : selectedProvider;
   }
+  syncNewSessionMode();
   renderHeader();
 }
 
@@ -2393,10 +2397,23 @@ function handleAttachmentPaste(event) {
   addAttachmentFiles(files);
 }
 
+function syncNewSessionMode() {
+  const shell = $('#sessionProvider').value === 'shell';
+  const mode = $('#sessionMode');
+  if (shell) mode.value = 'new';
+  mode.disabled = shell || state.sessionCreationPending;
+  $('#sessionModeFields').hidden = shell;
+  $('#sessionModeHint').hidden = shell || mode.value !== 'resume';
+  $('#createSessionButton').textContent = state.sessionCreationPending ? '正在创建…'
+    : mode.value === 'resume' ? '创建并选择历史' : '创建会话';
+}
+
 function openNewSession() {
   if (state.sessionCreationPending || state.sessionClosePending) return;
   const provider = preferredNewSessionProvider();
   $('#sessionProvider').value = provider;
+  $('#sessionMode').value = 'new';
+  syncNewSessionMode();
   $('#sessionCwdInput').value = state.thread?.cwd || state.cwd || state.defaultCwd;
   $('#sessionError').textContent = '';
   updateSuggestedSessionName(provider, { force: true });
@@ -2621,7 +2638,11 @@ $('#newSessionDialog').addEventListener('cancel', (event) => {
   if (state.sessionCreationPending) event.preventDefault();
 });
 $('#settingsTheme').addEventListener('change', (event) => applyTheme(event.target.value, { persist: true }));
-$('#sessionProvider').addEventListener('change', (event) => updateSuggestedSessionName(event.target.value));
+$('#sessionProvider').addEventListener('change', (event) => {
+  updateSuggestedSessionName(event.target.value);
+  syncNewSessionMode();
+});
+$('#sessionMode').addEventListener('change', syncNewSessionMode);
 $('#composerInput').addEventListener('paste', handleAttachmentPaste);
 $('#composerInput').addEventListener('input', () => {
   state.slashCommandIndex = 0;
@@ -2707,6 +2728,7 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
     payload = createRemoteSessionPayload({
       name: $('#sessionNameInput').value,
       provider: $('#sessionProvider').value,
+      mode: $('#sessionMode').value,
       cwd: $('#sessionCwdInput').value,
     });
   } catch (error) {
@@ -2722,10 +2744,18 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
   try {
     await requestSessionCreation(payload);
     created = true;
+    if (payload.mode === 'resume') {
+      // The CLI owns its history picker; it has no thread identity until selection.
+      $('#newSessionDialog').close();
+      location.assign(`/?session=${encodeURIComponent(payload.name)}`);
+      return;
+    }
     state.sessionSnapshot = null;
-    state.provider = payload.client;
+    if (payload.client !== 'shell') {
+      state.provider = payload.client;
+      localStorage.setItem('codeck-remote-provider', state.provider);
+    }
     state.cwd = payload.cwd || state.defaultCwd;
-    localStorage.setItem('codeck-remote-provider', state.provider);
     localStorage.setItem('codeck-remote-cwd', state.cwd);
     renderProviderControls();
     startNewThread({ focus: false });
@@ -2733,15 +2763,10 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
     const thread = await waitForCreatedSession(payload.name, payload.client);
     $('#newSessionDialog').close();
     if (!thread) {
-      setLiveMessage(`tmux 会话“${payload.name}”已创建，Agent 仍在启动，请稍后从左栏进入。`);
+      setLiveMessage(`tmux 会话“${payload.name}”已创建，仍在启动，请稍后从左栏进入。`);
       return;
     }
-    if (thread.tmux.available === false) openPendingThread(thread, { refresh: false });
-    else await openThread(thread.id, {
-      provider: thread.provider,
-      readOnly: true,
-      tmuxSession: thread.tmux?.name,
-    });
+    await openListedThread(thread);
     setTimeout(() => $('#composerInput').focus(), 50);
   } catch (error) {
     if (created) {
@@ -2754,7 +2779,7 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
     state.sessionCreationPending = false;
     for (const control of controls) control.disabled = false;
     button.disabled = false;
-    button.textContent = '创建会话';
+    syncNewSessionMode();
   }
 });
 $('#settingsForm').addEventListener('submit', (event) => {

@@ -117,6 +117,9 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-header .eyebrow { margin-bottom: 4px; }
 .terminal-header h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
 .terminal-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; }
+.terminal-disconnect { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; margin-bottom: 8px; border: 1px solid var(--line-strong); border-radius: 8px; color: #ffbdab; font-size: 12px; }
+.terminal-disconnect span { min-width: 0; overflow-wrap: anywhere; }
+.terminal-disconnect button { flex: none; min-height: 44px; }
 .terminal-tool-button, .view-mode-button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); cursor: pointer; }
 .terminal-tool-button:disabled { opacity: .55; cursor: wait; }
 [data-agent-output-copy][data-copy-state="success"] { border-color: #65d46e55; color: #8ee69a; }

@@ -94,7 +94,7 @@ export function createTerminalOutputBatcher(send, {
     clearTimers();
   };
 
-  return { write, cancel: stop };
+  return { write, flush, cancel: stop };
 }
 
 export async function handleTerminalConnection(ws, session, viewport, overrides = {}) {
@@ -212,6 +212,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       }
       if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)) {
         const [cols, rows] = dependencies.clampViewport(message.cols, message.rows);
+        activeViewport = { width: cols, height: rows };
         const nextGrid = `${cols}x${rows}`;
         if (nextGrid !== terminalGrid) {
           terminalGrid = nextGrid;
@@ -287,6 +288,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     });
     attached.onExit(({ exitCode }) => {
       if (terminal !== attached) return;
+      terminalOutput?.flush();
       terminalOutput?.cancel();
       terminalOutput = null;
       terminal = null;

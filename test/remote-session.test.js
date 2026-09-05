@@ -32,6 +32,21 @@ test('remote session creation rejects names tmux cannot safely address', () => {
   );
 });
 
+test('remote session creation supports native resume and plain Shell without a resume mode', () => {
+  for (const provider of ['codex', 'claude', 'qodercli']) {
+    assert.deepEqual(createRemoteSessionPayload({ name: 'work', provider, mode: 'resume' }), {
+      name: 'work', client: provider, mode: 'resume',
+    });
+  }
+  assert.deepEqual(createRemoteSessionPayload({ name: 'console', provider: 'shell', mode: 'new' }), {
+    name: 'console', client: 'shell',
+  });
+  assert.throws(() => createRemoteSessionPayload({ name: 'work', provider: 'shell', mode: 'resume' }), /Shell/);
+  for (const mode of ['other', '', null, true]) {
+    assert.throws(() => createRemoteSessionPayload({ name: 'work', provider: 'codex', mode }), /启动模式/);
+  }
+});
+
 test('remote session suggestions avoid existing tmux names', () => {
   const now = { getHours: () => 15, getMinutes: () => 7 };
   assert.equal(suggestedRemoteSessionName('claude', [], now), 'claude-1507');

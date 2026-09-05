@@ -20,6 +20,7 @@ import {
 import { CodexAppServer } from './codex-app-server.js';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
+import { latestAgentOutputText } from '../public/remote-copy.js';
 
 const CODEX_APPROVAL_METHODS = new Set([
   'item/commandExecution/requestApproval',
@@ -169,6 +170,30 @@ export class CodexAgentBackend extends EventEmitter {
       sortKey: 'updated_at',
       sortDirection: 'desc',
     });
+  }
+
+  async readLatestAgentOutput(threadId) {
+    let cursor;
+    do {
+      const page = await this.#readStore('thread/turns/list', {
+        threadId,
+        limit: CODEX_PROGRESSIVE_TURN_LIMIT,
+        sortDirection: 'desc',
+        itemsView: 'summary',
+        ...(cursor ? { cursor } : {}),
+      });
+      const turns = Array.isArray(page?.data) ? [...page.data] : [];
+      // Match exact openThread reads: Codex summaries can omit newly appended text
+      // from the latest interrupted turn. Other turns need no full tool hydration.
+      if (!cursor && turns[0]?.status === 'interrupted') {
+        const full = await this.#readLatestFullTurn(threadId, turns[0].id);
+        if (full) turns[0] = full;
+      }
+      const text = latestAgentOutputText(turns.reverse());
+      if (text) return { text };
+      cursor = page?.nextCursor;
+    } while (cursor);
+    return { text: '' };
   }
 
   async openThread(threadId, { readOnly = false, progressive = false } = {}) {
