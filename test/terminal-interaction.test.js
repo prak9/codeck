@@ -65,6 +65,46 @@ const imageEvent = () => ({
   preventDefault() {}, stopImmediatePropagation() {},
 });
 
+function mobileKeyFixture() {
+  const f = fixture();
+  const timers = [];
+  Object.assign(f.context, {
+    setTimeout: (callback) => { timers.push(callback); return timers.length; },
+    setInterval: (callback) => { timers.push(callback); return timers.length; },
+    clearInterval() {},
+  });
+  const start = source.indexOf('const TERMINAL_KEYS =');
+  const end = source.indexOf("$('#terminalVoiceCaptureButton').addEventListener", start);
+  vm.runInContext(source.slice(start, end), f.context);
+  const press = () => f.listeners.get('pointerdown')({
+    target: { closest: () => ({ dataset: { terminalKey: 'enter' } }) },
+  });
+  return { ...f, timers, press };
+}
+
+test('mobile Enter confirms in the terminal without sending or clearing a local draft or repeating', () => {
+  assert.match(html, /<button[^>]*data-terminal-key="enter"[^>]*>Enter<\/button>/);
+  const f = mobileKeyFixture();
+  f.$('#terminalVoiceComposer').hidden = false;
+  f.press();
+  f.listeners.get('pointerup')();
+  assert.deepEqual(f.sent, [{ type: 'input', data: '\r' }]);
+  assert.equal(f.$('#terminalVoiceDraft').value, 'unsent draft');
+  assert.deepEqual(f.timers, [], 'holding Enter must not confirm subsequent prompts');
+});
+
+for (const blocked of ['readonly', 'connecting', 'disconnected']) {
+  test(`mobile Enter cannot send while ${blocked}`, () => {
+    const f = mobileKeyFixture();
+    if (blocked === 'readonly') f.state.canWrite = false;
+    if (blocked === 'connecting') f.state.terminalInputReady = false;
+    if (blocked === 'disconnected') f.socket.readyState = 3;
+    f.press();
+    assert.deepEqual(f.sent, []);
+    assert.deepEqual(f.timers, []);
+  });
+}
+
 for (const backToOriginal of [false, true]) {
   test(`image upload never inserts into a reused socket after switching${backToOriginal ? ' away and back' : ''}`, async () => {
     const f = fixture();

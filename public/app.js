@@ -1584,7 +1584,7 @@ for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
 // Held keys repeat, the way a physical keyboard does. Without it the arrows move one
 // column per tap, so putting the cursor anywhere useful on a phone means tapping a dozen
 // times — which is what made tapping the screen directly seem worth attempting.
-const TERMINAL_KEYS = { escape: '\x1b', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
+const TERMINAL_KEYS = { escape: '\x1b', enter: '\r', tab: '\t', 'ctrl-c': '\x03', 'ctrl-d': '\x04', 'ctrl-l': '\x0c', left: '\x1b[D', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C' };
 const KEY_REPEAT_DELAY_MS = 400;
 const KEY_REPEAT_INTERVAL_MS = 55;
 // Only movement repeats. Holding Esc or ⌃C should send one, however long the finger rests.
