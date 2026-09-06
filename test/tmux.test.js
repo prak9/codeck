@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import { AGENT_SCREEN_MARKERS, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
+// Real Codex 0.153.2 captures at 24 and 28 columns. tmux -e preserves the
+// faint placeholder, which has the same text as a possible user-authored draft.
+const NARROW_CODEX_COMPOSERS = [
+  '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anyth\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…',
+  '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fast\x1b[2m\x1b[39m · …',
+];
 
 test('parses tmux list output into typed session records', () => {
   assert.deepEqual(parseSessions('agent-one\t2\t1\t100\t200\t180\t48\ton\n'), [{
@@ -2174,5 +2180,56 @@ test('Codex preflight recognizes the existing o3 and codex-mini footer identitie
     });
     assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1, model);
     assert.equal(commands.filter((args) => args.includes('Enter')).length, 1, model);
+  }
+});
+
+test('real narrow Codex composers accept messages and slash commands with clipped footers', async () => {
+  for (const screen of NARROW_CODEX_COMPOSERS) {
+    for (const text of ['怎么样了', '/status']) {
+      const commands = [];
+      const result = await sendSessionMessage({
+        provider: 'codex', sessionName: 'narrow', threadId: 'thread-1', text,
+      }, {
+        listTmuxSessions: async () => [{ name: 'narrow', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+        loadBuffer: async () => {}, execTmux: async (args) => commands.push(args),
+        waitForPaste: async () => {}, waitForSubmit: async () => {}, waitForSlashOutput: async () => {},
+        capturePane: async () => screen,
+      });
+      if (!text.startsWith('/')) assert.equal(result.submissionStatus, 'submitted');
+      assert.equal(commands.filter((args) => args.includes('Enter')).length, 1);
+    }
+  }
+});
+
+test('narrow Codex confirmation retries only the exact draft then recognizes the clipped placeholder', async () => {
+  for (const text of ['怎么样了', 'Ask Codex to do anyth']) {
+    let enters = 0;
+    const result = await ensureAgentInputSubmitted({
+      paneId: '%7', text, verifyPane: async () => true, waitForSubmit: async () => {},
+      execTmux: async () => { enters += 1; },
+      capturePane: async () => enters ? NARROW_CODEX_COMPOSERS[0]
+        : `\x1b[1m›\x1b[0m ${text}\n \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…`,
+    });
+    assert.equal(result, 'submitted');
+    assert.equal(enters, 1);
+  }
+});
+
+test('narrow Codex preflight preserves real drafts resembling truncated placeholders and footers', async () => {
+  for (const draft of [
+    'Ask Codex to do anyth', '\x1b[38;2;2;2;2mAsk Codex to do anyth',
+    '\x1b[2;22mAsk Codex to do anyth', '\x1b[2mAsk Codex\x1b[0m to do anyth',
+    '\x1b[2mAsk Codex to do anyth\n  keep this second line',
+    '\n  gpt-6-astra xhigh fas…\n  keep this second line',
+  ]) {
+    const commands = [];
+    await assert.rejects(sendSessionMessage({
+      provider: 'codex', sessionName: 'narrow', threadId: 'thread-1', text: 'Continue',
+    }, {
+      listTmuxSessions: async () => [{ name: 'narrow', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      loadBuffer: async () => {}, execTmux: async (args) => commands.push(args),
+      capturePane: async () => `\x1b[1m›\x1b[0m ${draft}\n \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…`,
+    }), /消息未发送/);
+    assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
   }
 });

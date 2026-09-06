@@ -492,9 +492,9 @@ function screenHash(output) {
   return createHash('sha1').update(String(output || '')).digest('hex');
 }
 
-function capturePane(paneId, execTmux = exec, joinWrapped = false) {
+function capturePane(paneId, execTmux = exec, joinWrapped = false, preserveStyles = false) {
   if (!paneId) return Promise.resolve('');
-  return execTmux('tmux', ['capture-pane', '-p', ...(joinWrapped ? ['-J'] : []), '-t', paneId])
+  return execTmux('tmux', ['capture-pane', '-p', ...(joinWrapped ? ['-J'] : []), ...(preserveStyles ? ['-e'] : []), '-t', paneId])
     .then(({ stdout }) => stdout).catch(() => '');
 }
 
@@ -830,6 +830,35 @@ async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, w
 
 const SUBMIT_CONFIRM_ATTEMPTS = 3;
 const SUBMIT_CONFIRM_DELAY_MS = 200;
+const CODEX_PLACEHOLDER = 'Ask Codex to do anything';
+const CODEX_CLIPPED_FOOTER = /^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*…$/iu;
+
+function hasDimComposerText(line, prefixLength) {
+  let dim = false;
+  let column = 0;
+  let found = false;
+  for (const part of line.split(/(\x1b\[[\d;]*m)/u)) {
+    if (part.startsWith('\x1b[')) {
+      const codes = part.slice(2, -1).split(';').map(Number);
+      for (let index = 0; index < codes.length; index += 1) {
+        const code = codes[index];
+        // RGB/palette arguments can contain 0, 2 and 22; they are not attributes.
+        if ([38, 48, 58].includes(code)) index += codes[index + 1] === 2 ? 4 : 2;
+        else if (code === 0 || code === 22) dim = false;
+        else if (code === 2) dim = true;
+      }
+    } else {
+      for (const character of part) {
+        if (column >= prefixLength && character.trim()) {
+          if (!dim) return false;
+          found = true;
+        }
+        column += 1;
+      }
+    }
+  }
+  return found;
+}
 
 function agentComposerState(output, text) {
   const rows = cleanScreenRows(output);
@@ -840,11 +869,13 @@ function agentComposerState(output, text) {
     CODEX_MODEL_PICKER_TITLE.test(line) || /press enter to confirm/iu.test(line)
   ))) return 'other';
   const lastRow = rows.findLastIndex((line) => line.trim());
-  // Empty preflight must include every draft row, even an indented prompt or a
-  // separator/model-like line typed by the user. Only the final Codex footer ends it.
-  const endOffset = text === ''
-    ? (AGENT_SCREEN_IDENTITY.codex.some((pattern) => pattern.test(rows[lastRow]?.trim() || '')) ? lastRow - start - 1 : -1)
-    : rows.slice(start + 1).findIndex((line) => (
+  // Codex clips its footer (including the path) on small terminals. Both preflight
+  // and confirmation must still include every draft row above that final footer.
+  const footer = rows[lastRow]?.trim() || '';
+  const codexFooter = AGENT_SCREEN_IDENTITY.codex.some((pattern) => pattern.test(footer))
+    || CODEX_CLIPPED_FOOTER.test(footer);
+  const endOffset = codexFooter ? lastRow - start - 1
+    : text === '' ? -1 : rows.slice(start + 1).findIndex((line) => (
       SCREEN_SEPARATOR.test(line.trim()) || /^\s*(?:gpt-\S+.*·|⏵⏵)/u.test(line)
     ));
   // A transcript prompt, clipped composer, or collapsed paste is not enough evidence
@@ -860,7 +891,11 @@ function agentComposerState(output, text) {
   }
   const composer = content.join('\n').trimEnd();
   if (!composer) return 'empty';
-  if (composer === 'Ask Codex to do anything' && composer !== text.trimEnd()) return 'empty';
+  // A clipped placeholder looks exactly like a possible user draft. Only Codex's
+  // faint rendering proves it is a placeholder, including after sending that text.
+  if (CODEX_PLACEHOLDER.startsWith(composer)
+    && hasDimComposerText(String(output).split('\n')[start], indent.length)) return 'empty';
+  if (composer === CODEX_PLACEHOLDER && composer !== text.trimEnd()) return 'empty';
   if (/^\[Pasted (?:Content|content)\b/u.test(composer)) return 'unknown';
   return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
 }
@@ -1047,7 +1082,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       } catch { return false; }
     };
     const captureInputPane = overrides.capturePane
-      || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped));
+      || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex'));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
     let activeCodexInput = false;
