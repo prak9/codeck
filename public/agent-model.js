@@ -536,9 +536,11 @@ export function checkpointTerminalActivity(currentThread, { commandId, output, t
 export function applyTmuxSnapshot(thread, tmux) {
   if (!thread || !tmux) return false;
   const completed = thread.tmux?.status === 'working' && tmux.status !== 'working';
-  const started = thread.tmux?.status !== 'working' && tmux.status === 'working';
   const commandOutput = thread.tmux?.commandOutput;
-  thread.tmux = { ...tmux, ...(!started && commandOutput ? { commandOutput } : {}) };
+  // A slash command repaints the pane before its RPC response arrives. That repaint can
+  // already be queued as a transient "working" snapshot and must not immediately close
+  // the result dialog. A real turn/started event and the next submission clear it.
+  thread.tmux = { ...tmux, ...(commandOutput ? { commandOutput } : {}) };
   return completed;
 }
 
