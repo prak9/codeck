@@ -791,6 +791,7 @@ const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
 const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model', '/usage']);
 const CODEX_MODEL_PICKER_TITLE = /(?:select model and effort|select reasoning level for .+|advanced reasoning)/iu;
 const CODEX_USAGE_PICKER_TITLE = /^Usage$/iu;
+const CODEX_SKILLS_PICKER_TITLE = /^Skills$/iu;
 const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call/iu;
 const CODEX_QUEUED_INPUT_ACTION = /press esc to interrupt and send immediately/iu;
 
@@ -934,6 +935,20 @@ function hasCodexUsagePicker(output) {
   return rows.slice(start).some((line) => /^›\s*1\.\s+Show usage\b/iu.test(line));
 }
 
+function codexLocalCommandPicker(output) {
+  const rows = screenLines(output);
+  const candidates = [
+    ['model', rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line))],
+    ['usage', rows.findLastIndex((line) => CODEX_USAGE_PICKER_TITLE.test(line))],
+    ['skills', rows.findLastIndex((line) => CODEX_SKILLS_PICKER_TITLE.test(line))],
+  ].filter(([, index]) => index >= 0).sort((left, right) => right[1] - left[1]);
+  const [kind, start] = candidates[0] || [];
+  if (start == null || !rows.slice(start).some((line) => (
+    /press enter to confirm or esc to go back/iu.test(line)
+  ))) return '';
+  return kind;
+}
+
 function queueSessionInput(sessionName, operation) {
   const previous = sessionInputQueues.get(sessionName) || Promise.resolve();
   const current = previous.catch(() => {}).then(operation);
@@ -1033,6 +1048,19 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
       if (state === 'empty') return false;
       if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
+      const localPicker = matchingDraft && codexLocalCommandPicker(screen);
+      if (matchingDraft === '/model' && localPicker === 'model' && codexModelPicker(screen)) {
+        return 'model-picker';
+      }
+      if (localPicker) {
+        if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Escape']));
+        await waitForPaste(pasteDelay);
+        if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+        screen = await captureInputPane(paneId, { joinWrapped: true });
+        state = agentComposerState(screen, '');
+        if (state === 'empty') return false;
+      }
       if (matchingDraft && (agentComposerState(screen, matchingDraft) === 'draft'
         || hasCodexSlashCompletionDraft(screen, matchingDraft))) return true;
       throw new Error(state === 'other' || state === 'draft'
@@ -1108,11 +1136,12 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         : false;
       const existingCommand = composerRecovery === true;
       const existingUsagePicker = composerRecovery === 'usage-picker';
+      const existingModelPicker = composerRecovery === 'model-picker';
       const initialScreen = await captureCommandPane(paneId);
       if (existingUsagePicker) {
         if (!await verifyPane()) return {};
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
-      } else {
+      } else if (!existingModelPicker) {
         await execTmux(exitPaneModeThen(
           paneId,
           ['send-keys', '-l', '-t', paneId, '--', existingCommand ? ' '

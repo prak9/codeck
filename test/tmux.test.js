@@ -434,6 +434,45 @@ test('captures the /status slash-command output after submitting it literally', 
   ]);
 });
 
+test('bare /status dismisses a stale Skills picker before submitting', async () => {
+  const calls = [];
+  const skillsPicker = [
+    'Skills',
+    'Choose an action',
+    '› 1. List skills            Tip: press $ to open this list directly.',
+    '  2. Enable/Disable Skills  Enable or disable skills.',
+    'Press enter to confirm or esc to go back',
+  ].join('\n');
+  const status = [
+    '/status',
+    '╭────────────────────────╮',
+    '│ Model: gpt-5.6-sol     │',
+    '│ Context: 45% left      │',
+    '╰────────────────────────╯',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-sol · /data/codeck',
+  ].join('\n');
+  const screens = [skillsPicker, EMPTY_CODEX_COMPOSER, EMPTY_CODEX_COMPOSER, status];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/status',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push(args),
+    waitForPaste: async () => {},
+    waitForSlashOutput: async () => {},
+    capturePane: async () => screens.shift() || status,
+  });
+
+  assert.match(result.terminalOutput, /Model: gpt-5\.6-sol/);
+  assert.deepEqual(calls, [
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Escape'],
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/status '],
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
+  ]);
+});
+
 test('waits for a delayed /status result instead of returning the old composer frame', async () => {
   const calls = [];
   const previousStatusScreen = [
@@ -558,6 +597,30 @@ test('bare /model bypasses slash completion and waits for the actual Codex picke
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
   ]);
   assert.equal(calls.filter((call) => call.type === 'capture').length, 3);
+});
+
+test('resumes an already open /model picker without typing the command again', async () => {
+  const calls = [];
+  const picker = [
+    'Select Model and Effort',
+    '› 1. gpt-5.6-sol (current)  Balanced',
+    '  2. gpt-6-astra            Most capable',
+    'Press enter to confirm or esc to go back',
+  ].join('\n');
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/model',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push(args),
+    waitForPaste: async () => {},
+    waitForSlashOutput: async () => {},
+    capturePane: async () => picker,
+  });
+
+  assert.match(result.terminalOutput, /Select Model and Effort/);
+  assert.deepEqual(calls, []);
 });
 
 test('bare /usage bypasses completion, selects Show usage, and waits past loading', async () => {
@@ -1965,8 +2028,7 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
     '» \n  gpt-fake · /pretend-footer\n  Existing second line\n\n  gpt-6-astra · /project',
     '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',
     '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
-    'Select Model and Effort\n› 1. gpt-6-astra\nPress enter to confirm or esc to go back',
-    'Usage\n  1. Show usage\n› 2. Redeem usage limit reset\nPress enter to confirm or esc to go back',
+    'Choose response\n› 1. Approve\n  2. Deny\nPress enter to confirm or esc to go back',
     '', 'redrawing', null,
   ];
   for (const text of ['怎么样了', '/status', '/model', '/usage']) {
@@ -1986,6 +2048,26 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
       assert.equal(commands.filter((args) => args[0] === 'delete-buffer').length, loads, 'only the unused temporary buffer is cleaned up');
     }
   }
+});
+
+test('ordinary messages never dismiss a local command picker', async () => {
+  const commands = [];
+  const picker = [
+    'Skills',
+    'Choose an action',
+    '› 1. List skills',
+    'Press enter to confirm or esc to go back',
+  ].join('\n');
+  await assert.rejects(sendSessionMessage({
+    provider: 'codex', sessionName: 'preflight', threadId: 'thread-1', text: 'Continue',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'preflight', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => commands.push(args),
+    capturePane: async () => picker,
+  }), /消息未发送.*终端|终端.*消息未发送/);
+  assert.equal(commands.some((args) => args[0] !== 'delete-buffer'), false);
 });
 
 test('Codex preflight allows a complete empty or placeholder composer even during a running turn', async () => {
