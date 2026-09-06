@@ -617,7 +617,7 @@ test('bare /usage bypasses completion, selects Show usage, and waits past loadin
   assert.deepEqual(calls.filter((call) => call.type === 'exec').map((call) => call.args), [
     ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/usage '],
     ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
-    ['send-keys', '-t', '%7', 'Enter'],
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
   ]);
 });
 
@@ -654,6 +654,41 @@ test('recovers an identical /usage draft left by slash completion without duplic
     'copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', ' ',
   ]);
   assert.equal(calls.flat().filter((value) => value === '/usage').length, 0);
+});
+
+test('resumes an already open /usage picker left by an earlier remote attempt', async () => {
+  const calls = [];
+  const picker = [
+    'Usage',
+    'View account usage or redeem an earned reset.',
+    '› 1. Show usage                View recent account token usage.',
+    '  2. Redeem usage limit reset  You have 2 usage limit resets available.',
+    'Press enter to confirm or esc to go back',
+  ].join('\n');
+  const loaded = [
+    '/usage daily',
+    'Token activity   last 12 months',
+    'Lifetime 19.4B · Peak 1.14B',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-sol · /data/codeck',
+  ].join('\n');
+  const screens = [picker, picker, loaded];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/usage',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push(args),
+    waitForPaste: async () => {},
+    waitForSlashOutput: async () => {},
+    capturePane: async () => screens.shift() || loaded,
+  });
+
+  assert.match(result.terminalOutput, /Token activity/);
+  assert.deepEqual(calls, [[
+    'copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter',
+  ]]);
 });
 
 test('selects an exact option in the verified Codex model picker and returns its next step', async () => {
@@ -1931,9 +1966,10 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
     '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',
     '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
     'Select Model and Effort\n› 1. gpt-6-astra\nPress enter to confirm or esc to go back',
+    'Usage\n  1. Show usage\n› 2. Redeem usage limit reset\nPress enter to confirm or esc to go back',
     '', 'redrawing', null,
   ];
-  for (const text of ['怎么样了', '/status', '/model']) {
+  for (const text of ['怎么样了', '/status', '/model', '/usage']) {
     for (const screen of screens) {
       const commands = [];
       let loads = 0;

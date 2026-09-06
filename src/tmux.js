@@ -1032,6 +1032,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         }
       } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
       if (state === 'empty') return false;
+      if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
       if (matchingDraft && (agentComposerState(screen, matchingDraft) === 'draft'
         || hasCodexSlashCompletionDraft(screen, matchingDraft))) return true;
       throw new Error(state === 'other' || state === 'draft'
@@ -1102,17 +1103,24 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       const codexUsage = provider === 'codex' && command === '/usage';
       const bareCodexUsage = codexUsage && text.trim() === command;
       const bareCodexCommand = provider === 'codex' && text.trim() === command;
-      const existingCommand = provider === 'codex'
+      const composerRecovery = provider === 'codex'
         ? await requireEmptyCodexComposer(bareCodexCommand ? command : '')
         : false;
+      const existingCommand = composerRecovery === true;
+      const existingUsagePicker = composerRecovery === 'usage-picker';
       const initialScreen = await captureCommandPane(paneId);
-      await execTmux(exitPaneModeThen(
-        paneId,
-        ['send-keys', '-l', '-t', paneId, '--', existingCommand ? ' '
-          : bareCodexCommand ? `${command} ` : text],
-      ));
-      await waitForPaste(pasteDelay);
-      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      if (existingUsagePicker) {
+        if (!await verifyPane()) return {};
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      } else {
+        await execTmux(exitPaneModeThen(
+          paneId,
+          ['send-keys', '-l', '-t', paneId, '--', existingCommand ? ' '
+            : bareCodexCommand ? `${command} ` : text],
+        ));
+        await waitForPaste(pasteDelay);
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      }
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return {};
       const waitForSlashOutput = overrides.waitForSlashOutput
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
@@ -1120,7 +1128,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         let screen = '';
         let modelPicker = null;
         let terminalOutput = '';
-        let usagePickerAccepted = false;
+        let usagePickerAccepted = existingUsagePicker;
         const attempts = Math.max(
           bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1,
           bareCodexUsage ? USAGE_OUTPUT_CAPTURE_ATTEMPTS : 1,
@@ -1131,7 +1139,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
           screen = await captureCommandPane(paneId);
           if (bareCodexUsage && !usagePickerAccepted && hasCodexUsagePicker(screen)) {
             if (!await verifyPane()) return {};
-            await execTmux(['send-keys', '-t', paneId, 'Enter']);
+            await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
             usagePickerAccepted = true;
             continue;
           }
