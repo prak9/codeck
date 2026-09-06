@@ -124,12 +124,12 @@ function send(socket, message) {
 }
 
 function setup({
-  listTmuxSessions, sendTmuxMessage, selectTmuxModel, interruptTmuxSession,
+  listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession,
   sessionFeed, threadFeed, protocolEpoch = 'test-epoch',
 } = {}) {
   const backends = Object.fromEntries(['codex', 'claude', 'qodercli'].map((provider) => [provider, new FakeBackend(provider)]));
   const registry = new AgentRegistry(backends, {
-    listTmuxSessions, sendTmuxMessage, selectTmuxModel, interruptTmuxSession,
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession,
   });
   const hub = new AgentHub(registry, {
     defaultCwd: '/srv/codeck', hostname: 'devbox', sessionFeed, threadFeed, protocolEpoch,
@@ -498,6 +498,33 @@ test('a progressive Codex reply is followed by the exact subscribed transcript',
   ]);
   socket.close();
   threadFeed.close();
+});
+
+test('a fresh open reply is never overwritten by an older retained feed snapshot', async (t) => {
+  for (const streamVersion of [1, 2]) {
+    let value = { thread: { id: 'thread-1', turns: [{ id: 'old', items: [] }] } };
+    let release;
+    let gate;
+    const threadFeed = createSnapshotFeed(async () => { await gate; return value; }, { intervalMs: 60_000 });
+    t.after(() => threadFeed.close());
+    const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'report' };
+    const retain = threadFeed.subscribeFrom(target, null, () => {});
+    await threadFeed.refresh(target);
+    retain();
+    gate = new Promise(resolve => { release = resolve; });
+    const { backends, hub } = setup({ threadFeed });
+    backends.codex.openThread = async () => ({ thread: { id: 'thread-1', turns: [{ id: 'old', items: [] }, { id: 'new', items: [] }] } });
+    value = await backends.codex.openThread();
+    const socket = new FakeSocket();
+    hub.handleConnection(socket, { streamVersion });
+    send(socket, { type: 'openThread', id: 1, ...target, readOnly: true });
+    await waitFor(() => socket.sent.some(message => message.id === 1));
+    const stale = socket.sent.filter(message => message.type === 'threadSnapshot' && !message.thread.turns.some(turn => turn.id === 'new'));
+    release();
+    await waitFor(() => socket.sent.some(message => message.type === 'threadSnapshot' && message.thread.turns.some(turn => turn.id === 'new')));
+    assert.deepEqual(stale, [], `V${streamVersion}: no cached rollback after the fresh RPC reply`);
+    socket.close();
+  }
 });
 
 test('tmux activity transitions wake the transcript subscription at start and completion', async () => {
@@ -1192,6 +1219,21 @@ test('routes model picker choices through the verified tmux session instead of a
   assert.deepEqual(socket.sent.find((message) => message.id === 8).result, {
     terminalOutput: 'Advanced Reasoning',
   });
+});
+
+test('closing a command popup routes only its identity and never starts or interrupts an Agent', async () => {
+  const dismissals = [];
+  const { backends, hub } = setup({
+    dismissTmuxCommand: async params => { dismissals.push(params); return { dismissed: true }; },
+  });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  send(socket, { type: 'dismissSessionCommand', id: 9, provider: 'codex', threadId: 'thread-1', tmuxSession: 'work', command: '/model', paneId: '%999' });
+  await waitFor(() => socket.sent.some(message => message.id === 9));
+  assert.deepEqual(dismissals, [{ provider: 'codex', threadId: 'thread-1', sessionName: 'work', command: '/model' }]);
+  assert.deepEqual(socket.sent.find(message => message.id === 9).result, { dismissed: true });
+  assert.deepEqual(backends.codex.calls, []);
+  socket.close();
 });
 
 test('routes a direct tmux interruption without requiring a backend turn id', async () => {

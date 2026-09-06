@@ -248,13 +248,14 @@ function tmuxThreads(provider, sessions, threads) {
 
 export class AgentRegistry extends EventEmitter {
   constructor(backends, {
-    listTmuxSessions, sendTmuxMessage, selectTmuxModel, interruptTmuxSession,
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession,
   } = {}) {
     super();
     this.backends = new Map(Object.entries(backends || {}));
     this.listTmuxSessions = listTmuxSessions;
     this.sendTmuxMessage = sendTmuxMessage;
     this.selectTmuxModel = selectTmuxModel;
+    this.dismissTmuxCommand = dismissTmuxCommand;
     this.interruptTmuxSession = interruptTmuxSession;
     for (const [provider, backend] of this.backends) {
       backend.on('notification', (message) => this.emit('notification', { provider, ...message }));
@@ -310,6 +311,11 @@ export class AgentRegistry extends EventEmitter {
     this.backend(provider);
     if (!this.selectTmuxModel) throw new Error('当前服务不支持远程选择模型');
     return this.selectTmuxModel({ provider, ...params });
+  }
+  dismissSessionCommand(provider, params) {
+    this.backend(provider);
+    if (!this.dismissTmuxCommand) throw new Error('当前服务不支持关闭原生命令菜单');
+    return this.dismissTmuxCommand({ provider, ...params });
   }
   recordSessionMessage(provider, params) {
     if (cleanProvider(provider) === 'shell') return;
@@ -539,6 +545,7 @@ export class AgentHub {
           );
         }
         subscription.cursor = null;
+        subscription.fresh = true;
         if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
         const result = this.#windowThread(this.#withPaneExcerpt(
           await this.registry.openThread(provider, threadId, options), target.tmuxSession,
@@ -599,6 +606,13 @@ export class AgentHub {
       this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
       return this.registry.selectSessionModel(provider, {
         threadId, sessionName, option,
+      });
+    }
+    if (message.type === 'dismissSessionCommand') {
+      return this.registry.dismissSessionCommand(provider, {
+        threadId: cleanId(message.threadId, 'Thread'),
+        sessionName: cleanId(message.tmuxSession, 'tmux session'),
+        command: cleanId(message.command, 'Command'),
       });
     }
     if (message.type === 'interruptSession') {
@@ -893,8 +907,8 @@ export class AgentHub {
           error: error.message || 'Thread stream failed',
         });
       subscription.unsubscribe = client.streamVersion === 2
-        ? this.threadFeed.subscribeFrom(subscription.target, subscription.cursor, onSnapshot, onError)
-        : this.threadFeed.subscribe(subscription.target, onSnapshot, onError);
+        ? this.threadFeed.subscribeFrom(subscription.target, subscription.cursor, onSnapshot, onError, { fresh: subscription.fresh })
+        : this.threadFeed.subscribe(subscription.target, onSnapshot, onError, { fresh: subscription.fresh });
     }
     for (const message of subscription.pending.splice(0)) send(socket, message);
     this.#sendPending(socket, subscription);

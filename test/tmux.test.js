@@ -1,9 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveSessionStatus, sessionSnapshotRefreshInterval } from '../src/session-status.js';
-import { AGENT_SCREEN_MARKERS, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
+import { AGENT_SCREEN_MARKERS, dismissSessionCommand, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
+// Codex 0.153.2 at 37x21: the title is offscreen and both annotations and hints clip.
+const NARROW_CODEX_MODEL_PICKER = `
+› 1. gpt-6-astra (curr… Our most
+                        capable
+                        model for
+                        complex,
+                        demanding
+                        work.
+  2. gpt-5.6-sol        Reliable
+                        agentic
+                        workhorse
+                        for
+                        everyday
+                        tasks.
+  3. gpt-5.6-terra      Balanced
+                        agentic
+                        coding
+                        model for
+                        everyday
+
+  Press enter to confirm or esc to go
+`;
+const NARROW_CODEX_REASONING_PICKER = `
+  2. Medium (default)   Balances
+                        speed and
+                        reasoning
+                        depth for
+                        everyday
+                        tasks
+  3. High               Greater
+                        reasoning
+                        depth for
+                        complex
+                        problems
+› 4. Extra high (curre… Extra high
+                        reasoning
+                        depth for
+                        complex
+                        problems
+  5. More reasoning…    Max and
+
+  Press enter to confirm or esc to go
+`;
 // Real Codex 0.153.2 captures at 24 and 28 columns. tmux -e preserves the
 // faint placeholder, which has the same text as a possible user-authored draft.
 const NARROW_CODEX_COMPOSERS = [
@@ -709,6 +752,102 @@ test('resumes an already open /model picker without typing the command again', a
   assert.deepEqual(calls, []);
 });
 
+test('recovers the real short narrow model picker without a title or complete hint', async () => {
+  const commands = [];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/model',
+  }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => NARROW_CODEX_MODEL_PICKER,
+    execTmux: async args => commands.push(args),
+    waitForSlashOutput: async () => {},
+  });
+  assert.match(result.terminalOutput, /Select Model and Effort/);
+  assert.match(result.terminalOutput, /gpt-6-astra \(current\)/);
+  assert.match(result.terminalOutput, /Our most capable model for complex, demanding work\./);
+  assert.deepEqual(commands, []);
+});
+
+test('model selection returns the real clipped reasoning menu instead of claiming completion', async () => {
+  const commands = [];
+  const result = await selectSessionModel({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', option: 'gpt-6-astra',
+  }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => commands.length ? NARROW_CODEX_REASONING_PICKER : NARROW_CODEX_MODEL_PICKER,
+    execTmux: async args => commands.push(args),
+    waitForSlashOutput: async () => {},
+  });
+  assert.match(result.terminalOutput, /Select Reasoning Level/);
+  assert.match(result.terminalOutput, /Extra high \(current\)/);
+  assert.equal(result.completed, undefined);
+  assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Enter']]);
+});
+
+test('an old model picker followed by a composer is not selectable', async () => {
+  const commands = [];
+  await assert.rejects(selectSessionModel({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', option: 'gpt-6-astra',
+  }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => `${NARROW_CODEX_MODEL_PICKER}\n${EMPTY_CODEX_COMPOSER}`,
+    execTmux: async args => commands.push(args),
+  }), /选择器已关闭/);
+  assert.deepEqual(commands, []);
+});
+
+test('a transient blank model redraw cannot be mistaken for a completed selection', async () => {
+  const screens = [NARROW_CODEX_MODEL_PICKER, '', NARROW_CODEX_REASONING_PICKER];
+  const result = await selectSessionModel({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', option: 'gpt-6-astra',
+  }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => screens.shift() ?? NARROW_CODEX_REASONING_PICKER,
+    execTmux: async () => {},
+    waitForSlashOutput: async () => {},
+  });
+  assert.equal(result.completed, undefined);
+  assert.match(result.terminalOutput, /Select Reasoning Level/);
+});
+
+test('explicitly closing a model popup dismisses only its matching native menu before plain input', async () => {
+  const commands = [];
+  const target = { provider: 'codex', sessionName: 'work', threadId: 'thread-1' };
+  const overrides = {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => commands.length ? EMPTY_CODEX_COMPOSER : NARROW_CODEX_MODEL_PICKER,
+    loadBuffer: async () => {},
+    execTmux: async args => commands.push(args),
+    waitForPaste: async () => {},
+    waitForSubmit: async () => {},
+  };
+  assert.deepEqual(await dismissSessionCommand({ ...target, command: '/model' }, overrides), { dismissed: true });
+  const result = await sendSessionMessage({ ...target, text: 'Continue checking' }, overrides);
+  assert.equal(result.submissionStatus, 'submitted');
+  assert.deepEqual(commands[0], ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Escape']);
+  assert.equal(commands.filter(args => args.includes('Enter')).length, 1);
+});
+
+test('closing an old command popup never interrupts work, confirms approvals, or dismisses another menu', async () => {
+  for (const screen of [
+    EMPTY_CODEX_COMPOSER,
+    `• Working (25s • esc to interrupt)\n${EMPTY_CODEX_COMPOSER}`,
+    'Choose response\n› 1. Approve\n  2. Deny\nPress enter to confirm or esc to go back',
+    'Skills\n› 1. List skills\nPress enter to confirm or esc to go',
+  ]) {
+    const commands = [];
+    const result = await dismissSessionCommand({
+      provider: 'codex', sessionName: 'work', threadId: 'thread-1', command: '/model',
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => screen,
+      execTmux: async args => commands.push(args),
+    });
+    assert.deepEqual(result, { dismissed: false });
+    assert.deepEqual(commands, []);
+  }
+});
+
 test('bare /usage bypasses completion, selects Show usage, and waits past loading', async () => {
   const calls = [];
   const usagePicker = [
@@ -888,8 +1027,9 @@ test('selects an exact option in the verified Codex model picker and returns its
   ].join('\n'));
 });
 
-test('does not capture slash commands other than /status, /model, and /usage', async () => {
+test('captures a narrow skills picker without confirming any selection', async () => {
   const calls = [];
+  const picker = 'Skills\nChoose an action\n› 1. List skills  Open the list\n  2. Enable/Disable Sk…  Configure skills\nPress enter to confirm or esc to go';
   const result = await sendSessionMessage({
     provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/skills',
   }, {
@@ -898,19 +1038,56 @@ test('does not capture slash commands other than /status, /model, and /usage', a
     }],
     execTmux: async (args) => calls.push({ type: 'exec', args }),
     waitForPaste: async () => calls.push({ type: 'wait' }),
+    waitForSlashOutput: async () => {},
     capturePane: async (paneId) => {
       if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
-      return '╭────────────────────────╮\n│ Model: gpt-5           │\n╰────────────────────────╯';
+      return picker;
     },
   });
 
-  assert.deepEqual(result, {});
-  assert.deepEqual(calls, [
+  assert.match(result.terminalOutput, /Skills\nChoose an action/);
+  assert.deepEqual(calls.filter(call => call.type !== 'capture'), [
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/skills '] },
     { type: 'wait' },
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
   ]);
+});
+
+test('other local command popups isolate fresh output, wait for loading, and never echo old status boxes', async () => {
+  for (const command of ['/mcp', '/ps']) {
+    const commands = [];
+    const old = `${command}\nOld command result\n/status\n╭────────────────╮\n│ Old status     │\n╰────────────────╯`;
+    const initial = `${old}\n${EMPTY_CODEX_COMPOSER}`;
+    const loading = `${old}\n• Loading inventory…\n${EMPTY_CODEX_COMPOSER}`;
+    const loaded = `${old}\n${command}\n${command === '/mcp' ? 'MCP Tools\n• server: connected' : 'Background terminals\n• No background terminals running.'}\n${EMPTY_CODEX_COMPOSER}`;
+    const screens = [initial, initial, loading, loaded];
+    const result = await sendSessionMessage({
+      provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: command,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => screens.shift() || loaded,
+      execTmux: async args => commands.push(args),
+      waitForPaste: async () => {},
+      waitForSlashOutput: async () => {},
+    });
+    assert.match(result.terminalOutput, command === '/mcp' ? /MCP Tools/ : /Background terminals/);
+    assert.doesNotMatch(result.terminalOutput, /Old status|Loading|Ask Codex/);
+    assert.equal(commands.length, 2);
+  }
+});
+
+test('a slash command that starts Agent work returns promptly without a fake local-output popup', async () => {
+  let submitted = false;
+  let polls = 0;
+  const result = await sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/review' }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => submitted ? '• Working (1s • esc to interrupt)' : EMPTY_CODEX_COMPOSER,
+    execTmux: async args => { if (args.includes('Enter')) submitted = true; },
+    waitForPaste: async () => {}, waitForSlashOutput: async () => { polls += 1; },
+  });
+  assert.deepEqual(result, { terminalWorking: true });
+  assert.equal(polls, 1);
 });
 
 test('recovers a matching completion draft for other bare Codex slash commands', async () => {
@@ -924,6 +1101,7 @@ test('recovers a matching completion draft for other bare Codex slash commands',
     }],
     execTmux: async (args) => calls.push(args),
     waitForPaste: async () => {},
+    waitForSlashOutput: async () => {},
     capturePane: async () => existingDraft,
   });
 

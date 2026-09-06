@@ -149,6 +149,38 @@ test('an invalidation during a load performs a fresh load instead of publishing 
   feed.close();
 });
 
+test('a fresh subscription skips in-flight stale reads, starts with a full base, then resumes deltas', async () => {
+  let value = { text: 'x'.repeat(2000) };
+  let gate;
+  let release;
+  const feed = createSnapshotFeed(async () => { const captured = value; await gate; return captured; }, {
+    epoch: 'fresh', schedule: () => 1, cancel: () => {},
+  });
+  const existing = [];
+  feed.subscribeFrom('thread', null, frame => existing.push(frame));
+  await feed.refresh('thread');
+  gate = new Promise(resolve => { release = resolve; });
+  const oldRead = feed.refresh('thread');
+  await Promise.resolve();
+  const fresh = [];
+  feed.subscribeFrom('thread', null, frame => fresh.push(frame), () => {}, { fresh: true });
+  value = { text: `${value.text} new` };
+  gate = null;
+  release();
+  await oldRead;
+  await feed.refresh('thread');
+  assert.equal(fresh.length, 1);
+  assert.equal(fresh[0].kind, 'snapshot');
+  assert.deepEqual(fresh[0].snapshot, value);
+  assert.equal(existing.at(-1).kind, 'delta', 'existing subscribers retain their valid base');
+  const base = fresh[0].sequence;
+  value = { text: `${value.text} next` };
+  await feed.refresh('thread');
+  assert.equal(fresh.at(-1).kind, 'delta');
+  assert.equal(fresh.at(-1).baseSequence, base);
+  feed.close();
+});
+
 test('snapshot feed selects its next interval from the latest snapshot', async () => {
   let active = false;
   const delays = [];

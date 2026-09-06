@@ -170,7 +170,8 @@ export function createSnapshotFeed(loadSnapshot, {
       if (subscriber.mode === 'snapshot') {
         subscriber.onSnapshot(entry.latest);
       } else {
-        const message = { ...frame, snapshot };
+        const message = { ...(subscriber.needsSnapshot ? fullFrame(entry) : frame), snapshot };
+        subscriber.needsSnapshot = false;
         if (subscriber.ready) subscriber.onSnapshot(message);
         else subscriber.pending.push(message);
       }
@@ -216,16 +217,16 @@ export function createSnapshotFeed(loadSnapshot, {
     return request;
   }
 
-  function subscribe(resource, onSnapshot, onError = () => {}) {
+  function subscribe(resource, onSnapshot, onError = () => {}, { fresh = false } = {}) {
     if (closed) throw new Error('Snapshot feed is closed');
     const entry = entryFor(resource);
     clearIdle(entry);
     const subscriber = { mode: 'snapshot', onSnapshot, onError };
     entry.subscribers.add(subscriber);
-    if (entry.latest) queueMicrotask(() => {
+    if (!fresh && entry.latest) queueMicrotask(() => {
       if (!closed && entry.subscribers.has(subscriber)) onSnapshot(entry.latest);
     });
-    refresh(resource).catch(() => {});
+    (fresh ? invalidate(resource) : refresh(resource)).catch(() => {});
     return () => {
       entry.subscribers.delete(subscriber);
       if (!entry.subscribers.size) retainOrDrop(entry);
@@ -262,19 +263,18 @@ export function createSnapshotFeed(loadSnapshot, {
     return frames.map(({ bytes: _bytes, ...frame }) => frame);
   }
 
-  function subscribeFrom(resource, cursor, onSnapshot, onError = () => {}) {
+  function subscribeFrom(resource, cursor, onSnapshot, onError = () => {}, { fresh = false } = {}) {
     if (closed) throw new Error('Snapshot feed is closed');
     const entry = entryFor(resource);
     clearIdle(entry);
     entry.retainOnIdle = true;
-    const initial = resumeFrames(entry, cursor);
-    const initialSequence = entry.latest?.sequence || 0;
+    const initial = fresh ? [] : resumeFrames(entry, cursor);
     const subscriber = {
-      mode: 'delta', onSnapshot, onError, ready: false, pending: [],
+      mode: 'delta', onSnapshot, onError, ready: fresh, pending: [], needsSnapshot: fresh,
     };
     entry.subscribers.add(subscriber);
     queueMicrotask(() => {
-      if (closed || !entry.subscribers.has(subscriber)) return;
+      if (fresh || closed || !entry.subscribers.has(subscriber)) return;
       let deliveredSequence = normalizedCursor(cursor)?.epoch === epoch
         ? normalizedCursor(cursor).sequence
         : 0;
@@ -295,7 +295,10 @@ export function createSnapshotFeed(loadSnapshot, {
         });
       }
     });
-    refresh(resource).catch(() => {});
+    // A cold open has already returned a newer progressive read. Neither cached
+    // frames nor a pre-open in-flight read may replace it. Start a fresh full base
+    // for this subscriber before delivering any delta; cursor resumes stay cheap.
+    (fresh ? invalidate(resource) : refresh(resource)).catch(() => {});
     return () => {
       entry.subscribers.delete(subscriber);
       subscriber.pending.length = 0;

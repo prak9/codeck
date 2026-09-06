@@ -33,6 +33,7 @@ const CODEX_APPROVAL_METHODS = new Set([
 const CODEX_RECENT_USER_TURN_LIMIT = 10;
 const CODEX_PROGRESSIVE_TURN_LIMIT = 20;
 const CODEX_HISTORY_POSITION_LIMIT = 1_024;
+const CODEX_INTERRUPTED_MESSAGE_CACHE_LIMIT = 128;
 
 function codexUserItems(turn) {
   return (Array.isArray(turn?.items) ? turn.items : [])
@@ -149,6 +150,7 @@ export class CodexAgentBackend extends EventEmitter {
     this.userMessageLoads = new Map();
     this.hydratedUserMessages = new Set();
     this.historyPositions = new Map();
+    this.interruptedMessages = new Map();
     appServer.on('notification', (message) => {
       this.#observeNotification(message);
       this.emit('notification', message);
@@ -191,14 +193,20 @@ export class CodexAgentBackend extends EventEmitter {
         ...(cursor ? { cursor } : {}),
       });
       const turns = Array.isArray(page?.data) ? [...page.data] : [];
-      // Match exact openThread reads: Codex summaries can omit newly appended text
-      // from the latest interrupted turn. Other turns need no full tool hydration.
+      // The latest interrupted turn may still be receiving appended output.
+      let fullTurnId;
       if (!cursor && turns[0]?.status === 'interrupted') {
         const full = await this.#readLatestFullTurn(threadId, turns[0].id);
-        if (full) turns[0] = full;
+        if (full) {
+          turns[0] = full;
+          fullTurnId = full.id;
+        }
       }
-      const text = latestAgentOutputText(turns.reverse());
-      if (text) return { text };
+      for (const turn of turns) {
+        const complete = await this.#hydrateInterruptedTurns(threadId, [turn], fullTurnId);
+        const text = latestAgentOutputText(complete);
+        if (text) return { text };
+      }
       cursor = page?.nextCursor;
     } while (cursor);
     return { text: '' };
@@ -261,7 +269,8 @@ export class CodexAgentBackend extends EventEmitter {
     if (anchor) throw new Error('Thread history anchor is no longer present');
     await this.#hydrateUserMessages(threadId);
     const cachedUsers = this.userMessages.get(threadId);
-    const turns = this.#reconcileUserDeliveries(threadId, collected.reverse()
+    const complete = await this.#hydrateInterruptedTurns(threadId, collected.reverse());
+    const turns = this.#reconcileUserDeliveries(threadId, complete
       .map((turn) => mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id))));
     return { turns, truncated, oldestTurnId: turns[0]?.id || null };
   }
@@ -293,7 +302,10 @@ export class CodexAgentBackend extends EventEmitter {
     if (summaryTurns.length && !progressive) await Promise.all([hydration, latestFull]);
     const fullTurn = await latestFull;
     const cachedUsers = this.userMessages.get(threadId);
-    const turns = this.#reconcileUserDeliveries(threadId, summaryTurns.map((turn) => (
+    const exactTurns = !progressive
+      ? await this.#hydrateInterruptedTurns(threadId, summaryTurns, fullTurn?.id)
+      : summaryTurns;
+    const turns = this.#reconcileUserDeliveries(threadId, exactTurns.map((turn) => (
       turn.id === fullTurn?.id
         ? mergeCodexFullTurn(turn, fullTurn, cachedUsers?.get(turn.id))
         : mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id))
@@ -380,6 +392,7 @@ export class CodexAgentBackend extends EventEmitter {
     this.userMessageLoads.clear();
     this.hydratedUserMessages.clear();
     this.historyPositions.clear();
+    this.interruptedMessages.clear();
     this.appServer.close();
   }
 
@@ -481,6 +494,54 @@ export class CodexAgentBackend extends EventEmitter {
       // The full active-turn view supplements the lightweight transcript.
       return null;
     }
+  }
+
+  async #hydrateInterruptedTurns(threadId, turns, fullTurnId) {
+    const result = [];
+    for (const turn of turns) {
+      if (turn.status !== 'interrupted' || turn.id === fullTurnId) {
+        result.push(turn);
+        continue;
+      }
+      // Summary views omit commentary from interrupted turns. Once a follow-up
+      // makes that turn historical, hydrating only the latest turn loses its text.
+      // Retain messages, not tool logs, and cache only closed, unchanged turns.
+      const key = JSON.stringify([threadId, turn.id]);
+      const fingerprint = JSON.stringify(turn);
+      const cached = this.interruptedMessages.get(key);
+      let items = cached?.fingerprint === fingerprint ? cached.items : null;
+      if (!items) {
+        items = [];
+        let cursor;
+        const visited = new Set();
+        do {
+          if (visited.has(cursor)) throw new Error('Thread item cursor did not advance');
+          visited.add(cursor);
+          const page = await this.#readStore('thread/items/list', {
+            threadId, turnId: turn.id, limit: 100, sortDirection: 'asc',
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const entry of page.data || []) {
+            if (entry.turnId === turn.id && ['userMessage', 'agentMessage'].includes(entry.item?.type)) {
+              items.push(entry.item);
+            }
+          }
+          cursor = page.nextCursor;
+        } while (cursor);
+        if (turn.completedAt != null) {
+          this.interruptedMessages.delete(key);
+          this.interruptedMessages.set(key, { fingerprint, items });
+          if (this.interruptedMessages.size > CODEX_INTERRUPTED_MESSAGE_CACHE_LIMIT) {
+            this.interruptedMessages.delete(this.interruptedMessages.keys().next().value);
+          }
+        }
+      }
+      const ids = new Set(items.map(item => item.id));
+      result.push(mergeCodexFullTurn(turn, { id: turn.id, items: [
+        ...items, ...(turn.items || []).filter(item => !ids.has(item.id)),
+      ] }, this.userMessages.get(threadId)?.get(turn.id)));
+    }
+    return result;
   }
 
   #observeNotification(message) {

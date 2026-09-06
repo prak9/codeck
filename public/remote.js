@@ -1404,10 +1404,10 @@ function toolCard({ id, icon, title, body, status, className = '' }) {
   return details;
 }
 
-function skillCard({ name, description }) {
+function skillCard({ label, description }) {
   const row = element('div', 'skill-row');
   row.append(
-    element('code', 'skill-name', name),
+    element('code', 'skill-name', label),
     element('span', 'skill-description', description || ''),
   );
   return row;
@@ -1519,7 +1519,9 @@ function skillsCommandDialog(commandOutput) {
 
 function commandDialogPresentation(commandOutput) {
   if (commandOutput.command === '/model') return modelCommandDialog(commandOutput);
-  if (commandOutput.command === '/skills') return skillsCommandDialog(commandOutput);
+  if (commandOutput.command === '/skills' && !/^[›>❯]\s*\d+\./mu.test(commandOutput.text)) {
+    return skillsCommandDialog(commandOutput);
+  }
   const output = element('pre', 'terminal-live-output command-output-body', commandOutput.text);
   output.tabIndex = 0;
   return {
@@ -1549,6 +1551,33 @@ function openCommandDialog(commandOutput) {
     const target = (presentation.focusSelector && dialog.querySelector(presentation.focusSelector))
       || $('#commandDialogClose');
     target.focus({ preventScroll: true });
+  });
+}
+
+async function closeCommandDialog() {
+  const thread = state.thread;
+  const commandOutput = thread?.tmux?.commandOutput;
+  if (state.provider !== 'codex' || !thread?.tmux?.name
+    || !['/model', '/skills', '/usage'].includes(commandOutput?.command)) {
+    dismissCommandDialog();
+    return;
+  }
+  if (composerRequestGate.pending) return;
+  await composerRequestGate.run(async () => {
+    try {
+      // Explicit close is the only ordinary-input path that may dismiss a native
+      // menu. The server rechecks its kind; Escape must never interrupt a turn.
+      await agentRequest('dismissSessionCommand', {
+        provider: thread.provider, threadId: thread.id, tmuxSession: thread.tmux.name,
+        command: commandOutput.command,
+      });
+      if (state.thread?.tmux?.commandOutput === commandOutput) dismissCommandDialog();
+    } catch (error) {
+      if (state.thread?.tmux?.commandOutput === commandOutput) {
+        dismissCommandDialog();
+        setLiveMessage(`${error.message}；原生菜单可能仍打开，请在普通终端检查。`);
+      }
+    }
   });
 }
 
@@ -2740,13 +2769,13 @@ $('#chooseImagesButton').addEventListener('click', () => chooseAttachments($('#a
 $('#chooseFilesButton').addEventListener('click', () => chooseAttachments($('#attachmentFileInput')));
 $('#attachmentImageInput').addEventListener('change', () => handleAttachmentInput($('#attachmentImageInput')));
 $('#attachmentFileInput').addEventListener('change', () => handleAttachmentInput($('#attachmentFileInput')));
-$('#commandDialogClose').addEventListener('click', () => dismissCommandDialog());
+$('#commandDialogClose').addEventListener('click', () => closeCommandDialog());
 $('#commandDialog').addEventListener('cancel', (event) => {
   event.preventDefault();
-  dismissCommandDialog();
+  closeCommandDialog();
 });
 $('#commandDialog').addEventListener('click', (event) => {
-  if (event.target === event.currentTarget) dismissCommandDialog();
+  if (event.target === event.currentTarget) closeCommandDialog();
 });
 $('#closeSessionDialogClose').addEventListener('click', dismissCloseSessionDialog);
 $('#cancelCloseSessionButton').addEventListener('click', dismissCloseSessionDialog);

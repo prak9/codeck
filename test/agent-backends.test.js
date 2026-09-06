@@ -317,6 +317,67 @@ test('an exact Codex refresh retries after progressive hydration fails transient
   assert.deepEqual(exact.thread.turns[0].items.map((item) => item.id), ['user-1', 'user-2']);
 });
 
+test('older interrupted Codex turns retain all messages after follow-ups and reopening', async () => {
+  const old = { id: 'old', status: 'interrupted', completedAt: 123, items: [
+    { id: 'user-old', type: 'userMessage', content: [{ type: 'text', text: 'Fix remote menus' }] },
+  ] };
+  const messages = [...old.items, ...['Checking', 'Found the cause', 'Adding tests'].map((text, index) => (
+    { id: `answer-${index}`, type: 'agentMessage', text }
+  ))];
+  const latest = { id: 'latest', status: 'completed', items: [] };
+  const calls = [];
+  const appServer = new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: params.threadId } };
+    if (method === 'thread/items/list') {
+      assert.equal(params.turnId, 'old');
+      return { data: [...messages, { id: 'tool', type: 'commandExecution', aggregatedOutput: 'large tool log' }]
+        .map((item) => ({ turnId: 'old', item })), nextCursor: null };
+    }
+    return { data: [latest, old] };
+  });
+  const backend = new CodexAgentBackend(appServer);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const opened = await backend.openThread('thread-1', { readOnly: true });
+    assert.deepEqual(opened.thread.turns[0].items, messages);
+  }
+  assert.equal(calls.filter(call => call.method === 'thread/items/list').length, 1,
+    'closed-turn message hydration must not reread tool logs on every live poll');
+  assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), { text: 'Checking\n\nFound the cause\n\nAdding tests' });
+});
+
+test('interrupted history hydration follows item cursors and retries failures without caching partial messages', async () => {
+  const turn = { id: 'old', status: 'interrupted', completedAt: 123, items: [] };
+  let fail = true;
+  const calls = [];
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    if (method === 'thread/turns/list') return { data: [turn], nextCursor: null };
+    assert.equal(method, 'thread/items/list');
+    calls.push(params);
+    if (params.cursor && fail) throw new Error('temporary item read failure');
+    const item = { id: params.cursor ? 'answer-2' : 'answer-1', type: 'agentMessage', text: params.cursor ? 'Second' : 'First' };
+    return { data: [{ turnId: 'old', item }], nextCursor: params.cursor ? null : 'next-item' };
+  }));
+  await assert.rejects(backend.loadThreadHistory('thread-1'), /temporary item read failure/);
+  fail = false;
+  const result = await backend.loadThreadHistory('thread-1');
+  assert.deepEqual(result.turns[0].items.map(item => item.text), ['First', 'Second']);
+  assert.deepEqual(calls.map(params => params.cursor), [undefined, 'next-item', undefined, 'next-item']);
+});
+
+test('interrupted message cache is isolated by thread and invalidated by changed turn metadata', async () => {
+  const turn = { id: 'shared-turn', status: 'interrupted', completedAt: 123, items: [] };
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    if (method === 'thread/turns/list') return { data: [structuredClone(turn)] };
+    assert.equal(method, 'thread/items/list');
+    return { data: [{ turnId: turn.id, item: { id: 'answer', type: 'agentMessage', text: `${params.threadId}:${turn.completedAt}` } }] };
+  }));
+  assert.equal((await backend.loadThreadHistory('a')).turns[0].items[0].text, 'a:123');
+  assert.equal((await backend.loadThreadHistory('b')).turns[0].items[0].text, 'b:123');
+  turn.completedAt = 456;
+  assert.equal((await backend.loadThreadHistory('a')).turns[0].items[0].text, 'a:456');
+});
+
 test('records an accepted tmux follow-up in the sparse Codex summary cache', async () => {
   const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
   const answer = { id: 'answer-1', type: 'agentMessage', text: 'Working' };

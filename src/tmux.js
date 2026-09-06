@@ -489,6 +489,25 @@ function resolveCodexUsageOutput(output) {
   )).join('\n');
 }
 
+function resolveCodexLocalCommandOutput(output, initialScreen, text) {
+  if (output === initialScreen) return '';
+  const picker = codexPickerRows(output);
+  if (picker?.some(line => /^[›>❯]\s*\d+\./u.test(line))) {
+    const heading = picker.findLastIndex(line => /^(?:Skills|Usage)$/u.test(line));
+    return [...picker.slice(Math.max(0, heading)), CODEX_PICKER_HINT].join('\n');
+  }
+  const rows = cleanScreenRows(output);
+  const start = rows.findLastIndex(line => line.trim() === text.trim());
+  if (start < 0 || agentComposerState(output, '') !== 'empty') return '';
+  const prompt = rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
+  if (prompt <= start) return '';
+  const body = rows.slice(start + 1, prompt);
+  // Async commands may show Loading before echoing their command. Do not mistake
+  // an earlier invocation (and its following status box) for the current result.
+  if (body.some(line => /^\s*\/[a-z][\w-]*(?:\s|$)/iu.test(line) || /\bLoading\b/iu.test(line))) return '';
+  return resolveSlashCommandOutput(body.join('\n'));
+}
+
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
 // a custom statusline adds a row, and a modal such as /usage hides the footer outright.
 // Whether the pane is repainting at all survives every one of those, and it needs no
@@ -802,7 +821,8 @@ const QUEUED_INPUT_DELAY_MS = 60;
 const QUEUED_INPUT_CAPTURE_ATTEMPTS = 5;
 const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
 const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model', '/usage']);
-const CODEX_MODEL_PICKER_TITLE = /(?:select model and effort|select reasoning level for .+|advanced reasoning)/iu;
+const CODEX_MODEL_PICKER_TITLE = /^(?:select model and effort|select reasoning level for .+|advanced reasoning)$/iu;
+const CODEX_PICKER_HINT = 'Press enter to confirm or esc to go back';
 const CODEX_USAGE_PICKER_TITLE = /^Usage$/iu;
 const CODEX_SKILLS_PICKER_TITLE = /^Skills$/iu;
 const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call/iu;
@@ -963,52 +983,86 @@ export async function ensureAgentInputSubmitted({
   return 'unconfirmed';
 }
 
-function codexModelPicker(output) {
-  const rows = cleanScreenRows(output);
-  const start = rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line));
-  const endOffset = start < 0 ? -1 : rows.slice(start)
-    .findIndex((line) => /press enter to confirm or esc to go back/iu.test(line));
-  if (start < 0 || endOffset < 0) return null;
-  const terminalOutput = rows.slice(start, start + endOffset + 1).map((line) => {
+function codexPickerRows(output) {
+  const rows = cleanScreenRows(output).map((line) => {
     const content = /^\s*[│║](.*)[│║]\s*$/u.exec(line)?.[1];
     return (content == null ? line : content).trim();
-  }).filter(Boolean).slice(-SLASH_OUTPUT_MAX_LINES).join('\n');
-  const options = terminalOutput.split('\n').flatMap((line) => {
+  }).filter((line) => line && !/^[╭┌╔╰└╚].*[╮┐╗╯┘╝]$/u.test(line));
+  const end = rows.findLastIndex((line) => line.startsWith('Press enter to '));
+  const hint = rows.slice(end).join(' ');
+  // Require the hint to own the final pane rows. Old pickers in scrollback must
+  // never authorize a selection in a later composer or approval dialog.
+  if (end < 0 || hint.length < 17 || !CODEX_PICKER_HINT.startsWith(hint)) return null;
+  const prompt = rows.slice(0, end).findLastIndex((line) => /^[»›>❯](?!\s*\d+\.)(?:\s|$)/u.test(line));
+  return rows.slice(prompt + 1, end);
+}
+
+function codexModelPicker(output) {
+  const rows = codexPickerRows(output);
+  if (!rows) return null;
+  const titleRow = rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line));
+  const options = [];
+  for (const line of rows.slice(titleRow + 1)) {
     const match = /^([›>❯])?\s*\d+\.\s+(.+)$/u.exec(line.trim());
-    if (!match) return [];
-    const current = /^(.*?)\s+\(current\)(?:\s{2,}(.*))?$/iu.exec(match[2]);
+    if (!match) {
+      if (options.length) options.at(-1).display += ` ${line}`;
+      continue;
+    }
+    const current = /^(.*?)\s+\((current\)|cur[a-z]*…)(?:\s+(.*))?$/iu.exec(match[2]);
+    if (current && current[2] !== 'current)' && !'current'.startsWith(current[2].slice(0, -1))) return null;
     const parts = current
-      ? [current[1], current[2] || '']
+      ? [current[1], current[3] || '']
       : match[2].split(/\s{2,}/u);
     const label = parts[0]?.trim();
-    return label ? [{
-      label,
-      cursor: Boolean(match[1]),
-    }] : [];
-  });
-  return options.length ? { terminalOutput, options } : null;
+    if (label) options.push({
+      label, cursor: Boolean(match[1]),
+      display: current && current[2] !== 'current)'
+        ? line.replace(match[2], `${label} (current)${current[3] ? `  ${current[3]}` : ''}`)
+        : line,
+    });
+  }
+  if (!options.length || options.filter(option => option.cursor).length !== 1) return null;
+  let title = rows[titleRow];
+  if (!title) {
+    if (options.every(option => /^(?:gpt-|o\d|codex)[\w.-]+(?:…)?$/iu.test(option.label))) title = 'Select Model and Effort';
+    else if (options.length >= 2 && options.every(option => (
+      /^(?:Low|Medium|High|Extra high|More reasoning…|Max|Ultra)(?: \(default\))?$/u.test(option.label)
+    ))) title = 'Select Reasoning Level for current model';
+    else return null;
+  }
+  if (new Set(options.map(option => option.label)).size !== options.length) return null;
+  const terminalOutput = [
+    title,
+    ...(titleRow >= 0 ? rows.slice(titleRow + 1, rows.findIndex((line, index) => index > titleRow && /^[›>❯]?\s*\d+\./u.test(line))) : []),
+    ...options.map(option => option.display),
+    CODEX_PICKER_HINT,
+  ].join('\n');
+  return { terminalOutput, options };
 }
 
 function hasCodexUsagePicker(output) {
-  const rows = screenLines(output);
+  const rows = codexPickerRows(output);
+  if (!rows) return false;
   const start = rows.findLastIndex((line) => CODEX_USAGE_PICKER_TITLE.test(line));
-  if (start < 0 || !rows.slice(start).some((line) => /press enter to confirm or esc to go back/iu.test(line))) {
-    return false;
-  }
+  if (start < 0) return false;
   return rows.slice(start).some((line) => /^›\s*1\.\s+Show usage\b/iu.test(line));
 }
 
 function codexLocalCommandPicker(output) {
-  const rows = screenLines(output);
+  if (codexModelPicker(output)) return 'model';
+  const rows = codexPickerRows(output);
+  if (!rows) return '';
   const candidates = [
-    ['model', rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line))],
     ['usage', rows.findLastIndex((line) => CODEX_USAGE_PICKER_TITLE.test(line))],
     ['skills', rows.findLastIndex((line) => CODEX_SKILLS_PICKER_TITLE.test(line))],
   ].filter(([, index]) => index >= 0).sort((left, right) => right[1] - left[1]);
   const [kind, start] = candidates[0] || [];
-  if (start == null || !rows.slice(start).some((line) => (
-    /press enter to confirm or esc to go back/iu.test(line)
-  ))) return '';
+  if (start == null) return '';
+  const choices = rows.slice(start + 1).filter(line => /^[›>❯]?\s*\d+\./u.test(line));
+  const knownChoice = kind === 'usage'
+    ? /^[›>❯]?\s*\d+\.\s+(?:Show usage|Redeem usage limit reset)\b/iu
+    : /^[›>❯]?\s*\d+\.\s+(?:List skills|Enable\/Disable Sk)/iu;
+  if (!choices.length || !choices.every(line => knownChoice.test(line))) return '';
   return kind;
 }
 
@@ -1200,6 +1254,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       const codexUsage = provider === 'codex' && command === '/usage';
       const bareCodexUsage = codexUsage && text.trim() === command;
       const bareCodexCommand = provider === 'codex' && text.trim() === command;
+      const otherCodexCommand = provider === 'codex' && !SLASH_COMMAND_OUTPUT_COMMANDS.has(command);
       const composerRecovery = provider === 'codex'
         ? await requireEmptyCodexComposer(bareCodexCommand ? command : '')
         : false;
@@ -1219,7 +1274,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         await waitForPaste(pasteDelay);
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       }
-      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return {};
+      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command) && !otherCodexCommand) return {};
       const waitForSlashOutput = overrides.waitForSlashOutput
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
       try {
@@ -1229,12 +1284,12 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         let usagePickerAccepted = existingUsagePicker;
         const attempts = Math.max(
           bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1,
-          bareCodexUsage ? USAGE_OUTPUT_CAPTURE_ATTEMPTS : 1,
+          bareCodexUsage || otherCodexCommand ? USAGE_OUTPUT_CAPTURE_ATTEMPTS : 1,
           SLASH_OUTPUT_CAPTURE_ATTEMPTS,
         );
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           await waitForSlashOutput();
-          screen = await captureCommandPane(paneId);
+          screen = await (bareCodexModel ? captureInputPane(paneId) : captureCommandPane(paneId));
           if (bareCodexUsage && !usagePickerAccepted && hasCodexUsagePicker(screen)) {
             if (!await verifyPane()) return {};
             await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
@@ -1242,15 +1297,25 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
             continue;
           }
           modelPicker = bareCodexModel ? codexModelPicker(screen) : null;
+          // Menus own the visible pane, not the scrollback that can still contain
+          // older menus, status boxes, or loading notices.
+          const localScreen = otherCodexCommand && codexPickerRows(screen)
+            ? await captureInputPane(paneId) : screen;
           terminalOutput = modelPicker?.terminalOutput
-            || (codexUsage ? resolveCodexUsageOutput(screen) : resolveSlashCommandOutput(screen));
+            || (codexUsage ? resolveCodexUsageOutput(screen)
+              : otherCodexCommand ? resolveCodexLocalCommandOutput(localScreen, initialScreen, text)
+              : resolveSlashCommandOutput(screen));
           if (modelPicker) break;
+          if (otherCodexCommand && terminalOutput && codexPickerRows(screen)) break;
+          if (otherCodexCommand && !terminalOutput
+            && hasCodexActiveTurn(screen) && !hasCodexActiveTurn(initialScreen)) return { terminalWorking: true };
           if (screen !== initialScreen && terminalOutput
-            && !(bareCodexUsage && /\bLoading\.\.\./iu.test(terminalOutput))
+            && !((bareCodexUsage || otherCodexCommand) && /\bLoading\b/iu.test(terminalOutput))
             && (provider !== 'codex' || agentComposerState(screen, '') === 'empty')) break;
         }
         if (bareCodexModel && !modelPicker) return {};
         if (bareCodexUsage && /\bLoading\.\.\./iu.test(terminalOutput)) return {};
+        if (otherCodexCommand && /\bLoading\b/iu.test(terminalOutput)) return {};
         const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
         if (!signals.busy && !signals.background) {
           // A local command redraw (for example /status or /model) is complete work, not Agent
@@ -1297,6 +1362,25 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
   });
 }
 
+export async function dismissSessionCommand({ provider, sessionName, threadId, command }, overrides = {}) {
+  if (provider !== 'codex' || !['/model', '/skills', '/usage'].includes(command)
+    || !validateSessionName(sessionName)) throw new Error('无效的命令弹窗');
+  return queueSessionInput(sessionName, async () => {
+    const listTmuxSessions = overrides.listTmuxSessions || listSessions;
+    const target = { provider, sessionName, threadId };
+    const { paneId } = await verifiedSessionTarget(target, listTmuxSessions);
+    const captureSessionPane = overrides.capturePane || capturePane;
+    const matches = screen => codexLocalCommandPicker(screen) === command.slice(1);
+    if (!matches(await captureSessionPane(paneId))) return { dismissed: false };
+    const current = await verifiedSessionTarget(target, listTmuxSessions);
+    if (current.paneId !== paneId || !matches(await captureSessionPane(paneId))) return { dismissed: false };
+    const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Escape']));
+    paneScreenCache.delete(sessionName);
+    return { dismissed: true };
+  });
+}
+
 export async function selectSessionModel({ provider, sessionName, threadId, option }, overrides = {}) {
   const selectedOption = typeof option === 'string' ? option.trim() : '';
   if (provider !== 'codex' || !selectedOption || selectedOption.length > 128
@@ -1336,7 +1420,10 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
       if (!signals.busy && !signals.background) {
         screenActivity.set(sessionName, { hash: screenHash(screen), changedAt: 0 });
       }
-      if (!nextPicker) return { completed: true };
+      if (!nextPicker) {
+        if (agentComposerState(screen, '') === 'empty') return { completed: true };
+        continue;
+      }
       latestPicker = nextPicker;
       const nextOptions = nextPicker.options.map((candidate) => candidate.label).join('\n');
       if (nextOptions !== initialOptions) return { terminalOutput: nextPicker.terminalOutput };
