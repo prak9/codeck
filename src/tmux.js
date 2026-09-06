@@ -796,13 +796,21 @@ const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call
 const CODEX_QUEUED_INPUT_ACTION = /press esc to interrupt and send immediately/iu;
 const CODEX_BACKGROUND_WAIT = /waiting for background terminal\b/iu;
 
-function hasCodexBackgroundWait(output) {
-  return screenLines(output).slice(-6).some((line) => CODEX_BACKGROUND_WAIT.test(line));
-}
-
 function hasCodexQueuedInput(output) {
   const text = screenLines(output).join(' ');
   return CODEX_QUEUED_INPUT_NOTICE.test(text) && CODEX_QUEUED_INPUT_ACTION.test(text);
+}
+
+function hasCodexActiveTurn(output) {
+  const rows = screenLines(output).slice(-12);
+  const activeRow = rows.findLastIndex((line) => (
+    AGENT_SCREEN_MARKERS.codex.busy.patterns.some((pattern) => pattern.test(line))
+      || CODEX_BACKGROUND_WAIT.test(line)
+      || CODEX_QUEUED_INPUT_NOTICE.test(line)
+  ));
+  if (activeRow < 0) return false;
+  const composerRow = rows.findLastIndex((line) => /^[»›>❯](?:\s|$)/u.test(line));
+  return composerRow <= activeRow;
 }
 
 async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, waitForQueuedInput }) {
@@ -1042,6 +1050,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
+    let activeCodexInput = false;
     const requireEmptyCodexComposer = async (matchingDraft = '') => {
       let state = 'unknown';
       let screen = '';
@@ -1052,9 +1061,10 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         }
       } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
       if (state === 'empty') return false;
-      if (!command && state === 'unknown'
-        && (session.hasRunningProcess || session.agent?.hasBackgroundProcess)
-        && hasCodexBackgroundWait(screen)) return false;
+      if (!command && state === 'unknown' && hasCodexActiveTurn(screen)) {
+        activeCodexInput = true;
+        return false;
+      }
       if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
       const localPicker = matchingDraft && codexLocalCommandPicker(screen);
       if (matchingDraft === '/model' && localPicker === 'model' && codexModelPicker(screen)) {
@@ -1075,13 +1085,14 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         ? 'Codex 终端中已有草稿，消息未发送。请先在终端处理草稿后重试。'
         : '无法安全确认 Codex 输入框为空，消息未发送。请先在终端检查后重试。');
     };
-    const inputWasQueued = provider !== 'shell' && Boolean(session.hasRunningProcess);
-    const shouldCheckQueuedInput = provider === 'codex' && !command
-      && Boolean(session.hasRunningProcess || session.agent?.hasBackgroundProcess);
+    const inputWasQueued = () => provider !== 'shell'
+      && Boolean(session.hasRunningProcess || activeCodexInput);
+    const shouldCheckQueuedInput = () => provider === 'codex' && !command
+      && Boolean(session.hasRunningProcess || session.agent?.hasBackgroundProcess || activeCodexInput);
     const finishAgentInput = async () => {
       let terminalWorking = false;
       let submissionStatus = 'submitted';
-      if (shouldCheckQueuedInput) {
+      if (shouldCheckQueuedInput()) {
         terminalWorking = await releaseCodexQueuedInput({
           paneId,
           execTmux,
@@ -1097,7 +1108,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
           paneId,
           text,
           provider,
-          allowBusy: !inputWasQueued,
+          allowBusy: !inputWasQueued(),
           execTmux,
           verifyPane,
           capturePane: captureInputPane,
@@ -1108,7 +1119,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       return {
         ...(provider === 'codex' ? { submissionStatus } : {}),
         ...(terminalWorking ? { terminalWorking: true } : {}),
-        ...(inputWasQueued ? { inputWasQueued: true } : {}),
+        ...(inputWasQueued() ? { inputWasQueued: true } : {}),
       };
     };
     // Literal key events keep ordinary single-line input ordered with Enter even when
@@ -1222,13 +1233,13 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       pasted = true;
       await waitForPaste(pasteDelay);
       if (provider === 'codex' && !await verifyPane()) {
-        return { submissionStatus: 'unconfirmed', ...(inputWasQueued ? { inputWasQueued: true } : {}) };
+        return { submissionStatus: 'unconfirmed', ...(inputWasQueued() ? { inputWasQueued: true } : {}) };
       }
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
     } catch (error) {
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
       if (provider === 'codex' && pasted) {
-        return { submissionStatus: 'unconfirmed', ...(inputWasQueued ? { inputWasQueued: true } : {}) };
+        return { submissionStatus: 'unconfirmed', ...(inputWasQueued() ? { inputWasQueued: true } : {}) };
       }
       throw error;
     }

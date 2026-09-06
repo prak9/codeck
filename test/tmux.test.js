@@ -279,6 +279,56 @@ test('reports when Claude input was submitted while the current turn was still r
   assert.deepEqual(result, { inputWasQueued: true });
 });
 
+test('accepts Codex input when an active turn hides the composer', async () => {
+  const commands = [];
+  const activeTurn = '› Original request\n◦ Working (12s • esc to interrupt)\n  └ Waiting on background process';
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '怎么样了',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'research', hasRunningProcess: false,
+      agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    bufferName: 'codeck-active-test',
+    loadBuffer: async () => {},
+    execTmux: async (args) => commands.push(args),
+    waitForPaste: async () => {}, waitForQueuedInput: async () => {}, waitForSubmit: async () => {},
+    capturePane: async () => activeTurn,
+  });
+
+  assert.deepEqual(result, { submissionStatus: 'unconfirmed', inputWasQueued: true });
+  assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1);
+  assert.equal(commands.filter((args) => args.includes('Enter')).length, 1);
+});
+
+test('an active Codex marker never bypasses a later draft, picker, or slash-command preflight', async () => {
+  const cases = [
+    ['Continue', '◦ Working (12s • esc to interrupt)\n» Existing draft'],
+    ['Continue', '• Waiting for background terminal (2h 04m)\n» Existing draft'],
+    ['Continue', [
+      '◦ Working (12s • esc to interrupt)',
+      'Choose response', '› 1. Approve', '  2. Deny',
+      'Press enter to confirm or esc to go back',
+    ].join('\n')],
+    ['/status', '› Original request\n◦ Working (12s • esc to interrupt)'],
+  ];
+  for (const [text, screen] of cases) {
+    const commands = [];
+    await assert.rejects(sendSessionMessage({
+      provider: 'codex', sessionName: 'research', threadId: 'thread-1', text,
+    }, {
+      listTmuxSessions: async () => [{
+        name: 'research', hasRunningProcess: true,
+        agent: { kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true },
+      }],
+      loadBuffer: async () => {},
+      execTmux: async (args) => commands.push(args),
+      capturePane: async () => screen,
+    }), /消息未发送/);
+    assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
+  }
+});
+
 test('releases Codex input from a composerless background terminal wait', async () => {
   const calls = [];
   const activeWait = '• Waiting for background terminal (2h 04m)';
@@ -296,10 +346,8 @@ test('releases Codex input from a composerless background terminal wait', async 
     provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '怎么样了',
   }, {
     listTmuxSessions: async () => [{
-      name: 'research', hasRunningProcess: true,
-      agent: {
-        kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true,
-      },
+      name: 'research', hasRunningProcess: false,
+      agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
     }],
     bufferName: 'codeck-queued-test',
     loadBuffer: async (bufferName, text) => calls.push({ type: 'load', bufferName, text }),
@@ -2032,7 +2080,6 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
     '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',
     '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
     'Choose response\n› 1. Approve\n  2. Deny\nPress enter to confirm or esc to go back',
-    '• Waiting for background terminal (2h 04m)',
     '', 'redrawing', null,
   ];
   for (const text of ['怎么样了', '/status', '/model', '/usage']) {
