@@ -279,10 +279,11 @@ test('reports when Claude input was submitted while the current turn was still r
   assert.deepEqual(result, { inputWasQueued: true });
 });
 
-test('releases Codex input queued behind a background terminal wait', async () => {
+test('releases Codex input from a composerless background terminal wait', async () => {
   const calls = [];
+  const activeWait = '• Waiting for background terminal (2h 04m)';
   const screens = [
-    '• Waiting for background terminal (2h 04m)\n› Write tests for @filename',
+    `${activeWait}\n› Write tests for @filename`,
     [
       '• Waiting for background terminal (2h 04m)',
       '• Messages to be submitted after',
@@ -295,7 +296,7 @@ test('releases Codex input queued behind a background terminal wait', async () =
     provider: 'codex', sessionName: 'research', threadId: 'thread-1', text: '怎么样了',
   }, {
     listTmuxSessions: async () => [{
-      name: 'research',
+      name: 'research', hasRunningProcess: true,
       agent: {
         kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true,
       },
@@ -306,13 +307,15 @@ test('releases Codex input queued behind a background terminal wait', async () =
     waitForPaste: async () => calls.push({ type: 'paste-wait' }),
     waitForQueuedInput: async () => calls.push({ type: 'queue-wait' }),
     capturePane: async (paneId) => {
-      if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
+      if (!calls.some((call) => call.type === 'exec')) return activeWait;
       calls.push({ type: 'capture', paneId });
       return screens.shift();
     },
   });
 
-  assert.deepEqual(result, { terminalWorking: true, submissionStatus: 'submitted' });
+  assert.deepEqual(result, {
+    terminalWorking: true, submissionStatus: 'submitted', inputWasQueued: true,
+  });
   assert.deepEqual(calls, [
     { type: 'load', bufferName: 'codeck-queued-test', text: '怎么样了' },
     {
@@ -2029,6 +2032,7 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
     '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',
     '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
     'Choose response\n› 1. Approve\n  2. Deny\nPress enter to confirm or esc to go back',
+    '• Waiting for background terminal (2h 04m)',
     '', 'redrawing', null,
   ];
   for (const text of ['怎么样了', '/status', '/model', '/usage']) {

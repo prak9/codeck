@@ -794,6 +794,11 @@ const CODEX_USAGE_PICKER_TITLE = /^Usage$/iu;
 const CODEX_SKILLS_PICKER_TITLE = /^Skills$/iu;
 const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call/iu;
 const CODEX_QUEUED_INPUT_ACTION = /press esc to interrupt and send immediately/iu;
+const CODEX_BACKGROUND_WAIT = /waiting for background terminal\b/iu;
+
+function hasCodexBackgroundWait(output) {
+  return screenLines(output).slice(-6).some((line) => CODEX_BACKGROUND_WAIT.test(line));
+}
 
 function hasCodexQueuedInput(output) {
   const text = screenLines(output).join(' ');
@@ -1047,6 +1052,9 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         }
       } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
       if (state === 'empty') return false;
+      if (!command && state === 'unknown'
+        && (session.hasRunningProcess || session.agent?.hasBackgroundProcess)
+        && hasCodexBackgroundWait(screen)) return false;
       if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
       const localPicker = matchingDraft && codexLocalCommandPicker(screen);
       if (matchingDraft === '/model' && localPicker === 'model' && codexModelPicker(screen)) {
