@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { resolveSessionStatus, sessionSnapshotRefreshInterval } from '../src/session-status.js';
 import { AGENT_SCREEN_MARKERS, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
@@ -528,6 +529,34 @@ test('bare /status dismisses a stale Skills picker before submitting', async () 
     ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/status '],
     ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
   ]);
+});
+
+test('/status returns its output without interrupting a working or background-waiting Codex', async () => {
+  for (const marker of ['• Working (25s • esc to interrupt)', '• Waiting for background terminal (25s)']) {
+    const commands = [];
+    const before = `${marker}\n${EMPTY_CODEX_COMPOSER}`;
+    const after = [
+      '/status',
+      '╭────────────────────────╮',
+      '│ Model: gpt-6-astra     │',
+      '╰────────────────────────╯',
+      marker, EMPTY_CODEX_COMPOSER,
+    ].join('\n');
+    const result = await sendSessionMessage({
+      provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/status',
+    }, {
+      listTmuxSessions: async () => [{
+        name: 'work', hasRunningProcess: true,
+        agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+      }],
+      execTmux: async (args) => commands.push(args),
+      waitForPaste: async () => {}, waitForSlashOutput: async () => {},
+      capturePane: async () => commands.length ? after : before,
+    });
+    assert.deepEqual(result, { terminalOutput: 'Model: gpt-6-astra', terminalWorking: true });
+    assert.equal(commands.some(args => args.includes('Escape') || args.includes('C-c')), false);
+    assert.equal(commands.filter(args => args.includes('Enter')).length, 1);
+  }
 });
 
 test('waits for a delayed /status result instead of returning the old composer frame', async () => {
@@ -1334,6 +1363,68 @@ test('reads the codex run state and background terminals', () => {
   assert.deepEqual(signals(CODEX_IDLE, 'codex'), { busy: false, background: false });
   assert.deepEqual(signals(CODEX_BACKGROUND, 'codex'), { busy: false, background: true });
   assert.equal(signals('• Working (12s · Esc to interrupt)', 'codex').busy, true);
+});
+
+test('a static Codex background wait stays working without an interrupt hint or a local child process', () => {
+  for (const marker of [
+    '• Waiting for background terminal (2h 04m)',
+    '◦ Waiting for background terminal',
+    '\x1b[2m• Waiting for background terminal (25s)\x1b[0m',
+  ]) {
+    for (const footer of [CODEX_IDLE, CODEX_BACKGROUND]) {
+      const screen = `${marker}\n${footer}`;
+      const screenSignals = { ...signals(screen, 'codex'), animating: false };
+      const agent = { kind: 'codex', id: 'thread-1' };
+      const session = {
+        hasRunningProcess: resolveWorkingState({ agentKind: 'codex', screenSignals }),
+        agent: { ...agent, hasBackgroundProcess: resolveAgentBackgroundState({ agent, screenSignals }) },
+      };
+      assert.equal(screenSignals.busy, true, screen);
+      assert.equal(session.agent.hasBackgroundProcess, false);
+      assert.equal(resolveSessionStatus(session), 'working');
+      assert.equal(sessionSnapshotRefreshInterval({ sessions: [{ status: resolveSessionStatus(session) }] }), 750);
+    }
+  }
+});
+
+test('Codex background waiting has an explicit activity label and remains visible as live output', () => {
+  const screen = `• Ran npm test\n• Waiting for background terminal (25s)\n${CODEX_BACKGROUND}`;
+  assert.equal(resolveAgentActivityText('codex', screen), '等待后台进程 · 25秒');
+  assert.equal(resolveAgentLiveOutput('codex', screen), '• Ran npm test\n• Waiting for background terminal (25s)');
+});
+
+test('recognizes a Codex waiting label clipped to the supported narrow terminal widths', () => {
+  const marker = '• Waiting for background terminal (2h 04m)';
+  for (let cols = 20; cols < marker.length; cols += 1) {
+    const clipped = `${marker.slice(0, cols - 1)}…`;
+    assert.equal(signals(`${clipped}\n${CODEX_IDLE}`, 'codex').busy, true, clipped);
+    assert.equal(resolveAgentActivityText('codex', `${clipped}\n${CODEX_IDLE}`), '等待后台进程');
+  }
+});
+
+test('a later normal Codex turn replaces the waiting activity label', () => {
+  const screen = `• Waiting for background terminal (25s)\n◦ Working (1s • esc to interrupt)\n${CODEX_IDLE}`;
+  assert.equal(resolveAgentActivityText('codex', screen), '正在处理 · 1秒');
+});
+
+test('a completed Codex wait does not keep the session working', () => {
+  for (const history of [
+    '• Waited for background terminal · sleep 30',
+    '• Explained Waiting for background terminal',
+    '  Waiting for background terminal is a status label.',
+    '> Waiting for background terminal',
+    '• Waiting for backup…',
+    '• Waiting for background task…',
+  ]) {
+    const screen = `${history}\n${CODEX_BACKGROUND}`;
+    const screenSignals = { ...signals(screen, 'codex'), animating: false };
+    const hasRunningProcess = resolveWorkingState({ agentKind: 'codex', screenSignals });
+    assert.equal(hasRunningProcess, false, history);
+    assert.equal(resolveSessionStatus({ hasRunningProcess, agent: { kind: 'codex' } }), 'done');
+    assert.equal(resolveSessionStatus({
+      hasRunningProcess, agent: { kind: 'codex', hasBackgroundProcess: true },
+    }), 'background');
+  }
 });
 
 test('describes live terminal Agent activity without exposing pane content', () => {

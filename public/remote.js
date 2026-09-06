@@ -2388,7 +2388,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
             });
           }
           delete state.thread.tmux.commandOutput;
-          if (result?.terminalOutput && !result.terminalWorking) {
+          if (result?.terminalOutput) {
             state.thread.tmux.commandOutput = {
               command: message.match(/^\/\S*/)?.[0] || '终端命令',
               text: result.terminalOutput,

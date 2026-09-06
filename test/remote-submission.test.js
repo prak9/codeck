@@ -113,6 +113,30 @@ for (const result of [{ submissionStatus: 'submitted' }, {}]) {
   });
 }
 
+for (const command of ['/status', '/model', '/usage']) {
+  test(`${command} output is available to its dialog while the Agent keeps working`, async () => {
+    const output = command === '/model' ? 'Select Model and Effort' : 'Model: gpt-6-astra';
+    const f = fixture({ terminalOutput: output, terminalWorking: true });
+    f.input.value = command;
+    f.state.thread.tmux.status = 'working';
+    f.state.thread.turns[0].status = 'inProgress';
+    await f.context.submitComposer();
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].type, 'sendSessionMessage');
+    assert.equal(f.sent[0].text, command);
+    assert.equal(f.state.thread.tmux.commandOutput?.command, command);
+    assert.equal(f.state.thread.tmux.commandOutput?.text, output);
+    assert.equal(f.state.thread.tmux.status, 'working');
+    assert.equal(f.state.thread.turns.length, 1);
+    assert.equal(f.state.thread.turns[0].items.length, 1, 'local commands are not model messages');
+    assert.equal(model.shouldShowTerminalActivity(f.state.thread), true);
+    model.applyTmuxSnapshot(f.state.thread, { name: 'skills', status: 'working', available: true });
+    assert.equal(f.state.thread.tmux.commandOutput?.text, output, 'working snapshots must not dismiss the dialog');
+    assert.equal(f.input.value, '');
+    assert.equal(f.state.pendingDeliveries.size, 0);
+  });
+}
+
 test('a late unconfirmed response cannot alter another session or its draft', async () => {
   let resolve;
   const f = fixture(new Promise((done) => { resolve = done; }));

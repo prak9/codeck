@@ -22,6 +22,16 @@ const SHELL_COMMANDS = new Set([
   'tcsh',
   'tmux',
 ]);
+const CODEX_BACKGROUND_WAIT = {
+  test(line) {
+    const label = /^[•◦·]\s+(waiting for back.*)$/iu.exec(line)?.[1].toLowerCase();
+    if (!label) return false;
+    // Narrow panes ellipsize the status label before its timer/interrupt hint.
+    // Only an exact prefix of this label is a wait, not arbitrary "Waiting…" text.
+    return /^waiting for background terminal\b/u.test(label)
+      || (label.endsWith('…') && 'waiting for background terminal'.startsWith(label.slice(0, -1)));
+  },
+};
 // An agent waiting on the model sleeps on a socket at 0% CPU, so the process tree cannot
 // tell working from idle. Each agent does render its own busy affordance, so read that
 // instead. `lines` is how many trailing non-empty lines of the visible pane a marker may
@@ -48,7 +58,7 @@ export const AGENT_SCREEN_MARKERS = {
     background: { lines: 1, patterns: [/\b\d+\s+(?:shell|monitor|task)s?\b/i] },
   },
   codex: {
-    busy: { lines: 6, patterns: [/esc to interrupt/i, /^[\s•·]*(?:working|thinking)\b/i] },
+    busy: { lines: 6, patterns: [/esc to interrupt/i, /^[\s•·]*(?:working|thinking)\b/i, CODEX_BACKGROUND_WAIT] },
     background: { lines: 6, patterns: [/\b\d+\s+background\s+terminals?\s+running\b/i] },
   },
   // qodercli's footer reads "⠋ Generating... (esc to cancel, 25s)" while a turn runs.
@@ -244,6 +254,9 @@ function elapsedActivityText(lines, markers) {
 
 function activityLabel(kind, lines) {
   if (kind === 'qodercli') return '正在生成';
+  if (kind === 'codex' && CODEX_BACKGROUND_WAIT.test(
+    lines[markerRow(lines, AGENT_SCREEN_MARKERS.codex.busy)] || '',
+  )) return '等待后台进程';
   const action = [...lines].reverse()
     .map((line) => /^[•●]\s*(.+)$/.exec(line)?.[1] || '')
     .find((line) => line && !/^(?:working|thinking)\b/i.test(line));
@@ -794,7 +807,6 @@ const CODEX_USAGE_PICKER_TITLE = /^Usage$/iu;
 const CODEX_SKILLS_PICKER_TITLE = /^Skills$/iu;
 const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call/iu;
 const CODEX_QUEUED_INPUT_ACTION = /press esc to interrupt and send immediately/iu;
-const CODEX_BACKGROUND_WAIT = /waiting for background terminal\b/iu;
 
 function hasCodexQueuedInput(output) {
   const text = screenLines(output).join(' ');
@@ -805,7 +817,6 @@ function hasCodexActiveTurn(output) {
   const rows = screenLines(output).slice(-12);
   const activeRow = rows.findLastIndex((line) => (
     AGENT_SCREEN_MARKERS.codex.busy.patterns.some((pattern) => pattern.test(line))
-      || CODEX_BACKGROUND_WAIT.test(line)
       || CODEX_QUEUED_INPUT_NOTICE.test(line)
   ));
   if (activeRow < 0) return false;
@@ -822,7 +833,11 @@ async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, w
         await execTmux(['send-keys', '-t', paneId, 'Escape']);
         return true;
       }
-      if (resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex).busy) return false;
+      // Waiting is busy for session status, but it is still the old turn. Keep
+      // polling for Codex's queued-message notice before deciding to interrupt.
+      const rows = screenLines(screen);
+      const busyRow = markerRow(rows, AGENT_SCREEN_MARKERS.codex.busy);
+      if (busyRow >= 0 && !CODEX_BACKGROUND_WAIT.test(rows[busyRow])) return false;
     }
   } catch { /* Input was delivered; a best-effort queue check must not report failure. */ }
   return false;
