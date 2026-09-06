@@ -4,6 +4,17 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+export function turnErrorText(error) {
+  if (error == null || error === '') return '';
+  if (typeof error === 'string') return error;
+  if (typeof error?.message === 'string' && error.message.trim()) return error.message.trim();
+  try {
+    return JSON.stringify(error, (_key, value) => value == null ? undefined : value, 2);
+  } catch {
+    return String(error);
+  }
+}
+
 function copyItem(item) {
   if (!item || typeof item !== 'object') return { id: crypto.randomUUID(), type: 'unknown' };
   return {
@@ -418,7 +429,7 @@ export function applyAgentEvent(currentThread, method, params = {}) {
     return updateTurn(currentThread, params.turnId || `error-${Date.now()}`, (turn) => ({
       ...turn,
       status: 'failed',
-      error: params.message || 'Agent request failed',
+      error: turnErrorText(params.message || params.error) || 'Agent request failed',
     }));
   }
   return currentThread;
@@ -559,14 +570,18 @@ export function shouldShowTerminalActivity(thread) {
   if (thread.provider === 'shell' || tmux.available === false) return true;
   if (latestRunningTurn(thread)) return false;
   if (tmux.status === 'working') return true;
-  if (thread.provider !== 'claude' || !thread.liveOutput) return false;
+  if (!thread.liveOutput && !tmux.liveOutput) return false;
 
-  // 这张卡片只是兜底: Claude 偶尔会渲染出一个从没写进 JSONL 的最终回答 (磁盘写满就会
-  // 这样)。判据因此是"这一轮有没有留下回答", 而不是"屏幕上的字和回答对不对得上" ——
+  // 这张卡片只是兜底: Claude 偶尔会渲染出一个从没写进 JSONL 的最终回答，Codex
+  // 失败 turn 也可能只有结构化 error 而没有 agentMessage。判据因此是"这一轮有没有
+  // 留下回答", 而不是"屏幕上的字和回答对不对得上" ——
   // pane 上除了回答还有工具调用的代码和输出, 它们永远不会出现在 agent 消息里, 所以
   // 那种比对注定不成立, 卡片也就永远不消失。修了两次都在补这个比对, 方向是错的。
   const latest = asArray(thread.turns).at(-1);
-  return !asArray(latest?.items).some((item) => item?.type === 'agentMessage' && item.text);
+  if (asArray(latest?.items).some((item) => item?.type === 'agentMessage' && item.text)) return false;
+  if (thread.provider === 'claude') return true;
+  return thread.provider === 'codex'
+    && (latest?.status === 'failed' || latest?.status === 'errored' || Boolean(latest?.error));
 }
 
 export function agentActivityText(thread) {

@@ -411,7 +411,8 @@ test('captures the /status slash-command output after submitting it literally', 
       if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
       return Array.from({ length: 34 }, (_, index) => (
-        index === 33 ? '  gpt-5 · /data/code/codeck' : `status row ${index + 1}`
+        index === 32 ? '› Ask Codex to do anything'
+          : index === 33 ? '  gpt-5 · /data/code/codeck' : `status row ${index + 1}`
       )).join('\n');
     },
   });
@@ -419,17 +420,55 @@ test('captures the /status slash-command output after submitting it literally', 
   assert.deepEqual(result, {
     terminalOutput: [
       'status row 5',
-      ...Array.from({ length: 28 }, (_, index) => `status row ${index + 6}`),
+      ...Array.from({ length: 27 }, (_, index) => `status row ${index + 6}`),
+      '› Ask Codex to do anything',
       '  gpt-5 · /data/code/codeck',
     ].join('\n'),
   });
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/status'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/status '] },
     { type: 'wait' },
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
     { type: 'output-wait' },
     { type: 'capture', paneId: '%7' },
   ]);
+});
+
+test('waits for a delayed /status result instead of returning the old composer frame', async () => {
+  const calls = [];
+  const previousStatusScreen = [
+    '╭────────────────────────╮',
+    '│ Model: gpt-5.5        │',
+    '╰────────────────────────╯',
+    '',
+    '› Ask Codex to do anything',
+    '  gpt-5.5 · /data/codeck',
+  ].join('\n');
+  const statusScreen = [
+    '/status',
+    '╭────────────────────────╮',
+    '│ Model: gpt-5.6-terra  │',
+    '│ Context: 80% left     │',
+    '╰────────────────────────╯',
+    '',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-terra · /data/codeck',
+  ].join('\n');
+  const screens = [EMPTY_CODEX_COMPOSER, previousStatusScreen, previousStatusScreen, statusScreen];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/status',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => {},
+    waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
+    capturePane: async () => screens.shift() || statusScreen,
+  });
+
+  assert.equal(result.terminalOutput, 'Model: gpt-5.6-terra\nContext: 80% left');
+  assert.equal(calls.filter((call) => call.type === 'output-wait').length, 2);
 });
 
 test('captures the /model slash-command output after submitting it literally', async () => {
@@ -453,6 +492,9 @@ test('captures the /model slash-command output after submitting it literally', a
         '│ GPT-5                  │',
         '│ Reasoning: High        │',
         '╰────────────────────────╯',
+        '',
+        '› Ask Codex to do anything',
+        '  gpt-5 · /data/codeck',
       ].join('\n');
     },
   });

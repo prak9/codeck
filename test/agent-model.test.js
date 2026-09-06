@@ -14,10 +14,21 @@ import {
   reconcileAgentThreadRefresh,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
+  turnErrorText,
   tmuxSessionsToThreads,
   userMessageDeliveryBaseline,
   userMessageText,
 } from '../public/agent-model.js';
+
+test('formats structured Agent errors without losing their message', () => {
+  assert.equal(turnErrorText('request failed'), 'request failed');
+  assert.equal(turnErrorText({
+    message: 'request timed out',
+    codexErrorInfo: 'other',
+    additionalDetails: null,
+  }), 'request timed out');
+  assert.equal(turnErrorText({ code: 'EFAIL', additionalDetails: null }), '{\n  "code": "EFAIL"\n}');
+});
 
 test('describes the active Agent item in real time', () => {
   const thread = normalizeAgentThread('codex', {
@@ -66,6 +77,22 @@ test('hides completed Qoder terminal output once structured history is available
   thread.tmux.status = 'done';
   thread.tmux.available = false;
   assert.equal(shouldShowTerminalActivity(thread), true);
+});
+
+test('keeps failed Codex terminal output visible when the turn has no answer', () => {
+  const thread = normalizeAgentThread('codex', {
+    id: 'thread-1',
+    turns: [{
+      id: 'turn-1', status: 'failed', error: { message: 'request timed out' },
+      items: [{ id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Retry this' }] }],
+    }],
+    liveOutput: 'request timed out\n\n› Ask Codex to do anything',
+  });
+  thread.tmux = { name: 'codeck', status: 'done', available: true };
+
+  assert.equal(shouldShowTerminalActivity(thread), true);
+  thread.turns[0].items.push({ id: 'answer-1', type: 'agentMessage', text: 'Recovered answer' });
+  assert.equal(shouldShowTerminalActivity(thread), false);
 });
 
 

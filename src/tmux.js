@@ -482,6 +482,13 @@ function capturePane(paneId, execTmux = exec, joinWrapped = false) {
     .then(({ stdout }) => stdout).catch(() => '');
 }
 
+function capturePaneHistory(paneId, execTmux = exec) {
+  if (!paneId) return Promise.resolve('');
+  return execTmux('tmux', [
+    'capture-pane', '-p', '-S', `-${SLASH_OUTPUT_HISTORY_LINES}`, '-t', paneId,
+  ]).then(({ stdout }) => stdout).catch(() => '');
+}
+
 function parsePaneCaptureBatch(output, markers) {
   const captures = [];
   let cursor = 0;
@@ -759,6 +766,8 @@ const PASTE_SUBMIT_DELAY_MS = 80;
 const CODEX_PASTE_SUBMIT_DELAY_MS = 200;
 const LITERAL_AGENT_INPUT_MAX_BYTES = 64 * 1024;
 const SLASH_OUTPUT_DELAY_MS = 150;
+const SLASH_OUTPUT_CAPTURE_ATTEMPTS = 12;
+const SLASH_OUTPUT_HISTORY_LINES = 120;
 const QUEUED_INPUT_DELAY_MS = 60;
 const QUEUED_INPUT_CAPTURE_ATTEMPTS = 5;
 const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
@@ -973,10 +982,14 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     };
     const captureInputPane = overrides.capturePane
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped));
+    const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
+      || ((pane) => capturePaneHistory(pane, exec));
     const requireEmptyCodexComposer = async () => {
       let state = 'unknown';
       try {
-        if (await verifyPane()) state = agentComposerState(await captureInputPane(paneId, { joinWrapped: true }), '');
+        if (await verifyPane()) {
+          state = agentComposerState(await captureInputPane(paneId, { joinWrapped: true }), '');
+        }
       } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
       if (state === 'empty') return;
       throw new Error(state === 'other' || state === 'draft'
@@ -1044,29 +1057,37 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     }
     if (literalAgentInput && command) {
       if (provider === 'codex') await requireEmptyCodexComposer();
+      const initialScreen = await captureCommandPane(paneId);
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
+      const bareCodexCommand = provider === 'codex'
+        && SLASH_COMMAND_OUTPUT_COMMANDS.has(command) && text.trim() === command;
       await execTmux(exitPaneModeThen(
         paneId,
-        ['send-keys', '-l', '-t', paneId, '--', bareCodexModel ? `${command} ` : text],
+        ['send-keys', '-l', '-t', paneId, '--', bareCodexCommand ? `${command} ` : text],
       ));
       await waitForPaste(pasteDelay);
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return finishAgentInput();
       const waitForSlashOutput = overrides.waitForSlashOutput
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
-      const captureSessionPane = overrides.capturePane || capturePane;
       try {
         let screen = '';
         let modelPicker = null;
-        const attempts = bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1;
+        let terminalOutput = '';
+        const attempts = Math.max(
+          bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1,
+          SLASH_OUTPUT_CAPTURE_ATTEMPTS,
+        );
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           await waitForSlashOutput();
-          screen = await captureSessionPane(paneId);
+          screen = await captureCommandPane(paneId);
           modelPicker = bareCodexModel ? codexModelPicker(screen) : null;
-          if (!bareCodexModel || modelPicker) break;
+          terminalOutput = modelPicker?.terminalOutput || resolveSlashCommandOutput(screen);
+          if (modelPicker) break;
+          if (screen !== initialScreen && terminalOutput
+            && (provider !== 'codex' || agentComposerState(screen, '') === 'empty')) break;
         }
         if (bareCodexModel && !modelPicker) return {};
-        const terminalOutput = modelPicker?.terminalOutput || resolveSlashCommandOutput(screen);
         const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
         if (!signals.busy && !signals.background) {
           // A local command redraw (for example /status or /model) is complete work, not Agent

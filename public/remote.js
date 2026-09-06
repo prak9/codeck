@@ -14,9 +14,10 @@ import {
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
+  turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=38';
+} from './agent-model.js?v=39';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -1659,7 +1660,8 @@ function renderTurn(turn) {
   section.dataset.turnId = turn.id;
   section._codeckTurn = turn;
   for (const item of turn.items || []) section.append(itemNode(item, turn));
-  if (turn.error) section.append(element('div', 'turn-error', turn.error));
+  const errorText = turnErrorText(turn.error);
+  if (errorText) section.append(element('div', 'turn-error', errorText));
   const output = agentOutputText(turn);
   if (output && turn.status !== 'inProgress' && turn.status !== 'running') {
     section.append(agentOutputActions(output));
