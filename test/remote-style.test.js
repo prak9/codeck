@@ -94,7 +94,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=34/);
+  assert.match(html, /\/remote\.css\?v=35/);
+  assert.match(html, /\/remote\.js\?v=81/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -121,6 +122,14 @@ test('completed model turns expose a touch-accessible copy action', () => {
   assert.match(remoteJs, /setAttribute\('aria-label', '复制本轮模型输出'\)/);
   assert.match(css, /\.message-copy-button\s*\{[^}]*min-height:\s*34px/s);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.message-copy-button\s*\{[^}]*min-height:\s*44px/s);
+});
+
+test('remote history exposes a touch-accessible shortcut to the latest message', () => {
+  assert.match(html, /id="scrollLatestButton"[^>]*type="button"[^>]*aria-label="直达最新消息"[^>]*hidden/);
+  assert.match(css, /\.scroll-latest-button\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(remoteJs, /transcriptNeedsLatestButton\(/);
+  assert.match(remoteJs, /scrollLatestButton'\)\.addEventListener\('click', scrollTranscriptToLatest\)/);
+  assert.match(remoteJs, /transcript'\)\.addEventListener\('scroll', scheduleTranscriptLatestButtonSync/);
 });
 
 test('skills command renders as a structured panel instead of plain terminal text', () => {

@@ -24,6 +24,7 @@ import { attachmentMessage, validateAttachmentSelection } from './remote-attachm
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=3';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
+import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
@@ -70,6 +71,7 @@ const THREAD_COMPLETION_REFRESH_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
 let viewportFrame = 0;
+let transcriptScrollFrame = 0;
 
 const state = {
   loadingEarlier: false,
@@ -1768,8 +1770,8 @@ function updateTerminalActivity() {
     return;
   }
   const transcript = $('#transcript');
-  const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
-  const outputNearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
+  const nearBottom = transcriptNearLatest(transcript);
+  const outputNearBottom = transcriptNearLatest(output, 40);
   const changed = current.textContent !== content.label
     || output.textContent !== content.output
     || output.hidden !== !content.output;
@@ -1935,6 +1937,27 @@ function scheduleThreadRender(forceBottom = false) {
   });
 }
 
+function syncTranscriptLatestButton() {
+  const transcript = $('#transcript');
+  const button = $('#scrollLatestButton');
+  button.hidden = !transcriptNeedsLatestButton(transcript, Boolean(state.thread));
+}
+
+function scheduleTranscriptLatestButtonSync() {
+  if (transcriptScrollFrame) return;
+  transcriptScrollFrame = requestAnimationFrame(() => {
+    transcriptScrollFrame = 0;
+    syncTranscriptLatestButton();
+  });
+}
+
+function scrollTranscriptToLatest() {
+  const transcript = $('#transcript');
+  transcript.scrollTop = transcript.scrollHeight;
+  transcript.focus({ preventScroll: true });
+  syncTranscriptLatestButton();
+}
+
 
 function loadEarlierNode() {
   const existing = [...$('#turns').children].find((node) => node.classList?.contains('load-earlier'));
@@ -2012,7 +2035,7 @@ async function loadEarlierTurns() {
 
 function renderThread() {
   const transcript = $('#transcript');
-  const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
+  const nearBottom = transcriptNearLatest(transcript);
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const turnContainer = $('#turns');
@@ -2054,7 +2077,11 @@ function renderThread() {
   );
   syncCommandDialog(terminalContent.kind === 'command' ? terminalContent.commandOutput : null);
   renderHeader();
-  if (state.forceScroll || nearBottom) requestAnimationFrame(() => { transcript.scrollTop = transcript.scrollHeight; });
+  if (state.forceScroll || nearBottom) requestAnimationFrame(() => {
+    transcript.scrollTop = transcript.scrollHeight;
+    syncTranscriptLatestButton();
+  });
+  else scheduleTranscriptLatestButtonSync();
   state.forceScroll = false;
 }
 
@@ -2658,8 +2685,7 @@ function syncViewportHeight() {
   viewportFrame = requestAnimationFrame(() => {
     viewportFrame = 0;
     const transcript = $('#transcript');
-    const nearBottom = transcript
-      && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
+    const nearBottom = transcript && transcriptNearLatest(transcript);
     const { height, top } = resolveViewportGeometry(window.visualViewport, window.innerHeight);
     const root = document.documentElement;
     const nextHeight = `${height}px`;
@@ -2669,10 +2695,16 @@ function syncViewportHeight() {
     if (!changed) return;
     root.style.setProperty('--app-height', nextHeight);
     root.style.setProperty('--app-top', nextTop);
-    if (nearBottom) requestAnimationFrame(() => { transcript.scrollTop = transcript.scrollHeight; });
+    if (nearBottom) requestAnimationFrame(() => {
+      transcript.scrollTop = transcript.scrollHeight;
+      syncTranscriptLatestButton();
+    });
+    else scheduleTranscriptLatestButtonSync();
   });
 }
 
+$('#transcript').addEventListener('scroll', scheduleTranscriptLatestButtonSync, { passive: true });
+$('#scrollLatestButton').addEventListener('click', scrollTranscriptToLatest);
 $('#drawerButton').addEventListener('click', openDrawer);
 $('#drawerScrim').addEventListener('click', closeDrawer);
 $('#drawerNewButton').addEventListener('click', openNewSession);

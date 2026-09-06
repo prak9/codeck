@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=34">
+  <link rel="stylesheet" href="/remote.css?v=35">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -82,6 +82,9 @@
       </main>
 
       <footer class="composer-area">
+        <button class="scroll-latest-button" id="scrollLatestButton" type="button" aria-label="直达最新消息" title="直达最新消息" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>最新消息</span>
+        </button>
         <div class="composer-meta" id="composerMeta">
           <span id="composerStatus"><i class="connection-dot"></i>正在连接</span>
           <button id="cwdButton" type="button" title="更改工作目录"><span id="cwdLabel">工作目录</span></button>
@@ -215,6 +218,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=80"></script>
+  <script type="module" src="/remote.js?v=81"></script>
 </body>
 </html>
