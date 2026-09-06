@@ -1418,6 +1418,7 @@ function commandPendingMessage(text) {
     return label ? `正在切换到 ${label}…` : '正在切换模型…';
   }
   if (command === '/status') return '正在读取状态…';
+  if (command === '/usage') return '正在读取用量…';
   return '正在发送…';
 }
 

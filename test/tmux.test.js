@@ -560,6 +560,102 @@ test('bare /model bypasses slash completion and waits for the actual Codex picke
   assert.equal(calls.filter((call) => call.type === 'capture').length, 3);
 });
 
+test('bare /usage bypasses completion, selects Show usage, and waits past loading', async () => {
+  const calls = [];
+  const usagePicker = [
+    'Usage',
+    'View account usage or redeem an earned reset.',
+    '',
+    '› 1. Show usage                View recent account token usage.',
+    '     Redeem usage limit reset  No usage limit resets available.',
+    '',
+    'Press enter to confirm or esc to go back',
+  ].join('\n');
+  const loading = [
+    '/usage daily',
+    '',
+    'Token activity',
+    '  Loading...',
+    '',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-sol · /data/codeck',
+  ].join('\n');
+  const loaded = [
+    '╭────────────────────────╮',
+    '│ OpenAI Codex           │',
+    '╰────────────────────────╯',
+    '/usage daily',
+    '',
+    'Token activity   last 12 months',
+    'Lifetime 19.4B · Peak 1.14B',
+    '',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-sol · /data/codeck',
+  ].join('\n');
+  const screens = [
+    EMPTY_CODEX_COMPOSER,
+    EMPTY_CODEX_COMPOSER,
+    usagePicker,
+    ...Array(12).fill(loading),
+    loaded,
+  ];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/usage',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push({ type: 'exec', args }),
+    waitForPaste: async () => {},
+    waitForSlashOutput: async () => calls.push({ type: 'output-wait' }),
+    capturePane: async () => screens.shift() || loaded,
+  });
+
+  assert.match(result.terminalOutput, /Token activity\s+last 12 months/);
+  assert.doesNotMatch(result.terminalOutput, /Loading/);
+  assert.doesNotMatch(result.terminalOutput, /OpenAI Codex/);
+  assert.deepEqual(calls.filter((call) => call.type === 'exec').map((call) => call.args), [
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/usage '],
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
+    ['send-keys', '-t', '%7', 'Enter'],
+  ]);
+});
+
+test('recovers an identical /usage draft left by slash completion without duplicating it', async () => {
+  const calls = [];
+  const existingDraft = '› /usage\n\n  /usage  view account usage or use a usage limit reset';
+  const picker = [
+    'Usage',
+    '› 1. Show usage                View recent account token usage.',
+    'Press enter to confirm or esc to go back',
+  ].join('\n');
+  const loaded = [
+    '/usage daily',
+    'Token activity   last 12 months',
+    'Lifetime 19.4B · Peak 1.14B',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-sol · /data/codeck',
+  ].join('\n');
+  const screens = [existingDraft, existingDraft, picker, loaded];
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/usage',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push(args),
+    waitForPaste: async () => {},
+    waitForSlashOutput: async () => {},
+    capturePane: async () => screens.shift() || loaded,
+  });
+
+  assert.match(result.terminalOutput, /Token activity/);
+  assert.deepEqual(calls[0], [
+    'copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', ' ',
+  ]);
+  assert.equal(calls.flat().filter((value) => value === '/usage').length, 0);
+});
+
 test('selects an exact option in the verified Codex model picker and returns its next step', async () => {
   const calls = [];
   const screens = [
@@ -608,7 +704,7 @@ test('selects an exact option in the verified Codex model picker and returns its
   ].join('\n'));
 });
 
-test('does not special-case slash commands other than /status and /model', async () => {
+test('does not capture slash commands other than /status, /model, and /usage', async () => {
   const calls = [];
   const result = await sendSessionMessage({
     provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/skills',
@@ -625,13 +721,32 @@ test('does not special-case slash commands other than /status and /model', async
     },
   });
 
-  assert.deepEqual(result, { submissionStatus: 'unconfirmed' });
+  assert.deepEqual(result, {});
   assert.deepEqual(calls, [
-    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/skills'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/skills '] },
     { type: 'wait' },
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'] },
-    // 没有可识别输入框, 只能报告未确认, 不补 Enter。
-    { type: 'capture', paneId: '%7' },
+  ]);
+});
+
+test('recovers a matching completion draft for other bare Codex slash commands', async () => {
+  const calls = [];
+  const existingDraft = '› /skills\n\n  /skills  view and use Skills';
+  const result = await sendSessionMessage({
+    provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: '/skills',
+  }, {
+    listTmuxSessions: async () => [{
+      name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
+    }],
+    execTmux: async (args) => calls.push(args),
+    waitForPaste: async () => {},
+    capturePane: async () => existingDraft,
+  });
+
+  assert.deepEqual(result, {});
+  assert.deepEqual(calls, [
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', ' '],
+    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
   ]);
 });
 
@@ -1810,6 +1925,7 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
     '» Existing wrapped draft\ncontinuation\n\n  gpt-6-astra · /project',
     '» \n  Existing second line\n\n  gpt-6-astra · /project',
     '» Existing draft\n  › \n\n  gpt-6-astra · /project',
+    '› /status\n\n  /status  user-authored second line\n\n  gpt-6-astra · /project',
     '» \n  ----------\n  Existing second line\n\n  gpt-6-astra · /project',
     '» \n  gpt-fake · /pretend-footer\n  Existing second line\n\n  gpt-6-astra · /project',
     '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',

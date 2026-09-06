@@ -460,6 +460,22 @@ export function resolveSlashCommandOutput(output) {
   )).join('\n');
 }
 
+function resolveCodexUsageOutput(output) {
+  const rows = cleanScreenRows(output);
+  const start = rows.findLastIndex((line) => /^\s*\/usage(?:\s+daily)?\s*$/iu.test(line));
+  if (start < 0) return '';
+  const promptOffset = rows.slice(start + 1)
+    .findIndex((line) => /^\s*[»›>❯]\s+Ask Codex to do anything\s*$/iu.test(line));
+  const visible = rows.slice(start + 1, promptOffset < 0 ? rows.length : start + 1 + promptOffset);
+  while (visible.length && !visible[0]) visible.shift();
+  while (visible.length && !visible.at(-1)) visible.pop();
+  return visible.slice(-SLASH_OUTPUT_MAX_LINES).map((line) => (
+    line.length > LIVE_OUTPUT_MAX_LINE_LENGTH
+      ? `${line.slice(0, LIVE_OUTPUT_MAX_LINE_LENGTH - 1)}…`
+      : line
+  )).join('\n');
+}
+
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
 // a custom statusline adds a row, and a modal such as /usage hides the footer outright.
 // Whether the pane is repainting at all survives every one of those, and it needs no
@@ -767,12 +783,14 @@ const CODEX_PASTE_SUBMIT_DELAY_MS = 200;
 const LITERAL_AGENT_INPUT_MAX_BYTES = 64 * 1024;
 const SLASH_OUTPUT_DELAY_MS = 150;
 const SLASH_OUTPUT_CAPTURE_ATTEMPTS = 12;
+const USAGE_OUTPUT_CAPTURE_ATTEMPTS = 40;
 const SLASH_OUTPUT_HISTORY_LINES = 120;
 const QUEUED_INPUT_DELAY_MS = 60;
 const QUEUED_INPUT_CAPTURE_ATTEMPTS = 5;
 const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
-const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model']);
+const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model', '/usage']);
 const CODEX_MODEL_PICKER_TITLE = /(?:select model and effort|select reasoning level for .+|advanced reasoning)/iu;
+const CODEX_USAGE_PICKER_TITLE = /^Usage$/iu;
 const CODEX_QUEUED_INPUT_NOTICE = /Messages to be submitted after next tool call/iu;
 const CODEX_QUEUED_INPUT_ACTION = /press esc to interrupt and send immediately/iu;
 
@@ -831,6 +849,17 @@ function agentComposerState(output, text) {
   if (composer === 'Ask Codex to do anything' && composer !== text.trimEnd()) return 'empty';
   if (/^\[Pasted (?:Content|content)\b/u.test(composer)) return 'unknown';
   return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
+}
+
+function hasCodexSlashCompletionDraft(output, command) {
+  const rows = cleanScreenRows(output);
+  const prompt = /^\s*[»›>❯]\s+(\/\S+)\s*$/u;
+  const start = rows.findLastIndex((line) => prompt.test(line));
+  if (start < 0 || prompt.exec(rows[start])?.[1] !== command) return false;
+  const menuRows = rows.slice(start + 1);
+  while (menuRows.length && !menuRows.at(-1)) menuRows.pop();
+  return menuRows.length === 2 && !menuRows[0]
+    && menuRows[1].startsWith(`  ${command}  `);
 }
 
 // Only retry Enter, never the message text. Screen confirmation means the TUI no
@@ -894,6 +923,15 @@ function codexModelPicker(output) {
     }] : [];
   });
   return options.length ? { terminalOutput, options } : null;
+}
+
+function hasCodexUsagePicker(output) {
+  const rows = screenLines(output);
+  const start = rows.findLastIndex((line) => CODEX_USAGE_PICKER_TITLE.test(line));
+  if (start < 0 || !rows.slice(start).some((line) => /press enter to confirm or esc to go back/iu.test(line))) {
+    return false;
+  }
+  return rows.slice(start).some((line) => /^›\s*1\.\s+Show usage\b/iu.test(line));
 }
 
 function queueSessionInput(sessionName, operation) {
@@ -984,14 +1022,18 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
-    const requireEmptyCodexComposer = async () => {
+    const requireEmptyCodexComposer = async (matchingDraft = '') => {
       let state = 'unknown';
+      let screen = '';
       try {
         if (await verifyPane()) {
-          state = agentComposerState(await captureInputPane(paneId, { joinWrapped: true }), '');
+          screen = await captureInputPane(paneId, { joinWrapped: true });
+          state = agentComposerState(screen, '');
         }
       } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
-      if (state === 'empty') return;
+      if (state === 'empty') return false;
+      if (matchingDraft && (agentComposerState(screen, matchingDraft) === 'draft'
+        || hasCodexSlashCompletionDraft(screen, matchingDraft))) return true;
       throw new Error(state === 'other' || state === 'draft'
         ? 'Codex 终端中已有草稿，消息未发送。请先在终端处理草稿后重试。'
         : '无法安全确认 Codex 输入框为空，消息未发送。请先在终端检查后重试。');
@@ -1056,38 +1098,53 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       return finishAgentInput();
     }
     if (literalAgentInput && command) {
-      if (provider === 'codex') await requireEmptyCodexComposer();
-      const initialScreen = await captureCommandPane(paneId);
       const bareCodexModel = provider === 'codex' && command === '/model' && text.trim() === command;
-      const bareCodexCommand = provider === 'codex'
-        && SLASH_COMMAND_OUTPUT_COMMANDS.has(command) && text.trim() === command;
+      const codexUsage = provider === 'codex' && command === '/usage';
+      const bareCodexUsage = codexUsage && text.trim() === command;
+      const bareCodexCommand = provider === 'codex' && text.trim() === command;
+      const existingCommand = provider === 'codex'
+        ? await requireEmptyCodexComposer(bareCodexCommand ? command : '')
+        : false;
+      const initialScreen = await captureCommandPane(paneId);
       await execTmux(exitPaneModeThen(
         paneId,
-        ['send-keys', '-l', '-t', paneId, '--', bareCodexCommand ? `${command} ` : text],
+        ['send-keys', '-l', '-t', paneId, '--', existingCommand ? ' '
+          : bareCodexCommand ? `${command} ` : text],
       ));
       await waitForPaste(pasteDelay);
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
-      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return finishAgentInput();
+      if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command)) return {};
       const waitForSlashOutput = overrides.waitForSlashOutput
         || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
       try {
         let screen = '';
         let modelPicker = null;
         let terminalOutput = '';
+        let usagePickerAccepted = false;
         const attempts = Math.max(
           bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1,
+          bareCodexUsage ? USAGE_OUTPUT_CAPTURE_ATTEMPTS : 1,
           SLASH_OUTPUT_CAPTURE_ATTEMPTS,
         );
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           await waitForSlashOutput();
           screen = await captureCommandPane(paneId);
+          if (bareCodexUsage && !usagePickerAccepted && hasCodexUsagePicker(screen)) {
+            if (!await verifyPane()) return {};
+            await execTmux(['send-keys', '-t', paneId, 'Enter']);
+            usagePickerAccepted = true;
+            continue;
+          }
           modelPicker = bareCodexModel ? codexModelPicker(screen) : null;
-          terminalOutput = modelPicker?.terminalOutput || resolveSlashCommandOutput(screen);
+          terminalOutput = modelPicker?.terminalOutput
+            || (codexUsage ? resolveCodexUsageOutput(screen) : resolveSlashCommandOutput(screen));
           if (modelPicker) break;
           if (screen !== initialScreen && terminalOutput
+            && !(bareCodexUsage && /\bLoading\.\.\./iu.test(terminalOutput))
             && (provider !== 'codex' || agentComposerState(screen, '') === 'empty')) break;
         }
         if (bareCodexModel && !modelPicker) return {};
+        if (bareCodexUsage && /\bLoading\.\.\./iu.test(terminalOutput)) return {};
         const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
         if (!signals.busy && !signals.background) {
           // A local command redraw (for example /status or /model) is complete work, not Agent

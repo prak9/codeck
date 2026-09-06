@@ -259,6 +259,7 @@ test('remote slash commands use explicit pending status messages', () => {
   assert.match(remoteJs, /commandPendingMessage\(/);
   assert.match(remoteJs, /'正在读取状态…'/);
   assert.match(remoteJs, /'正在切换模型…'/);
+  assert.match(remoteJs, /'正在读取用量…'/);
 });
 
 test('remote slash command completion is accessible without shifting the composer', () => {
