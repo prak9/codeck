@@ -71,7 +71,7 @@ export const AGENT_SCREEN_MARKERS = {
   // bare spinner glyph shows up in other widgets too.
   qodercli: {
     busy: { lines: 16, patterns: [/\(esc to cancel,\s*\d/i] },
-    // Background-agent waits wrap across rows and are checked structurally below.
+    // Background waits and context-summary task counts are checked structurally below.
     background: { lines: 16, patterns: [] },
   },
 };
@@ -252,13 +252,28 @@ function hasQoderBackgroundWait(lines) {
   return /^[✶-✺]\s+Waiting for [1-9]\d* background agents? to finish$/u.test(label);
 }
 
+function hasQoderBackgroundTasks(lines) {
+  const tail = lines.slice(-AGENT_SCREEN_MARKERS.qodercli.background.lines);
+  const end = tail.findLastIndex(line => SCREEN_SEPARATOR.test(line));
+  // Only the live context summary above the composer owns this count. A quoted
+  // badge, a draft, or a retired Qoder screen followed by a shell prompt does not.
+  if (end < 0 || tail.length !== end + 2 || !/^.+ Model(?:\s*·|$)/u.test(tail[end + 1])) return false;
+  const composer = tail.slice(0, end).findLastIndex(line => SCREEN_SEPARATOR.test(line));
+  if (composer < 0 || !/^[>*](?:\s|$)/u.test(tail[composer + 1] || '')) return false;
+  const start = tail.slice(0, composer).findLastIndex(line => SCREEN_SEPARATOR.test(line));
+  if (start < 0) return false;
+  const summary = tail.slice(start + 1, composer).join(' ');
+  return /(?:^|[·|])\s*[1-9]\d*\s+Background tasks?\s*(?:[·|]|$)/iu.test(summary);
+}
+
 export function resolveScreenSignals(output, markers) {
   if (!markers) return { busy: false, background: false };
   const rows = cleanScreenRows(output);
   return {
     busy: markerRow(rows, markers.busy) >= 0,
     background: markers === AGENT_SCREEN_MARKERS.qodercli
-      ? hasQoderBackgroundWait(screenLines(output)) : markerRow(rows, markers.background) >= 0,
+      ? hasQoderBackgroundWait(screenLines(output)) || hasQoderBackgroundTasks(screenLines(output))
+      : markerRow(rows, markers.background) >= 0,
   };
 }
 

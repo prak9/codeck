@@ -5,7 +5,7 @@ import {
   resolveAgentSessionLiveOutput, resolveScreenSignals, resolveWorkingState,
 } from '../src/tmux.js';
 import { resolveSessionStatus, sessionSnapshotRefreshInterval, threadSnapshotRefreshInterval } from '../src/session-status.js';
-import { latestRunningTurn, tmuxSessionsToThreads } from '../public/agent-model.js';
+import { latestRunningTurn, threadExecutionState, tmuxSessionsToThreads } from '../public/agent-model.js';
 
 const footer = [
   '────────────────────────────────────────',
@@ -14,6 +14,16 @@ const footer = [
   ' > Type your message or @path/to/file',
   '────────────────────────────────────────',
   ' Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project',
+].join('\n');
+
+// IMG_1345: Qoder's context-summary badge, separate from the transient wait item.
+const backgroundFooter = [
+  '────────────────────────────────────────',
+  ' YOLO Shift+Tab to Auto Mode · 1 AGENTS.md file · 56 skills · 1 Background task',
+  '────────────────────────────────────────',
+  ' * Type your message or @path/to/file',
+  '────────────────────────────────────────',
+  ' Ultimate Model · ctx ▓▓▓░░░░░░░ 35% · /project',
 ].join('\n');
 
 function sessionFor(screen, animating = false) {
@@ -87,6 +97,61 @@ test('Qoder does not treat quoted, completed, zero-count, or composer wait text 
   }
   for (const kind of ['codex', 'claude']) {
     assert.deepEqual(resolveScreenSignals(`✶ Waiting for 1 background agent to finish\n${footer}`, AGENT_SCREEN_MARKERS[kind]), {
+      busy: false, background: false,
+    });
+  }
+});
+
+test('Qoder live Background task badges propagate through session status into Remote', () => {
+  for (const statusFooter of [
+    backgroundFooter,
+    backgroundFooter.replace('1 Background task', '3 Background tasks'),
+    backgroundFooter.replace('1 Background task', '\x1b[33m1 Background task\x1b[0m'),
+    backgroundFooter.replace('YOLO Shift+Tab to Auto Mode', 'Shift+Tab to Accept Edits').replace(' * ', ' > '),
+    backgroundFooter.replace(' · 1 Background task', ' ·\n 1 Background\n task'),
+    backgroundFooter.replace('YOLO Shift+Tab to Auto Mode · 1 AGENTS.md file · 56 skills · ', ''),
+    backgroundFooter.replace('Type your message or @path/to/file', 'A draft\n   with another line'),
+  ]) {
+    for (const animating of [false, true]) {
+      const screen = `The main turn has finished.\nTasks 8/13 completed\n${statusFooter}`;
+      const { session, signals } = sessionFor(screen, animating);
+      assert.equal(signals.background, true, screen);
+      assert.equal(signals.busy, false);
+      assert.equal(session.hasRunningProcess, false);
+      assert.equal(session.status, 'background');
+      assert.equal(resolveAgentActivityText('qodercli', screen), '后台任务运行中');
+      const [thread] = tmuxSessionsToThreads([session]);
+      assert.equal(threadExecutionState(thread), 'background');
+      assert.equal(latestRunningTurn(thread), null);
+      assert.equal(sessionSnapshotRefreshInterval({ sessions: [session] }), 2_000);
+      assert.equal(threadSnapshotRefreshInterval({ thread }, session.status), 2_000);
+    }
+  }
+});
+
+test('Qoder task badges coexist with foreground work and clear when the count disappears', () => {
+  const working = `⠋ Generating... (esc to cancel, 25s)\n${backgroundFooter}`;
+  const complete = backgroundFooter.replace(' · 1 Background task', '');
+  assert.deepEqual([backgroundFooter, working, complete].map(screen => sessionFor(screen).session.status), [
+    'background', 'working', 'done',
+  ]);
+});
+
+test('Qoder ignores zero, completed, quoted, draft and retired Background task badges', () => {
+  for (const screen of [
+    backgroundFooter.replace('1 Background task', '0 Background tasks'),
+    backgroundFooter.replace('1 Background task', '1 Background task completed'),
+    backgroundFooter.replace('1 Background task', 'Explain 1 Background task'),
+    `1 Background task\n${footer}`,
+    `${backgroundFooter}\nThe tasks finished.\n${footer}`,
+    `${backgroundFooter}\nuser@host:~$`,
+    footer.replace('> Type your message or @path/to/file', '> Explain this:\n   1 Background task'),
+    footer.replace('14 skills', '14 skills\n   > 1 Background task'),
+  ]) {
+    assert.equal(sessionFor(screen).session.status, 'done', screen);
+  }
+  for (const kind of ['codex', 'claude']) {
+    assert.deepEqual(resolveScreenSignals(backgroundFooter, AGENT_SCREEN_MARKERS[kind]), {
       busy: false, background: false,
     });
   }
