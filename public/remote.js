@@ -17,7 +17,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=40';
+} from './agent-model.js?v=41';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -271,6 +271,8 @@ function applyRefreshedThread(provider, thread) {
     && ['id', 'provider', 'name', 'preview', 'cwd', 'readOnly', 'status', 'truncated', 'oldestTurnId']
       .every((key) => reconciled[key] === current[key]);
   state.thread = reconciled;
+  if (refreshed.historyError && refreshed.historyError !== current?.historyError) setLiveMessage(refreshed.historyError);
+  else if (current?.historyError && !refreshed.historyError && state.liveMessage === current.historyError) setLiveMessage('');
   settleConfirmedDeliveries();
   if (paneOnly) updateTerminalActivity();
   else scheduleThreadRender(false);
@@ -564,10 +566,19 @@ function scheduleReconnect() {
   state.reconnectTimer = setTimeout(connectSocket, delay);
 }
 
+function markRestartedDeliveries() {
+  if (state.provider !== 'qodercli' || !state.thread) return;
+  state.thread = { ...state.thread, turns: (state.thread.turns || []).map(turn => ({
+    ...turn, items: (turn.items || []).map(item => item.delivery
+      ? { ...item, delivery: { ...item.delivery, status: 'unknown' } } : item),
+  })) };
+}
+
 async function handleReady(message) {
   const shellActive = state.provider === 'shell' && Boolean(state.thread?.tmux?.name);
   const nextEpoch = typeof message.protocol?.epoch === 'string' ? message.protocol.epoch : '';
   if (nextEpoch !== state.protocolEpoch) {
+    if (state.protocolEpoch) markRestartedDeliveries();
     state.sessionStreamCursor = null;
     state.sessionStreamSnapshot = null;
     resetThreadStream();
@@ -925,7 +936,7 @@ function handoffTmuxThread(thread) {
     settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = Date.now() + 2_500;
-    setLiveMessage('已同步对话记录，可直接参与。');
+    setLiveMessage(state.thread.historyError || '已同步对话记录，可直接参与。');
     renderThreadList();
     scheduleThreadRender(true);
   })();
@@ -1025,13 +1036,15 @@ async function openThread(threadId, {
     state.activeThreadId = threadId;
     if (!result?.resumed) {
       rememberOpenedThread(streamTarget, result.thread);
-      state.thread = normalizeAgentThread(provider, result.thread);
+      const opened = normalizeAgentThread(provider, result.thread);
+      state.thread = provider === 'qodercli' && state.thread?.provider === provider && state.thread.id === threadId
+        ? reconcileAgentThreadRefresh(state.thread, opened) : opened;
     }
     if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
     settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
-    setLiveMessage(directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : '');
+    setLiveMessage(state.thread.historyError || (directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : ''));
     renderThreadList();
     scheduleThreadRender(true);
     closeDrawer();
@@ -1608,8 +1621,10 @@ function syncCommandDialog(commandOutput) {
 function itemNode(item, turn) {
   if (item.type === 'userMessage') {
     const node = element('div', 'message user-message', userMessageText(item));
-    if (item.delivery?.status === 'accepted') {
-      node.append(element('small', 'message-delivery-status', item.delivery.submissionStatus === 'unconfirmed'
+    if (item.delivery?.status === 'accepted' || item.delivery?.status === 'unknown') {
+      node.append(element('small', 'message-delivery-status', item.delivery.status === 'unknown'
+        ? '送达状态未知，请检查终端，勿重复发送'
+        : item.delivery.submissionStatus === 'unconfirmed'
         ? '等待 Agent 确认 · 提交未确认，请检查终端，勿重复发送'
         : '等待 Agent 确认'));
     }
@@ -2356,7 +2371,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       const message = attachmentMessage({ provider: targetProvider, text, paths });
       if (!message) throw new Error('请输入要发送的内容');
       const unconfirmedItem = state.thread.turns?.flatMap((turn) => turn.items || []).find((item) => (
-        item.delivery?.submissionStatus === 'unconfirmed'
+        (item.delivery?.submissionStatus === 'unconfirmed' || item.delivery?.status === 'unknown')
         && userMessageText(item) === message
         && !isUserMessageDeliveryConfirmed(state.thread, { text: message, ...item.delivery })
       ));

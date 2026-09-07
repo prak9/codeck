@@ -730,7 +730,7 @@ test('restores accepted no-turn tmux messages after reconnect until the transcri
 
 for (const [provider, submissionStatus] of [
   ['codex', 'submitted'], ['codex', 'unconfirmed'], ['codex', undefined], ['codex', 'unknown'],
-  ['claude', undefined], ['qodercli', undefined],
+  ['claude', undefined], ['qodercli', undefined], ['qodercli', 'submitted'], ['qodercli', 'unconfirmed'],
 ]) {
   test(`${provider} retains ${submissionStatus ?? 'missing'} submission status across cold reconnect without another tmux injection`, async () => {
     const threadFeed = new FakeSnapshotFeed();
@@ -807,6 +807,39 @@ for (const [provider, submissionStatus] of [
     second.close();
   });
 }
+
+test('Qoder captures its source boundary before injection and accepts source receipts after compaction', async () => {
+  const calls = [];
+  const threadFeed = new FakeSnapshotFeed();
+  const { backends, hub } = setup({ threadFeed, sendTmuxMessage: async () => {
+    calls.push('inject'); return { submissionStatus: 'unconfirmed' };
+  } });
+  backends.qodercli.prepareSessionMessage = async () => { calls.push('prepare'); return { offset: 42 }; };
+  backends.qodercli.recordSessionMessage = params => {
+    calls.push('record'); assert.deepEqual(params.deliveryBaseline, { offset: 42 });
+  };
+  const target = { provider: 'qodercli', threadId: 'qoder-1', tmuxSession: 'qoder' };
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+  send(socket, { type: 'sendSessionMessage', id: 1, ...target,
+    text: 'Continue', commandId: 'command-qoder', baselineVersion: 2,
+    baselineUserMessageId: 'old-user', baselineTurnId: 'old-turn', baselineMatchingTextCount: 0,
+  });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  assert.equal(socket.sent.find(message => message.id === 1).ok, true);
+  assert.deepEqual(calls, ['prepare', 'inject', 'record']);
+  threadFeed.publish(target, { kind: 'snapshot', epoch: 'test', sequence: 1, snapshot: { thread: {
+    id: target.threadId, turns: [], truncated: true, unconfirmedDeliveryIds: ['command-qoder'],
+  } } });
+  assert.equal(socket.sent.at(-1).thread.turns[0].items[0].delivery.status, 'unknown');
+  threadFeed.publish(target, { kind: 'snapshot', epoch: 'test', sequence: 1, snapshot: { thread: {
+    id: target.threadId, turns: [], truncated: true,
+    deliveryConfirmations: [{ commandId: 'command-qoder', itemId: 'actual-user' }],
+  } } });
+  assert.equal(hub.sessionMessageReceipts.size, 0);
+  assert.equal(socket.sent.at(-1).thread.turns.flatMap(turn => turn.items).some(item => item.delivery), false);
+  socket.close();
+});
 
 test('Codex cold reconnect clears an unconfirmed old-turn delivery only after a matching real user in a new turn', async () => {
   const text = 'Check the skills implementation';

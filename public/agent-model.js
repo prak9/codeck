@@ -61,6 +61,12 @@ function usersAfterDeliveryBaseline(thread, delivery) {
 }
 
 function matchingUserAfterDeliveryBaseline(thread, deliveryItem) {
+  const commandId = deliveryItem.delivery?.commandId
+    || (deliveryItem.id?.startsWith('delivery:') ? deliveryItem.id.slice(9) : null);
+  const confirmation = commandId && asArray(thread?.deliveryConfirmations)
+    .find(entry => entry.commandId === commandId && typeof entry.itemId === 'string' && entry.itemId);
+  if (confirmation) return threadUserMessages(thread).find(item => item.id === confirmation.itemId)
+    || { id: confirmation.itemId, type: 'userMessage' };
   const candidates = usersAfterDeliveryBaseline(thread, deliveryItem.delivery);
   if (!candidates) return null;
   const ordinal = Number.isSafeInteger(deliveryItem.delivery?.baselineMatchingTextCount)
@@ -265,6 +271,9 @@ function renderedThreadMetadata(thread) {
     thread?.readOnly,
     thread?.status,
     thread?.liveOutput,
+    thread?.deliveryConfirmations,
+    thread?.unconfirmedDeliveryIds,
+    thread?.historyError,
   ]);
 }
 
@@ -277,10 +286,16 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   const windowStart = refreshed?.truncated
     ? allCurrentTurns.findIndex((turn) => turn.id === asArray(refreshed.turns)[0]?.id)
     : -1;
-  const retained = windowStart > 0 ? allCurrentTurns.slice(0, windowStart) : [];
-  const currentTurns = retained.length ? allCurrentTurns.slice(windowStart) : allCurrentTurns;
-  const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
   const resolvedDeliveries = resolvedDeliveryItems(current, refreshed);
+  let retainedChanged = false;
+  const retained = (windowStart > 0 ? allCurrentTurns.slice(0, windowStart) : []).flatMap(turn => {
+    const items = asArray(turn.items).filter(item => !resolvedDeliveries.has(item.id));
+    if (items.length === asArray(turn.items).length) return [turn];
+    retainedChanged = true;
+    return !items.length && turn.deliveryOnly ? [] : [{ ...turn, items }];
+  });
+  const currentTurns = windowStart > 0 ? allCurrentTurns.slice(windowStart) : allCurrentTurns;
+  const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
   const refreshedItemIds = new Set(asArray(refreshed.turns).flatMap((turn) => (
     asArray(turn?.items).map((item) => item?.id).filter(Boolean)
   )));
@@ -302,10 +317,10 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   }
   const sameTurns = turns.length === currentTurns.length
     && turns.every((turn, index) => turn === currentTurns[index]);
-  if (sameTurns && renderedThreadMetadata(current) === renderedThreadMetadata(refreshed)) return current;
+  if (sameTurns && !retainedChanged && renderedThreadMetadata(current) === renderedThreadMetadata(refreshed)) return current;
   return {
     ...refreshed,
-    turns: sameTurns ? allCurrentTurns : retained.length ? [...retained, ...turns] : turns,
+    turns: sameTurns && !retainedChanged ? allCurrentTurns : retained.length ? [...retained, ...turns] : turns,
     ...(current?.tmux ? { tmux: { ...current.tmux } } : {}),
   };
 }
@@ -458,6 +473,7 @@ export function applyAcceptedUserMessage(currentThread, {
   if (submissionStatus === 'submitted' || submissionStatus === 'unconfirmed') {
     delivery.submissionStatus = submissionStatus;
   }
+  delivery.commandId = commandId;
   const acceptedItem = {
     id,
     type: 'userMessage',

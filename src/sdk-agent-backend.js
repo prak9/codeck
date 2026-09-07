@@ -212,6 +212,7 @@ export class SdkAgentBackend extends EventEmitter {
     listSessions,
     getSessionInfo,
     getSessionMessages,
+    sessionSource = null,
     transcriptFile = null,
     readTranscriptRange = null,
     readTranscriptFile = null,
@@ -235,7 +236,9 @@ export class SdkAgentBackend extends EventEmitter {
     this.queryOptions = queryOptions;
     this.listSessions = listSessions;
     this.getSessionInfo = getSessionInfo;
-    this.getSessionMessages = getSessionMessages;
+    this.sessionSource = sessionSource;
+    this.getSessionMessages = sessionSource
+      ? (threadId, options) => sessionSource.getSessionMessages(threadId, options) : getSessionMessages;
     this.transcriptFile = transcriptFile;
     this.readTranscriptRange = readTranscriptRange;
     this.readTranscriptFile = readTranscriptFile;
@@ -244,6 +247,7 @@ export class SdkAgentBackend extends EventEmitter {
     this.runtimes = new Map();
     this.transcriptCache = new Map();
     this.transcriptLoads = new Map();
+    this.transcriptGeneration = 0;
     this.approvals = new Map();
     this.approvalSequence = 0;
     this.closed = false;
@@ -275,14 +279,44 @@ export class SdkAgentBackend extends EventEmitter {
   async openThread(threadId) {
     const info = await this.getSessionInfo(threadId);
     if (!info) throw new Error(`${this.label} session not found`);
-    const persistedTurns = await this.#persistedTurns(threadId, info);
+    let persistedTurns;
+    let historyError;
+    try { persistedTurns = await this.#persistedTurns(threadId, info); }
+    catch (error) {
+      const previous = this.transcriptCache.get(threadId);
+      if (!this.sessionSource || !previous) throw error;
+      persistedTurns = previous.turns;
+      historyError = 'QoderCLI 历史暂时无法读取，已保留最近内容，正在重试。';
+    }
     const thread = sessionToThread(info, [...persistedTurns]);
+    if (historyError) thread.historyError = historyError;
     const runtime = this.runtimes.get(threadId);
     if (runtime?.activeTurn) {
       thread.turns.push(runtime.activeTurn, ...runtime.pendingTurns);
       thread.status = { type: 'active' };
     }
+    if (this.sessionSource) {
+      thread.deliveryConfirmations = this.sessionSource.confirmations(threadId);
+      thread.unconfirmedDeliveryIds = this.sessionSource.unconfirmed(threadId);
+    }
     return { thread };
+  }
+
+  async prepareSessionMessage({ threadId, text, commandId }) {
+    if (!this.sessionSource || !commandId || text.startsWith('/')) return undefined;
+    const info = await this.getSessionInfo(threadId);
+    if (!info) return undefined; // A newly started CLI may not have a transcript yet.
+    return this.sessionSource.prepare({ threadId, cwd: info.cwd, text });
+  }
+
+  recordSessionMessage(params) {
+    if (!this.sessionSource) return;
+    this.sessionSource.record(params);
+    // A poll can read the appended input before the send RPC returns. Re-observe
+    // that source once after recording, even if file metadata has stopped changing.
+    const cached = this.transcriptCache.get(params.threadId);
+    if (cached) this.transcriptCache.set(params.threadId, { ...cached, revision: null });
+    this.transcriptGeneration += 1;
   }
 
   async newThread({ cwd, text }) {
@@ -340,6 +374,7 @@ export class SdkAgentBackend extends EventEmitter {
     this.runtimes.clear();
     this.transcriptCache.clear();
     this.transcriptLoads.clear();
+    this.sessionSource?.close();
     for (const approval of this.approvals.values()) {
       approval.cleanup();
       approval.resolve(withToolUseId({ behavior: 'deny', message: '远程会话已关闭', interrupt: true }, approval.options));
@@ -429,6 +464,7 @@ export class SdkAgentBackend extends EventEmitter {
   }
 
   async #persistedTurns(threadId, info) {
+    const generation = this.transcriptGeneration;
     const revision = transcriptRevision(info);
     const cached = revision ? this.transcriptCache.get(threadId) : null;
     if (cached?.revision === revision) {
@@ -466,7 +502,15 @@ export class SdkAgentBackend extends EventEmitter {
       }
     }
     const { messages, turns } = await load;
-    if (revision) {
+    // Qoder's SDK can return [] on a transient read failure. Do not poison a
+    // revision indefinitely or replace a known transcript with that empty read.
+    if (this.provider === 'qodercli' && !this.sessionSource && !messages.length) {
+      if (this.transcriptCache.get(threadId)?.turns.length) {
+        throw new Error('QoderCLI 历史读取暂时为空，保留原历史并稍后重试');
+      }
+      return turns;
+    }
+    if (revision && generation === this.transcriptGeneration) {
       this.transcriptCache.delete(threadId);
       this.transcriptCache.set(threadId, {
         revision, turns, messages, size: Number(info?.fileSize),

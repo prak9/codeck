@@ -8,6 +8,7 @@ import {
   checkpointTerminalActivity,
   findTmuxThreadTarget,
   findTmuxThreadReplacement,
+  isUserMessageDeliveryConfirmed,
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
@@ -917,6 +918,42 @@ test('an Agent update that wins the send-response race prevents a duplicate acce
   });
 
   assert.equal(updated, actual);
+});
+
+test('source-backed Qoder receipts settle a pending bubble after its history anchor disappears', () => {
+  const current = applyAcceptedUserMessage(normalizeAgentThread('qodercli', {
+    id: 'thread-1', turns: [{ id: 'old-turn', items: [{
+      id: 'old-user', type: 'userMessage', content: [{ type: 'text', text: 'Earlier' }],
+    }] }],
+  }), { text: 'Continue', commandId: 'command-qoder', submissionStatus: 'unconfirmed' });
+  const refreshed = normalizeAgentThread('qodercli', {
+    id: 'thread-1', truncated: true,
+    deliveryConfirmations: [{ commandId: 'command-qoder', itemId: 'actual-user' }],
+    turns: [{ id: 'new-turn', items: [{ id: 'answer', type: 'agentMessage', text: 'Done' }] }],
+  });
+  assert.equal(reconcileAgentThreadRefresh(current, refreshed).turns
+    .flatMap(turn => turn.items).some(item => item.delivery), false);
+  assert.equal(isUserMessageDeliveryConfirmed(refreshed, { commandId: 'command-qoder', text: 'Continue' }), true);
+  assert.equal(isUserMessageDeliveryConfirmed(refreshed, { commandId: 'another-command', text: 'Continue' }), false);
+  assert.equal(applyAcceptedUserMessage(refreshed, { commandId: 'command-qoder', text: 'Continue' }), refreshed);
+});
+
+test('source-backed receipts also settle queued input inside retained offscreen history', () => {
+  const current = applyAcceptedUserMessage(normalizeAgentThread('qodercli', {
+    id: 'thread-1', turns: [{ id: 'old-turn', items: [{
+      id: 'old-user', type: 'userMessage', content: [{ type: 'text', text: 'Earlier' }],
+    }] }],
+  }), { text: 'Continue', commandId: 'command-qoder', inputWasQueued: true,
+    baselineVersion: 2, baselineTurnId: 'old-turn', baselineUserMessageId: 'old-user', baselineMatchingTextCount: 0 });
+  const newer = { id: 'new-turn', status: 'completed', items: [] };
+  current.turns.push(newer);
+  const refreshed = normalizeAgentThread('qodercli', {
+    id: 'thread-1', truncated: true, turns: [newer],
+    deliveryConfirmations: [{ commandId: 'command-qoder', itemId: 'actual-user' }],
+  });
+  const result = reconcileAgentThreadRefresh(current, refreshed);
+  assert.deepEqual(result.turns.map(turn => turn.id), ['old-turn', 'new-turn']);
+  assert.deepEqual(result.turns[0].items.map(item => item.id), ['old-user']);
 });
 
 test('adds provider-neutral user and command content safely', () => {

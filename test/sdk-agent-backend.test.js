@@ -127,6 +127,79 @@ test('reuses an unchanged persisted transcript and reloads as soon as its file m
   backend.close();
 });
 
+test('Qoder does not cache an empty SDK read and preserves valid history on a transient empty read', async () => {
+  let revision = 1;
+  let empty = true;
+  let reads = 0;
+  const { backend } = setup('qodercli', {
+    getSessionInfo: async sessionId => ({ sessionId, cwd: '/project', lastModified: revision, fileSize: 1000 }),
+    getSessionMessages: async () => { reads += 1; return empty ? [] : [
+      { type: 'user', uuid: 'u1', message: { content: 'Hello' } },
+    ]; },
+  });
+  try {
+    assert.equal((await backend.openThread('t1')).thread.turns.length, 0);
+    empty = false;
+    assert.equal((await backend.openThread('t1')).thread.turns.length, 1);
+    empty = true;
+    revision += 1;
+    await assert.rejects(backend.openThread('t1'), /history|历史/i);
+    assert.equal(backend.transcriptCache.get('t1').turns.length, 1);
+    empty = false;
+    assert.equal((await backend.openThread('t1')).thread.turns.length, 1);
+    assert.equal(reads, 4);
+  } finally { backend.close(); }
+});
+
+test('Qoder delivery recording cannot be overwritten by an older in-flight cache load', async () => {
+  let release;
+  let reads = 0;
+  const source = {
+    getSessionMessages: () => { reads += 1; return reads === 1 ? new Promise(resolve => { release = resolve; }) : []; },
+    record() {}, confirmations: () => [], unconfirmed: () => [], close() {},
+  };
+  const { backend } = setup('qodercli', {
+    sessionSource: source,
+    getSessionInfo: async sessionId => ({ sessionId, cwd: '/project', lastModified: 1, fileSize: 1000 }),
+  });
+  try {
+    const inFlight = backend.openThread('t1');
+    await waitFor(() => release);
+    backend.recordSessionMessage({ threadId: 't1', commandId: 'command-qoder', text: 'Continue' });
+    release([{ type: 'user', uuid: 'u1', message: { content: 'Previous' } }]);
+    await inFlight;
+    const current = await backend.openThread('t1');
+    assert.equal(reads, 2, 'must re-observe after recording even when metadata is unchanged');
+    assert.equal(current.thread.turns.length, 0, 'an authoritative clear is not a read failure');
+  } finally { backend.close(); }
+});
+
+test('Qoder retains valid history and reports delivery uncertainty while its source is unreadable', async () => {
+  let failed = false;
+  const source = {
+    getSessionMessages: async () => {
+      if (failed) throw new Error('temporary read failure');
+      return [{ type: 'user', uuid: 'u1', message: { content: 'Previous' } }];
+    },
+    record() {}, confirmations: () => [], unconfirmed: () => failed ? ['command-qoder'] : [], close() {},
+  };
+  const { backend } = setup('qodercli', {
+    sessionSource: source,
+    getSessionInfo: async sessionId => ({ sessionId, cwd: '/project', lastModified: 1, fileSize: 1000 }),
+  });
+  try {
+    await backend.openThread('t1');
+    backend.recordSessionMessage({ threadId: 't1', commandId: 'command-qoder', text: 'Continue' });
+    failed = true;
+    const stale = await backend.openThread('t1');
+    assert.equal(stale.thread.turns[0].items[0].id, 'u1');
+    assert.match(stale.thread.historyError, /历史.*重试/);
+    assert.deepEqual(stale.thread.unconfirmedDeliveryIds, ['command-qoder']);
+    failed = false;
+    assert.equal((await backend.openThread('t1')).thread.historyError, undefined);
+  } finally { backend.close(); }
+});
+
 test('reloads persisted transcripts when the SDK does not expose reliable file metadata', async () => {
   let messageLoads = 0;
   const { backend } = setup('claude', {

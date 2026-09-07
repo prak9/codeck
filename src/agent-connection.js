@@ -5,6 +5,7 @@ import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-rec
 import { resolveSessionStatus } from './session-status.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
+import { isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
@@ -125,6 +126,7 @@ function sessionUserMessageEntries(thread) {
 }
 
 function sessionMessageReceiptResolved(thread, receipt) {
+  if (isUserMessageDeliveryConfirmed(thread, receipt)) return true;
   if (receipt.baselineVersion !== 2) return false;
   const users = sessionUserMessageEntries(thread);
   let candidates;
@@ -133,7 +135,8 @@ function sessionMessageReceiptResolved(thread, receipt) {
   // 让那条乐观回显永远挂着, 表现为一条重复的待发消息。
   // A missing anchor cannot prove that an input whose submission was unconfirmed
   // ever left the CLI draft. Keep its receipt until the transcript can confirm it.
-  const outOfWindow = Boolean(thread?.truncated) && receipt.submissionStatus !== 'unconfirmed';
+  const outOfWindow = receipt.provider !== 'qodercli'
+    && Boolean(thread?.truncated) && receipt.submissionStatus !== 'unconfirmed';
   if (receipt.baselineUserMessageId) {
     const anchorIndex = users.findIndex(({ item }) => item.id === receipt.baselineUserMessageId);
     if (anchorIndex < 0) return outOfWindow;
@@ -157,7 +160,8 @@ function sessionMessageReceiptItem(receipt) {
     type: 'userMessage',
     content: [{ type: 'text', text: receipt.text }],
     delivery: {
-      status: 'accepted',
+      status: receipt.confirmationTimedOut ? 'unknown' : 'accepted',
+      commandId: receipt.commandId,
       submissionStatus: receipt.submissionStatus,
       baselineVersion: receipt.baselineVersion,
       baselineUserMessageId: receipt.baselineUserMessageId,
@@ -320,6 +324,10 @@ export class AgentRegistry extends EventEmitter {
   recordSessionMessage(provider, params) {
     if (cleanProvider(provider) === 'shell') return;
     this.backend(provider).recordSessionMessage?.(params);
+  }
+  prepareSessionMessage(provider, params) {
+    if (cleanProvider(provider) === 'shell') return undefined;
+    return this.backend(provider).prepareSessionMessage?.(params);
   }
   interruptSession(provider, params) {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
@@ -574,6 +582,8 @@ export class AgentHub {
         ...baseline,
       };
       return this.#runCommand(message, provider, payload, async () => {
+        const deliveryBaseline = provider === 'qodercli'
+          ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text });
         const submission = provider === 'codex' || result?.submissionStatus != null
           ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
@@ -583,6 +593,7 @@ export class AgentHub {
           commandId,
           ...submission,
           ...baseline,
+          ...(deliveryBaseline ? { deliveryBaseline } : {}),
         });
         const receiptRecorded = !turnId && provider !== 'shell' && commandId
           && !text.startsWith('/') && (!result?.terminalOutput || result.terminalWorking)
@@ -757,7 +768,8 @@ export class AgentHub {
       if (sessionMessageReceiptResolved(thread, receipt)) {
         this.sessionMessageReceipts.delete(commandId);
       } else {
-        pending.push(receipt);
+        pending.push(thread.unconfirmedDeliveryIds?.includes(receipt.commandId)
+          ? { ...receipt, confirmationTimedOut: true } : receipt);
       }
     }
     if (!pending.length) return result;

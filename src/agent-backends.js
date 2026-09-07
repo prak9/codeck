@@ -12,13 +12,13 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import {
   getSessionInfo as getQoderSessionInfo,
-  getSessionMessages as getQoderSessionMessages,
   listSessions as listQoderSessions,
   qodercliAuth,
   query as queryQoder,
 } from '@qoder-ai/qoder-agent-sdk';
 import { CodexAppServer } from './codex-app-server.js';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
+import { QoderSessionSource } from './qoder-session-source.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
 import { isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
@@ -638,7 +638,7 @@ export function createAgentBackends() {
       queryOptions: () => ({ auth: qodercliAuth() }),
       listSessions: listQoderSessions,
       getSessionInfo: getQoderSessionInfo,
-      getSessionMessages: getQoderSessionMessages,
+      sessionSource: new QoderSessionSource(),
     }),
   };
 }

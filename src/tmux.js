@@ -935,6 +935,32 @@ function agentComposerState(output, text) {
   return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
 }
 
+function qoderComposerState(output, text) {
+  const rows = cleanScreenRows(output);
+  const end = rows.findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
+  const footer = rows.slice(end + 1).filter(line => line.trim());
+  if (end < 0 || footer.length !== 1
+    || !/^.+ Model(?: · (?:ctx\s*[\u2580-\u259f]+\s*\d+%\s*·\s*)?(?:\/|~).*)?$/u.test(footer[0].trim())) return 'unknown';
+  const start = rows.slice(0, end).findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
+  if (start < 0 || !/^ >(?: |$)/u.test(rows[start + 1] || '')) return 'unknown';
+  const content = [rows[start + 1].slice(3)];
+  for (const row of rows.slice(start + 2, end)) {
+    if (!row) content.push('');
+    else if (row.startsWith('   ')) content.push(row.slice(3));
+    else return 'unknown';
+  }
+  const composer = content.join('\n').trimEnd();
+  if (!composer) return 'empty';
+  // A real draft can contain the placeholder too. Only the cursor BEFORE the
+  // placeholder proves this is the empty widget, not user-authored text.
+  const raw = String(output).split('\n')[start + 1];
+  if (/^ > \x1b\[7m \x1b\[0m /u.test(raw)
+    && content.map(line => line.trim()).join(' ') === 'Type your message or @path/to/file') {
+    return 'empty';
+  }
+  return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
+}
+
 function hasCodexSlashCompletionDraft(output, command) {
   const rows = cleanScreenRows(output);
   const prompt = /^\s*[»›>❯]\s+(\/\S+)\s*$/u;
@@ -955,14 +981,19 @@ export async function ensureAgentInputSubmitted({
   if (!PANE_ID.test(paneId || '') || typeof text !== 'string' || !text.trim()) return 'unconfirmed';
   let retries = 0;
   let emptyCaptures = 0;
+  const composerState = provider === 'qodercli' ? qoderComposerState : agentComposerState;
   try {
     for (let attempt = 0; attempt < SUBMIT_CONFIRM_ATTEMPTS + 2; attempt += 1) {
       await waitForSubmit(SUBMIT_CONFIRM_DELAY_MS);
       const screen = await capturePane(paneId, { joinWrapped: true });
-      if (!String(screen || '').trim()) return 'unconfirmed';
-      const state = agentComposerState(screen, text);
+      if (!String(screen || '').trim()) {
+        if (provider === 'qodercli') continue;
+        return 'unconfirmed';
+      }
+      const state = composerState(screen, text);
       if (state === 'other') return 'unconfirmed';
-      if (state !== 'draft' && ((provider === 'codex' && hasCodexQueuedInput(screen))
+      if (provider === 'qodercli' && state === 'unknown') continue;
+      if (provider !== 'qodercli' && state !== 'draft' && ((provider === 'codex' && hasCodexQueuedInput(screen))
         || (allowBusy && resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]).busy))) {
         return await verifyPane?.() ? 'submitted' : 'unconfirmed';
       }
@@ -975,7 +1006,7 @@ export async function ensureAgentInputSubmitted({
       emptyCaptures = 0;
       if (state !== 'draft' || retries >= SUBMIT_CONFIRM_ATTEMPTS) return 'unconfirmed';
       if (!await verifyPane?.()) return 'unconfirmed';
-      if (agentComposerState(await capturePane(paneId, { joinWrapped: true }), text) !== 'draft') return 'unconfirmed';
+      if (composerState(await capturePane(paneId, { joinWrapped: true }), text) !== 'draft') return 'unconfirmed';
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       retries += 1;
     }
@@ -1151,9 +1182,22 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       } catch { return false; }
     };
     const captureInputPane = overrides.capturePane
-      || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex'));
+      || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
+    if (provider === 'qodercli') {
+      let state = 'unknown';
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt) await waitForPaste(pasteDelay);
+        const screen = await captureInputPane(paneId, { joinWrapped: true });
+        if (!await verifyPane()) break;
+        state = qoderComposerState(screen, '');
+        if (state !== 'unknown') break;
+      }
+      if (state !== 'empty') {
+        throw new Error('无法安全确认 QoderCLI 输入框为空，消息未发送。请先在终端处理草稿或弹窗后重试。');
+      }
+    }
     let activeCodexInput = false;
     const requireEmptyCodexComposer = async (matchingDraft = '') => {
       let state = 'unknown';
@@ -1221,7 +1265,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         });
       }
       return {
-        ...(provider === 'codex' ? { submissionStatus } : {}),
+        ...(provider === 'codex' || provider === 'qodercli' ? { submissionStatus } : {}),
         ...(terminalWorking ? { terminalWorking: true } : {}),
         ...(inputWasQueued() ? { inputWasQueued: true } : {}),
       };
@@ -1233,7 +1277,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       && !/[\u0000-\u001f\u007f]/u.test(text);
     const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
-    if (literalAgentInput && !command && provider !== 'codex') {
+    if (literalAgentInput && !command && provider !== 'codex' && provider !== 'qodercli') {
       await loadBuffer(bufferName, text);
       try {
         // A normal line is raw terminal input, not an asynchronous bracketed paste.
@@ -1347,13 +1391,13 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       ));
       pasted = true;
       await waitForPaste(pasteDelay);
-      if (provider === 'codex' && !await verifyPane()) {
+      if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) {
         return { submissionStatus: 'unconfirmed', ...(inputWasQueued() ? { inputWasQueued: true } : {}) };
       }
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
     } catch (error) {
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
-      if (provider === 'codex' && pasted) {
+      if ((provider === 'codex' || provider === 'qodercli') && pasted) {
         return { submissionStatus: 'unconfirmed', ...(inputWasQueued() ? { inputWasQueued: true } : {}) };
       }
       throw error;
