@@ -3,7 +3,7 @@
 - Overall status: `阻塞`
 - Profile: `Lite`
 - Active plan node: `NODE-004`
-- Latest evidence: `NODE-010 deployed locally with explicit user authorization; 830/830 tests pass, authenticated API and V2 session/thread streams pass after restart, all 8 tmux sessions preserved.`
+- Latest evidence: `NODE-011 fixes IMG_1348's merged-looking live echo locally; 832/832 tests and 6 cross-provider browser journeys pass, including light mobile live-output and manual-scroll races. Not deployed.`
 - Current blocker: `A-004 requires the user's other server, authenticated Claude/Qoder test sessions and physical-phone journeys; none are available to this executor. Owner: user; unblock with an accessible SSH host/test-session names or target-side verification.`
 - Next step: `NODE-004: obtain the other server/test sessions for remaining live journeys, including hmap after updating that server. G-007 half-open recovery remains unresolved.`
 - Next checkpoint: `None`
@@ -11,11 +11,11 @@
 - Owner: `Codex`
 - Last updated: `2026-09-07`
 - Clean state: `Not due`
-- Last clean: `2026-09-07: NODE-010 local deployment and post-restart verification recorded; other-server hmap, A-004 and G-007 remain explicitly unverified or unresolved`
+- Last clean: `2026-09-07: NODE-011 is isolated to Remote live-output presentation and queued auto-follow cancellation; other-server hmap, A-004 and G-007 remain explicitly unverified or unresolved`
 
 ## Outcome
 
-- Problem: Remote has repeatedly lost, misordered, or misclassified messages and activity. The original screenshot exposed input/output ordering; IMG_1345 now exposes a Qoder background-task footer missed by activity detection.
+- Problem: Remote has repeatedly lost, misordered, or misclassified messages and activity. The original screenshot exposed input/output ordering; IMG_1345 exposed a missed Qoder background-task footer; IMG_1348 shows the terminal-style live echo visually merging with historical input instead of matching the final reply.
 - Success: Codex, Claude, and Qoder adapters expose a common data contract; interaction logic uses that contract; UI renders its states consistently. Claims of parity require end-to-end evidence, not just green unit tests.
 - Non-goals: Replace native CLIs, interrupt users' existing sessions, change authentication, add project dependencies, or publish without release authorization.
 
@@ -39,6 +39,7 @@
 | A-004 | Official-quality claim has representative live evidence | Mobile browser and authenticated CLI journeys on target servers | Idle/busy/background, commands, failure, reconnect, scroll/latest, attachments, and resume pass; currently not established |
 | A-005 | Persisted follow-up ordering survives adapter summaries and receipt replacement | Codex source-order fixture plus equivalent adapter contract cases | Preserve user-original, output-old, user-followup, output-new; full/summary/receipt-replacement regressions now pass |
 | A-006 | Qoder's live positive Background task count remains background without a foreground spinner | Screenshot-derived parser-to-session-to-Remote regression; quote/draft/zero/retired-footer controls | Ordinary and Remote receive background, foreground work still wins, completion returns idle, unrelated text cannot set the flag |
+| A-007 | Agent live echo remains visually distinct from user input and stable while reading history | VM render contract plus three-provider light-mobile/dark-desktop browser journeys | Live echo uses the final assistant-message surface; Shell/raw command output remains terminal-shaped; queued auto-follow never overrides a newer manual scroll |
 
 ## Plan
 
@@ -54,6 +55,7 @@
 | NODE-004 | `阻塞` | I-05: fault injection and real provider/server/mobile journeys for parity | A-004; depends on NODE-008 | Deterministic faults, browser fixtures, live Codex read-only probes and local restart/session survival pass. Missing authenticated Claude/Qoder, other target server and physical-phone journeys; owner/unblock action above | R-007, R-009, R-010, R-011 |
 | NODE-009 | `完成` | User-authorized local deployment, commit and push of the verified fixes | Full suite, browser fixtures, service/API/V2 stream health, existing tmux session survival and remote Git ref | Release 109ad60 pushed to origin/main; 827 tests and 6 browser journeys pass; service PID 1724177, authenticated health/sessions 200, unauthenticated sessions 401, V2 streams and 20-turn read pass; all 8 tmux identities unchanged | None: scoped release, no new implementation |
 | NODE-010 | `完成` | Fix screenshot-exposed Qoder background task badge detection; deploy locally on the user's follow-up release request | A-006; focused Qoder/Codex/status tests, full suite and deployment health | `test/qoder-status.test.js`: 2 regressions fail before and pass after; 21 focused and 830 total tests pass. Badge/foreground/completion/negative controls covered. Local service PID 1750986, API/V2 checks and 8-session preservation pass; other-server hmap not re-tested | R-012 |
+| NODE-011 | `完成` | Make pane-only Agent echo match final reply rendering and prevent stale auto-follow from overriding an upward scroll | A-007; screenshot-derived VM contract, full suite and 6 real-browser journeys | `test/remote-live-output-ui.test.js` fails before and passes after; 832 tests pass. Codex/Claude/Qoder at 390×844 and 1365×900 pass live-output/latest/manual-scroll/history/failure/command journeys; light-mobile screenshot `/data/tmp/codeck-remote-smoke-RL72Dr/qodercli-390-live-output.png`. Not deployed | R-013 |
 
 ## Abstraction Gate
 
@@ -89,6 +91,7 @@
 | R-010 | NODE-008, NODE-004 | Live full-history diagnostic hit its overall 45-second deadline; 20-turn read-only probes complete, and requested-limit regression passes | Polling hydrated up to 80 turns before discarding all but 20 | Preserve explicit older-history paging and the default full-read path | Request the polling window at the backend; report cold/warm probe evidence without claiming a controlled speedup |
 | R-011 | NODE-008, NODE-004 | New gap-below-viewport test failed with scrollTop 110 instead of 10; fixed test and all 6 browser gap journeys pass | Total added height is not the visible displacement when a reconnect gap is filled in the middle | Retain request generation guards, stable turn IDs and ordinary prefix compensation | Anchor scroll compensation to the currently visible turn, including replacement DOM nodes |
 | R-012 | NODE-010 | IMG_1345 shows `1 Background task` with no wait spinner; local Qoder 1.1.45 builds this footer from pending/running tasks; screenshot regressions fail before and pass after the detector fix | Earlier wait-label tests and synthetic background sessions did not cover the actual footer-to-status producer | Preserve independent foreground/background states, provider isolation and input transport | Test real status producers end to end into the shared model; recognize a positive count only in the current footer, with stale/quoted/draft/zero negative controls |
+| R-013 | NODE-011 | IMG_1348 plus the new render contract and browser race: the live pane used a grey terminal card, and its queued next-frame auto-follow moved the viewport after a manual upward scroll | Prior browser coverage checked final structured messages and settled scroll positions, but not the pane-only presentation or user input arriving between render and its queued follow callback | Preserve one assistant-message surface for structured and pane-only Agent replies; preserve terminal surfaces for Shell, raw commands and checkpoints | Every transient/final UI pair must share a presentation contract, and deferred automatic scrolling must be cancelled by newer user scroll intent |
 
 ## Three-layer target contract
 
@@ -154,11 +157,13 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 - Release verification: reran all 827 tests and 6 browser journeys (screenshots `/data/tmp/codeck-remote-smoke-BuwB6y`). Restarted `codeck.service` at 2026-09-07 18:30:25 CST, PID 1724177, active/running with zero automatic restarts. Authenticated `/api/health` and `/api/sessions` return 200; unauthenticated sessions returns 401. Owner V2 handshake, session snapshot, read-only open of codeck (20 turns), and thread snapshot pass. All 8 tmux session IDs/names/creation times are unchanged; tmux server remains outside the service control group. No message was sent into a user's CLI.
 - Post-release screenshot fix (NODE-010): `test/qoder-status.test.js` reconstructs IMG_1345's footer and drives screen detection → session status → Remote model. Singular/plural, ANSI, normal/YOLO, wrapped summary and draft variants remain background; foreground wins, and zero/completed/quoted/draft/retired badges do not activate it. 21 focused and 830 full tests pass; syntax/diff checks pass. Live hmap on the other server has not been re-tested.
 - NODE-010 deployment: reran all 830 tests, syntax/diff/strict-plan checks, then restarted `codeck.service` at 2026-09-07 19:08:12 CST (PID 1750986, active/running, zero automatic restarts). Authenticated health/sessions return 200; unauthenticated sessions returns 401. Owner V2 handshake, session snapshot, read-only codeck open (20 turns) and thread snapshot pass. All 8 tmux session IDs/names/creation times are unchanged. No CLI input was sent; the other server was not deployed.
+- Post-release presentation fix (NODE-011, local only): `test/remote-live-output-ui.test.js` fixes the transient/final render contract for Agent pane fallback while retaining Shell terminal output. All 832 tests pass. Six Chromium journeys cover Codex/Claude/Qoder at 390×844 and 1365×900, including live-output/latest/manual-scroll races with zero page errors; artifacts `/data/tmp/codeck-remote-smoke-RL72Dr`. The screenshot-derived light-mobile Qoder frame shows distinct user bubbles and a borderless assistant-style live reply. No service restart, commit, push or target-server verification has occurred for this node.
 
 ## Current verification boundary
 
 - NODE-009 deployed and pushed source revision `109ad60`; NODE-010 subsequently updates the server-side Qoder status producer on this server. No other-server rollout is claimed.
 - NODE-010 is deployed with the user's explicit release authorization. Only the Qoder screen-status producer plus tests/this plan changed; input transport, receipt handling, stream protocol and UI source are unchanged.
+- NODE-011 is implemented and verified locally but not deployed. It changes only Remote presentation and scroll-intent arbitration; adapter data, transport, delivery, command and ordinary-terminal paths are unchanged.
 - I-01 through I-04 and local I-05 checks, including authorized local restart/session survival, are verified within the evidence above. A-004 remains blocked, not accepted: obtain the other server/test sessions and run real send/busy/background/commands/failure/reconnect/scroll/attachments/resume journeys on a phone.
 - No parity claim, durable exactly-once guarantee or performance speedup is established by the fixture test counts.
 - Tool-item completion may update an existing item in place. That is not a new conversation item and is not split into an artificial message solely for chronology.

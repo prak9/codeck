@@ -94,8 +94,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=36/);
-  assert.match(html, /\/remote\.js\?v=86/);
+  assert.match(html, /\/remote\.css\?v=37/);
+  assert.match(html, /\/remote\.js\?v=87/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -129,7 +129,7 @@ test('remote history exposes a touch-accessible shortcut to the latest message',
   assert.match(css, /\.scroll-latest-button\s*\{[^}]*min-height:\s*44px/s);
   assert.match(remoteJs, /transcriptNeedsLatestButton\(/);
   assert.match(remoteJs, /scrollLatestButton'\)\.addEventListener\('click', scrollTranscriptToLatest\)/);
-  assert.match(remoteJs, /transcript'\)\.addEventListener\('scroll', scheduleTranscriptLatestButtonSync/);
+  assert.match(remoteJs, /transcript'\)\.addEventListener\('scroll', \(\) => \{\s*transcriptScrollRevision \+= 1;\s*scheduleTranscriptLatestButtonSync\(\)/);
 });
 
 test('skills command renders as a structured panel instead of plain terminal text', () => {
@@ -221,8 +221,8 @@ test('sending into pane-only work checkpoints the visible output before tmux rep
   assert.match(css, /\.terminal-checkpoint\s*\{/);
 });
 
-test('default terminal activity updates in place without scheduling a replacement render', () => {
-  assert.match(remoteJs, /const shell = state\.thread\?\.provider === 'shell';[\s\S]*?return \{\s*kind: 'text',\s*status: working \? 'working' : 'done'/);
+test('default pane activity updates in place without scheduling a replacement render', () => {
+  assert.match(remoteJs, /const shell = state\.thread\?\.provider === 'shell';[\s\S]*?return \{\s*kind: 'text',\s*presentation: shell \? 'terminal' : 'assistant',\s*status: working \? 'working' : 'done'/);
 });
 
 test('remote consumes sequenced session and thread snapshots before using slow polling fallbacks', () => {

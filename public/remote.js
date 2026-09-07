@@ -73,6 +73,7 @@ const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
 let viewportFrame = 0;
 let transcriptScrollFrame = 0;
+let transcriptScrollRevision = 0;
 
 const state = {
   loadingEarlier: false,
@@ -1750,28 +1751,40 @@ function renderTurn(turn) {
 
 function terminalActivityKey(content) {
   return JSON.stringify([
-    content.kind, content.status, content.working, content.label, content.output, content.ariaLabel,
+    content.kind, content.presentation, content.status, content.working,
+    content.label, content.output, content.ariaLabel,
   ]);
 }
 
 function terminalActivityNode(content = terminalActivityContent()) {
-  const section = element('section', 'turn terminal-activity');
+  const assistant = content.presentation === 'assistant';
+  const section = element('section', `turn terminal-activity${assistant ? ' agent-live-activity' : ''}`);
   section.dataset.activityStatus = content.status;
   section.dataset.activityKind = 'text';
+  section.dataset.activityPresentation = content.presentation;
   section._codeckActivityKey = terminalActivityKey(content);
   const foot = element('div', 'turn-foot');
   foot.setAttribute('role', 'status');
   foot.setAttribute('aria-live', 'polite');
   if (content.working) foot.append(element('span', 'spinner'));
   foot.append(element('span', 'working', content.label));
-  const output = element('pre', 'terminal-live-output', content.output);
+  const output = element(
+    assistant ? 'div' : 'pre',
+    assistant
+      ? `message assistant-message agent-live-output activity-live-output${content.working ? ' streaming' : ''}`
+      : 'terminal-live-output activity-live-output',
+    content.output,
+  );
   output.hidden = !content.output;
-  output.tabIndex = 0;
   output.setAttribute('aria-label', content.ariaLabel);
-  section.append(foot, output);
-  requestAnimationFrame(() => {
-    if (output.isConnected) output.scrollTop = output.scrollHeight;
-  });
+  if (assistant) section.append(output, foot);
+  else {
+    output.tabIndex = 0;
+    section.append(foot, output);
+    requestAnimationFrame(() => {
+      if (output.isConnected) output.scrollTop = output.scrollHeight;
+    });
+  }
   return section;
 }
 
@@ -1779,6 +1792,7 @@ function terminalActivityContent() {
   const commandOutput = state.thread?.tmux?.commandOutput;
   if (commandOutput?.command?.startsWith('/') && commandOutput.text) return {
     kind: 'command',
+    presentation: 'terminal',
     commandOutput,
     status: 'command',
     working: false,
@@ -1788,6 +1802,7 @@ function terminalActivityContent() {
   };
   if (commandOutput?.text) return {
     kind: 'text',
+    presentation: 'terminal',
     status: 'command',
     working: false,
     label: `${commandOutput.command} 输出`,
@@ -1798,6 +1813,7 @@ function terminalActivityContent() {
   const working = state.thread?.tmux?.status === 'working';
   return {
     kind: 'text',
+    presentation: shell ? 'terminal' : 'assistant',
     status: working ? 'working' : 'done',
     working,
     label: shell
@@ -1812,7 +1828,7 @@ function terminalActivityContent() {
 function updateTerminalActivity() {
   const section = $('.terminal-activity');
   const current = $('.terminal-activity .working');
-  const output = $('.terminal-activity .terminal-live-output');
+  const output = $('.terminal-activity .activity-live-output');
   const content = terminalActivityContent();
   const visible = shouldShowTerminalActivity(state.thread);
   if (!visible) {
@@ -1832,12 +1848,15 @@ function updateTerminalActivity() {
     scheduleThreadRender(false);
     return;
   }
-  if (section?.dataset.activityKind !== content.kind || section?.dataset.activityStatus !== content.status) {
+  if (section?.dataset.activityKind !== content.kind
+    || section?.dataset.activityPresentation !== content.presentation
+    || section?.dataset.activityStatus !== content.status) {
     scheduleThreadRender(false);
     return;
   }
   const transcript = $('#transcript');
   const nearBottom = transcriptNearLatest(transcript);
+  const scrollRevision = transcriptScrollRevision;
   const outputNearBottom = transcriptNearLatest(output, 40);
   const changed = current.textContent !== content.label
     || output.textContent !== content.output
@@ -1848,8 +1867,10 @@ function updateTerminalActivity() {
   output.setAttribute('aria-label', content.ariaLabel);
   section._codeckActivityKey = terminalActivityKey(content);
   if (changed) requestAnimationFrame(() => {
-    if (outputNearBottom) output.scrollTop = output.scrollHeight;
-    if (nearBottom) transcript.scrollTop = transcript.scrollHeight;
+    if (content.presentation === 'terminal' && outputNearBottom) output.scrollTop = output.scrollHeight;
+    if (nearBottom && transcriptScrollRevision === scrollRevision) {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
   });
 }
 
@@ -2112,6 +2133,8 @@ async function loadEarlierTurns() {
 function renderThread() {
   const transcript = $('#transcript');
   const nearBottom = transcriptNearLatest(transcript);
+  const forceBottom = state.forceScroll;
+  const scrollRevision = transcriptScrollRevision;
   const openItems = new Set([...$('#turns').querySelectorAll('details[open]')].map((item) => item.dataset.itemId));
   $('#welcome').hidden = Boolean(state.thread);
   const turnContainer = $('#turns');
@@ -2153,7 +2176,11 @@ function renderThread() {
   );
   syncCommandDialog(terminalContent.kind === 'command' ? terminalContent.commandOutput : null);
   renderHeader();
-  if (state.forceScroll || nearBottom) requestAnimationFrame(() => {
+  if (forceBottom || nearBottom) requestAnimationFrame(() => {
+    if (!forceBottom && transcriptScrollRevision !== scrollRevision) {
+      scheduleTranscriptLatestButtonSync();
+      return;
+    }
     transcript.scrollTop = transcript.scrollHeight;
     syncTranscriptLatestButton();
   });
@@ -2784,6 +2811,7 @@ function syncViewportHeight() {
     viewportFrame = 0;
     const transcript = $('#transcript');
     const nearBottom = transcript && transcriptNearLatest(transcript);
+    const scrollRevision = transcriptScrollRevision;
     const { height, top } = resolveViewportGeometry(window.visualViewport, window.innerHeight);
     const root = document.documentElement;
     const nextHeight = `${height}px`;
@@ -2794,6 +2822,10 @@ function syncViewportHeight() {
     root.style.setProperty('--app-height', nextHeight);
     root.style.setProperty('--app-top', nextTop);
     if (nearBottom) requestAnimationFrame(() => {
+      if (transcriptScrollRevision !== scrollRevision) {
+        scheduleTranscriptLatestButtonSync();
+        return;
+      }
       transcript.scrollTop = transcript.scrollHeight;
       syncTranscriptLatestButton();
     });
@@ -2801,7 +2833,10 @@ function syncViewportHeight() {
   });
 }
 
-$('#transcript').addEventListener('scroll', scheduleTranscriptLatestButtonSync, { passive: true });
+$('#transcript').addEventListener('scroll', () => {
+  transcriptScrollRevision += 1;
+  scheduleTranscriptLatestButtonSync();
+}, { passive: true });
 $('#scrollLatestButton').addEventListener('click', scrollTranscriptToLatest);
 $('#drawerButton').addEventListener('click', openDrawer);
 $('#drawerScrim').addEventListener('click', closeDrawer);

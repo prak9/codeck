@@ -159,6 +159,9 @@ a.header-button { text-decoration: none; }
 .spinner { width: 10px; height: 10px; border: 1.5px solid #ffffff25; border-top-color: #ffd15b; border-radius: 50%; display: inline-block; animation: spin .8s linear infinite; }
 .terminal-activity { padding: 13px 15px; border: 1px solid #ffd15b24; border-radius: 12px; background: #ffd15b0a; }
 .terminal-activity .turn-foot { margin: 0; font-size: 11px; }
+.terminal-activity.agent-live-activity { padding: 0; border: 0; border-radius: 0; background: transparent; }
+.agent-live-activity .assistant-message { margin-bottom: 5px; }
+.agent-live-activity .turn-foot { margin-top: 5px; }
 .terminal-checkpoint { margin: 8px 0 13px; padding: 11px 12px 12px; border: 1px solid var(--line); border-radius: 12px; background: #ffffff05; }
 .terminal-checkpoint-label { color: var(--subtle); font-size: 10px; }
 .terminal-checkpoint .terminal-live-output { margin-top: 8px; }
@@ -434,6 +437,7 @@ a.header-button { text-decoration: none; }
 :root[data-theme="light"] .turn-foot .working { color: #805700; }
 :root[data-theme="light"] .spinner { border-color: #00000024; border-top-color: #805700; }
 :root[data-theme="light"] .terminal-activity { border-color: #0000000f; border-radius: 18px; background: #f7f7f8; }
+:root[data-theme="light"] .terminal-activity.agent-live-activity { border-color: transparent; border-radius: 0; background: transparent; }
 :root[data-theme="light"] .terminal-checkpoint { border-color: #0000000f; border-radius: 18px; background: #f7f7f8; }
 :root[data-theme="light"] .model-panel,
 :root[data-theme="light"] .skills-panel { border-color: #0000000f; border-radius: 18px; background: #f7f7f8; }

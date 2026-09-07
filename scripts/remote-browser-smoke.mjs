@@ -22,7 +22,7 @@ const turn = n => ({ id: `turn-${n}`, status: 'completed', items: [
 ] });
 function reset(provider) {
   fixture = { provider, turns: Array.from({ length: 80 }, (_, i) => turn(i + 1)),
-    status: 'done', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [] };
+    status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [] };
 }
 function snapshot() {
   return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status,
@@ -31,7 +31,8 @@ function snapshot() {
 function thread() {
   return { id: 'fixture-thread', provider: fixture.provider, readOnly: true, turns: fixture.turns.slice(-20),
     truncated: fixture.turns.length > 20, oldestTurnId: fixture.turns.at(-20)?.id,
-    receivedDeliveryIds: fixture.receivedDeliveryIds };
+    receivedDeliveryIds: fixture.receivedDeliveryIds,
+    ...(fixture.liveOutput ? { liveOutput: fixture.liveOutput } : {}) };
 }
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
 const server = http.createServer(async (req, res) => {
@@ -155,6 +156,42 @@ try {
       assert.equal(await page.locator('[data-turn-id="turn-80"]').count(), 1);
       assert.equal(await page.locator('[data-turn-id="turn-81"]').count(), 1);
 
+      fixture.status = 'working';
+      fixture.liveOutput = '正在整理结果\n- 保持输入和回复边界\n- 实时回显沿用最终回复样式';
+      publishSessions();
+      publishThread();
+      await page.waitForSelector('.agent-live-activity .agent-live-output');
+      if (viewport.width < 500) {
+        await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+      }
+      const liveSurface = await page.locator('.agent-live-activity').evaluate(node => ({
+        tag: node.querySelector('.agent-live-output')?.tagName,
+        outputClass: node.querySelector('.agent-live-output')?.className,
+        background: getComputedStyle(node).backgroundColor,
+        firstChild: node.firstElementChild?.className,
+      }));
+      assert.equal(liveSurface.tag, 'DIV');
+      assert.match(liveSurface.outputClass, /assistant-message/);
+      assert.doesNotMatch(liveSurface.outputClass, /terminal-live-output/);
+      assert.match(liveSurface.firstChild, /assistant-message/);
+      assert.equal(liveSurface.background, 'rgba(0, 0, 0, 0)');
+      await page.getByRole('button', { name: '直达最新消息' }).click();
+      await page.waitForFunction(() => { const node = document.querySelector('#transcript'); return node.scrollHeight - node.scrollTop - node.clientHeight < 3; });
+      const liveBox = await page.locator('.agent-live-output').boundingBox();
+      const transcriptBox = await page.locator('#transcript').boundingBox();
+      assert.ok(liveBox.y >= transcriptBox.y && liveBox.y < transcriptBox.y + transcriptBox.height,
+        'latest action exposes the live answer surface');
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-live-output.png`) });
+      fixture.status = 'done';
+      fixture.liveOutput = '';
+      publishThread();
+      publishSessions();
+      await page.waitForSelector('.agent-live-activity', { state: 'detached' });
+      if (viewport.width < 500) {
+        await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+      }
+
+      await page.locator('#transcript').evaluate(node => { node.scrollTop = Math.min(100, node.scrollHeight - node.clientHeight); });
       const readingTop = await page.locator('#transcript').evaluate(node => node.scrollTop);
       const running = { ...turn(82), status: 'inProgress' };
       fixture.turns.push(running);
@@ -233,7 +270,7 @@ try {
       assert.deepEqual(errors, []);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-conversation.png`) });
       results.push({ provider, viewport: viewport.width, eventRenderMs,
-        journeys: 'history/latest/reading-position/reconnect-gap/background/failure/approval/commands/selection/attachment/copy/receipt/lost-response/restart/geometry', errors: 0 });
+        journeys: 'history/latest/live-output/reading-position/reconnect-gap/background/failure/approval/commands/selection/attachment/copy/receipt/lost-response/restart/geometry', errors: 0 });
       await context.close();
     }
   }
