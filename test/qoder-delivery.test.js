@@ -12,6 +12,74 @@ const pane = (composer = placeholder) => [
   ' Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project',
 ].join('\n');
 
+// Qoder uses '*' for YOLO, '>' for other chat modes, and a colored cursor
+// instead of reverse video in themes with an explicit background color.
+const chatPlaceholders = ['>', '*'].flatMap(prompt => [
+  ` ${prompt} \x1b[7m \x1b[0m Type your message or @path/to/file`,
+  ` \x1b[31m${prompt} \x1b[7m \x1b[27m\x1b[90m Type your message or @path/to/file\x1b[0m`,
+  ` \x1b[31m${prompt} \x1b[48;2;128;128;128m\x1b[38;2;0;0;0m \x1b[49m\x1b[38;2;128;128;128m Type your message or @path/to/file`,
+  ` \x1b[31m${prompt} \x1b[38;5;0;48;5;244m \x1b[39;49m Type your message or @path/to/file`,
+]);
+
+test('Qoder preflight accepts empty normal and YOLO chat composers across cursor themes', async () => {
+  for (const composer of chatPlaceholders) {
+    for (const narrow of [false, true]) {
+      const screen = pane(narrow ? composer.replace('or @path/to/file', 'or\n   @path/to/file') : composer)
+        .replace('Shift+Tab to Accept Edits     14 skills', 'YOLO Shift+Tab to Auto Mode · 2 Background tasks')
+        .replace('Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project', 'Ultimate Model · ctx ▓▓▓▓▓▓░░░░ 63% · /project · +99 -15');
+      const calls = [];
+      const result = await sendSessionMessage({
+        provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue',
+      }, {
+        listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true } }],
+        capturePane: async () => screen, loadBuffer: async () => {},
+        execTmux: async args => calls.push(args), waitForSubmit: async () => {}, waitForPaste: async () => {},
+      });
+      assert.equal(result.submissionStatus, 'submitted', JSON.stringify(composer));
+      assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
+      assert.equal(calls.filter(args => args.includes('Enter')).length, 1, 'no duplicate Enter after submission');
+    }
+  }
+});
+
+test('Qoder YOLO retries only its complete matching draft', async () => {
+  for (const text of ['Continue', 'Type your message or @path/to/file', 'First\n\n  Second']) {
+    let screen = pane(` \x1b[31m*\x1b[39m ${text.replaceAll('\n', '\n   ')}`);
+    let enters = 0;
+    assert.equal(await ensureAgentInputSubmitted({
+      paneId: '%7', provider: 'qodercli', text,
+      capturePane: async () => screen, verifyPane: async () => true, waitForSubmit: async () => {},
+      execTmux: async args => { assert.ok(args.includes('Enter')); enters += 1; screen = pane(chatPlaceholders[4]); },
+    }), 'submitted');
+    assert.equal(enters, 1);
+  }
+});
+
+test('Qoder cursor recognition never submits shell mode, search, an unfocused widget or a different draft', async () => {
+  for (const screen of [
+    pane(chatPlaceholders[4].replace('*', '!')),
+    pane(chatPlaceholders[4].replace('*', '(r:)')),
+    pane(' * Another draft'),
+    pane(' * Continue\n   extra'),
+    pane(' * Type your message or @path/to/file'),
+    pane(' * \x1b[7mT\x1b[27mype your message or @path/to/file'),
+    pane(' * \x1b[7m  Type your message or @path/to/file\x1b[27m'),
+    pane('\x1b[48;5;244m *   Type your message or @path/to/file\x1b[49m'),
+    pane(' * \x1b[38;2;7;48;27m  Type your message or @path/to/file'),
+    `${pane(chatPlaceholders[4])}\nAllow this tool? Enter to confirm`,
+  ]) {
+    const overrides = { capturePane: async () => screen, verifyPane: async () => true,
+      execTmux: async () => assert.fail('unsafe injection'), waitForSubmit: async () => {}, waitForPaste: async () => {} };
+    await assert.rejects(sendSessionMessage({
+      provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue',
+    }, {
+      ...overrides, loadBuffer: async () => assert.fail('unsafe paste'),
+      listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    }), /消息未发送/);
+    assert.equal(await ensureAgentInputSubmitted({ paneId: '%7', provider: 'qodercli', text: 'Continue', ...overrides }), 'unconfirmed');
+  }
+});
+
 test('Qoder recognizes its empty composer even while a previous task is busy', async () => {
   const narrow = pane(' > \x1b[7m \x1b[0m Type your message or\n   @path/to/file')
     .replace('Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project', 'Qwen3.8-Max Model · /data/.../codeck');

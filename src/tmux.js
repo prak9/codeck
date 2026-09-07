@@ -966,6 +966,43 @@ function agentComposerState(output, text) {
   return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
 }
 
+function hasQoderPlaceholderCursor(line) {
+  let inverse = false;
+  let background = '';
+  let column = 0;
+  const cells = [];
+  for (const part of line.split(/(\x1b\[[\d;]*m)/u)) {
+    if (part.startsWith('\x1b[')) {
+      const codes = part.slice(2, -1).split(';').map(Number);
+      for (let index = 0; index < codes.length; index += 1) {
+        const code = codes[index];
+        if ([38, 48, 58].includes(code)) {
+          const length = codes[index + 1] === 2 ? 4 : codes[index + 1] === 5 ? 2 : 0;
+          if (!length) return false;
+          if (code === 48) background = codes.slice(index, index + length + 1).join(';');
+          index += length; // Color values are not SGR attributes, even if they are 7 or 27.
+        } else if (code === 0) { inverse = false; background = ''; }
+        else if (code === 7) inverse = true;
+        else if (code === 27) inverse = false;
+        else if (code === 49) background = '';
+        else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) background = String(code);
+      }
+    } else {
+      for (const character of part) {
+        if (column >= 2) cells.push({ character, style: `${inverse}:${background}` });
+        column += 1;
+        if (column === 5) {
+          // The cursor is the first placeholder space after " > " or " * ".
+          // Require a single highlighted blank, not a selected/dimmed whole widget.
+          return cells.every(cell => cell.character === ' ')
+            && cells[0].style === cells[2].style && cells[1].style !== cells[0].style;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function qoderComposerState(output, text) {
   const rows = cleanScreenRows(output);
   const end = rows.findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
@@ -973,7 +1010,8 @@ function qoderComposerState(output, text) {
   if (end < 0 || footer.length !== 1
     || !/^.+ Model(?: · (?:ctx\s*[\u2580-\u259f]+\s*\d+%\s*·\s*)?(?:\/|~).*)?$/u.test(footer[0].trim())) return 'unknown';
   const start = rows.slice(0, end).findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
-  if (start < 0 || !/^ >(?: |$)/u.test(rows[start + 1] || '')) return 'unknown';
+  // Qoder's YOLO chat mode uses '*'; '!' and '(r:)' belong to shell/search.
+  if (start < 0 || !/^ [>*](?: |$)/u.test(rows[start + 1] || '')) return 'unknown';
   const content = [rows[start + 1].slice(3)];
   for (const row of rows.slice(start + 2, end)) {
     if (!row) content.push('');
@@ -985,7 +1023,7 @@ function qoderComposerState(output, text) {
   // A real draft can contain the placeholder too. Only the cursor BEFORE the
   // placeholder proves this is the empty widget, not user-authored text.
   const raw = String(output).split('\n')[start + 1];
-  if (/^ > \x1b\[7m \x1b\[0m /u.test(raw)
+  if (hasQoderPlaceholderCursor(raw)
     && content.map(line => line.trim()).join(' ') === 'Type your message or @path/to/file') {
     return 'empty';
   }
