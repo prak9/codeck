@@ -21,7 +21,7 @@ const chatPlaceholders = ['>', '*'].flatMap(prompt => [
   ` \x1b[31m${prompt} \x1b[38;5;0;48;5;244m \x1b[39;49m Type your message or @path/to/file`,
 ]);
 
-test('Qoder preflight accepts empty normal and YOLO chat composers across cursor themes', async () => {
+test('Qoder confirms empty normal and YOLO chat composers across cursor themes after sending', async () => {
   for (const composer of chatPlaceholders) {
     for (const narrow of [false, true]) {
       const screen = pane(narrow ? composer.replace('or @path/to/file', 'or\n   @path/to/file') : composer)
@@ -55,7 +55,7 @@ test('Qoder YOLO retries only its complete matching draft', async () => {
   }
 });
 
-test('Qoder cursor recognition never submits shell mode, search, an unfocused widget or a different draft', async () => {
+test('Qoder confirmation never retries shell mode, search, an unfocused widget or a different draft', async () => {
   for (const screen of [
     pane(chatPlaceholders[4].replace('*', '!')),
     pane(chatPlaceholders[4].replace('*', '(r:)')),
@@ -68,15 +68,11 @@ test('Qoder cursor recognition never submits shell mode, search, an unfocused wi
     pane(' * \x1b[38;2;7;48;27m  Type your message or @path/to/file'),
     `${pane(chatPlaceholders[4])}\nAllow this tool? Enter to confirm`,
   ]) {
-    const overrides = { capturePane: async () => screen, verifyPane: async () => true,
-      execTmux: async () => assert.fail('unsafe injection'), waitForSubmit: async () => {}, waitForPaste: async () => {} };
-    await assert.rejects(sendSessionMessage({
-      provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue',
-    }, {
-      ...overrides, loadBuffer: async () => assert.fail('unsafe paste'),
-      listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
-    }), /消息未发送/);
-    assert.equal(await ensureAgentInputSubmitted({ paneId: '%7', provider: 'qodercli', text: 'Continue', ...overrides }), 'unconfirmed');
+    assert.equal(await ensureAgentInputSubmitted({
+      paneId: '%7', provider: 'qodercli', text: 'Continue', capturePane: async () => screen,
+      verifyPane: async () => true, waitForSubmit: async () => {},
+      execTmux: async () => assert.fail('unsafe retry'),
+    }), 'unconfirmed');
   }
 });
 
@@ -142,35 +138,81 @@ test('Qoder uses delayed bracketed paste and returns its actual submission resul
   ]);
 });
 
-test('Qoder refuses to append to an existing terminal draft or confirm an unseen modal', async () => {
-  for (const screen of [pane(' > My draft'), 'Select permission\nEnter to confirm']) {
+test('Qoder sends once without a recognizable or empty composer and reports confirmation separately', async () => {
+  for (const screen of ['', '⠋ Generating... (esc to cancel, 1m 33s)',
+    pane().replace('Qwen3.8-Max Model', 'Custom status line'), pane(' > My draft'),
+    'Select permission\nEnter to confirm', null]) {
     const calls = [];
-    await assert.rejects(sendSessionMessage({
+    const result = await sendSessionMessage({
       provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue',
     }, {
       listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
-      capturePane: async () => screen, loadBuffer: async () => {},
+      capturePane: async () => { if (screen === null) throw new Error('capture unavailable'); return screen; },
+      loadBuffer: async () => {},
       execTmux: async (args) => calls.push(args), waitForSubmit: async () => {}, waitForPaste: async () => {},
-    }), /消息未发送/);
-    assert.equal(calls.length, 0);
+    });
+    assert.equal(result.submissionStatus, 'unconfirmed');
+    assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
+    assert.equal(calls.filter(args => args.includes('Enter')).length, 1);
+    assert.equal(calls.some(args => args.includes('Escape') || args.includes('C-u')), false);
   }
 });
 
-test('Qoder tolerates a transient redraw before and after its single injection', async () => {
-  let captures = 0;
-  let wrote = false;
+test('Qoder still revalidates its exact Agent and pane before injecting text or commands', async () => {
+  for (const text of ['Continue', 'First\nSecond', '/usage']) {
+    for (const change of [{ paneId: '%8' }, { id: 'another-thread' }, { kind: 'codex' }]) {
+      let prepared = false;
+      const calls = [];
+      await assert.rejects(sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text }, {
+        listTmuxSessions: async () => [{ name: 'qoder', agent: {
+          kind: 'qodercli', id: 'thread-1', paneId: '%7', ...(prepared ? change : {}),
+        } }],
+        loadBuffer: async () => { prepared = true; },
+        capturePane: async () => pane(), captureSlashPane: async () => { prepared = true; return ''; },
+        execTmux: async args => calls.push(args), waitForSubmit: async () => {}, waitForPaste: async () => {}, waitForSlashOutput: async () => {},
+      }), /pane 已变化/);
+      assert.ok(calls.every(args => args[0] === 'delete-buffer'), 'cleanup is allowed, input is not');
+    }
+  }
+});
+
+test('Qoder commands do not require the terminal composer layout either', async () => {
+  const calls = [];
+  await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: '/usage' }, {
+    listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => 'custom terminal layout', execTmux: async args => calls.push(args),
+    waitForPaste: async () => {}, waitForSlashOutput: async () => {},
+  });
+  assert.equal(calls.filter(args => args.includes('/usage')).length, 1);
+  assert.equal(calls.filter(args => args.includes('Enter')).length, 1);
+});
+
+test('Qoder does not send a delayed Enter into a changed pane after text was delivered', async () => {
+  for (const text of ['Continue', '/usage']) {
+    let wrote = false;
+    const calls = [];
+    const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text }, {
+      listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: wrote ? '%8' : '%7' } }],
+      loadBuffer: async () => {}, capturePane: async () => '',
+      execTmux: async args => { calls.push(args); wrote = true; },
+      waitForPaste: async () => {}, waitForSubmit: async () => {}, waitForSlashOutput: async () => {},
+    });
+    assert.equal(result.submissionStatus, 'unconfirmed');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].includes('Enter'), false);
+  }
+});
+
+test('Qoder tolerates a transient redraw while confirming its single injection', async () => {
   let afterWrite = 0;
   let pastes = 0;
   const result = await sendSessionMessage({
     provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue',
   }, {
     listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
-    capturePane: async () => {
-      if (!wrote) return ++captures === 1 ? '' : pane();
-      return ++afterWrite === 1 ? 'redrawing' : pane();
-    },
+    capturePane: async () => ++afterWrite === 1 ? 'redrawing' : pane(),
     loadBuffer: async () => {},
-    execTmux: async args => { wrote = true; if (args.includes('paste-buffer')) pastes += 1; },
+    execTmux: async args => { if (args.includes('paste-buffer')) pastes += 1; },
     waitForSubmit: async () => {}, waitForPaste: async () => {},
   });
   assert.equal(result.submissionStatus, 'submitted');

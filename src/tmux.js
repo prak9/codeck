@@ -1254,19 +1254,8 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
-    if (provider === 'qodercli') {
-      let state = 'unknown';
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        if (attempt) await waitForPaste(pasteDelay);
-        const screen = await captureInputPane(paneId, { joinWrapped: true });
-        if (!await verifyPane()) break;
-        state = qoderComposerState(screen, '');
-        if (state !== 'unknown') break;
-      }
-      if (state !== 'empty') {
-        throw new Error('无法安全确认 QoderCLI 输入框为空，消息未发送。请先在终端处理草稿或弹窗后重试。');
-      }
-    }
+    // Qoder input follows ordinary terminal semantics. Its screen is used only
+    // for best-effort confirmation after sending, never as a layout-based gate.
     let activeCodexInput = false;
     const requireEmptyCodexComposer = async (matchingDraft = '') => {
       let state = 'unknown';
@@ -1375,6 +1364,9 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       const existingUsagePicker = composerRecovery === 'usage-picker';
       const existingModelPicker = composerRecovery === 'model-picker';
       const initialScreen = await captureCommandPane(paneId);
+      if (provider === 'qodercli' && !await verifyPane()) {
+        throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+      }
       if (existingUsagePicker) {
         if (!await verifyPane()) return {};
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
@@ -1385,6 +1377,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
             : bareCodexCommand ? `${command} ` : text],
         ));
         await waitForPaste(pasteDelay);
+        if (provider === 'qodercli' && !await verifyPane()) return { submissionStatus: 'unconfirmed' };
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       }
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command) && !otherCodexCommand) return {};
@@ -1450,6 +1443,9 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     let pasted = false;
     try {
       if (provider === 'codex') await requireEmptyCodexComposer();
+      if (provider === 'qodercli' && !await verifyPane()) {
+        throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+      }
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same
       // tmux command, it can be consumed before the composer finishes applying the paste,
       // leaving the text visible but unsent. Leave any pane mode atomically before each
