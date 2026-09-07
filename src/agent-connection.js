@@ -160,9 +160,9 @@ function sessionMessageReceiptItem(receipt) {
     type: 'userMessage',
     content: [{ type: 'text', text: receipt.text }],
     delivery: {
-      status: receipt.confirmationTimedOut ? 'unknown' : 'accepted',
+      status: receipt.inputReceived ? 'received' : receipt.confirmationTimedOut ? 'unknown' : 'accepted',
       commandId: receipt.commandId,
-      submissionStatus: receipt.submissionStatus,
+      submissionStatus: receipt.inputReceived ? 'submitted' : receipt.submissionStatus,
       baselineVersion: receipt.baselineVersion,
       baselineUserMessageId: receipt.baselineUserMessageId,
       baselineTurnId: receipt.baselineTurnId,
@@ -768,6 +768,7 @@ export class AgentHub {
       if (sessionMessageReceiptResolved(thread, receipt)) {
         this.sessionMessageReceipts.delete(commandId);
       } else {
+        if (provider === 'qodercli' && thread.receivedDeliveryIds?.includes(commandId)) receipt.inputReceived = true;
         pending.push(thread.unconfirmedDeliveryIds?.includes(receipt.commandId)
           ? { ...receipt, confirmationTimedOut: true } : receipt);
       }

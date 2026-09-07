@@ -832,6 +832,12 @@ test('Qoder captures its source boundary before injection and accepts source rec
     id: target.threadId, turns: [], truncated: true, unconfirmedDeliveryIds: ['command-qoder'],
   } } });
   assert.equal(socket.sent.at(-1).thread.turns[0].items[0].delivery.status, 'unknown');
+  threadFeed.publish(target, { kind: 'snapshot', epoch: 'test', sequence: 2, snapshot: { thread: {
+    id: target.threadId, turns: [], truncated: true, receivedDeliveryIds: ['command-qoder'],
+  } } });
+  assert.equal(socket.sent.at(-1).thread.turns[0].items[0].delivery.status, 'received');
+  assert.equal(socket.sent.at(-1).thread.turns[0].items[0].delivery.submissionStatus, 'submitted');
+  assert.equal(hub.sessionMessageReceipts.size, 1, 'keep the message until the real transcript replaces it');
   threadFeed.publish(target, { kind: 'snapshot', epoch: 'test', sequence: 1, snapshot: { thread: {
     id: target.threadId, turns: [], truncated: true,
     deliveryConfirmations: [{ commandId: 'command-qoder', itemId: 'actual-user' }],

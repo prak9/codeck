@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { QoderSessionSource } from '../src/qoder-session-source.js';
+import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const cwd = '/qoder-test';
@@ -85,4 +86,64 @@ test('Qoder exposes an unresolved receipt after a bounded wait and can still con
   await source.getSessionMessages(id, { dir: cwd });
   assert.deepEqual(source.unconfirmed(id), []);
   assert.deepEqual(source.confirmations(id), [{ commandId: 'command-1', itemId: 'new' }]);
+});
+
+test('Qoder confirms CLI receipt while queued input has no new transcript revision', async t => {
+  const { source, file, write, append } = await setup(t);
+  const logFile = path.join(path.dirname(path.dirname(path.dirname(file))), 'tmp', '-qoder-test', 'logs.json');
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+  const logged = (messageId, message, sessionId = id) => ({ sessionId, messageId, type: 'user', message,
+    timestamp: new Date().toISOString() });
+  const old = logged(0, 'Continue');
+  await fs.writeFile(logFile, JSON.stringify([old]));
+  await write([user('old', 'Start')]);
+  let now = 1000;
+  source.now = () => now;
+  let revision = 1;
+  const backend = new SdkAgentBackend({ provider: 'qodercli', label: 'QoderCLI', sessionSource: source,
+    getSessionInfo: async () => ({ sessionId: id, cwd, lastModified: revision, fileSize: revision }) });
+  t.after(() => backend.close());
+  await backend.openThread(id);
+  const deliveryBaseline = await backend.prepareSessionMessage({ threadId: id, commandId: 'command-1', text: 'Continue' });
+  backend.recordSessionMessage({ threadId: id, commandId: 'command-1', text: 'Continue', deliveryBaseline });
+  await backend.openThread(id); // Consume the post-send cache invalidation before the log write.
+  now += 60_000;
+  await fs.writeFile(logFile, JSON.stringify([old, logged(0, 'Continue', 'other-session')]));
+  assert.deepEqual((await backend.openThread(id)).thread.receivedDeliveryIds, []);
+  await fs.writeFile(logFile, JSON.stringify([old, logged(0, 'Continue', 'other-session'), logged(1, 'Continue')]));
+  const received = (await backend.openThread(id)).thread;
+  assert.deepEqual(received.receivedDeliveryIds, ['command-1']);
+  assert.deepEqual(received.unconfirmedDeliveryIds, []);
+  assert.deepEqual(received.deliveryConfirmations, [], 'CLI receipt is not a fabricated transcript message');
+  assert.equal(received.turns.length, 1);
+  await append([user('actual', 'Continue', { parentUuid: 'old' })]);
+  revision += 1;
+  assert.deepEqual((await backend.openThread(id)).thread.deliveryConfirmations,
+    [{ commandId: 'command-1', itemId: 'actual' }]);
+});
+
+test('Qoder input receipts reject replay, replacement and duplicate matches, and recover from partial log writes', async t => {
+  const { source, file, write } = await setup(t);
+  const logFile = path.join(path.dirname(path.dirname(path.dirname(file))), 'tmp', '-qoder-test', 'logs.json');
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+  await write([user('old', 'Start')]);
+  const logged = (messageId, message = 'Continue') => ({ sessionId: id, messageId, message,
+    type: 'user', timestamp: new Date().toISOString() });
+  const old = logged(0);
+  await fs.writeFile(logFile, JSON.stringify([old]));
+  const deliveryBaseline = await source.prepare({ threadId: id, cwd, text: 'Continue' });
+  for (const commandId of ['one', 'two']) source.record({ threadId: id, text: 'Continue', commandId, deliveryBaseline });
+  for (const entries of [[old], [old, old], [logged(1)], [old, logged(1, 'Different')]]) {
+    await fs.writeFile(logFile, JSON.stringify(entries));
+    assert.deepEqual(await source.received(id), []);
+  }
+  await fs.writeFile(logFile, '[{"sessionId":');
+  assert.deepEqual(await source.received(id), []);
+  const first = logged(1);
+  await fs.writeFile(logFile, JSON.stringify([old, first, first]));
+  assert.deepEqual(await source.received(id), ['one'], 'one CLI input cannot acknowledge two commands');
+  await fs.writeFile(logFile, JSON.stringify([old, first, logged(2)]));
+  assert.deepEqual(await source.received(id), ['one', 'two']);
+  await fs.writeFile(logFile, '');
+  assert.deepEqual(await source.received(id), ['one', 'two'], 'observed receipt must not regress');
 });

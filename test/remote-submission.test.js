@@ -192,6 +192,77 @@ test('a real transcript removes the marker and releases the unconfirmed retry bl
   assert.equal(f.context.itemNode(f.state.thread.turns.at(-1).items[0], {}).children.length, 0);
 });
 
+test('Qoder input-log receipt releases a timed-out submission without dropping the visible message', async () => {
+  const f = fixture();
+  f.state.provider = f.state.thread.provider = 'qodercli';
+  await f.context.submitComposer();
+  const commandId = f.sent[0].commandId;
+  const pending = f.state.thread.turns.at(-1).items[0];
+  pending.delivery.status = 'received';
+  f.state.thread.receivedDeliveryIds = [commandId];
+  f.context.settleConfirmedDeliveries();
+  assert.equal(f.state.pendingDeliveries.size, 0);
+  assert.equal(f.message, '');
+  assert.equal(f.input.value, '', 'clear only the original, now-received draft');
+  assert.equal(f.state.thread.turns.at(-1).items[0], pending, 'receipt must not erase user input');
+  assert.match(f.context.itemNode(pending, {}).children.at(-1)?.textContent, /已接收/);
+});
+
+test('a late Qoder input receipt preserves a newer draft and never sends or interrupts again', async () => {
+  const f = fixture();
+  f.state.provider = f.state.thread.provider = 'qodercli';
+  await f.context.submitComposer();
+  f.input.value = '下一条尚未发送';
+  f.state.thread.receivedDeliveryIds = [f.sent[0].commandId];
+  f.context.settleConfirmedDeliveries();
+  assert.equal(f.input.value, '下一条尚未发送');
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.state.pendingDeliveries.size, 0);
+});
+
+test('Qoder input receipts update even when the transcript and pane have not changed', () => {
+  const current = { ...thread(), provider: 'qodercli' };
+  const refreshed = model.reconcileAgentThreadRefresh(current, {
+    ...current, receivedDeliveryIds: ['command-1'],
+  });
+  assert.notEqual(refreshed, current);
+  assert.deepEqual(refreshed.receivedDeliveryIds, ['command-1']);
+  assert.equal(refreshed.turns, current.turns);
+});
+
+test('Qoder confirmation before the send response settles once and preserves new attachments', async () => {
+  let resolve;
+  const f = fixture(new Promise(done => { resolve = done; }));
+  f.state.provider = f.state.thread.provider = 'qodercli';
+  const sentAttachment = { id: 'sent', status: 'uploaded' };
+  const newAttachment = { id: 'new', status: 'uploaded' };
+  f.state.attachments = [sentAttachment];
+  const sending = f.context.submitComposer();
+  await new Promise(setImmediate);
+  f.state.thread.receivedDeliveryIds = [f.sent[0].commandId];
+  f.state.attachments.push(newAttachment);
+  f.context.settleConfirmedDeliveries();
+  assert.equal(f.input.value, draft, 'wait for the in-flight send response');
+  resolve({ submissionStatus: 'unconfirmed' });
+  await sending;
+  assert.equal(f.input.value, '');
+  assert.deepEqual(f.state.attachments, [newAttachment]);
+  assert.equal(f.state.pendingDeliveries.size, 0);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.message, '');
+});
+
+test('clicking send just as Qoder confirms the old draft cannot become a duplicate or Stop', async () => {
+  const f = fixture();
+  f.state.provider = f.state.thread.provider = 'qodercli';
+  await f.context.submitComposer();
+  f.state.thread.tmux.status = 'working';
+  f.state.thread.receivedDeliveryIds = [f.sent[0].commandId];
+  await f.context.submitComposer({ explicitInterrupt: true });
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.input.value, '');
+});
+
 test('unconfirmed receipts cannot block later intentional repetition after a real transcript confirms them', async () => {
   const f = fixture({ submissionStatus: 'submitted' });
   const original = thread();

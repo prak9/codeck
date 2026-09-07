@@ -296,6 +296,7 @@ export class SdkAgentBackend extends EventEmitter {
       thread.status = { type: 'active' };
     }
     if (this.sessionSource) {
+      thread.receivedDeliveryIds = await this.sessionSource.received?.(threadId) || [];
       thread.deliveryConfirmations = this.sessionSource.confirmations(threadId);
       thread.unconfirmedDeliveryIds = this.sessionSource.unconfirmed(threadId);
     }

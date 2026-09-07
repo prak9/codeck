@@ -12,6 +12,38 @@ const pane = (composer = placeholder) => [
   ' Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project',
 ].join('\n');
 
+test('Qoder ordinary text and its submit travel as one raw terminal input, even when read together', async () => {
+  const inputs = [];
+  const commands = [];
+  await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: '怎么样了' }, {
+    listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => 'custom status line',
+    loadBuffer: async (_name, text) => inputs.push(text),
+    execTmux: async args => commands.push(args),
+    waitForPaste: async () => {}, waitForSubmit: async () => {},
+  });
+  assert.deepEqual(inputs, ['怎么样了\r']);
+  assert.equal(commands.filter(args => args.includes('paste-buffer')).length, 1);
+  assert.ok(commands[0].includes('-r'), 'preserve the final CR without bracketed paste');
+  assert.equal(commands.some(args => args.includes('Enter')), false, 'submit is already in the raw input');
+});
+
+test('Qoder never replays raw input after a possibly partial tmux write failure', async () => {
+  const commands = [];
+  const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue' }, {
+    listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    loadBuffer: async () => {},
+    execTmux: async args => {
+      commands.push(args);
+      if (args.includes('paste-buffer')) throw new Error('socket closed after write');
+    },
+    capturePane: async () => assert.fail('a failed write must not trigger a submit retry'),
+  });
+  assert.equal(result.submissionStatus, 'unconfirmed');
+  assert.equal(commands.filter(args => args.includes('paste-buffer')).length, 1);
+  assert.equal(commands.some(args => args.includes('Enter')), false);
+});
+
 // Qoder uses '*' for YOLO, '>' for other chat modes, and a colored cursor
 // instead of reverse video in themes with an explicit background color.
 const chatPlaceholders = ['>', '*'].flatMap(prompt => [
@@ -37,7 +69,7 @@ test('Qoder confirms empty normal and YOLO chat composers across cursor themes a
       });
       assert.equal(result.submissionStatus, 'submitted', JSON.stringify(composer));
       assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
-      assert.equal(calls.filter(args => args.includes('Enter')).length, 1, 'no duplicate Enter after submission');
+      assert.equal(calls.filter(args => args.includes('Enter')).length, 0, 'the raw buffer already contains Enter');
     }
   }
 });
@@ -119,11 +151,11 @@ test('Qoder never retries a different draft, a modal, or a clipped composer', as
   }
 });
 
-test('Qoder uses delayed bracketed paste and returns its actual submission result', async () => {
+test('Qoder multiline input still uses delayed bracketed paste and returns its actual submission result', async () => {
   const calls = [];
   let wrote = false;
   const result = await sendSessionMessage({
-    provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'Continue',
+    provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text: 'First\nSecond',
   }, {
     listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
     capturePane: async () => wrote ? 'redrawing' : pane(),
@@ -153,7 +185,7 @@ test('Qoder sends once without a recognizable or empty composer and reports conf
     });
     assert.equal(result.submissionStatus, 'unconfirmed');
     assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
-    assert.equal(calls.filter(args => args.includes('Enter')).length, 1);
+    assert.equal(calls.filter(args => args.includes('Enter')).length, 0);
     assert.equal(calls.some(args => args.includes('Escape') || args.includes('C-u')), false);
   }
 });
@@ -188,7 +220,7 @@ test('Qoder commands do not require the terminal composer layout either', async 
 });
 
 test('Qoder does not send a delayed Enter into a changed pane after text was delivered', async () => {
-  for (const text of ['Continue', '/usage']) {
+  for (const text of ['First\nSecond', '/usage']) {
     let wrote = false;
     const calls = [];
     const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text }, {

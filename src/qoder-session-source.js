@@ -10,6 +10,13 @@ const RECEIPT_LIMIT = 1024;
 const CONFIRMATION_WAIT_MS = 30_000;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+async function readInputLog(file) {
+  try {
+    const entries = JSON.parse(await fs.readFile(file, 'utf8'));
+    return Array.isArray(entries) ? entries : null;
+  } catch (error) { return error.code === 'ENOENT' ? [] : null; }
+}
+
 function userText(entry) {
   if (entry?.type !== 'user' || entry.isMeta || entry.isSidechain || entry.teamName
     || entry.parent_tool_use_id || typeof entry.uuid !== 'string') return '';
@@ -79,6 +86,15 @@ export class QoderSessionSource {
         seen: records.filter(({ entry }) => userText(entry) === text).map(({ entry }) => entry.uuid),
       };
     });
+    if (baseline) {
+      const file = path.join(this.configDir, 'tmp', path.basename(path.dirname(baseline.file)), 'logs.json');
+      const entries = await readInputLog(file);
+      if (entries) baseline.inputLog = {
+        file, count: entries.length, hash: hash(JSON.stringify(entries)),
+        lastId: entries.reduce((last, entry) => entry?.sessionId === threadId && Number.isSafeInteger(entry.messageId)
+          ? Math.max(last, entry.messageId) : last, -1),
+      };
+    }
     return baseline;
   }
 
@@ -119,10 +135,39 @@ export class QoderSessionSource {
       .map(({ commandId, itemId }) => ({ commandId, itemId }));
   }
 
+  // The CLI logs input on submission, before queueing/steering. The conversation
+  // JSONL is written later (or has no separate user turn for a steering hint).
+  // Poll this independently of transcript revisions; a busy turn may not change.
+  async received(threadId) {
+    this.#prune();
+    const receipts = [...this.receipts.values()].filter(receipt => receipt.threadId === threadId);
+    const files = new Set(receipts.filter(receipt => !receipt.itemId && !receipt.inputId)
+      .map(receipt => receipt.baseline?.inputLog?.file).filter(Boolean));
+    for (const file of files) {
+      const entries = await readInputLog(file);
+      if (!entries) continue; // A concurrent CLI rewrite can temporarily be incomplete.
+      const used = new Set(receipts.map(receipt => receipt.inputId).filter(Boolean));
+      for (const receipt of receipts) {
+        const base = receipt.baseline?.inputLog;
+        if (receipt.itemId || receipt.inputId || base?.file !== file
+          || entries.length < base.count || hash(JSON.stringify(entries.slice(0, base.count))) !== base.hash) continue;
+        const entry = entries.slice(base.count).find(entry => entry?.sessionId === threadId
+          && entry.type === 'user' && Number.isSafeInteger(entry.messageId) && entry.messageId > base.lastId
+          && typeof entry.timestamp === 'string' && Number.isFinite(Date.parse(entry.timestamp))
+          && typeof entry.message === 'string' && stripTerminalInputResidue(entry.message.trim()) === receipt.text
+          && !used.has(`${file}:${entry.messageId}`));
+        if (!entry) continue;
+        receipt.inputId = `${file}:${entry.messageId}`;
+        used.add(receipt.inputId);
+      }
+    }
+    return receipts.filter(receipt => receipt.inputId).map(receipt => receipt.commandId);
+  }
+
   unconfirmed(threadId) {
     this.#prune();
     return [...this.receipts.values()].filter(receipt => receipt.threadId === threadId
-      && !receipt.itemId && this.now() - receipt.createdAt >= CONFIRMATION_WAIT_MS)
+      && !receipt.itemId && !receipt.inputId && this.now() - receipt.createdAt >= CONFIRMATION_WAIT_MS)
       .map(receipt => receipt.commandId);
   }
 

@@ -1335,6 +1335,26 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       && !/[\u0000-\u001f\u007f]/u.test(text);
     const bufferName = overrides.bufferName || `codeck_remote_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
+    if (provider === 'qodercli' && literalAgentInput && !command
+      && !text.endsWith('\\') && !/[\u0080-\u009f]/u.test(text)) {
+      // Qoder handles a plain line ending in CR as one submit, even when its event
+      // loop reads both together. Bracketed paste + a timed Enter can instead be
+      // consumed in its paste-protection window after a busy redraw and add a newline.
+      await loadBuffer(bufferName, `${text}\r`);
+      let writing = false;
+      try {
+        if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+        writing = true;
+        await execTmux(exitPaneModeThen(paneId, [
+          'paste-buffer', '-r', '-d', '-b', bufferName, '-t', paneId,
+        ]));
+      } catch (error) {
+        await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
+        if (writing) return { submissionStatus: 'unconfirmed' };
+        throw error;
+      }
+      return finishAgentInput();
+    }
     if (literalAgentInput && !command && provider !== 'codex' && provider !== 'qodercli') {
       await loadBuffer(bufferName, text);
       try {

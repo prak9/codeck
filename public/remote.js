@@ -17,7 +17,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=41';
+} from './agent-model.js?v=42';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -280,14 +280,24 @@ function applyRefreshedThread(provider, thread) {
 }
 
 function settleConfirmedDeliveries() {
+  let clearedDraft = false;
   for (const [key, attempt] of state.pendingDeliveries) {
     if (attempt.blockReason !== 'submissionUnconfirmed'
       || attempt.provider !== state.provider || attempt.threadId !== state.thread?.id
       || attempt.tmuxSession !== state.thread?.tmux?.name
-      || !isUserMessageDeliveryConfirmed(state.thread, attempt)) continue;
+      || !(isUserMessageDeliveryConfirmed(state.thread, attempt)
+        || (state.provider === 'qodercli' && state.thread.receivedDeliveryIds?.includes(attempt.commandId)))) continue;
     state.pendingDeliveries.delete(key);
     if (state.liveMessage === SUBMISSION_UNCONFIRMED_MESSAGE) setLiveMessage('');
+    const input = $('#composerInput');
+    if (state.provider === 'qodercli' && typeof attempt.draft === 'string' && input.value === attempt.draft) {
+      input.value = '';
+      clearedDraft = true;
+      clearAttachments(state.attachments.filter(attachment => attempt.attachmentIds?.includes(attachment.id)));
+      resizeComposer();
+    }
   }
+  return clearedDraft;
 }
 
 function releaseThreadStream() {
@@ -569,7 +579,7 @@ function scheduleReconnect() {
 function markRestartedDeliveries() {
   if (state.provider !== 'qodercli' || !state.thread) return;
   state.thread = { ...state.thread, turns: (state.thread.turns || []).map(turn => ({
-    ...turn, items: (turn.items || []).map(item => item.delivery
+    ...turn, items: (turn.items || []).map(item => item.delivery && item.delivery.status !== 'received'
       ? { ...item, delivery: { ...item.delivery, status: 'unknown' } } : item),
   })) };
 }
@@ -1621,8 +1631,10 @@ function syncCommandDialog(commandOutput) {
 function itemNode(item, turn) {
   if (item.type === 'userMessage') {
     const node = element('div', 'message user-message', userMessageText(item));
-    if (item.delivery?.status === 'accepted' || item.delivery?.status === 'unknown') {
-      node.append(element('small', 'message-delivery-status', item.delivery.status === 'unknown'
+    if (['accepted', 'received', 'unknown'].includes(item.delivery?.status)) {
+      node.append(element('small', 'message-delivery-status', item.delivery.status === 'received'
+        ? 'Qoder 已接收'
+        : item.delivery.status === 'unknown'
         ? '送达状态未知，请检查终端，勿重复发送'
         : item.delivery.submissionStatus === 'unconfirmed'
         ? '等待 Agent 确认 · 提交未确认，请检查终端，勿重复发送'
@@ -2270,7 +2282,7 @@ function resizeComposer() {
 
 async function submitComposer({ explicitInterrupt = false } = {}) {
   if (composerRequestGate.pending || state.threadOpening) return;
-  settleConfirmedDeliveries();
+  if (settleConfirmedDeliveries()) return;
   abortSpeechInput();
   const input = $('#composerInput');
   const draft = input.value;
@@ -2372,6 +2384,8 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       if (!message) throw new Error('请输入要发送的内容');
       const unconfirmedItem = state.thread.turns?.flatMap((turn) => turn.items || []).find((item) => (
         (item.delivery?.submissionStatus === 'unconfirmed' || item.delivery?.status === 'unknown')
+        && item.delivery?.status !== 'received'
+        && !(targetProvider === 'qodercli' && state.thread.receivedDeliveryIds?.includes(item.delivery?.commandId))
         && userMessageText(item) === message
         && !isUserMessageDeliveryConfirmed(state.thread, { text: message, ...item.delivery })
       ));
@@ -2380,6 +2394,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           ...delivery, ...unconfirmedItem.delivery,
           commandId: unconfirmedItem.id?.startsWith('delivery:') ? unconfirmedItem.id.slice(9) : delivery.commandId,
           provider: targetProvider, threadId: targetThreadId, tmuxSession: targetSessionName, text: message,
+          draft, attachmentIds: attachments.map(attachment => attachment.id),
           blocked: true, blockReason: 'submissionUnconfirmed',
         });
         setLiveMessage(SUBMISSION_UNCONFIRMED_MESSAGE);
@@ -2406,6 +2421,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
         if (unconfirmed) state.pendingDeliveries.set(deliveryKey, {
           ...delivery, provider: targetProvider, threadId: targetThreadId,
           tmuxSession: targetSessionName, text: message,
+          draft, attachmentIds: attachments.map(attachment => attachment.id),
           blocked: true, blockReason: 'submissionUnconfirmed',
         });
         const nextStatus = sessionStatusAfterSend({ previousStatus, result });

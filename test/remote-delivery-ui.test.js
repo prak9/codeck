@@ -37,6 +37,15 @@ test('a server restart marks only unresolved Qoder delivery bubbles as unknown',
   }
 });
 
+test('a server restart does not downgrade an observed Qoder input receipt', () => {
+  const item = { id: 'delivery:one', type: 'userMessage', delivery: { status: 'received' } };
+  const state = { provider: 'qodercli', thread: { turns: [{ items: [item] }] } };
+  const context = vm.createContext({ state });
+  load(context, 'markRestartedDeliveries');
+  context.markRestartedDeliveries();
+  assert.equal(state.thread.turns[0].items[0].delivery.status, 'received');
+});
+
 test('opening the same Qoder thread after a restart preserves unknown input until it is confirmed', async () => {
   const state = { provider: 'qodercli', threads: [], protocolEpoch: 'new', thread: {
     id: 'thread-1', provider: 'qodercli', turns: [{ id: 'delivery-turn:command-1', deliveryOnly: true, items: [{

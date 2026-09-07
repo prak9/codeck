@@ -272,6 +272,7 @@ function renderedThreadMetadata(thread) {
     thread?.status,
     thread?.liveOutput,
     thread?.deliveryConfirmations,
+    thread?.receivedDeliveryIds,
     thread?.unconfirmedDeliveryIds,
     thread?.historyError,
   ]);
