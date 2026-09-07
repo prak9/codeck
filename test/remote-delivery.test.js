@@ -21,6 +21,7 @@ test('an uncertain retry reuses its command id while the server epoch is unchang
     baselineVersion: 2,
     baselineUserMessageId: 'user-7',
     baselineTurnId: 'turn-7',
+    baselineLastItemId: 'tool-7',
     baselineMatchingTextCount: 0,
   }, {
     serverEpoch: 'epoch-1',
@@ -33,6 +34,7 @@ test('an uncertain retry reuses its command id while the server epoch is unchang
     baselineVersion: 2,
     baselineUserMessageId: 'user-8',
     baselineTurnId: 'turn-8',
+    baselineLastItemId: 'tool-8',
     baselineMatchingTextCount: 1,
   }, {
     serverEpoch: 'epoch-1',
@@ -46,6 +48,7 @@ test('an uncertain retry reuses its command id while the server epoch is unchang
   assert.equal(retry.turnId, null);
   assert.equal(retry.baselineUserMessageId, 'user-7');
   assert.equal(retry.baselineTurnId, 'turn-7');
+  assert.equal(retry.baselineLastItemId, 'tool-7');
   assert.equal(retry.baselineMatchingTextCount, 0);
 });
 

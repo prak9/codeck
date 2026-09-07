@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from '../public/remote-scroll.js';
+import { applyAgentEvent } from '../public/agent-model.js';
 
 const source = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
 
@@ -70,4 +71,20 @@ test('the scroll shortcut batches visibility checks and moves focus to the lates
   assert.equal(transcript.scrollTop, 1_000);
   assert.equal(transcript.focused, true);
   assert.equal(button.hidden, true);
+});
+
+test('background turn and approval events do not force a reader away from history', () => {
+  const renders = [];
+  const state = { provider: 'codex', thread: { provider: 'codex', id: 'thread-1', turns: [] },
+    approvals: new Map(), interactions: new Map() };
+  const context = vm.createContext({ state, applyAgentEvent,
+    messageTargetsCurrentThread: () => true, updateThreadActivity() {}, settleConfirmedDeliveries() {},
+    scheduleThreadRender: force => renders.push(Boolean(force)),
+  });
+  vm.runInContext(functionSource('handleSocketMessage'), context);
+  context.handleSocketMessage({ type: 'event', provider: 'codex', method: 'turn/started',
+    params: { threadId: 'thread-1', turn: { id: 'new', status: 'inProgress', items: [] } } });
+  context.handleSocketMessage({ type: 'approval', provider: 'codex', request: { id: 'approval', params: { threadId: 'thread-1' } } });
+  context.handleSocketMessage({ type: 'interaction', provider: 'codex', request: { id: 'question', params: { threadId: 'thread-1' } } });
+  assert.deepEqual(renders, [false, false, false], 'renderThread already follows automatically when near latest');
 });

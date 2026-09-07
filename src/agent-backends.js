@@ -21,7 +21,7 @@ import { SdkAgentBackend } from './sdk-agent-backend.js';
 import { QoderSessionSource } from './qoder-session-source.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
-import { isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
+import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 
 const CODEX_APPROVAL_METHODS = new Set([
   'item/commandExecution/requestApproval',
@@ -80,28 +80,36 @@ function mergeCodexUserItems(current, incoming, turnId) {
   return users;
 }
 
-function mergeCodexSummaryUsers(turn, cachedUsers) {
-  if (!Array.isArray(cachedUsers) || !cachedUsers.length) return turn;
-  const items = Array.isArray(turn?.items) ? turn.items : [];
-  const users = [...cachedUsers];
-  const ids = new Set(users.map((item) => item?.id).filter(Boolean));
-  for (const item of codexUserItems(turn)) {
-    if (!item.id || !ids.has(item.id)) users.push(item);
+function mergeCodexCachedUsers(turn, cached) {
+  const items = [...(Array.isArray(turn?.items) ? turn.items : [])];
+  const itemIds = new Set(items.map((item) => item?.id).filter(Boolean));
+  const order = cached?.order || [];
+  for (const item of cached?.items || []) {
+    if (item?.id && itemIds.has(item.id)) continue;
+    if (item?.delivery && codexTurnConfirmsDelivery(turn, item)) continue;
+    let index = deliveryInsertionIndex(items, item.delivery?.baselineLastItemId);
+    if (!item.delivery) {
+      const sourceIndex = order.indexOf(item.id);
+      if (sourceIndex >= 0) {
+        const next = order.slice(sourceIndex + 1).find(id => itemIds.has(id));
+        const previous = order.slice(0, sourceIndex).findLast(id => itemIds.has(id));
+        if (next) index = items.findIndex(candidate => candidate.id === next);
+        else if (previous) index = items.findIndex(candidate => candidate.id === previous) + 1;
+      }
+    }
+    items.splice(index, 0, item);
+    if (item?.id) itemIds.add(item.id);
   }
-  return {
-    ...turn,
-    items: [...users, ...items.filter((item) => item?.type !== 'userMessage')],
-  };
+  return items;
 }
 
-function mergeCodexFullTurn(summaryTurn, fullTurn, cachedUsers) {
-  const items = [...(Array.isArray(fullTurn?.items) ? fullTurn.items : [])];
-  const itemIds = new Set(items.map((item) => item?.id).filter(Boolean));
-  for (const item of Array.isArray(cachedUsers) ? cachedUsers : []) {
-    if (item?.id && itemIds.has(item.id)) continue;
-    if (item?.delivery && codexTurnConfirmsDelivery(fullTurn, item)) continue;
-    items.push(item);
-  }
+function mergeCodexSummaryUsers(turn, cached) {
+  if (!cached?.items?.length) return turn;
+  return { ...turn, items: mergeCodexCachedUsers(turn, cached) };
+}
+
+function mergeCodexFullTurn(summaryTurn, fullTurn, cached) {
+  const items = mergeCodexCachedUsers(fullTurn, cached);
   return { ...summaryTurn, ...fullTurn, items };
 }
 
@@ -275,7 +283,7 @@ export class CodexAgentBackend extends EventEmitter {
     return { turns, truncated, oldestTurnId: turns[0]?.id || null };
   }
 
-  async openThread(threadId, { readOnly = false, progressive = false } = {}) {
+  async openThread(threadId, { readOnly = false, progressive = false, turnLimit = 80 } = {}) {
     if (!readOnly) {
       try {
         await this.appServer.request('thread/resume', { threadId });
@@ -287,7 +295,7 @@ export class CodexAgentBackend extends EventEmitter {
     const read = this.#readStore('thread/read', { threadId, includeTurns: false });
     const summary = this.#readStore('thread/turns/list', {
       threadId,
-      limit: progressive ? CODEX_PROGRESSIVE_TURN_LIMIT : 80,
+      limit: progressive ? CODEX_PROGRESSIVE_TURN_LIMIT : turnLimit,
       sortDirection: 'desc',
       itemsView: 'summary',
     });
@@ -347,10 +355,10 @@ export class CodexAgentBackend extends EventEmitter {
 
   recordSessionMessage({
     threadId, turnId, text, commandId, submissionStatus,
-    baselineVersion, baselineUserMessageId, baselineTurnId, baselineMatchingTextCount,
+    baselineVersion, baselineUserMessageId, baselineTurnId, baselineMatchingTextCount, baselineLastItemId,
   }) {
     if (!threadId || !turnId || typeof text !== 'string' || !text.trim()) return;
-    this.#cacheUserItem(threadId, turnId, {
+    this.#cacheObservedItem(threadId, turnId, {
       id: `delivery:${commandId || crypto.randomUUID()}`,
       type: 'userMessage',
       content: [{ type: 'text', text }],
@@ -359,6 +367,7 @@ export class CodexAgentBackend extends EventEmitter {
         submissionStatus: submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed',
         ...(baselineVersion === 2 ? {
           baselineVersion, baselineUserMessageId, baselineTurnId, baselineMatchingTextCount,
+          ...(baselineLastItemId ? { baselineLastItemId } : {}),
         } : {}),
       },
     });
@@ -419,16 +428,23 @@ export class CodexAgentBackend extends EventEmitter {
     return turns.map((turn) => {
       const items = (turn.items || []).filter((item) => !resolved.has(item.id));
       if (items.length === (turn.items || []).length) return turn;
-      const users = cachedUsers?.get(turn.id);
-      if (users) cachedUsers.set(turn.id, users.filter((item) => !resolved.has(item.id)));
+      const cached = cachedUsers?.get(turn.id);
+      if (cached) cachedUsers.set(turn.id, { ...cached, items: cached.items.filter((item) => !resolved.has(item.id)) });
       return { ...turn, items };
     });
   }
 
-  #cacheUserItem(threadId, turnId, item) {
-    if (!threadId || !turnId || item?.type !== 'userMessage') return;
+  #cacheObservedItem(threadId, turnId, item) {
+    if (!threadId || !turnId || !item) return;
     const turns = this.#threadUserMessages(threadId);
-    const users = [...(turns.get(turnId) || [])];
+    const cached = turns.get(turnId) || { items: [], order: [] };
+    const order = !item.delivery && item.id && !cached.order.includes(item.id)
+      ? [...cached.order, item.id] : cached.order;
+    if (item.type !== 'userMessage') {
+      if (order !== cached.order) turns.set(turnId, { ...cached, order });
+      return;
+    }
+    const users = [...cached.items];
     let index = users.findIndex((candidate) => candidate.id === item.id);
     if (index < 0 && !item.delivery) {
       const text = codexUserItemText(item);
@@ -439,7 +455,7 @@ export class CodexAgentBackend extends EventEmitter {
     }
     if (index < 0) users.push(item);
     else users[index] = item;
-    turns.set(turnId, users);
+    turns.set(turnId, { items: users, order });
   }
 
   #cacheTurnUsers(threadId, turn, { replace = false } = {}) {
@@ -447,11 +463,18 @@ export class CodexAgentBackend extends EventEmitter {
     const incoming = codexUserItems(turn);
     if (!incoming.length) return;
     const turns = this.#threadUserMessages(threadId);
+    const cached = turns.get(turn.id) || { items: [], order: [] };
+    const incomingOrder = (turn.items || []).filter(item => !item.delivery && item.id).map(item => item.id);
+    // Retain IDs, not full tool output. A lagging prefix must not erase already
+    // observed placement evidence when the full view catches up asynchronously.
+    const order = cached.order.length >= incomingOrder.length
+      && incomingOrder.every((id, index) => id === cached.order[index]) ? cached.order : incomingOrder;
+    turns.set(turn.id, { ...cached, order });
     if (replace) {
-      turns.set(turn.id, mergeCodexUserItems(turns.get(turn.id), incoming, turn.id));
+      turns.set(turn.id, { order, items: mergeCodexUserItems(cached.items, incoming, turn.id) });
       return;
     }
-    for (const item of incoming) this.#cacheUserItem(threadId, turn.id, item);
+    for (const item of incoming) this.#cacheObservedItem(threadId, turn.id, item);
   }
 
   #hydrateUserMessages(threadId, { force = false, limit = CODEX_RECENT_USER_TURN_LIMIT } = {}) {
@@ -510,6 +533,7 @@ export class CodexAgentBackend extends EventEmitter {
       const fingerprint = JSON.stringify(turn);
       const cached = this.interruptedMessages.get(key);
       let items = cached?.fingerprint === fingerprint ? cached.items : null;
+      let order = cached?.fingerprint === fingerprint ? cached.order : [];
       if (!items) {
         items = [];
         let cursor;
@@ -522,24 +546,26 @@ export class CodexAgentBackend extends EventEmitter {
             ...(cursor ? { cursor } : {}),
           });
           for (const entry of page.data || []) {
-            if (entry.turnId === turn.id && ['userMessage', 'agentMessage'].includes(entry.item?.type)) {
-              items.push(entry.item);
-            }
+            if (entry.turnId !== turn.id || !entry.item) continue;
+            if (entry.item.id) order.push(entry.item.id);
+            if (['userMessage', 'agentMessage'].includes(entry.item.type)) items.push(entry.item);
           }
           cursor = page.nextCursor;
         } while (cursor);
         if (turn.completedAt != null) {
           this.interruptedMessages.delete(key);
-          this.interruptedMessages.set(key, { fingerprint, items });
+          this.interruptedMessages.set(key, { fingerprint, items, order });
           if (this.interruptedMessages.size > CODEX_INTERRUPTED_MESSAGE_CACHE_LIMIT) {
             this.interruptedMessages.delete(this.interruptedMessages.keys().next().value);
           }
         }
       }
       const ids = new Set(items.map(item => item.id));
-      result.push(mergeCodexFullTurn(turn, { id: turn.id, items: [
+      const positions = new Map(order.map((id, index) => [id, index]));
+      const ordered = [
         ...items, ...(turn.items || []).filter(item => !ids.has(item.id)),
-      ] }, this.userMessages.get(threadId)?.get(turn.id)));
+      ].sort((a, b) => (positions.get(a.id) ?? order.length) - (positions.get(b.id) ?? order.length));
+      result.push(mergeCodexFullTurn(turn, { id: turn.id, items: ordered }, this.userMessages.get(threadId)?.get(turn.id)));
     }
     return result;
   }
@@ -548,8 +574,8 @@ export class CodexAgentBackend extends EventEmitter {
     const params = message?.params || {};
     const threadId = params.threadId;
     if (!threadId) return;
-    if (params.item?.type === 'userMessage' && params.turnId) {
-      this.#cacheUserItem(threadId, params.turnId, params.item);
+    if (params.item && params.turnId) {
+      this.#cacheObservedItem(threadId, params.turnId, params.item);
     }
     if (params.turn) this.#cacheTurnUsers(threadId, params.turn);
     if (message.method === 'turn/completed') {

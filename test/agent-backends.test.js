@@ -209,6 +209,71 @@ test('hydrates lightweight Codex summaries with every recent user follow-up only
   assert.equal(calls.filter((call) => call.params?.itemsView === 'full').length, 1);
 });
 
+for (const omitFollowup of [false, true]) {
+  test(`persisted Codex follow-ups retain source order when summaries ${omitFollowup ? 'omit' : 'include'} them`, async () => {
+    const original = { id: 'user-original', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+    const oldOutput = { id: 'output-old', type: 'agentMessage', text: 'Earlier output' };
+    const followup = { id: 'user-followup', type: 'userMessage', content: [{ type: 'text', text: '咋样了' }] };
+    const newOutput = { id: 'output-new', type: 'agentMessage', text: 'Later output' };
+    const full = [original, oldOutput, followup, newOutput];
+    const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => (
+      method === 'thread/read' ? { thread: { id: 'thread-1' } }
+        : { data: [{ id: 'turn-1', status: 'completed', items: params.itemsView === 'summary' && omitFollowup
+          ? [original, oldOutput, newOutput] : full }] }
+    )));
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      const result = await backend.openThread('thread-1', { readOnly: true });
+      assert.deepEqual(result.thread.turns[0].items.map(item => item.id), full.map(item => item.id));
+    }
+    backend.close();
+  });
+}
+
+test('Codex item events retain follow-up position before the full transcript catches up', async () => {
+  const first = { id: 'first', type: 'userMessage', content: [{ type: 'text', text: 'First' }] };
+  const answer = { id: 'old-answer', type: 'agentMessage', text: 'Old answer' };
+  const followup = { id: 'followup', type: 'userMessage', content: [{ type: 'text', text: 'Follow up' }] };
+  let summary = { id: 'turn', status: 'completed', items: [first] };
+  const appServer = new FakeAppServer(async (method, params) => method === 'thread/read'
+    ? { thread: { id: 'thread' } }
+    : { data: [params.itemsView === 'full' ? { id: 'turn', status: 'inProgress', items: [first] } : summary] });
+  const backend = new CodexAgentBackend(appServer);
+  await backend.openThread('thread', { readOnly: true });
+  for (const item of [answer, followup]) appServer.emit('notification', {
+    method: 'item/completed', params: { threadId: 'thread', turnId: 'turn', item },
+  });
+  summary = { id: 'turn', status: 'inProgress', items: [first, answer] };
+  const refreshed = await backend.openThread('thread', { readOnly: true, progressive: true });
+  assert.deepEqual(refreshed.thread.turns[0].items.map(item => item.id), ['first', 'old-answer', 'followup']);
+  backend.close();
+});
+
+test('Codex receipt replacement and turn completion preserve the chronological position', async () => {
+  const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const oldOutput = { id: 'old-output', type: 'agentMessage', text: 'Earlier output' };
+  const newOutput = { id: 'new-output', type: 'agentMessage', text: 'Later output' };
+  let status = 'inProgress';
+  let items = [first, oldOutput];
+  const appServer = new FakeAppServer(async method => method === 'thread/read'
+    ? { thread: { id: 'thread-1' } } : { data: [{ id: 'turn-1', status, items }] });
+  const backend = new CodexAgentBackend(appServer);
+  await backend.openThread('thread-1', { readOnly: true });
+  backend.recordSessionMessage({ threadId: 'thread-1', turnId: 'turn-1', commandId: 'command-replace', text: '咋样了',
+    baselineVersion: 2, baselineUserMessageId: 'user-1', baselineTurnId: 'turn-1', baselineLastItemId: 'old-output', baselineMatchingTextCount: 0 });
+  items = [...items, newOutput];
+  const pending = await backend.openThread('thread-1', { readOnly: true });
+  assert.deepEqual(pending.thread.turns[0].items.map(item => item.id), ['user-1', 'old-output', 'delivery:command-replace', 'new-output']);
+  const actual = { id: 'user-actual', type: 'userMessage', content: [{ type: 'text', text: '咋样了' }] };
+  items = [first, oldOutput, actual, newOutput];
+  status = 'completed';
+  appServer.emit('notification', { method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status, items } } });
+  await new Promise(setImmediate);
+  const completed = await backend.openThread('thread-1', { readOnly: true });
+  assert.deepEqual(completed.thread.turns[0].items.map(item => item.id), items.map(item => item.id));
+  assert.equal(completed.thread.turns[0].items.some(item => item.delivery), false);
+  backend.close();
+});
+
 test('starts recent Codex user hydration without waiting for the long summary page', async () => {
   let resolveSummary;
   const summary = new Promise((resolve) => { resolveSummary = resolve; });
@@ -346,6 +411,42 @@ test('older interrupted Codex turns retain all messages after follow-ups and reo
   assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), { text: 'Checking\n\nFound the cause\n\nAdding tests' });
 });
 
+test('interrupted hydration keeps summary tools between their source messages without caching tool logs', async () => {
+  const user = { id: 'user', type: 'userMessage', content: [] };
+  const tool = { id: 'tool', type: 'commandExecution', aggregatedOutput: 'summary log' };
+  const reply = { id: 'reply', type: 'agentMessage', text: 'After the tool' };
+  const old = { id: 'old', status: 'interrupted', completedAt: 123, items: [user, tool] };
+  const latest = { id: 'latest', status: 'completed', items: [] };
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    if (method === 'thread/read') return { thread: { id: 'thread' } };
+    if (method === 'thread/items/list') return { data: [user, { ...tool, aggregatedOutput: 'large raw log' }, reply]
+      .map(item => ({ turnId: 'old', item })) };
+    return { data: [latest, old] };
+  }));
+  for (let i = 0; i < 2; i += 1) {
+    const result = await backend.openThread('thread', { readOnly: true });
+    assert.deepEqual(result.thread.turns[0].items.map(item => item.id), ['user', 'tool', 'reply']);
+    assert.equal(result.thread.turns[0].items[1].aggregatedOutput, 'summary log');
+  }
+  assert.ok([...backend.interruptedMessages.values()].every(entry => entry.items.every(item => item.type !== 'commandExecution')));
+  backend.close();
+});
+
+test('a live window request hydrates only its requested tail, retaining explicit history access', async () => {
+  const calls = [];
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'thread' } };
+    return { data: [{ id: 'latest', status: 'completed', items: [] }] };
+  }));
+  await backend.openThread('thread', { readOnly: true, turnLimit: 20 });
+  assert.equal(calls.find(call => call.params.itemsView === 'summary').params.limit, 20);
+  calls.length = 0;
+  await backend.openThread('thread', { readOnly: true });
+  assert.equal(calls.find(call => call.params.itemsView === 'summary').params.limit, 80);
+  backend.close();
+});
+
 test('interrupted history hydration follows item cursors and retries failures without caching partial messages', async () => {
   const turn = { id: 'old', status: 'interrupted', completedAt: 123, items: [] };
   let fail = true;
@@ -401,6 +502,32 @@ test('records an accepted tmux follow-up in the sparse Codex summary cache', asy
     .filter((item) => item.type === 'userMessage')
     .map((item) => item.content[0].text), ['Start', 'Use the latest data']);
 });
+
+for (const progressive of [false, true]) {
+  test(`Codex ${progressive ? 'summary' : 'full'} view preserves a follow-up's captured position`, async () => {
+    const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+    const oldAnswer = { id: 'answer-old', type: 'agentMessage', text: 'Old output' };
+    let items = [first, oldAnswer];
+    const backend = new CodexAgentBackend(new FakeAppServer(async method => (
+      method === 'thread/read' ? { thread: { id: 'thread-1' } }
+        : { data: [{ id: 'turn-1', status: 'inProgress', items }] }
+    )));
+    await backend.openThread('thread-1', { readOnly: true });
+    backend.recordSessionMessage({
+      threadId: 'thread-1', turnId: 'turn-1', text: '咋样了', commandId: 'command-position',
+      baselineVersion: 2, baselineUserMessageId: 'user-1', baselineTurnId: 'turn-1',
+      baselineMatchingTextCount: 0, baselineLastItemId: 'answer-old',
+    });
+    items = [...items, { id: 'answer-new', type: 'agentMessage', text: 'New output' }];
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      const opened = await backend.openThread('thread-1', { readOnly: true, progressive });
+      assert.deepEqual(opened.thread.turns[0].items.map(item => item.id), [
+        'user-1', 'answer-old', 'delivery:command-position', 'answer-new',
+      ]);
+    }
+    backend.close();
+  });
+}
 
 test('a lagging Codex full refresh cannot delete an accepted tmux follow-up', async () => {
   const first = { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };

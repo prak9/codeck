@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import * as model from '../public/agent-model.js';
 import * as composer from '../public/remote-composer.js';
 import * as delivery from '../public/remote-delivery.js';
+import * as commands from '../public/remote-command-output.js';
 
 const source = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
 const draft = '分析下 BABA 当前投资价值';
@@ -24,7 +25,7 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
   const sent = [];
   let liveMessage = '';
   const context = vm.createContext({
-    ...model, ...composer, ...delivery,
+    ...model, ...composer, ...delivery, ...commands,
     state, crypto: { randomUUID: () => `command-${sent.length + 1}` },
     Date, setTimeout, clearTimeout,
     $: () => input,
@@ -70,6 +71,22 @@ test('unconfirmed submission preserves the draft and original command without cl
   assert.equal(f.input.value, draft);
   assert.match(f.message, /提交未确认.*勿重复发送/);
 });
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} composer captures send-time order before a delayed response`, async () => {
+    const f = fixture(() => {
+      f.state.thread.turns[0].items.push({ id: 'answer-new', type: 'agentMessage', text: 'New output' });
+      return { inputWasQueued: true, submissionStatus: 'submitted' };
+    });
+    f.state.provider = f.state.thread.provider = provider;
+    f.state.thread.turns[0].items.push({ id: 'answer-old', type: 'agentMessage', text: 'Old output' });
+    await f.context.submitComposer();
+    assert.equal(f.sent[0].baselineLastItemId, 'answer-old');
+    assert.deepEqual(Array.from(f.state.thread.turns[0].items, item => item.id), [
+      'user-old', 'answer-old', `delivery:${f.sent[0].commandId}`, 'answer-new',
+    ]);
+  });
+}
 
 for (const message of [
   'Codex 终端中已有草稿，消息未发送。请先在终端处理草稿后重试。',
@@ -206,6 +223,66 @@ test('Qoder input-log receipt releases a timed-out submission without dropping t
   assert.equal(f.input.value, '', 'clear only the original, now-received draft');
   assert.equal(f.state.thread.turns.at(-1).items[0], pending, 'receipt must not erase user input');
   assert.match(f.context.itemNode(pending, {}).children.at(-1)?.textContent, /已接收/);
+});
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} confirmed submission clears only its old draft with the same shared rule`, async () => {
+    const f = fixture();
+    f.state.provider = f.state.thread.provider = provider;
+    await f.context.submitComposer();
+    f.state.thread.receivedDeliveryIds = [f.sent[0].commandId];
+    f.context.settleConfirmedDeliveries();
+    assert.equal(f.state.pendingDeliveries.size, 0);
+    assert.equal(f.input.value, '');
+    assert.equal(f.sent.length, 1);
+  });
+
+  test(`${provider} transcript confirmation after a lost send response settles without replay`, async () => {
+    const f = fixture(() => { throw new Error('Agent 请求超时'); });
+    f.state.provider = f.state.thread.provider = provider;
+    await f.context.submitComposer();
+    assert.equal(f.sent.length, 1);
+    f.state.thread.turns.push({ id: 'turn-confirmed', status: 'completed', items: [user('actual-user')] });
+    f.context.settleConfirmedDeliveries();
+    assert.equal(f.state.pendingDeliveries.size, 0);
+    assert.equal(f.input.value, '');
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.message, '');
+  });
+
+  test(`${provider} a lost response after confirmation preserves newer input and attachments`, async () => {
+    let reject;
+    const f = fixture(new Promise((_, fail) => { reject = fail; }));
+    f.state.provider = f.state.thread.provider = provider;
+    const sentAttachment = { id: 'sent' };
+    const newerAttachment = { id: 'new' };
+    f.state.attachments = [sentAttachment];
+    const sending = f.context.submitComposer();
+    await new Promise(setImmediate);
+    f.state.thread.turns.push({ id: 'turn-confirmed', status: 'completed', items: [user('actual-user')] });
+    f.input.value = 'New draft';
+    f.state.attachments.push(newerAttachment);
+    reject(new Error('Agent 请求超时'));
+    await sending;
+    assert.equal(f.state.pendingDeliveries.size, 0);
+    assert.equal(f.input.value, 'New draft');
+    assert.deepEqual(f.state.attachments, [newerAttachment]);
+    assert.equal(f.message, '');
+    assert.equal(f.sent.length, 1);
+  });
+}
+
+test('a late network failure cannot replace another session status', async () => {
+  let reject;
+  const f = fixture(new Promise((_, fail) => { reject = fail; }));
+  const sending = f.context.submitComposer();
+  await new Promise(setImmediate);
+  f.state.thread = { ...thread(), id: 'other', tmux: { name: 'other' } };
+  f.context.setLiveMessage('Other session status');
+  reject(new Error('Agent 请求超时'));
+  await sending;
+  assert.equal(f.message, 'Other session status');
+  assert.equal(f.state.pendingDeliveries.size, 1);
 });
 
 test('a late Qoder input receipt preserves a newer draft and never sends or interrupts again', async () => {

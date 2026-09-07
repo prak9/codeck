@@ -1,3 +1,28 @@
+export function sessionCommandCapabilities(provider) {
+  return {
+    modelSelection: provider === 'codex',
+    dismissCommands: provider === 'codex' ? ['/model', '/skills', '/usage'] : [],
+  };
+}
+
+// Shared by the server adapter and the older-server compatibility path. Keep
+// raw output even when a native command has no supported Remote interaction.
+export function normalizeSessionCommandOutput(provider, command, result, capabilities = sessionCommandCapabilities(provider)) {
+  if (result?.commandOutput) return result.commandOutput;
+  if (typeof result?.terminalOutput !== 'string' || !result.terminalOutput) return null;
+  const text = result.terminalOutput;
+  const output = { command, text, kind: 'output', dismissible: capabilities.dismissCommands?.includes(command) === true };
+  if (command === '/model' && capabilities.modelSelection
+    && /^\s*(?:select model and effort|select reasoning level for .+|advanced reasoning|(?:current|choose|select|available)\s+models?)\s*$/imu.test(text)) {
+    const parsed = parseModelCommandOutput(text);
+    if (parsed.items.length) return { ...output, kind: 'modelSelection', parsed };
+  }
+  if (command === '/skills' && !/^[›>❯]\s*\d+\./mu.test(text)) {
+    return { ...output, kind: 'skills', parsed: parseSkillsCommandOutput(text) };
+  }
+  return output;
+}
+
 function stripCommandPrefix(line) {
   return String(line || '').replace(/^[•◦▪▫*-]\s*/, '').trim();
 }

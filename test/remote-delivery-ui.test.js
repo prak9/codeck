@@ -23,7 +23,7 @@ test('unknown delivery has an explicit terminal-check warning instead of a waiti
   }
 });
 
-test('a server restart marks only unresolved Qoder delivery bubbles as unknown', () => {
+test('a server restart marks unresolved Agent delivery bubbles as unknown consistently', () => {
   for (const provider of ['qodercli', 'codex', 'claude', 'shell']) {
     const pending = { id: 'delivery:command', type: 'userMessage', delivery: { status: 'accepted' } };
     const actual = { id: 'real', type: 'userMessage', content: 'Hello' };
@@ -31,24 +31,26 @@ test('a server restart marks only unresolved Qoder delivery bubbles as unknown',
     const context = vm.createContext({ state });
     load(context, 'markRestartedDeliveries');
     context.markRestartedDeliveries();
-    assert.equal(state.thread.turns[0].items[1].delivery.status, provider === 'qodercli' ? 'unknown' : 'accepted');
+    assert.equal(state.thread.turns[0].items[1].delivery.status, provider !== 'shell' ? 'unknown' : 'accepted');
     assert.equal(state.thread.turns[0].items[0], actual);
     assert.equal(pending.delivery.status, 'accepted', 'do not mutate an old snapshot');
   }
 });
 
-test('a server restart does not downgrade an observed Qoder input receipt', () => {
+for (const provider of ['codex', 'claude', 'qodercli']) {
+test(`${provider} server restart does not downgrade an observed input receipt`, () => {
   const item = { id: 'delivery:one', type: 'userMessage', delivery: { status: 'received' } };
-  const state = { provider: 'qodercli', thread: { turns: [{ items: [item] }] } };
+  const state = { provider, thread: { turns: [{ items: [item] }] } };
   const context = vm.createContext({ state });
   load(context, 'markRestartedDeliveries');
   context.markRestartedDeliveries();
   assert.equal(state.thread.turns[0].items[0].delivery.status, 'received');
 });
 
-test('opening the same Qoder thread after a restart preserves unknown input until it is confirmed', async () => {
-  const state = { provider: 'qodercli', threads: [], protocolEpoch: 'new', thread: {
-    id: 'thread-1', provider: 'qodercli', turns: [{ id: 'delivery-turn:command-1', deliveryOnly: true, items: [{
+test(`${provider} reopening after a restart preserves unknown input until it is confirmed`, async () => {
+  const renders = [];
+  const state = { provider, threads: [], protocolEpoch: 'new', thread: {
+    id: 'thread-1', provider, turns: [{ id: 'delivery-turn:command-1', deliveryOnly: true, items: [{
       id: 'delivery:command-1', type: 'userMessage', content: 'Continue',
       delivery: { status: 'unknown', commandId: 'command-1' },
     }] }],
@@ -59,11 +61,14 @@ test('opening the same Qoder thread after a restart preserves unknown input unti
     agentRequest: async (_type, params) => ({ thread: { id: params.threadId, turns: [] } }),
     ...Object.fromEntries(['resetThreadHistory', 'resetThreadStream', 'rememberOpenedThread',
       'renderComposerState', 'setLiveMessage', 'settleConfirmedDeliveries', 'renderThreadList',
-      'scheduleThreadRender', 'closeDrawer'].map(name => [name, () => {}])),
+      'closeDrawer'].map(name => [name, () => {}])),
+    scheduleThreadRender: force => renders.push(force),
   });
   load(context, 'openThread');
-  await context.openThread('thread-1');
+  await context.openThread('thread-1', { quiet: true });
+  assert.equal(renders.at(-1), false, 'quiet same-session reconnect must preserve reading position');
   assert.equal(state.thread.turns[0]?.items[0]?.delivery?.status, 'unknown');
   await context.openThread('another-thread');
   assert.equal(state.thread.turns.length, 0, 'do not carry pending input into a different session');
 });
+}

@@ -594,7 +594,7 @@ test('an accepted direct-tmux follow-up appears immediately in its active turn',
   assert.equal(updated.turns[0].items[1].id, 'delivery:command-12345678');
 });
 
-test('an input absorbed by a running Claude turn stays ahead of that turn output', () => {
+test('a queued legacy input without a placement anchor follows existing output', () => {
   const thread = normalizeAgentThread('claude', {
     id: 'thread-1',
     turns: [{
@@ -615,11 +615,75 @@ test('an input absorbed by a running Claude turn stays ahead of that turn output
 
   assert.equal(updated.turns.length, 1);
   assert.deepEqual(updated.turns[0].items.map((item) => item.type), [
-    'userMessage', 'userMessage', 'agentMessage',
+    'userMessage', 'agentMessage', 'userMessage',
   ]);
-  assert.equal(updated.turns[0].items[1].id, 'delivery:command-queued-1');
-  assert.equal(updated.turns[0].items.at(-1).text, 'Final answer');
+  assert.equal(updated.turns[0].items.at(-1).id, 'delivery:command-queued-1');
+  assert.equal(updated.turns[0].items[1].text, 'Final answer');
 });
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+test(`${provider} queued input stays after already-visible output and before later output across refreshes`, () => {
+  const thread = normalizeAgentThread(provider, { id: 'thread-1', turns: [{
+    id: 'turn-running', status: 'completed', items: [
+      { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] },
+      { id: 'answer-1', type: 'agentMessage', text: '我先核对当前任务' },
+      { id: 'tool-1', type: 'commandExecution', command: 'pwd', status: 'completed' },
+    ],
+  }] });
+  const baseline = userMessageDeliveryBaseline(thread, '咋样了');
+  assert.equal(baseline.baselineLastItemId, 'tool-1');
+  const updated = applyAcceptedUserMessage(thread, {
+    text: '咋样了', commandId: 'command-latest', inputWasQueued: true, ...baseline,
+  });
+  const before = ['user-1', 'answer-1', 'tool-1', 'delivery:command-latest'];
+  assert.deepEqual(updated.turns[0].items.map(item => item.id), before);
+  const refreshed = normalizeAgentThread(provider, { ...thread, turns: [{
+    ...thread.turns[0], items: [...thread.turns[0].items,
+      { id: 'answer-2', type: 'agentMessage', text: '刚才检查已完成' }],
+  }] });
+  const merged = reconcileAgentThreadRefresh(updated, refreshed);
+  assert.deepEqual(merged.turns[0].items.map(item => item.id), [...before, 'answer-2']);
+  assert.deepEqual(reconcileAgentThreadRefresh(merged, refreshed).turns[0].items.map(item => item.id), [...before, 'answer-2']);
+});
+
+test(`${provider} sends during a delayed response retain the captured position and consecutive send order`, () => {
+  const thread = normalizeAgentThread(provider, { id: 'thread-1', turns: [{
+    id: 'turn-running', items: [
+      { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] },
+      { id: 'tool-1', type: 'commandExecution', command: 'pwd', status: 'completed' },
+    ],
+  }] });
+  const baseline = userMessageDeliveryBaseline(thread, '进展正常吗');
+  let updated = applyAcceptedUserMessage(thread, {
+    text: '进展正常吗', commandId: 'command-first', inputWasQueued: true, ...baseline,
+  });
+  const latestBaseline = userMessageDeliveryBaseline(updated, '咋样了');
+  assert.equal(latestBaseline.baselineLastItemId, 'tool-1', 'anchor to durable output, not an optimistic receipt');
+  updated = applyAgentEvent(updated, 'item/completed', { threadId: 'thread-1', turnId: 'turn-running',
+    item: { id: 'answer-new', type: 'agentMessage', text: 'Later output' },
+  });
+  updated = applyAcceptedUserMessage(updated, {
+    text: '咋样了', commandId: 'command-latest', inputWasQueued: true, ...latestBaseline,
+  });
+  assert.deepEqual(updated.turns[0].items.map(item => item.id), [
+    'user-1', 'tool-1', 'delivery:command-first', 'delivery:command-latest', 'answer-new',
+  ]);
+});
+
+test(`${provider} input follows its captured terminal activity checkpoint`, () => {
+  const original = normalizeAgentThread(provider, { id: 'thread-1', turns: [{
+    id: 'turn-1', items: [{ id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] }],
+  }] });
+  const baseline = userMessageDeliveryBaseline(original, '咋样了');
+  const checkpointed = checkpointTerminalActivity(original, { commandId: 'command-latest', output: 'Earlier terminal activity', turnId: 'turn-1' });
+  const updated = applyAcceptedUserMessage(checkpointed, {
+    text: '咋样了', commandId: 'command-latest', inputWasQueued: true, ...baseline,
+  });
+  assert.deepEqual(updated.turns[0].items.map(item => item.id), [
+    'user-1', 'terminal-checkpoint:command-latest', 'delivery:command-latest',
+  ]);
+});
+}
 
 test('an accepted tmux message without a running turn survives stale snapshots', () => {
   const current = normalizeAgentThread('codex', {

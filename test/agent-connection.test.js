@@ -300,9 +300,9 @@ test('advertises and routes all three providers through one owner-scoped socket'
     hostname: 'devbox',
     protocol: { version: 1, epoch: 'test-epoch', commandReceiptTtlMs: 600_000 },
     providers: [
-      { id: 'codex', label: 'Codex', capabilities: backends.codex.capabilities },
-      { id: 'claude', label: 'Claude Code', capabilities: backends.claude.capabilities },
-      { id: 'qodercli', label: 'QoderCLI', capabilities: backends.qodercli.capabilities },
+      { id: 'codex', label: 'Codex', capabilities: { ...backends.codex.capabilities, modelSelection: false, dismissCommands: [] } },
+      { id: 'claude', label: 'Claude Code', capabilities: { ...backends.claude.capabilities, modelSelection: false, dismissCommands: [] } },
+      { id: 'qodercli', label: 'QoderCLI', capabilities: { ...backends.qodercli.capabilities, modelSelection: false, dismissCommands: [] } },
     ],
   });
 
@@ -894,7 +894,7 @@ test('Codex cold reconnect clears an unconfirmed old-turn delivery only after a 
   const opened = normalizeAgentThread('codex', second.sent.find((message) => message.id === 3).result.thread);
   assert.equal(opened.turns.flatMap((turn) => turn.items).some((item) => item.delivery), false);
   assert.equal(isUserMessageDeliveryConfirmed(opened, request), true);
-  assert.deepEqual([...backend.userMessages.get('thread-1').get('turn-old')].map((item) => item.id), ['user-anchor']);
+  assert.deepEqual(backend.userMessages.get('thread-1').get('turn-old').items.map((item) => item.id), ['user-anchor']);
   send(second, { ...request, id: 4 });
   await waitFor(() => second.sent.some((message) => message.id === 4));
   assert.equal(injections, 1);
@@ -1071,7 +1071,7 @@ test('a terminal identity reply appended to an accepted message settles its serv
     .filter((item) => item.delivery).length, 0);
 });
 
-test('keeps an absorbed Claude input ahead of the answer instead of as an unanswered tail turn', async () => {
+test('a restored legacy queued input follows existing output in its original turn', async () => {
   const anchor = {
     id: 'user-anchor', type: 'userMessage',
     content: [{ type: 'text', text: 'Start reviewing' }],
@@ -1117,11 +1117,51 @@ test('keeps an absorbed Claude input ahead of the answer instead of as an unansw
 
   assert.equal(turns.length, 1);
   assert.deepEqual(turns[0].items.map((item) => item.type), [
-    'userMessage', 'userMessage', 'agentMessage',
+    'userMessage', 'agentMessage', 'userMessage',
   ]);
-  assert.equal(turns[0].items[1].delivery.status, 'accepted');
-  assert.equal(turns.at(-1).items.at(-1).text, 'Review complete.');
+  assert.equal(turns[0].items.at(-1).delivery.status, 'accepted');
+  assert.equal(turns[0].items[1].text, 'Review complete.');
 });
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+test(`${provider} reconnect restores queued receipts at their send-time output anchor, not before old output`, async () => {
+  const { backends, hub } = setup({ sendTmuxMessage: async () => ({ inputWasQueued: true }) });
+  const original = [
+    { id: 'user-anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] },
+    { id: 'answer-old', type: 'agentMessage', text: '我先核对当前任务' },
+    { id: 'tool-old', type: 'commandExecution', command: 'pwd', status: 'completed' },
+  ];
+  backends[provider].turns = [{ id: 'turn-running', status: 'completed', items: original }];
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  for (const [index, text] of ['进展正常吗', '咋样了'].entries()) {
+    send(socket, {
+      type: 'sendSessionMessage', id: index + 1, provider, threadId: 'qoder-thread',
+      tmuxSession: 'qoder', text, commandId: `command-order-${index}`,
+      baselineVersion: 2, baselineUserMessageId: 'user-anchor', baselineTurnId: 'turn-running',
+      baselineLastItemId: 'tool-old', baselineMatchingTextCount: 0,
+    });
+    await waitFor(() => socket.sent.some(message => message.id === index + 1));
+  }
+  socket.close();
+  backends[provider].turns = [{ ...backends[provider].turns[0], items: [...original,
+    { id: 'answer-new', type: 'agentMessage', text: 'Later output' }],
+  }];
+  const reconnected = new FakeSocket();
+  hub.handleConnection(reconnected);
+  for (const id of [3, 4]) {
+    send(reconnected, { type: 'openThread', id, provider, threadId: 'qoder-thread', tmuxSession: 'qoder', readOnly: true });
+    await waitFor(() => reconnected.sent.some(message => message.id === id));
+    const items = reconnected.sent.find(message => message.id === id).result.thread.turns[0].items;
+    assert.deepEqual(items.map(item => item.id), [
+      'user-anchor', 'answer-old', 'tool-old', 'delivery:command-order-0', 'delivery:command-order-1', 'answer-new',
+    ]);
+    assert.equal(items[4].delivery.baselineLastItemId, 'tool-old');
+  }
+  assert.deepEqual(original.map(item => item.id), ['user-anchor', 'answer-old', 'tool-old'], 'restoration must not mutate the cached transcript');
+  reconnected.close();
+});
+}
 
 test('V2 thread patches rebase through full snapshots while a delivery receipt is pending', async () => {
   const anchor = {
@@ -1257,6 +1297,7 @@ test('routes model picker choices through the verified tmux session instead of a
   assert.deepEqual(backends.codex.calls, []);
   assert.deepEqual(socket.sent.find((message) => message.id === 8).result, {
     terminalOutput: 'Advanced Reasoning',
+    commandOutput: { command: '/model', text: 'Advanced Reasoning', kind: 'output', dismissible: false },
   });
 });
 

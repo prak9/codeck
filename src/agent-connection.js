@@ -5,7 +5,8 @@ import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-rec
 import { resolveSessionStatus } from './session-status.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
-import { isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
+import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
+import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
@@ -103,6 +104,7 @@ function cleanDeliveryBaseline(message) {
     baselineVersion: 2,
     baselineUserMessageId: cleanOptionalId(message.baselineUserMessageId),
     baselineTurnId: cleanOptionalId(message.baselineTurnId),
+    ...(message.baselineLastItemId != null ? { baselineLastItemId: cleanOptionalId(message.baselineLastItemId) } : {}),
     baselineMatchingTextCount: count,
   };
 }
@@ -166,6 +168,7 @@ function sessionMessageReceiptItem(receipt) {
       baselineVersion: receipt.baselineVersion,
       baselineUserMessageId: receipt.baselineUserMessageId,
       baselineTurnId: receipt.baselineTurnId,
+      ...(receipt.baselineLastItemId ? { baselineLastItemId: receipt.baselineLastItemId } : {}),
       baselineMatchingTextCount: receipt.baselineMatchingTextCount,
       ...(receipt.inputWasQueued ? { inputWasQueued: true } : {}),
     },
@@ -182,6 +185,11 @@ function sessionMessageReceiptTurn(receipt) {
 }
 
 function sessionMessageReceiptTurnIndex(turns, receipt) {
+  if (receipt.baselineLastItemId) {
+    const index = turns.findIndex(turn => (Array.isArray(turn?.items) ? turn.items : [])
+      .some(item => item.id === receipt.baselineLastItemId));
+    if (index >= 0) return index;
+  }
   if (receipt.baselineTurnId) {
     const index = turns.findIndex((turn) => turn.id === receipt.baselineTurnId);
     if (index >= 0) return index;
@@ -272,8 +280,16 @@ export class AgentRegistry extends EventEmitter {
     return [...this.backends.entries()].map(([id, backend]) => ({
       id,
       label: backend.label || id,
-      ...(backend.capabilities ? { capabilities: { ...backend.capabilities } } : {}),
+      capabilities: { ...backend.capabilities, ...this.commandCapabilities(id) },
     }));
+  }
+
+  commandCapabilities(provider) {
+    const supported = sessionCommandCapabilities(provider);
+    return {
+      modelSelection: supported.modelSelection && Boolean(this.selectTmuxModel),
+      dismissCommands: this.dismissTmuxCommand ? supported.dismissCommands : [],
+    };
   }
 
   backend(provider) {
@@ -306,15 +322,20 @@ export class AgentRegistry extends EventEmitter {
     const slice = turns.slice(start, end);
     return { turns: slice, truncated: start > 0, oldestTurnId: slice[0]?.id || null };
   }
-  sendSessionMessage(provider, params) {
+  async sendSessionMessage(provider, params) {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
-    return this.sendTmuxMessage({ provider, ...params });
+    const result = await this.sendTmuxMessage({ provider, ...params });
+    const command = provider !== 'shell' ? params.text.match(/^\/\S*/)?.[0] : null;
+    const commandOutput = command && normalizeSessionCommandOutput(provider, command, result, this.commandCapabilities(provider));
+    return commandOutput ? { ...result, commandOutput } : result;
   }
-  selectSessionModel(provider, params) {
+  async selectSessionModel(provider, params) {
     this.backend(provider);
-    if (!this.selectTmuxModel) throw new Error('当前服务不支持远程选择模型');
-    return this.selectTmuxModel({ provider, ...params });
+    if (!this.commandCapabilities(provider).modelSelection) throw new Error('当前 Agent 不支持远程选择模型，请在普通终端操作');
+    const result = await this.selectTmuxModel({ provider, ...params });
+    const commandOutput = normalizeSessionCommandOutput(provider, '/model', result, this.commandCapabilities(provider));
+    return commandOutput ? { ...result, commandOutput } : result;
   }
   dismissSessionCommand(provider, params) {
     this.backend(provider);
@@ -792,8 +813,7 @@ export class AgentHub {
         if (restoredTurns === turns) restoredTurns = [...turns];
         const target = restoredTurns[turnIndex];
         const items = [...(Array.isArray(target?.items) ? target.items : [])];
-        const firstOutput = items.findIndex((candidate) => candidate?.type !== 'userMessage');
-        items.splice(firstOutput < 0 ? items.length : firstOutput, 0, item);
+        items.splice(deliveryInsertionIndex(items, receipt.baselineLastItemId), 0, item);
         restoredTurns[turnIndex] = { ...target, items };
       }
       itemIds.add(item.id);

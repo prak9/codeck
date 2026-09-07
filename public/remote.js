@@ -6,7 +6,7 @@ import {
   checkpointTerminalActivity,
   findTmuxThreadTarget,
   findTmuxThreadReplacement,
-  isUserMessageDeliveryConfirmed,
+  isUserMessageDeliveryReceived,
   latestRunningTurn,
   normalizeAgentThread,
   normalizeInteractionQuestions,
@@ -14,16 +14,17 @@ import {
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   tmuxSessionsToThreads,
+  threadExecutionState,
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=42';
+} from './agent-model.js?v=43';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
-import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=3';
+import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=4';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
-import { parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=3';
+import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=4';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
@@ -282,18 +283,18 @@ function applyRefreshedThread(provider, thread) {
 function settleConfirmedDeliveries() {
   let clearedDraft = false;
   for (const [key, attempt] of state.pendingDeliveries) {
-    if (attempt.blockReason !== 'submissionUnconfirmed'
+    if ((composerRequestGate.pending && !attempt.blocked)
       || attempt.provider !== state.provider || attempt.threadId !== state.thread?.id
-      || attempt.tmuxSession !== state.thread?.tmux?.name
-      || !(isUserMessageDeliveryConfirmed(state.thread, attempt)
-        || (state.provider === 'qodercli' && state.thread.receivedDeliveryIds?.includes(attempt.commandId)))) continue;
+      || (attempt.tmuxSession || '') !== (state.thread?.tmux?.name || '')
+      || !isUserMessageDeliveryReceived(state.thread, attempt)) continue;
     state.pendingDeliveries.delete(key);
-    if (state.liveMessage === SUBMISSION_UNCONFIRMED_MESSAGE) setLiveMessage('');
+    if (state.liveMessage === SUBMISSION_UNCONFIRMED_MESSAGE
+      || (attempt.errorMessage && state.liveMessage === attempt.errorMessage)) setLiveMessage('');
+    clearAttachments(state.attachments.filter(attachment => attempt.attachmentIds?.includes(attachment.id)));
     const input = $('#composerInput');
-    if (state.provider === 'qodercli' && typeof attempt.draft === 'string' && input.value === attempt.draft) {
+    if (typeof attempt.draft === 'string' && input.value === attempt.draft) {
       input.value = '';
       clearedDraft = true;
-      clearAttachments(state.attachments.filter(attachment => attempt.attachmentIds?.includes(attachment.id)));
       resizeComposer();
     }
   }
@@ -577,7 +578,7 @@ function scheduleReconnect() {
 }
 
 function markRestartedDeliveries() {
-  if (state.provider !== 'qodercli' || !state.thread) return;
+  if (state.provider === 'shell' || !state.thread) return;
   state.thread = { ...state.thread, turns: (state.thread.turns || []).map(turn => ({
     ...turn, items: (turn.items || []).map(item => item.delivery && item.delivery.status !== 'received'
       ? { ...item, delivery: { ...item.delivery, status: 'unknown' } } : item),
@@ -783,7 +784,7 @@ function handleSocketMessage(message) {
         setLiveMessage('');
         loadThreads({ quiet: true }).catch(() => {});
       }
-      scheduleThreadRender(message.method === 'turn/started');
+      scheduleThreadRender(false);
     }
     return;
   }
@@ -795,7 +796,7 @@ function handleSocketMessage(message) {
       request: message.request,
       tmuxSession: message.tmuxSession == null ? null : message.tmuxSession,
     });
-    scheduleThreadRender(true);
+    scheduleThreadRender(false);
     return;
   }
   if (message.type === 'interaction') {
@@ -806,7 +807,7 @@ function handleSocketMessage(message) {
       request: message.request,
       tmuxSession: message.tmuxSession == null ? null : message.tmuxSession,
     });
-    scheduleThreadRender(true);
+    scheduleThreadRender(false);
   }
 }
 
@@ -1033,6 +1034,8 @@ async function openThread(threadId, {
     threadId,
     tmuxSession: listedThread?.tmux?.name || tmuxSession || '',
   };
+  const sameTarget = state.thread?.provider === provider && state.thread.id === threadId
+    && (state.thread.tmux?.name || '') === streamTarget.tmuxSession;
   try {
     resetThreadStream(streamTarget);
     const result = await agentRequest('openThread', {
@@ -1047,7 +1050,7 @@ async function openThread(threadId, {
     if (!result?.resumed) {
       rememberOpenedThread(streamTarget, result.thread);
       const opened = normalizeAgentThread(provider, result.thread);
-      state.thread = provider === 'qodercli' && state.thread?.provider === provider && state.thread.id === threadId
+      state.thread = sameTarget
         ? reconcileAgentThreadRefresh(state.thread, opened) : opened;
     }
     if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
@@ -1056,7 +1059,7 @@ async function openThread(threadId, {
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
     setLiveMessage(state.thread.historyError || (directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : ''));
     renderThreadList();
-    scheduleThreadRender(true);
+    scheduleThreadRender(!quiet || !sameTarget);
     closeDrawer();
   } finally {
     if (state.threadOpening === opening) {
@@ -1284,12 +1287,12 @@ function threadRow(thread, index) {
   const copy = element('span', 'thread-copy');
   const tmux = thread.tmux || {};
   const title = tmux.name || thread.name || thread.preview || '未命名会话';
-  const status = tmux.status === 'working' || tmux.status === 'background'
-    ? tmux.status
-    : 'done';
+  const execution = threadExecutionState(thread);
+  const status = execution === 'idle' ? 'done' : execution;
   const statusText = status === 'working'
     ? '正在干活'
-    : status === 'background' ? '后台运行' : '已就绪';
+    : status === 'background' ? '后台运行' : status === 'done' ? '已就绪'
+      : status === 'failed' ? '任务失败' : '状态待确认';
   const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
   copy.append(
     element('b', '', title),
@@ -1380,7 +1383,7 @@ function renderHeader() {
   $('#welcomeMark').textContent = details.glyph;
   $('#hostLabel').textContent = state.hostname || location.hostname || '服务器';
   $('#threadTitle').textContent = state.thread?.tmux?.title || state.thread?.name || state.thread?.preview || '新对话';
-  const active = latestRunningTurn(state.thread) || state.thread?.tmux?.status === 'working';
+  const active = threadExecutionState(state.thread) === 'working';
   $('#composerInput').placeholder = state.thread?.readOnly && !state.thread?.tmux?.name
     ? '当前会话只读'
     : active ? '跟进当前任务' : state.thread?.tmux?.name ? `参与 ${details.name} 会话` : `给 ${details.name} 发消息`;
@@ -1468,16 +1471,19 @@ function modelRowButton({ label, description }, selected) {
         if (state.provider !== target.provider || state.thread?.id !== target.threadId
           || state.thread?.tmux?.name !== target.tmuxSession) return;
         if (result?.terminalOutput) {
-          state.thread.tmux.commandOutput = { command: '/model', text: result.terminalOutput };
-          setLiveMessage('请选择推理强度。');
+          state.thread.tmux.commandOutput = normalizeSessionCommandOutput(target.provider, '/model', result);
+          setLiveMessage('请确认当前模型选项。');
           scheduleThreadRender(true);
-        } else {
+        } else if (result?.completed === true) {
           delete state.thread.tmux.commandOutput;
           dismissCommandDialog();
           setLiveMessage('模型设置已更新。');
+        } else {
+          setLiveMessage('模型选择结果未确认，请检查终端或重新打开 /model。');
         }
       } catch (error) {
-        setLiveMessage(error.message);
+        if (state.provider === target.provider && state.thread?.id === target.threadId
+          && state.thread?.tmux?.name === target.tmuxSession) setLiveMessage(error.message);
       }
     });
   });
@@ -1485,7 +1491,7 @@ function modelRowButton({ label, description }, selected) {
 }
 
 function modelCommandDialog(commandOutput) {
-  const parsed = parseModelCommandOutput(commandOutput.text);
+  const parsed = commandOutput.parsed || parseModelCommandOutput(commandOutput.text);
   const panel = element('div', 'model-panel');
   if (parsed.items.length) {
     const list = element('div', 'model-list');
@@ -1514,7 +1520,7 @@ function modelCommandDialog(commandOutput) {
 }
 
 function skillsCommandDialog(commandOutput) {
-  const parsed = parseSkillsCommandOutput(commandOutput.text);
+  const parsed = commandOutput.parsed || parseSkillsCommandOutput(commandOutput.text);
   const panel = element('div', 'skills-panel');
   if (parsed.items.length) {
     const list = element('div', 'skills-list');
@@ -1541,9 +1547,12 @@ function skillsCommandDialog(commandOutput) {
 }
 
 function commandDialogPresentation(commandOutput) {
-  if (commandOutput.command === '/model') return modelCommandDialog(commandOutput);
-  if (commandOutput.command === '/skills' && !/^[›>❯]\s*\d+\./mu.test(commandOutput.text)) {
-    return skillsCommandDialog(commandOutput);
+  const normalized = commandOutput.kind ? commandOutput : normalizeSessionCommandOutput(
+    state.provider, commandOutput.command, { terminalOutput: commandOutput.text },
+  );
+  if (normalized?.kind === 'modelSelection') return modelCommandDialog(normalized);
+  if (normalized?.kind === 'skills') {
+    return skillsCommandDialog(normalized);
   }
   const output = element('pre', 'terminal-live-output command-output-body', commandOutput.text);
   output.tabIndex = 0;
@@ -1580,8 +1589,10 @@ function openCommandDialog(commandOutput) {
 async function closeCommandDialog() {
   const thread = state.thread;
   const commandOutput = thread?.tmux?.commandOutput;
-  if (state.provider !== 'codex' || !thread?.tmux?.name
-    || !['/model', '/skills', '/usage'].includes(commandOutput?.command)) {
+  const normalized = commandOutput?.kind ? commandOutput : normalizeSessionCommandOutput(
+    state.provider, commandOutput?.command, { terminalOutput: commandOutput?.text },
+  );
+  if (!thread?.tmux?.name || !normalized?.dismissible) {
     dismissCommandDialog();
     return;
   }
@@ -1633,7 +1644,7 @@ function itemNode(item, turn) {
     const node = element('div', 'message user-message', userMessageText(item));
     if (['accepted', 'received', 'unknown'].includes(item.delivery?.status)) {
       node.append(element('small', 'message-delivery-status', item.delivery.status === 'received'
-        ? 'Qoder 已接收'
+        ? 'Agent 已接收'
         : item.delivery.status === 'unknown'
         ? '送达状态未知，请检查终端，勿重复发送'
         : item.delivery.submissionStatus === 'unconfirmed'
@@ -1976,11 +1987,12 @@ async function resolveApproval(key, entry, decision, card) {
     state.approvals.delete(key);
     scheduleThreadRender(false);
   } catch (error) {
+    for (const button of card.querySelectorAll('button')) button.disabled = false;
     if (/already resolved|expired/i.test(error.message)) {
       state.approvals.delete(key);
       scheduleThreadRender(false);
     }
-    setLiveMessage(error.message);
+    if (messageTargetsCurrentThread({ ...entry, params: entry.request.params })) setLiveMessage(error.message);
   }
 }
 
@@ -2070,14 +2082,22 @@ async function loadEarlierTurns() {
       return true;
     });
     const heightBefore = transcript.scrollHeight;
-    current.turns = [...missing, ...(current.turns || [])];
+    const viewportTop = transcript.getBoundingClientRect().top;
+    const visibleTurn = [...$('#turns').children].find(node => node.dataset.turnId
+      && node.getBoundingClientRect().bottom > viewportTop);
+    const visibleTop = visibleTurn?.getBoundingClientRect().top;
+    const anchorIndex = current.turns.findIndex(turn => turn.id === anchor);
+    current.turns = [...current.turns.slice(0, anchorIndex), ...missing, ...current.turns.slice(anchorIndex)];
     current.truncated = Boolean(result?.truncated);
     current.oldestTurnId = result?.oldestTurnId || null;
     scheduleThreadRender(false);
-    // 在顶部插入内容会把已读位置整体下推, 补回滚动量, 否则视线会跳。
+    // Reconnect gaps may be below the viewport. Preserve the visible turn, not
+    // the total height added anywhere in the transcript.
     requestAnimationFrame(() => {
       if (!currentRequest()) return;
-      transcript.scrollTop += transcript.scrollHeight - heightBefore;
+      const retained = visibleTurn && [...$('#turns').children].find(node => node.dataset.turnId === visibleTurn.dataset.turnId);
+      transcript.scrollTop += retained ? retained.getBoundingClientRect().top - visibleTop
+        : transcript.scrollHeight - heightBefore;
     });
   } catch (error) {
     if (currentRequest()) setLiveMessage(error.message || '加载更早的对话失败');
@@ -2145,11 +2165,15 @@ function renderComposerState() {
   const input = $('#composerInput');
   const sendButton = $('#sendButton');
   if (!input || !sendButton) return;
-  const running = latestRunningTurn(state.thread);
   const activity = agentActivityText(state.thread);
   const sessionName = state.thread?.tmux?.name;
-  const active = Boolean(running || state.thread?.tmux?.status === 'working');
-  const background = state.thread?.tmux?.status === 'background';
+  const waitingForInput = [state.approvals, state.interactions].some(entries => [...entries.values()].some(entry => (
+    entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
+    && (entry.tmuxSession == null || entry.tmuxSession === (sessionName || ''))
+  )));
+  const execution = threadExecutionState(state.thread, { waitingForInput });
+  const active = execution === 'working';
+  const background = execution === 'background';
   const readOnly = Boolean(state.thread?.readOnly && !sessionName);
   const hasText = Boolean(input.value.trim());
   const attachmentsSupported = providerSupports('attachments');
@@ -2174,13 +2198,17 @@ function renderComposerState() {
   for (const remove of document.querySelectorAll('.attachment-remove')) remove.disabled = opening || pending;
   const status = $('#composerStatus');
   status.replaceChildren();
-  const dot = element('i', `connection-dot ${state.connected ? active || background ? 'busy' : 'online' : 'problem'}`);
+  const dot = element('i', `connection-dot ${!state.connected || execution === 'failed' || execution === 'unknown'
+    ? 'problem' : active || background || waitingForInput ? 'busy' : 'online'}`);
   const message = closing
     ? '正在关闭会话…'
     : opening
     ? '正在读取会话…'
     : !state.connected
       ? '连接已断开'
+      : waitingForInput ? 'Agent 等待你的确认或回答'
+        : execution === 'failed' ? '最近任务失败 · 可查看错误后继续输入'
+        : execution === 'unknown' && state.thread ? '终端状态尚未确认 · 可查看普通终端'
       : sessionName
         ? state.thread?.provider === 'shell'
           ? active ? 'Shell 命令正在运行 · 可直接输入' : '已连接 Shell 会话 · 可直接输入'
@@ -2289,7 +2317,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
   const text = draft.trim();
   const running = latestRunningTurn(state.thread);
   const sessionName = state.thread?.tmux?.name;
-  const active = Boolean(running || state.thread?.tmux?.status === 'working');
+  const active = threadExecutionState(state.thread) === 'working';
   const attachments = [...state.attachments];
   const submitAction = composerSubmitAction({
     active, attachmentCount: attachments.length, explicitInterrupt,
@@ -2304,6 +2332,10 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
     return;
   }
   if (submitAction === 'interrupt') {
+    if (!sessionName && !running) {
+      setLiveMessage('尚未获取当前任务标识，请等待同步后再停止。');
+      return;
+    }
     await composerRequestGate.run(async () => {
       try {
         setLiveMessage('正在停止任务…');
@@ -2382,12 +2414,12 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       ) throw new Error('会话已切换，附件未发送');
       const message = attachmentMessage({ provider: targetProvider, text, paths });
       if (!message) throw new Error('请输入要发送的内容');
+      delivery.text = message;
       const unconfirmedItem = state.thread.turns?.flatMap((turn) => turn.items || []).find((item) => (
         (item.delivery?.submissionStatus === 'unconfirmed' || item.delivery?.status === 'unknown')
         && item.delivery?.status !== 'received'
-        && !(targetProvider === 'qodercli' && state.thread.receivedDeliveryIds?.includes(item.delivery?.commandId))
         && userMessageText(item) === message
-        && !isUserMessageDeliveryConfirmed(state.thread, { text: message, ...item.delivery })
+        && !isUserMessageDeliveryReceived(state.thread, { text: message, ...item.delivery })
       ));
       if (unconfirmedItem) {
         state.pendingDeliveries.set(deliveryKey, {
@@ -2415,6 +2447,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           baselineVersion: delivery.baselineVersion,
           baselineUserMessageId: delivery.baselineUserMessageId,
           baselineTurnId: delivery.baselineTurnId,
+          baselineLastItemId: delivery.baselineLastItemId,
           baselineMatchingTextCount: delivery.baselineMatchingTextCount,
         });
         const unconfirmed = result?.submissionStatus === 'unconfirmed';
@@ -2442,6 +2475,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
               baselineVersion: delivery.baselineVersion,
               baselineUserMessageId: delivery.baselineUserMessageId,
               baselineTurnId: delivery.baselineTurnId,
+              baselineLastItemId: delivery.baselineLastItemId,
               baselineMatchingTextCount: delivery.baselineMatchingTextCount,
               inputWasQueued: result?.inputWasQueued === true,
               submissionStatus: result?.submissionStatus,
@@ -2449,10 +2483,9 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
           }
           delete state.thread.tmux.commandOutput;
           if (result?.terminalOutput) {
-            state.thread.tmux.commandOutput = {
-              command: message.match(/^\/\S*/)?.[0] || '终端命令',
-              text: result.terminalOutput,
-            };
+            state.thread.tmux.commandOutput = normalizeSessionCommandOutput(
+              targetProvider, message.match(/^\/\S*/)?.[0] || '终端命令', result,
+            );
           }
           state.thread.tmux.status = nextStatus;
           state.thread.tmux.activityAt = Date.now();
@@ -2510,9 +2543,14 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       const retryHint = state.protocolEpoch
         ? '再次点击将使用同一命令安全确认。'
         : '当前服务不支持安全重试，请先确认终端输出。';
-      setLiveMessage(uncertain ? `${error.message}；发送状态未知，${retryHint}` : error.message);
+      const errorMessage = uncertain ? `${error.message}；发送状态未知，${retryHint}` : error.message;
+      const pendingAttempt = state.pendingDeliveries.get(deliveryKey);
+      if (pendingAttempt) pendingAttempt.errorMessage = errorMessage;
+      if (!delivery || (state.provider === delivery.provider && state.thread?.id === delivery.threadId
+        && (state.thread?.tmux?.name || '') === (delivery.tmuxSession || ''))) setLiveMessage(errorMessage);
     }
   });
+  settleConfirmedDeliveries();
 }
 
 function toggleSpeechInput() {

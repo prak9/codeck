@@ -17,10 +17,11 @@ const thread = (id = 'thread-a', session = 'session-a') => ({
 
 function fixture() {
   const state = { provider: 'codex', providers: ['codex'], thread: thread(), historyGeneration: 0, loadingEarlier: false };
-  const transcript = { scrollHeight: 100, scrollTop: 10 };
+  const transcript = { scrollHeight: 100, scrollTop: 10, getBoundingClientRect: () => ({ top: 0 }) };
+  const turnContainer = { children: [] };
   const frames = [], requests = [], messages = [], renders = [];
   const context = vm.createContext({
-    state, $: () => transcript,
+    state, $: selector => selector === '#turns' ? turnContainer : transcript,
     agentRequest(type, params) {
       return new Promise((resolve, reject) => requests.push({ type, params, resolve, reject }));
     },
@@ -38,7 +39,7 @@ function fixture() {
     state.thread = next;
   };
   const flushFrames = () => { for (const callback of frames.splice(0)) callback(); };
-  return { state, transcript, requests, messages, renders, context, reopen, flushFrames };
+  return { state, transcript, turnContainer, requests, messages, renders, context, reopen, flushFrames };
 }
 
 test('history merges into the latest same-view stream without losing new output or duplicating turns', async () => {
@@ -55,6 +56,33 @@ test('history merges into the latest same-view stream without losing new output 
   assert.equal(f.state.thread.truncated, false);
   assert.equal(f.state.loadingEarlier, false);
 });
+
+test('paging a reconnect gap inserts before its source anchor, not before previously loaded history', async () => {
+  const f = fixture();
+  f.state.thread.turns = [turn('old'), turn('recent')];
+  const pending = f.context.loadEarlierTurns();
+  f.requests[0].resolve({ turns: [turn('gap')], truncated: true, oldestTurnId: 'gap' });
+  await pending;
+  assert.deepEqual(Array.from(f.state.thread.turns, turn => turn.id), ['old', 'gap', 'recent']);
+  f.state.thread = reconcileAgentThreadRefresh(f.state.thread, { ...thread(), turns: [turn('recent')] });
+  assert.equal(f.state.thread.oldestTurnId, 'gap', 'a tail refresh cannot reset paging progress');
+});
+
+for (const offset of [0, 100]) {
+  test(`history compensates only the visible turn displacement (${offset}px), not all inserted height`, async () => {
+    const f = fixture();
+    f.state.thread.turns = [turn('old'), turn('recent')];
+    const visible = offset ? 'recent' : 'old';
+    f.turnContainer.children = [{ dataset: { turnId: visible }, getBoundingClientRect: () => ({ top: 0, bottom: 100 }) }];
+    const pending = f.context.loadEarlierTurns();
+    f.requests[0].resolve({ turns: [turn('gap')], truncated: true, oldestTurnId: 'gap' });
+    await pending;
+    f.transcript.scrollHeight += 100;
+    f.turnContainer.children = [{ dataset: { turnId: visible }, getBoundingClientRect: () => ({ top: offset, bottom: offset + 100 }) }];
+    f.flushFrames();
+    assert.equal(f.transcript.scrollTop, 10 + offset);
+  });
+}
 
 test('switching away and back releases loading but an old response cannot finish the new request', async () => {
   const f = fixture();

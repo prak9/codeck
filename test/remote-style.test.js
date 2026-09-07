@@ -94,8 +94,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=35/);
-  assert.match(html, /\/remote\.js\?v=85/);
+  assert.match(html, /\/remote\.css\?v=36/);
+  assert.match(html, /\/remote\.js\?v=86/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -166,8 +166,8 @@ test('model picker can be dismissed without sending a model selection', () => {
 test('all slash command results use the same dismissible dialog', () => {
   assert.match(html, /<dialog[^>]*class="sheet command-sheet"[^>]*id="commandDialog"/);
   assert.match(remoteJs, /function openCommandDialog\(commandOutput\)/);
-  assert.match(remoteJs, /commandOutput\.command === '\/model'/);
-  assert.match(remoteJs, /commandOutput\.command === '\/skills'/);
+  assert.match(remoteJs, /normalized\?\.kind === 'modelSelection'/);
+  assert.match(remoteJs, /normalized\?\.kind === 'skills'/);
   assert.match(remoteJs, /commandOutput\?\.command\?\.startsWith\('\/'\)/);
   assert.match(remoteJs, /function dismissCommandDialog\(/);
 });

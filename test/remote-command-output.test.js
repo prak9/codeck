@@ -1,6 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseModelCommandOutput, parseSkillsCommandOutput } from '../public/remote-command-output.js';
+import * as commands from '../public/remote-command-output.js';
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} command results preserve raw output and expose only supported actions`, () => {
+    const terminalOutput = 'Select Model and Effort\n› 1. model-a (current)  Fast\n2. model-b  Deep';
+    const result = commands.normalizeSessionCommandOutput(provider, '/model', { terminalOutput });
+    assert.equal(result.text, terminalOutput);
+    assert.equal(result.kind, provider === 'codex' ? 'modelSelection' : 'output');
+    assert.equal(result.dismissible, provider === 'codex');
+    if (provider === 'codex') assert.deepEqual(result.parsed.items.map(item => item.label), ['model-a', 'model-b']);
+    for (const command of ['/status', '/usage', '/unknown']) {
+      const output = commands.normalizeSessionCommandOutput(provider, command, { terminalOutput: 'Command result or error' });
+      assert.equal(output.kind, 'output');
+      assert.equal(output.text, 'Command result or error');
+    }
+    assert.equal(commands.normalizeSessionCommandOutput(provider, '/model', {}), null, 'missing output is not success');
+    assert.equal(commands.normalizeSessionCommandOutput(provider, '/model', {
+      terminalOutput: 'Failed to load models',
+    }).kind, 'output', 'an error sentence is not a selectable model');
+    const unsupported = commands.normalizeSessionCommandOutput(provider, '/model', { terminalOutput }, {
+      modelSelection: false, dismissCommands: [],
+    });
+    assert.equal(unsupported.kind, 'output');
+    assert.equal(unsupported.dismissible, false);
+  });
+}
 
 test('parses skills command output into a structured list', () => {
   const parsed = parseSkillsCommandOutput(`

@@ -24,6 +24,11 @@ export function prepareDeliveryAttempt(current, input, {
   }
   return {
     key,
+    provider: input.provider,
+    threadId: input.threadId,
+    tmuxSession: input.tmuxSession,
+    draft: input.draft,
+    attachmentIds: [...(input.attachmentIds || [])],
     commandId: createId(),
     serverEpoch,
     blocked: false,
@@ -35,6 +40,7 @@ export function prepareDeliveryAttempt(current, input, {
       baselineVersion: 2,
       baselineUserMessageId: input.baselineUserMessageId || null,
       baselineTurnId: input.baselineTurnId || null,
+      ...(input.baselineLastItemId ? { baselineLastItemId: input.baselineLastItemId } : {}),
       baselineMatchingTextCount: Number.isSafeInteger(input.baselineMatchingTextCount)
         && input.baselineMatchingTextCount >= 0 ? input.baselineMatchingTextCount : 0,
     } : {}),

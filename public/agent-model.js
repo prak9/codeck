@@ -82,6 +82,27 @@ export function isUserMessageDeliveryConfirmed(thread, { text, ...delivery }) {
   }));
 }
 
+export function isUserMessageDeliveryReceived(thread, delivery) {
+  if (isUserMessageDeliveryConfirmed(thread, delivery)) return true;
+  const commandId = delivery?.commandId;
+  if (!commandId) return false;
+  return asArray(thread?.receivedDeliveryIds).includes(commandId)
+    || threadUserMessages(thread).some(item => item.delivery?.status === 'received'
+      && (item.delivery.commandId === commandId || item.id === `delivery:${commandId}`));
+}
+
+export function threadExecutionState(thread, { waitingForInput = false } = {}) {
+  if (waitingForInput) return 'waitingForInput';
+  if (thread?.tmux?.status === 'working' || latestRunningTurn(thread)
+    || thread?.status?.type === 'active') return 'working';
+  if (thread?.tmux?.status === 'background') return 'background';
+  if (thread?.tmux?.available === false) return 'unknown';
+  const latest = asArray(thread?.turns).findLast(turn => !turn.deliveryOnly && !turn.localOnly);
+  if (latest?.status === 'failed' || latest?.status === 'errored' || latest?.error) return 'failed';
+  if (thread?.tmux?.status === 'done' || thread?.status?.type === 'idle') return 'idle';
+  return 'unknown';
+}
+
 function resolvedDeliveryItems(current, refreshed) {
   const resolved = new Map();
   for (const delivery of threadUserMessages(current).filter((item) => item.delivery)) {
@@ -116,6 +137,10 @@ function mergeObservedItem(current, incoming) {
   }
   if (current.delivery && incoming.delivery) {
     merged.delivery = { ...current.delivery, ...incoming.delivery };
+    if (current.delivery.status === 'received') {
+      merged.delivery.status = 'received';
+      merged.delivery.submissionStatus = 'submitted';
+    }
   }
   return merged;
 }
@@ -254,12 +279,25 @@ export function userMessageDeliveryBaseline(thread, text) {
     && item.delivery.baselineTurnId === baselineTurnId
     && userMessageText(item) === text
   )).length;
+  const lastItem = asArray(thread?.turns).filter(turn => !turn.deliveryOnly && !turn.localOnly)
+    .flatMap(turn => asArray(turn.items)).findLast(item => !item.delivery && item.type !== 'terminalOutput');
   return {
     baselineVersion: 2,
     baselineUserMessageId,
     baselineTurnId,
     baselineMatchingTextCount,
+    ...(lastItem?.id ? { baselineLastItemId: lastItem.id } : {}),
   };
+}
+
+// An input belongs after what was visible when sent, not before every output in
+// its turn. Keep consecutive receipts at the same anchor in submission order.
+export function deliveryInsertionIndex(items, lastItemId) {
+  const anchor = lastItemId ? items.findIndex(item => item.id === lastItemId) : -1;
+  if (anchor < 0) return items.length;
+  let index = anchor + 1;
+  while (items[index]?.delivery) index += 1;
+  return index;
 }
 
 function renderedThreadMetadata(thread) {
@@ -275,18 +313,34 @@ function renderedThreadMetadata(thread) {
     thread?.receivedDeliveryIds,
     thread?.unconfirmedDeliveryIds,
     thread?.historyError,
+    thread?.truncated,
+    thread?.oldestTurnId,
   ]);
 }
 
 export function reconcileAgentThreadRefresh(current, refreshed) {
-  if (!current) return refreshed;
+  if (!current || current.id !== refreshed?.id
+    || (current.provider && refreshed?.provider && current.provider !== refreshed.provider)
+    || (current.tmux?.name && refreshed?.tmux?.name && current.tmux.name !== refreshed.tmux.name)) return refreshed;
+  if (asArray(current.receivedDeliveryIds).length) {
+    refreshed = { ...refreshed, receivedDeliveryIds: [...new Set([
+      ...current.receivedDeliveryIds, ...asArray(refreshed.receivedDeliveryIds),
+    ])] };
+  }
   const allCurrentTurns = asArray(current.turns);
   // 流只推尾部窗口时 (refreshed.truncated), 窗口之前的历史不在这一帧里 —— 它们
   // 是已有的, 不是被删的。不保留就等于每秒把用户往回翻的历史清一次。
   // 没有该标记时保持原语义: 服务端没给的 turn 就是被删了。
-  const windowStart = refreshed?.truncated
+  const firstSharedTurn = refreshed?.truncated
     ? allCurrentTurns.findIndex((turn) => turn.id === asArray(refreshed.turns)[0]?.id)
     : -1;
+  // A reconnect may advance by an entire tail window. No overlap does not mean
+  // the history the user already loaded was deleted.
+  const windowStart = refreshed?.truncated && firstSharedTurn < 0 ? allCurrentTurns.length : firstSharedTurn;
+  if (firstSharedTurn > 0) refreshed = {
+    ...refreshed, truncated: Boolean(current.truncated),
+    oldestTurnId: current.oldestTurnId || allCurrentTurns[0]?.id || null,
+  };
   const resolvedDeliveries = resolvedDeliveryItems(current, refreshed);
   let retainedChanged = false;
   const retained = (windowStart > 0 ? allCurrentTurns.slice(0, windowStart) : []).flatMap(turn => {
@@ -453,7 +507,7 @@ export function applyAgentEvent(currentThread, method, params = {}) {
 
 export function applyAcceptedUserMessage(currentThread, {
   turnId, text, commandId, baselineVersion, baselineUserMessageId, baselineTurnId,
-  baselineMatchingTextCount, inputWasQueued = false, submissionStatus,
+  baselineMatchingTextCount, baselineLastItemId, inputWasQueued = false, submissionStatus,
 } = {}) {
   if (!currentThread || !commandId || typeof text !== 'string' || !text.trim()) {
     return currentThread;
@@ -470,6 +524,7 @@ export function applyAcceptedUserMessage(currentThread, {
     baselineMatchingTextCount: Number.isSafeInteger(baselineMatchingTextCount)
       && baselineMatchingTextCount >= 0 ? baselineMatchingTextCount : 0,
     ...(inputWasQueued ? { inputWasQueued: true } : {}),
+    ...(baselineLastItemId ? { baselineLastItemId } : {}),
   } : { status: 'accepted', ...fallback };
   if (submissionStatus === 'submitted' || submissionStatus === 'unconfirmed') {
     delivery.submissionStatus = submissionStatus;
@@ -482,18 +537,20 @@ export function applyAcceptedUserMessage(currentThread, {
     delivery,
   };
   if (matchingUserAfterDeliveryBaseline(currentThread, acceptedItem)) return currentThread;
-  const queuedTurnId = inputWasQueued && baselineTurnId
-    && asArray(currentThread.turns).some((turn) => turn.id === baselineTurnId)
-    ? baselineTurnId
+  const anchoredTurn = inputWasQueued && delivery.baselineLastItemId
+    && asArray(currentThread.turns).find(turn => asArray(turn.items).some(item => item.id === delivery.baselineLastItemId));
+  const queuedTurnId = inputWasQueued
+    ? anchoredTurn?.id || asArray(currentThread.turns).find(turn => turn.id === baselineTurnId)?.id
     : null;
   const targetTurnId = turnId || queuedTurnId || `delivery-turn:${commandId}`;
   return updateTurn(currentThread, targetTurnId, (turn) => {
     const items = asArray(turn.items);
-    const firstOutput = inputWasQueued
-      ? items.findIndex((item) => item?.type !== 'userMessage')
-      : -1;
+    // The send handler can preserve pre-send pane output after capturing the
+    // baseline. That local checkpoint also precedes this input.
+    const checkpointId = `terminal-checkpoint:${commandId}`;
+    const lastItemId = items.some(item => item.id === checkpointId) ? checkpointId : delivery.baselineLastItemId;
     const nextItems = [...items];
-    nextItems.splice(firstOutput < 0 ? items.length : firstOutput, 0, acceptedItem);
+    nextItems.splice(deliveryInsertionIndex(items, lastItemId), 0, acceptedItem);
     return {
       ...turn,
       ...(!turnId && !queuedTurnId ? { status: 'completed', deliveryOnly: true } : {}),

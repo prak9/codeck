@@ -136,7 +136,7 @@ a.header-button { text-decoration: none; }
 .assistant-message { max-width: 78ch; margin: 0 0 15px; color: #ebe8e5; font-size: 14px; line-height: 1.72; white-space: pre-wrap; }
 .assistant-message.streaming::after { content: ''; width: 6px; height: 16px; margin-left: 3px; background: #ff8b64; display: inline-block; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
 .agent-message-actions { min-height: 34px; margin: -6px 0 5px; display: flex; align-items: center; }
-.message-copy-button { min-width: 72px; min-height: 34px; padding: 0 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--subtle); font-size: 9px; transition: color 120ms ease, background 120ms ease, border-color 120ms ease; }
+.message-copy-button { min-width: 72px; min-height: 34px; padding: 0 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; transition: color 120ms ease, background 120ms ease, border-color 120ms ease; }
 .message-copy-button:hover { border-color: var(--line); background: #ffffff08; color: var(--muted); }
 .message-copy-button:disabled { cursor: default; }
 .message-copy-button[data-copy-state="success"] { color: var(--success); }
@@ -232,6 +232,7 @@ a.header-button { text-decoration: none; }
 .composer-meta, .composer-stack, .composer-hint { width: min(100%, var(--content)); margin-inline: auto; }
 .composer-meta { min-height: 26px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--subtle); font-size: 9px; }
 .composer-meta > span { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+#composerStatus { min-width: 0; color: var(--muted); font-size: 11px; white-space: normal; }
 .composer-meta button { min-width: 0; padding: 4px 0 4px 12px; border: 0; background: transparent; color: var(--subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .composer-stack { min-width: 0; position: relative; }
 .attachment-tray { min-width: 0; width: 100%; max-width: 100%; margin: 0 0 7px; padding: 1px 1px 3px; display: flex; gap: 7px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }

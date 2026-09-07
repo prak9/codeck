@@ -335,10 +335,8 @@ function withPaneExcerpt(result, tmuxSession) {
   return { ...result, thread: { ...result.thread, liveOutput: excerpt } };
 }
 
-// 轮询流只需要携带尾部: 新内容永远追加在末尾, 更早的 turn 已经在客户端手里
-// (openThread 首帧返回完整 transcript)。整份重推每秒要为 890KB 付出序列化、
-// permessage-deflate 和客户端解析的代价, 而真正会变的只有最后一两个 turn。
-// truncated 标记让客户端知道窗口之前的历史是"已有"而不是"被删"。
+// 轮询流只读取并携带尾部窗口，避免反复补全和传输更早的 turn。
+// 早期历史由客户端按需分页；truncated 表示窗口外的记录不是被删除了。
 const THREAD_STREAM_TURN_WINDOW = 20;
 
 function windowedThread(result, limit = THREAD_STREAM_TURN_WINDOW) {
@@ -352,7 +350,7 @@ function windowedThread(result, limit = THREAD_STREAM_TURN_WINDOW) {
 
 const threadFeed = createSnapshotFeed(
   async ({ provider, threadId, tmuxSession }) => windowedThread(withPaneExcerpt(
-    await agentRegistry.openThread(provider, threadId, { readOnly: true }), tmuxSession,
+    await agentRegistry.openThread(provider, threadId, { readOnly: true, turnLimit: THREAD_STREAM_TURN_WINDOW }), tmuxSession,
   )),
   {
     epoch: protocolEpoch,
