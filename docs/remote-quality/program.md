@@ -1,17 +1,17 @@
 # Program: Remote consistency, correctness, and stability
 
-- Overall status: `进行中`
+- Overall status: `阻塞`
 - Profile: `Lite`
-- Active plan node: `NODE-009`
-- Latest evidence: `Release rerun: 827 tests and 6 browser journeys pass; service restart, authenticated API, V2 session/thread streams and preservation of all 8 tmux sessions verified. Git publication in progress.`
+- Active plan node: `NODE-004`
+- Latest evidence: `Release 109ad60 deployed and pushed to origin/main; 827 tests and 6 browser journeys pass; authenticated API, V2 streams and all 8 tmux sessions verified after restart.`
 - Current blocker: `A-004 requires the user's other server, authenticated Claude/Qoder test sessions and physical-phone journeys; none are available to this executor. Owner: user; unblock with an accessible SSH host/test-session names or target-side verification.`
-- Next step: `NODE-009: deploy the user's explicitly authorized local release, verify health and session survival, then commit and push; A-004 remains blocked independently.`
+- Next step: `NODE-004: obtain the other server and authenticated test sessions for the remaining provider/phone journeys. Keep G-007 half-open recovery explicitly outside the completed release.`
 - Next checkpoint: `None`
 - Next human decision: `None`
 - Owner: `Codex`
 - Last updated: `2026-09-07`
 - Clean state: `Not due`
-- Last clean: `2026-09-07: I-01 through I-04 implementation, I-05 local evidence and external blocker reconciled; stale gap and deployment statements retired`
+- Last clean: `2026-09-07: release 109ad60, deployment/session-survival evidence and Git publication reconciled; A-004 and G-007 remain explicitly unresolved`
 
 ## Outcome
 
@@ -51,7 +51,7 @@
 | NODE-007 | `完成` | I-03: typed command/capability results and uniform states | I-03 scenarios; depends on NODE-005 and NODE-006 | `test/remote-command-output.test.js`, `test/remote-command-dialog.test.js`, `test/agent-contract.test.js` and 6 browser journeys: capabilities, errors, selection/dismiss, approval recovery and background states pass | R-007 |
 | NODE-008 | `完成` | I-04: history/rendering/mobile consistency | I-04 scenarios; depends on NODE-006 and NODE-007 | `test/remote-history.test.js`, `test/remote-scroll.test.js`, `test/agent-contract.test.js` and 6 browser journeys: non-overlapping tails, gap paging, latest/up, reading position, clipboard, attachments and geometry pass; Codex polling reads 20-turn tail | R-008, R-010, R-011 |
 | NODE-004 | `阻塞` | I-05: fault injection and real provider/server/mobile journeys for parity | A-004; depends on NODE-008 | Deterministic faults, browser fixtures, live Codex read-only probes and local restart/session survival pass. Missing authenticated Claude/Qoder, other target server and physical-phone journeys; owner/unblock action above | R-007, R-009, R-010, R-011 |
-| NODE-009 | `进行中` | User-authorized local deployment, commit and push of the verified fixes | Full suite, browser fixtures, service/API/V2 stream health, existing tmux session survival and remote Git ref | 827 tests and 6 browser journeys pass; restarted service PID 1724177, authenticated health/sessions 200, unauthenticated sessions 401, V2 streams and 20-turn read pass; all 8 tmux identities unchanged. Commit/push pending | None: scoped release, no new implementation |
+| NODE-009 | `完成` | User-authorized local deployment, commit and push of the verified fixes | Full suite, browser fixtures, service/API/V2 stream health, existing tmux session survival and remote Git ref | Release 109ad60 pushed to origin/main; 827 tests and 6 browser journeys pass; service PID 1724177, authenticated health/sessions 200, unauthenticated sessions 401, V2 streams and 20-turn read pass; all 8 tmux identities unchanged | None: scoped release, no new implementation |
 
 ## Abstraction Gate
 
@@ -152,7 +152,7 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 
 ## Current verification boundary
 
-- NODE-009 deployed the verified source on this server; pre-release revision is `c3baaca`. Both backend and static assets now use the release worktree; Git publication remains in progress.
+- NODE-009 deployed and pushed source revision `109ad60` to `origin/main`; pre-release revision is `c3baaca`. Both backend and static assets use this release. Only this server was deployed; no other-server rollout is claimed.
 - I-01 through I-04 and local I-05 checks, including authorized local restart/session survival, are verified within the evidence above. A-004 remains blocked, not accepted: obtain the other server/test sessions and run real send/busy/background/commands/failure/reconnect/scroll/attachments/resume journeys on a phone.
 - No parity claim, durable exactly-once guarantee or performance speedup is established by the fixture test counts.
 - Tool-item completion may update an existing item in place. That is not a new conversation item and is not split into an artificial message solely for chronology.
