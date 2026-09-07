@@ -24,12 +24,15 @@ const SHELL_COMMANDS = new Set([
 ]);
 const CODEX_BACKGROUND_WAIT = {
   test(line) {
-    const label = /^[•◦·]\s+(waiting for back.*)$/iu.exec(line)?.[1].toLowerCase();
+    const label = /^(?:[•◦·]\s+)?(waiting for back.*)$/iu.exec(line)?.[1].toLowerCase();
     if (!label) return false;
+    const full = 'waiting for background terminal';
     // Narrow panes ellipsize the status label before its timer/interrupt hint.
-    // Only an exact prefix of this label is a wait, not arbitrary "Waiting…" text.
-    return /^waiting for background terminal\b/u.test(label)
-      || (label.endsWith('…') && 'waiting for background terminal'.startsWith(label.slice(0, -1)));
+    // Reduced motion hides the bullet. Require the exact label/timer or a clipped
+    // prefix, not explanatory prose that happens to begin with the same words.
+    return label === full || (label.startsWith(`${full} (`)
+      && /^\((?:\d[^()\n]*(?:\)|…)|…)(?:\s+·.*)?$/u.test(label.slice(full.length + 1)))
+      || (label.endsWith('…') && full.startsWith(label.slice(0, -1).trimEnd()));
   },
 };
 // An agent waiting on the model sleeps on a socket at 0% CPU, so the process tree cannot
@@ -68,7 +71,8 @@ export const AGENT_SCREEN_MARKERS = {
   // bare spinner glyph shows up in other widgets too.
   qodercli: {
     busy: { lines: 16, patterns: [/\(esc to cancel,\s*\d/i] },
-    background: { lines: 1, patterns: [] },
+    // Background-agent waits wrap across rows and are checked structurally below.
+    background: { lines: 16, patterns: [] },
   },
 };
 
@@ -233,19 +237,33 @@ function screenLines(output) {
     .filter((line) => line.length > 0);
 }
 
-function matchesMarker(lines, { lines: window, patterns }) {
-  return lines.slice(-window).some((line) => patterns.some((pattern) => pattern.test(line)));
+function hasQoderBackgroundWait(lines) {
+  const tail = lines.slice(-AGENT_SCREEN_MARKERS.qodercli.background.lines);
+  // Qoder's transient wait item has a star spinner, not the ordinary info icon.
+  // It exists while the main turn is idle and in-process background agents run.
+  const start = tail.findLastIndex(line => /^[✶-✺]\s+Waiting for\b/u.test(line));
+  if (start < 0) return false;
+  const composer = tail.findLastIndex(line => /^>(?:\s|$)/u.test(line));
+  if (composer >= 0 && composer < start) return false;
+  const boundary = tail.findIndex((line, index) => index > start && SCREEN_SEPARATOR.test(line));
+  const label = tail.slice(start, boundary < 0 ? tail.length : boundary).join(' ');
+  // Join wrapped lines, but require the whole live label immediately above the
+  // controls. Later output, quoted prose and a zero count must not keep it alive.
+  return /^[✶-✺]\s+Waiting for [1-9]\d* background agents? to finish$/u.test(label);
 }
 
 export function resolveScreenSignals(output, markers) {
   if (!markers) return { busy: false, background: false };
-  const lines = screenLines(output);
-  return { busy: matchesMarker(lines, markers.busy), background: matchesMarker(lines, markers.background) };
+  const rows = cleanScreenRows(output);
+  return {
+    busy: markerRow(rows, markers.busy) >= 0,
+    background: markers === AGENT_SCREEN_MARKERS.qodercli
+      ? hasQoderBackgroundWait(screenLines(output)) : markerRow(rows, markers.background) >= 0,
+  };
 }
 
 function elapsedActivityText(lines, markers) {
-  const activeLine = [...lines.slice(-markers.busy.lines)].reverse()
-    .find((line) => markers.busy.patterns.some((pattern) => pattern.test(line)));
+  const activeLine = lines[markerRow(lines, markers.busy)];
   const match = activeLine?.match(/\((?:esc to cancel,\s*)?(?:(\d+)m\s*)?(\d+)s\b/i);
   if (!match) return '';
   if (!match[1]) return `${Number(match[2])}秒`;
@@ -255,10 +273,10 @@ function elapsedActivityText(lines, markers) {
 function activityLabel(kind, lines) {
   if (kind === 'qodercli') return '正在生成';
   if (kind === 'codex' && CODEX_BACKGROUND_WAIT.test(
-    lines[markerRow(lines, AGENT_SCREEN_MARKERS.codex.busy)] || '',
+    lines[markerRow(lines, AGENT_SCREEN_MARKERS.codex.busy)]?.trim() || '',
   )) return '等待后台进程';
   const action = [...lines].reverse()
-    .map((line) => /^[•●]\s*(.+)$/.exec(line)?.[1] || '')
+    .map((line) => /^[•●]\s*(.+)$/.exec(line.trim())?.[1] || '')
     .find((line) => line && !/^(?:working|thinking)\b/i.test(line));
   if (!action) return '正在处理';
   if (/^(?:ran|running|run|executed|executing)\b/i.test(action)) return '正在运行命令';
@@ -276,7 +294,7 @@ function activityLabel(kind, lines) {
 export function resolveAgentActivityText(kind, output) {
   const markers = AGENT_SCREEN_MARKERS[kind];
   if (!markers) return '';
-  const lines = screenLines(output);
+  const lines = cleanScreenRows(output);
   const signals = resolveScreenSignals(output, markers);
   if (!signals.busy && !signals.background) return '';
   if (!signals.busy) return '后台任务运行中';
@@ -296,8 +314,21 @@ function cleanScreenRows(output) {
     .replace(/\s+$/, ''));
 }
 
+function codexStatusEnd(rows) {
+  const last = rows.findLastIndex(line => line.trim());
+  const footer = rows[last]?.trim() || '';
+  if (!AGENT_SCREEN_IDENTITY.codex.some(pattern => pattern.test(footer))
+    && !CODEX_CLIPPED_FOOTER.test(footer)) return rows.length;
+  const composer = rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
+  if (composer < 0 || !rows.slice(composer + 1, last).every(line => !line || /^ {2}/u.test(line))) return rows.length;
+  // Measure from the live composer's top, not the pane bottom: wrapped drafts and
+  // their text are neither status rows nor evidence that an Agent is running.
+  return composer;
+}
+
 function markerRow(rows, marker) {
-  const candidates = rows
+  const codex = marker === AGENT_SCREEN_MARKERS.codex.busy || marker === AGENT_SCREEN_MARKERS.codex.background;
+  const candidates = (codex ? rows.slice(0, codexStatusEnd(rows)) : rows)
     .map((line, index) => ({ index, text: line.trim() }))
     .filter(({ text }) => text)
     .slice(-marker.lines)
@@ -656,7 +687,7 @@ export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) 
 export function resolveAgentBackgroundState({ agent, screenSignals }) {
   if (!agent) return false;
   if (agent.hasBackgroundProcess) return true;
-  return agent.kind === 'claude' && Boolean(screenSignals?.background);
+  return (agent.kind === 'claude' || agent.kind === 'qodercli') && Boolean(screenSignals?.background);
 }
 
 export async function listSessions({ refreshAgentIdentities = false, refreshPaneSession = null } = {}) {

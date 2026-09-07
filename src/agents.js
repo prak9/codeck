@@ -511,14 +511,21 @@ function readAgentSessionId(procRoot, pid) {
 
 export function findDetachedAgentSessionIdsFromProc(attachedPids, {
   procRoot = '/proc',
+  codexPids = [],
   observationCache = null,
   observationCacheTtlMs = DETACHED_PROCESS_CACHE_TTL_MS,
   now = Date.now(),
 } = {}) {
   const cache = observationCache instanceof Map ? observationCache : null;
-  const candidatePids = new Set(readProcChildren(procRoot, 1));
+  const candidatePids = new Set([
+    ...readProcChildren(procRoot, 1), ...codexPids,
+    // The service-owned app-server is not necessarily reparented to PID 1.
+    ...readProcThreadChildren(procRoot, process.pid),
+  ]);
   const queue = [...candidatePids];
   const processes = [];
+  const codexChildren = new Set();
+  const codexRoots = new Set();
   while (queue.length) {
     const pid = queue.shift();
     let stat;
@@ -543,30 +550,36 @@ export function findDetachedAgentSessionIdsFromProc(attachedPids, {
         };
     processes.push(process);
     cache?.set(pid, process);
-    if (!/(?:^|[ /])codex(?:\s|$)/i.test(process.command)
-      || !/(?:^|\s)app-server(?:\s|$)/i.test(process.command)) continue;
-    // app-server may spawn unified-exec from any worker thread. Linux exposes those
-    // children only below that thread's task directory, not the process leader's.
+    if (!/(?:^|[ /])codex(?:\s|$)/i.test(process.command)) continue;
+    codexRoots.add(pid);
+    // Both the CLI and app-server spawn unified-exec from worker threads. Follow
+    // only these known owners, not unrelated services or every process on the host.
     for (const child of readProcThreadChildren(procRoot, pid)) {
+      codexChildren.add(child);
       if (candidatePids.has(child)) continue;
       candidatePids.add(child);
       queue.push(child);
     }
   }
+  const excluded = new Set(attachedPids);
+  // A task can retain its CLI parent and still own an independent terminal. The
+  // session-leader and exact thread-id checks below still exclude ordinary helpers.
+  for (const pid of codexChildren) excluded.delete(pid);
+  for (const pid of codexRoots) excluded.add(pid);
   if (cache) {
     for (const pid of cache.keys()) {
       if (!candidatePids.has(pid)) cache.delete(pid);
     }
   }
   for (const process of processes) {
-    if (attachedPids?.has(process.pid) || !isIndependentProcessLeader(process, procRoot)) continue;
+    if (excluded.has(process.pid) || !isIndependentProcessLeader(process, procRoot)) continue;
     if (!process.environmentLoaded) {
       process.agentSessionId = readAgentSessionId(procRoot, process.pid);
       process.environmentLoaded = true;
       cache?.set(process.pid, process);
     }
   }
-  return findDetachedAgentSessionIds(processes, attachedPids, { procRoot });
+  return findDetachedAgentSessionIds(processes, excluded, { procRoot });
 }
 
 function readProcUptimeMs(procRoot) {
@@ -1122,6 +1135,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
   const attachedPids = new Set([...trees.values()].flat().map((process) => process.pid));
   const detachedSessionIds = findDetachedAgentSessionIdsFromProc(attachedPids, {
     procRoot,
+    codexPids: [...trees.values()].flat().filter(process => (
+      /(?:^|[ /])codex(?:\s|$)/i.test(process.command)
+    )).map(process => process.pid),
     observationCache: options.detachedProcessObservationCache,
   });
   for (const agent of agents.values()) {

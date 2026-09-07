@@ -1459,6 +1459,68 @@ test('finds detached tasks by Agent session id without counting the Agent proces
   }
 });
 
+test('finds Codex-owned terminal leaders below CLI workers and the Codeck service', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-owned-proc-'));
+  const id = '11111111-2222-4333-8444-555555555555';
+  try {
+    writeProcProcess(root, { pid: 1, ppid: 0 });
+    writeProcProcess(root, { pid: process.pid, ppid: 1, command: 'node server.js', children: [80] });
+    for (const command of ['codex app-server', 'codex resume']) {
+      writeProcProcess(root, {
+        pid: 80, ppid: process.pid, command, pgrp: 70, session: 70,
+        environment: `CODEX_THREAD_ID=${id}\0`,
+      });
+      fs.mkdirSync(path.join(root, '80', 'task', '81'), { recursive: true });
+      fs.writeFileSync(path.join(root, '80', 'task', '81', 'children'), '82 83');
+      writeProcProcess(root, { pid: 82, ppid: 80, command: '/bin/bash -lc sleep', environment: `CODEX_THREAD_ID=${id}\0` });
+      writeProcProcess(root, {
+        pid: 83, ppid: 80, pgrp: 70, session: 70,
+        command: 'node mcp-server', environment: `CODEX_THREAD_ID=${id}\0`,
+      });
+      for (const attached of [new Set([80]), new Set([80, 82, 83])]) {
+        assert.deepEqual(findDetachedAgentSessionIdsFromProc(attached, {
+          procRoot: root, codexPids: command === 'codex resume' ? [80] : [],
+        }), new Set([id]), command);
+      }
+      fs.writeFileSync(path.join(root, '80', 'task', '81', 'children'), '83');
+      assert.deepEqual(findDetachedAgentSessionIdsFromProc(new Set([80, 83]), {
+        procRoot: root, codexPids: [80],
+      }), new Set(), 'helpers and the idle CLI must not count after the terminal exits');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex pane detection follows worker-owned background tasks across cached refreshes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-background-state-'));
+  const procRoot = path.join(root, 'proc');
+  const id = '11111111-2222-4333-8444-555555555555';
+  const otherId = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+  const identityCache = new Map(), processTreeCache = new Map(), detachedProcessObservationCache = new Map();
+  try {
+    writeProcProcess(procRoot, { pid: 1, ppid: 0, children: [10] });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, command: `codex resume ${id}`, pgrp: 10, session: 10 });
+    fs.mkdirSync(path.join(procRoot, '11', 'task', '12'), { recursive: true });
+    const childFile = path.join(procRoot, '11', 'task', '12', 'children');
+    fs.writeFileSync(childFile, '');
+    const detect = async () => (await detectPaneAgents([{ session: 'work', pid: 10, paneId: '%7' }], {
+      CODEX_HOME: path.join(root, 'codex'),
+    }, {
+      procRoot, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000,
+      identityCache, processTreeCache, detachedProcessObservationCache,
+      readCodexPaneOutput: async () => '',
+    })).get('work');
+    assert.equal(Boolean((await detect()).hasBackgroundProcess), false);
+    writeProcProcess(procRoot, { pid: 13, ppid: 11, command: '/bin/bash', environment: `CODEX_THREAD_ID=${id}\0` });
+    fs.writeFileSync(childFile, '13');
+    assert.equal((await detect()).hasBackgroundProcess, true);
+    writeProcProcess(procRoot, { pid: 13, ppid: 11, startTicks: 100, command: '/bin/bash', environment: `CODEX_THREAD_ID=${otherId}\0` });
+    assert.equal(Boolean((await detect()).hasBackgroundProcess), false, 'a reused PID owned by another thread is not this session');
+    fs.writeFileSync(childFile, '');
+    assert.equal(Boolean((await detect()).hasBackgroundProcess), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('ps is asked for one field per -o, never a comma-joined header', () => {
   // `-o pid=,ppid=,etimes=,args=` is a single pid column headed ",ppid=,etimes=,args="
   // on older procps, because POSIX allows commas inside the header.

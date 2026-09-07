@@ -18,7 +18,8 @@ test('Qoder recognizes its empty composer even while a previous task is busy', a
   const smallest = narrow.replace('Type your message or\n   @path/to/file', 'Type your message\n   or @path/to/file')
     .replace('Qwen3.8-Max Model · /data/.../codeck', 'Qwen3.8-Max Model');
   for (const screen of [pane(), narrow, smallest, pane().replace('/project', '/my project'),
-    `⠋ Generating... (esc to cancel, 25s)\n${pane()}`]) {
+    `⠋ Generating... (esc to cancel, 25s)\n${pane()}`,
+    `✶ Waiting for 1 background agent to finish\n${pane()}`]) {
     assert.equal(await ensureAgentInputSubmitted({
       paneId: '%7', provider: 'qodercli', text: 'Continue', allowBusy: false,
       capturePane: async () => screen, verifyPane: async () => true,
