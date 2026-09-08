@@ -10,8 +10,11 @@ test('ordinary typing stays local so it costs no round trip', () => {
   }
 });
 
-test('Enter sends the line, Shift+Enter keeps editing', () => {
-  assert.equal(terminalComposerKeyAction(press('Enter')).type, 'send');
+test('Enter sends a draft, reaches an open CLI picker when empty, and Shift+Enter keeps editing', () => {
+  assert.equal(terminalComposerKeyAction(press('Enter'), { draft: 'run this' }).type, 'send');
+  assert.deepEqual(terminalComposerKeyAction(press('Enter'), { draft: '' }), {
+    type: 'passthrough', data: '\r',
+  });
   assert.equal(terminalComposerKeyAction(press('Enter', { shiftKey: true })).type, 'insert');
 });
 

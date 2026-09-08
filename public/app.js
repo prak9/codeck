@@ -16,7 +16,7 @@ import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-cop
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
-import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForHandoff, terminalDraftForSend } from './terminal-compose.js?v=5';
+import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForHandoff, terminalDraftForSend } from './terminal-compose.js?v=6';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,

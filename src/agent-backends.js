@@ -608,15 +608,16 @@ export class CodexAgentBackend extends EventEmitter {
 
 // Claude Code 把 transcript 写在 ~/.claude/projects/<cwd 的 / 换成 ->/<sessionId>.jsonl。
 // 这是 SDK 的内部布局, 所以只有在文件确实存在、且大小与 SDK 自己报告的 fileSize
-// 完全一致时才认它。布局一旦变化, 校验失败 -> 回落到 SDK 的整份读取, 只会变慢,
-// 不会读错。
+// 完全一致时才认它。必须跟随 CLAUDE_CONFIG_DIR；否则自定义目录会误回落到 SDK
+// 的 active-chain 读取，并在 compact 后少掉旧历史。
 function claudeTranscriptFile(threadId, info, { requireSize = true } = {}) {
   const cwd = typeof info?.cwd === 'string' ? info.cwd : '';
   const size = Number(info?.fileSize);
   if (!cwd || !/^[0-9a-fA-F-]{36}$/.test(threadId)) return null;
   if (requireSize && !Number.isFinite(size)) return null;
   const file = nodePath.join(
-    os.homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'), `${threadId}.jsonl`,
+    process.env.CLAUDE_CONFIG_DIR || nodePath.join(os.homedir(), '.claude'),
+    'projects', cwd.replace(/\//g, '-'), `${threadId}.jsonl`,
   );
   try {
     if (requireSize && fs.statSync(file).size !== size) return null;

@@ -28,6 +28,10 @@ export function terminalComposerKeyAction(event, { draft = '', caret = null, has
   if (key === 'Enter') {
     // Shift+Enter 交给浏览器原生插入换行 —— 那样撤销栈是完整的。
     if (event.shiftKey) return { type: 'insert' };
+    // An empty local draft means the active terminal UI owns Enter: model pickers,
+    // confirmations and shell prompts all need the key even though there is no text
+    // for the textarea to submit.
+    if (!draft) return { type: 'passthrough', data: '\r' };
     // 行尾反斜杠续行, 与 Codex 和 Claude Code 一致: 换行, 并吃掉那个反斜杠。
     const before = draft.slice(0, caret ?? draft.length);
     if (before.endsWith('\\')) return { type: 'newline', stripBackslash: true };

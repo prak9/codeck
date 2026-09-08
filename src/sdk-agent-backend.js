@@ -284,9 +284,10 @@ export class SdkAgentBackend extends EventEmitter {
     try { persistedTurns = await this.#persistedTurns(threadId, info); }
     catch (error) {
       const previous = this.transcriptCache.get(threadId);
-      if (!this.sessionSource || !previous) throw error;
+      const canRetainHistory = this.sessionSource || (this.transcriptFile && this.readTranscriptFile);
+      if (!canRetainHistory || !previous) throw error;
       persistedTurns = previous.turns;
-      historyError = 'QoderCLI 历史暂时无法读取，已保留最近内容，正在重试。';
+      historyError = `${this.label} 历史暂时无法读取，已保留最近内容，正在重试。`;
     }
     const thread = sessionToThread(info, [...persistedTurns]);
     if (historyError) thread.historyError = historyError;
@@ -488,6 +489,13 @@ export class SdkAgentBackend extends EventEmitter {
       this.transcriptCache.set(threadId, { revision, ...own });
       this.#trimTranscriptCache();
       return own.turns;
+    }
+
+    // Claude's SDK follows only the active parent chain after compaction. A backend
+    // configured with the complete JSONL reader must therefore fail visibly (or let
+    // openThread retain its cache) instead of presenting that shorter tail as history.
+    if (this.transcriptFile && this.readTranscriptFile) {
+      throw new Error(`${this.label} transcript is temporarily unavailable`);
     }
 
     const loadKey = revision ? `${threadId}\0${revision}` : null;

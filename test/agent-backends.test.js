@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CodexAgentBackend } from '../src/agent-backends.js';
+import { CodexAgentBackend, createAgentBackends } from '../src/agent-backends.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
 
 class FakeAppServer extends EventEmitter {
@@ -17,6 +20,26 @@ class FakeAppServer extends EventEmitter {
   async respondError(id, code, message) { this.errors.push({ id, code, message }); }
   close() {}
 }
+
+test('Claude transcript lookup honors CLAUDE_CONFIG_DIR instead of falling back to compacted SDK history', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-claude-config-'));
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  const threadId = '11111111-1111-4111-8111-111111111111';
+  const cwd = '/srv/project';
+  const file = path.join(root, 'projects', '-srv-project', `${threadId}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{}\n');
+  process.env.CLAUDE_CONFIG_DIR = root;
+  const backends = createAgentBackends();
+  t.after(() => {
+    for (const backend of Object.values(backends)) backend.close();
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  assert.equal(backends.claude.transcriptFile(threadId, { cwd, fileSize: 3 }), file);
+});
 
 test('reads only Codex summaries to select the latest non-streaming output', async () => {
   for (const status of ['completed', 'failed']) {

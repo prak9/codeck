@@ -221,6 +221,58 @@ test('Qoder retains valid history and reports delivery uncertainty while its sou
   } finally { backend.close(); }
 });
 
+test('Claude keeps a complete cached transcript when a changed file is temporarily unreadable', async () => {
+  let revision = 1;
+  let readable = true;
+  const raw = [
+    { type: 'user', uuid: 'old-user', message: { content: 'Before compaction' } },
+    { type: 'assistant', uuid: 'old-answer', message: { content: 'Earlier answer' } },
+    { type: 'user', uuid: 'new-user', message: { content: 'After compaction' } },
+  ].map(entry => JSON.stringify(entry)).join('\n');
+  const { backend } = setup('claude', {
+    getSessionInfo: async sessionId => ({
+      sessionId, cwd: '/project', lastModified: revision, fileSize: raw.length,
+    }),
+    // This is what the SDK fallback returns after compaction: only the active tail.
+    getSessionMessages: async () => [
+      { type: 'user', uuid: 'new-user', message: { content: 'After compaction' } },
+    ],
+    transcriptFile: () => '/transcripts/thread.jsonl',
+    readTranscriptFile: async () => {
+      if (!readable) throw new Error('temporary read failure');
+      return raw;
+    },
+  });
+  try {
+    const complete = await backend.openThread('t1');
+    assert.equal(complete.thread.turns[0].items[0].id, 'old-user');
+    readable = false;
+    revision += 1;
+    const retained = await backend.openThread('t1');
+    assert.equal(retained.thread.turns[0].items[0].id, 'old-user');
+    assert.match(retained.thread.historyError, /Claude Code.*历史.*重试/);
+  } finally { backend.close(); }
+});
+
+test('Claude never presents an SDK active-chain tail as complete history when its JSONL is unavailable', async () => {
+  let sdkReads = 0;
+  const { backend } = setup('claude', {
+    getSessionInfo: async sessionId => ({
+      sessionId, cwd: '/project', lastModified: 1, fileSize: 100,
+    }),
+    getSessionMessages: async () => {
+      sdkReads += 1;
+      return [{ type: 'user', uuid: 'post-compact', message: { content: 'Recent tail only' } }];
+    },
+    transcriptFile: () => '/transcripts/thread.jsonl',
+    readTranscriptFile: async () => { throw new Error('temporary read failure'); },
+  });
+  try {
+    await assert.rejects(backend.openThread('t1'), /transcript.*unavailable/i);
+    assert.equal(sdkReads, 0, 'the lossy SDK fallback must not be presented as complete history');
+  } finally { backend.close(); }
+});
+
 test('reloads persisted transcripts when the SDK does not expose reliable file metadata', async () => {
   let messageLoads = 0;
   const { backend } = setup('claude', {
