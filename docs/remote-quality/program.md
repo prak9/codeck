@@ -1,17 +1,17 @@
 # Program: Remote consistency, correctness, and stability
 
-- Overall status: `进行中`
+- Overall status: `阻塞`
 - Profile: `Lite`
-- Active plan node: `NODE-014`
-- Latest evidence: `NODE-014's production-path Qoder regression failed before and passes after metadata restoration; 26 focused and 834 full tests pass, as do 6 cross-provider browser journeys with zero page errors.`
-- Current blocker: `A-004 still requires the user's other server, authenticated Claude/Qoder test sessions and physical-phone journeys. It does not block the scoped NODE-014 repair.`
-- Next step: `NODE-014: commit and push the verified repair, restart the local service, then verify API/V2 health and existing tmux session survival.`
+- Active plan node: `NODE-004`
+- Latest evidence: `NODE-014 released the Qoder production-path compaction fix as 8542809; 834/834 tests and 6 browser journeys pass. Service PID 1963317, authenticated API/V2, read-only thread open and all 8 tmux sessions pass after restart.`
+- Current blocker: `A-004 requires the user's other server, authenticated Claude/Qoder test sessions and physical-phone journeys; none are available to this executor. Owner: user; unblock with an accessible SSH host/test-session names or target-side verification.`
+- Next step: `NODE-004: obtain the other server/test sessions for remaining live journeys, including hmap after updating that server. G-007 half-open recovery remains unresolved.`
 - Next checkpoint: `None`
 - Next human decision: `None`
 - Owner: `Codex`
 - Last updated: `2026-09-08`
 - Clean state: `Not due`
-- Last clean: `2026-09-08: NODE-013 local release evidence recorded; other-server hmap, A-004 and G-007 remain explicitly unverified or unresolved`
+- Last clean: `2026-09-08: NODE-014 local release evidence reconciled; A-004 and G-007 remain explicitly unverified or unresolved`
 
 ## Outcome
 
@@ -59,7 +59,7 @@
 | NODE-011 | `完成` | Make pane-only Agent echo match final reply rendering and prevent stale auto-follow from overriding an upward scroll | A-007; screenshot-derived VM contract, full suite and 6 real-browser journeys | `test/remote-live-output-ui.test.js` fails before and passes after; 832 tests pass. Codex/Claude/Qoder at 390×844 and 1365×900 pass live-output/latest/manual-scroll/history/failure/command journeys; light-mobile screenshot `/data/tmp/codeck-remote-smoke-RL72Dr/qodercli-390-live-output.png` | R-013 |
 | NODE-012 | `完成` | User-authorized local deployment, commit and push of NODE-011 | Full suite, browser fixtures, service/API/V2 stream health and existing tmux session survival | Release `f3d8f6a` pushed to `origin/main`; service restarted at 2026-09-07 22:16:10 CST with PID 1805009 and zero automatic restarts. Authenticated health/sessions, unauthenticated 401, V2 ready/sessions/openThread and all 8 original tmux identities pass | None: scoped release, no new implementation |
 | NODE-013 | `完成` | Hide screenshot-exposed SDK compaction summaries and deploy the scoped fix | A-008; failing-then-passing transcript regression, full suite, browser fixtures and deployment health | Release `cb7d6d5` pushed to `origin/main`; 833 tests and 6 browser journeys pass. Service restarted at 2026-09-08 08:19:42 CST with PID 1910802 and zero automatic restarts; authenticated health/sessions and V2 ready/sessions pass, unauthenticated sessions return 401, and all 8 tmux identities remain | None: one metadata guard; no text heuristics, transport, cache or UI changes |
-| NODE-014 | `进行中` | Close NODE-013's Qoder production-path gap without changing SDK branch reconstruction or ordinary history | A-008 and A-002; real Qoder SDK/session-store regression must fail before and pass after, followed by focused/full tests and release health | Production-path regression fails before and passes after; 26 focused and 834 full tests pass. Six browser journeys pass with zero errors; artifacts `/data/tmp/codeck-remote-smoke-WMaFL5`. Release evidence pending | R-014 |
+| NODE-014 | `完成` | Close NODE-013's Qoder production-path gap without changing SDK branch reconstruction or ordinary history | A-008 and A-002; real Qoder SDK/session-store regression must fail before and pass after, followed by focused/full tests and release health | Release `8542809` pushed to `origin/main`; production-path regression fails before and passes after, 26 focused and 834 full tests pass, and 6 browser journeys have zero errors. Service PID 1963317, API/V2/read-only thread checks and all 8 tmux identities pass after restart | R-014 |
 
 ## Abstraction Gate
 
@@ -167,6 +167,7 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 - NODE-013 compaction visibility fix: the regression fails before and passes after the metadata guard; all 833 tests pass. Six Chromium journeys cover Codex/Claude/Qoder at 390×844 and 1365×900 with zero page errors; artifacts `/data/tmp/codeck-remote-smoke-iy5YlJ`. Release `cb7d6d5` is pushed to `origin/main`; `codeck.service` restarted at 2026-09-08 08:19:42 CST with PID 1910802 and zero automatic restarts. Authenticated health and 8-session API return 200, unauthenticated sessions returns 401, owner V2 ready/session snapshot passes, and all 8 tmux identities remain unchanged. No CLI input was sent; the other server was not deployed.
 - NODE-014 pre-fix evidence: a synthetic raw Qoder transcript passed through the installed SDK returns the compaction summary as a normal `user` message while removing `isCompactSummary`. This is the escaped production-path failure class; the existing 833-test result remains valid for its covered cases but does not satisfy A-008 for Qoder.
 - NODE-014 implementation evidence: the same transcript now reaches the shared converter with its UUID-scoped raw marker restored after SDK branch reconstruction. The regression preserves the preceding/following assistant output and an ordinary user message with identical text. The two focused files pass 26 tests, the full suite passes 834, and six browser journeys pass with zero page errors; artifacts `/data/tmp/codeck-remote-smoke-WMaFL5`.
+- NODE-014 deployment: release `8542809` is pushed to `origin/main`. `codeck.service` restarted at 2026-09-08 12:13:20 CST with PID 1963317 and zero automatic restarts. Authenticated health and 8-session API return 200, unauthenticated sessions returns 401, owner V2 ready/session snapshot and a 20-turn read-only `codeck` open pass. All 8 tmux IDs, names and creation times are unchanged. No CLI input was sent; the other server was not deployed.
 
 ## Current verification boundary
 
@@ -174,6 +175,7 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 - NODE-010 is deployed with the user's explicit release authorization. Only the Qoder screen-status producer plus tests/this plan changed; input transport, receipt handling, stream protocol and UI source are unchanged.
 - NODE-011 is deployed on this server through release `f3d8f6a`. It changes only Remote presentation and scroll-intent arbitration; adapter data, transport, delivery, command and ordinary-terminal paths are unchanged.
 - NODE-013 is deployed on this server through release `cb7d6d5`. Its guard works for Claude's raw transcript path and already-normalized inputs, but Qoder's SDK strips the marker before that guard; NODE-014 reopens A-008 for that provider.
+- NODE-014 is deployed on this server through release `8542809`. Qoder's complete raw graph still reaches the SDK first; only afterward is the UUID-scoped `isCompactSummary` fact restored for the shared guard. Normal history, SDK branch semantics, transport and UI are unchanged. The other server remains unverified and undeployed.
 - I-01 through I-04 and local I-05 checks, including authorized local restart/session survival, are verified within the evidence above. A-004 remains blocked, not accepted: obtain the other server/test sessions and run real send/busy/background/commands/failure/reconnect/scroll/attachments/resume journeys on a phone.
 - No parity claim, durable exactly-once guarantee or performance speedup is established by the fixture test counts.
 - Tool-item completion may update an existing item in place. That is not a new conversation item and is not split into an artificial message solely for chronology.
