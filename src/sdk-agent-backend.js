@@ -100,7 +100,7 @@ function transcriptToTurns(messages) {
     if (entry.type === 'user') {
       const text = textFromBlocks(blocks).trim();
       const isToolResult = blocks.some((block) => block?.type === 'tool_result');
-      if (text && !entry.parent_tool_use_id && !isToolResult) {
+      if (text && !entry.isCompactSummary && !entry.parent_tool_use_id && !isToolResult) {
         turn = {
           id: `turn-${entry.uuid || crypto.randomUUID()}`,
           status: 'completed',

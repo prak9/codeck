@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
+import { SdkAgentBackend, sdkTranscriptToTurns } from '../src/sdk-agent-backend.js';
 
 class FakeQuery extends EventEmitter {
   constructor(prompt) {
@@ -89,6 +89,27 @@ test('lists and reconstructs persisted Claude and Qoder SDK sessions', async () 
     assert.equal(opened.thread.turns[0].items[1].type, 'agentMessage');
     assert.equal(opened.thread.turns[0].items[1].text, 'It is fixed.');
   }
+});
+
+test('does not expose an internal compaction summary as a user message', () => {
+  const summary = 'This session is being continued from a previous conversation that ran out of context.';
+  const turns = sdkTranscriptToTurns([
+    { type: 'user', uuid: 'user-1', message: { role: 'user', content: 'Continue the fix' } },
+    { type: 'assistant', uuid: 'assistant-1', message: { role: 'assistant', content: 'Checking.' } },
+    {
+      type: 'user', uuid: 'compact-1', isCompactSummary: true,
+      isVisibleInTranscriptOnly: true, isSidechain: true,
+      message: { role: 'user', content: summary },
+    },
+    { type: 'assistant', uuid: 'assistant-2', message: { role: 'assistant', content: 'The fix is complete.' } },
+    { type: 'user', uuid: 'user-2', message: { role: 'user', content: summary } },
+  ]);
+
+  const items = turns.flatMap((turn) => turn.items);
+  assert.deepEqual(items.filter((item) => item.type === 'userMessage')
+    .map((item) => item.content[0].text), ['Continue the fix', summary]);
+  assert.deepEqual(items.filter((item) => item.type === 'agentMessage')
+    .map((item) => item.text), ['Checking.', 'The fix is complete.']);
 });
 
 test('reuses an unchanged persisted transcript and reloads as soon as its file metadata changes', async () => {
