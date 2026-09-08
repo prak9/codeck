@@ -18,7 +18,7 @@ async function readInputLog(file) {
 }
 
 function userText(entry) {
-  if (entry?.type !== 'user' || entry.isMeta || entry.isSidechain || entry.teamName
+  if (entry?.type !== 'user' || entry.isMeta || entry.isCompactSummary || entry.isSidechain || entry.teamName
     || entry.parent_tool_use_id || typeof entry.uuid !== 'string') return '';
   const content = entry.message?.content;
   if (typeof content === 'string') return stripTerminalInputResidue(content.trim());
@@ -38,7 +38,8 @@ export class QoderSessionSource {
   }
 
   async #read(threadId, options, capture) {
-    return getSessionMessages(threadId, {
+    const compactSummaryIds = new Set();
+    const messages = await getSessionMessages(threadId, {
       ...options,
       sessionStore: {
         // Let the SDK compute projectKey, including realpath and long-path hashing.
@@ -68,12 +69,21 @@ export class QoderSessionSource {
             offset += Buffer.byteLength(line) + 1;
           }
           const snapshot = { file, identity, bytes, records };
+          for (const { entry } of records) {
+            if (entry.isCompactSummary === true && typeof entry.uuid === 'string') {
+              compactSummaryIds.add(entry.uuid);
+            }
+          }
           capture?.(snapshot);
           this.#observe(threadId, snapshot);
           return records.map(record => record.entry);
         },
       },
     });
+    // The SDK must see the complete graph so it can resolve branches and compaction
+    // boundaries, but its normalized SessionMessage drops this raw metadata.
+    return messages.map(message => compactSummaryIds.has(message.uuid)
+      ? { ...message, isCompactSummary: true } : message);
   }
 
   getSessionMessages(threadId, options) { return this.#read(threadId, options); }

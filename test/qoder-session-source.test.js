@@ -46,6 +46,7 @@ test('Qoder never confirms old, rewritten, tool-result, or duplicate same-text r
   }
   await append([
     user('old', 'Continue'), user('meta', 'Continue', { isMeta: true }),
+    user('compact', 'Continue', { isCompactSummary: true }),
     user('side', 'Continue', { isSidechain: true }),
     user('result', [{ type: 'tool_result', content: 'Continue', tool_use_id: 'tool' }]),
     user('new-1', 'Continue'),
@@ -70,6 +71,40 @@ test('Qoder propagates read errors, keeps SDK clear semantics, and skips malform
   await fs.appendFile(file, '{broken\n' + JSON.stringify(user('new', 'Hello again')) + '\n'
     + JSON.stringify({ type: 'active-leaf', sessionId: id, leafUuid: 'new' }) + '\n');
   assert.deepEqual((await source.getSessionMessages(id, { dir: cwd })).map(m => m.uuid), ['new']);
+});
+
+test('Qoder hides raw compaction summaries after SDK branch reconstruction without changing history', async t => {
+  const { source, write } = await setup(t);
+  const summary = 'This session is being continued from a previous conversation that ran out of context.';
+  await write([
+    user('user-1', 'Continue the fix'),
+    { type: 'assistant', uuid: 'assistant-1', sessionId: id, parentUuid: 'user-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Checking.' }] } },
+    { type: 'system', subtype: 'compact_boundary', uuid: 'compact-boundary', sessionId: id,
+      parentUuid: 'assistant-1', message: { role: 'system', content: '' },
+      compactMetadata: { trigger: 'auto' } },
+    user('compact-summary', summary, { parentUuid: 'compact-boundary', isCompactSummary: true,
+      isVisibleInTranscriptOnly: true }),
+    { type: 'assistant', uuid: 'assistant-2', sessionId: id, parentUuid: 'compact-summary',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'The fix is complete.' }] } },
+    user('user-2', summary, { parentUuid: 'assistant-2' }),
+    { type: 'assistant', uuid: 'assistant-3', sessionId: id, parentUuid: 'user-2',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Ordinary user text is preserved.' }] } },
+  ]);
+  const backend = new SdkAgentBackend({ provider: 'qodercli', label: 'QoderCLI', sessionSource: source,
+    getSessionInfo: async () => ({ sessionId: id, cwd, lastModified: 1, fileSize: 1 }) });
+  t.after(() => backend.close());
+
+  const opened = await backend.openThread(id);
+  assert.deepEqual(opened.thread.turns.flatMap(turn => turn.items).map(item => (
+    item.type === 'userMessage' ? ['user', item.content[0].text] : ['assistant', item.text]
+  )), [
+    ['user', 'Continue the fix'],
+    ['assistant', 'Checking.'],
+    ['assistant', 'The fix is complete.'],
+    ['user', summary],
+    ['assistant', 'Ordinary user text is preserved.'],
+  ]);
 });
 
 test('Qoder exposes an unresolved receipt after a bounded wait and can still confirm it later', async t => {
