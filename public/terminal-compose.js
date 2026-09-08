@@ -18,8 +18,12 @@ const PASSTHROUGH_KEYS = new Map([
 const BROWSER_OWNED = new Set(['v', 'x', 'z', 'y', 'a', 'j']);
 
 export function terminalComposerKeyAction(event, { draft = '', caret = null, hasSelection = false } = {}) {
-  if (!event || event.isComposing) return { type: 'insert' };
+  if (!event) return { type: 'insert' };
   const key = event.key;
+  // Keep genuine IME composition inside the textarea. Some mobile keyboards leave the
+  // Enter event marked as composing after the submitted draft has already been cleared,
+  // though; with no local text to confirm, that Enter belongs to the active CLI picker.
+  if (event.isComposing && (key !== 'Enter' || draft)) return { type: 'insert' };
   // Cmd 是浏览器的地盘 —— 复制、粘贴、全选。把它和 Ctrl 一样对待, macOS 上 Cmd+C
   // 就会给 CLI 发中断而不是复制。
   const control = event.ctrlKey && !event.metaKey && !event.altKey;

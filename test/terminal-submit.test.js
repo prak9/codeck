@@ -18,7 +18,7 @@ function fixture({ legacy = false, draftValue = 'echo intact', agentKind = 'qode
   const state = {
     socket, active: 'one', connectionId: 1, canWrite: true, terminalInputReady: true,
     terminalSubmitSupported: !legacy, terminalSubmitPending: null, nextTerminalSubmitId: 0,
-    sessions: [{ name: 'one', agent: { kind: agentKind } }],
+    sessions: [{ name: 'one', agent: agentKind ? { kind: agentKind } : null }],
   };
   let timerId = 0;
   const context = vm.createContext({
@@ -52,19 +52,11 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.timers.size, 0);
 });
 
-test('Qoder slash commands request a separate final Enter', async () => {
-  const f = fixture({ draftValue: '/model' });
-  const pending = f.context.submitTerminalVoiceDraft();
-  assert.equal(f.sent[0].separateFinalEnter, true);
-  f.state.terminalSubmitPending.resolve();
-  await pending;
-});
-
-test('other CLIs keep slash-command submission unchanged', async () => {
-  for (const agentKind of ['codex', 'claude', 'shell']) {
+test('slash commands request a separate final Enter even before Agent identity resolves', async () => {
+  for (const agentKind of ['qodercli', 'codex', 'claude', null]) {
     const f = fixture({ draftValue: '/model', agentKind });
     const pending = f.context.submitTerminalVoiceDraft();
-    assert.equal(f.sent[0].separateFinalEnter, undefined, agentKind);
+    assert.equal(f.sent[0].separateFinalEnter, true, agentKind || 'pending identity');
     f.state.terminalSubmitPending.resolve();
     await pending;
   }

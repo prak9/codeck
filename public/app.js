@@ -16,7 +16,7 @@ import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-cop
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
-import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForHandoff, terminalDraftForSend } from './terminal-compose.js?v=6';
+import { endsTerminalHandoff, terminalComposerKeyAction, terminalDraftForHandoff, terminalDraftForSend } from './terminal-compose.js?v=7';
 import { hideSharedCodexBackgroundFooter } from './terminal-output.js?v=1';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
@@ -309,12 +309,11 @@ async function submitTerminalVoiceDraft() {
   if (!isCurrentTerminalTarget(target)) return setTerminalVoiceState(false, '终端尚未连接，草稿仍保留在这里。');
   voiceInput.abort();
   try {
-    const agentKind = state.sessions.find((session) => session.name === target.session)?.agent?.kind;
     const receipt = requestTerminalSubmit(target, `${text}\r`, {
-      // Qoder can apply pasted text one render after the key event while it is generating.
-      // Let slash commands settle before Enter so that Enter acts on the command, not the
-      // previous empty composer state. Ordinary prompts keep their atomic raw write.
-      separateFinalEnter: agentKind === 'qodercli' && /^\/\S/u.test(text),
+      // Agent identity can still be unresolved on an SSH-backed or newly opened session.
+      // Slash commands share the same TUI race regardless of provider: let the text settle
+      // before Enter so the key acts on the command, not the previous composer state.
+      separateFinalEnter: /^\/\S/u.test(text),
     });
     setTerminalVoiceState(false, '正在发送到终端…');
     syncTerminalVoiceControls();

@@ -49,10 +49,15 @@ test('arrow keys navigate history only when the draft is empty', () => {
   assert.equal(terminalComposerKeyAction(press('ArrowLeft'), { draft: 'hi' }).type, 'insert');
 });
 
-test('an in-flight IME composition is never intercepted', () => {
+test('IME composition keeps editing text but cannot swallow an empty picker Enter', () => {
   // 中文输入法组字期间抢键会把候选framework打断。
-  assert.equal(terminalComposerKeyAction(press('Enter', { isComposing: true })).type, 'insert');
+  assert.equal(terminalComposerKeyAction(press('Enter', { isComposing: true }), { draft: '拼音' }).type, 'insert');
   assert.equal(terminalComposerKeyAction(press('Escape', { isComposing: true })).type, 'insert');
+  // iOS 偶尔把软键盘 Enter 留在 composing 状态。草稿为空时没有候选文字可确认，
+  // 此时 Enter 属于终端里的模型选择器或确认框，必须直通。
+  assert.deepEqual(terminalComposerKeyAction(press('Enter', { isComposing: true }), { draft: '' }), {
+    type: 'passthrough', data: '\r',
+  });
 });
 
 test('Ctrl+J inserts a newline instead of doing nothing', () => {
