@@ -1227,15 +1227,25 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
       return paneId;
     };
     const paneId = await currentPane();
+    const separateFinalEnter = overrides.separateFinalEnter === true && data.length > 1
+      && !/[\r\n]/u.test(data.slice(0, -1)) && data.endsWith('\r');
+    const bufferData = separateFinalEnter ? data.slice(0, -1) : data;
     const bufferName = overrides.bufferName || `codeck_local_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
+    const waitForInputSettle = overrides.waitForInputSettle
+      || (() => new Promise((resolve) => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS)));
     try {
-      await loadBuffer(bufferName, data);
+      await loadBuffer(bufferName, bufferData);
       if (await currentPane() !== paneId) throw new Error('终端会话 pane 已变化，输入未发送');
       checkConnection();
       await execTmux(exitPaneModeThen(paneId, [
         'paste-buffer', '-r', '-d', '-b', bufferName, '-t', paneId,
       ]));
+      if (separateFinalEnter) {
+        await waitForInputSettle();
+        if (await currentPane() !== paneId) throw new Error('终端会话 pane 已变化，输入未发送');
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      }
     } catch (error) {
       await execTmux(['delete-buffer', '-b', bufferName]).catch(() => {});
       throw error;

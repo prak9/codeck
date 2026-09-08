@@ -274,9 +274,12 @@ function rejectTerminalSubmit(message) {
   state.terminalSubmitPending?.reject(new Error(message));
 }
 
-function requestTerminalSubmit(target, data) {
+function requestTerminalSubmit(target, data, { separateFinalEnter = false } = {}) {
   if (state.terminalSubmitPending) throw new Error('上一笔输入仍在发送，请稍后重试');
-  const message = { type: 'input', data, submit: true };
+  const message = {
+    type: 'input', data, submit: true,
+    ...(separateFinalEnter ? { separateFinalEnter: true } : {}),
+  };
   // New static assets can reach an old running server. Its raw-input contract still
   // works; only request a receipt when that server advertises support for it.
   if (!state.terminalSubmitSupported) {
@@ -306,7 +309,13 @@ async function submitTerminalVoiceDraft() {
   if (!isCurrentTerminalTarget(target)) return setTerminalVoiceState(false, '终端尚未连接，草稿仍保留在这里。');
   voiceInput.abort();
   try {
-    const receipt = requestTerminalSubmit(target, `${text}\r`);
+    const agentKind = state.sessions.find((session) => session.name === target.session)?.agent?.kind;
+    const receipt = requestTerminalSubmit(target, `${text}\r`, {
+      // Qoder can apply pasted text one render after the key event while it is generating.
+      // Let slash commands settle before Enter so that Enter acts on the command, not the
+      // previous empty composer state. Ordinary prompts keep their atomic raw write.
+      separateFinalEnter: agentKind === 'qodercli' && /^\/\S/u.test(text),
+    });
     setTerminalVoiceState(false, '正在发送到终端…');
     syncTerminalVoiceControls();
     await receipt;

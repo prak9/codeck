@@ -155,7 +155,10 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     pendingScroll.then(async () => {
       if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
       if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
-      await dependencies.submitTerminalInput(targetSession, message.data, { isCurrent });
+      await dependencies.submitTerminalInput(targetSession, message.data, {
+        isCurrent,
+        separateFinalEnter: message.separateFinalEnter === true,
+      });
     }).then(() => sendInputResult(message), (error) => sendInputResult(message, error)).finally(() => {
       if (inputOperation !== operation) return;
       inputOperation = null;

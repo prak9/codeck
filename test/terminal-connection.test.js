@@ -59,16 +59,18 @@ test('whole terminal submissions leave copy mode without changing raw key semant
   let finish;
   await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
     createTerminal: () => terminal,
-    submitTerminalInput: async (session, data, { isCurrent }) => {
+    submitTerminalInput: async (session, data, { isCurrent, separateFinalEnter }) => {
       assert.equal(isCurrent(), true);
-      submissions.push({ session, data });
+      submissions.push({ session, data, separateFinalEnter });
       await new Promise((resolve) => { finish = resolve; });
     },
   }));
-  sendFrame(ws, { type: 'input', data: 'echo 完整\r', submit: true, inputId: '1:1' });
+  sendFrame(ws, {
+    type: 'input', data: 'echo 完整\r', submit: true, inputId: '1:1', separateFinalEnter: true,
+  });
   await nextTurn();
   sendFrame(ws, { type: 'input', data: '\r' });
-  assert.deepEqual(submissions, [{ session: 'work', data: 'echo 完整\r' }]);
+  assert.deepEqual(submissions, [{ session: 'work', data: 'echo 完整\r', separateFinalEnter: true }]);
   assert.deepEqual(terminal.writes, [], 'later raw Enter cannot overtake the complete submission');
   assert.deepEqual(inputResults(ws), [], 'a draft is not acknowledged before tmux accepts it');
   finish();

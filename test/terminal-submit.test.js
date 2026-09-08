@@ -11,13 +11,14 @@ function functionSource(text, name) {
   return start < 0 ? '' : text.slice(start, text.indexOf('\n}', start) + 2);
 }
 
-function fixture({ legacy = false } = {}) {
+function fixture({ legacy = false, draftValue = 'echo intact', agentKind = 'qodercli' } = {}) {
   const sent = [], feedback = [], timers = new Map();
-  const draft = { value: 'echo intact', hidden: false, classList: { add() {} } };
+  const draft = { value: draftValue, hidden: false, classList: { add() {} } };
   const socket = { readyState: 1, send: (data) => sent.push(JSON.parse(data)) };
   const state = {
     socket, active: 'one', connectionId: 1, canWrite: true, terminalInputReady: true,
     terminalSubmitSupported: !legacy, terminalSubmitPending: null, nextTerminalSubmitId: 0,
+    sessions: [{ name: 'one', agent: { kind: agentKind } }],
   };
   let timerId = 0;
   const context = vm.createContext({
@@ -40,6 +41,7 @@ test('whole draft submission waits for server receipt and does not send twice wh
   const pending = f.context.submitTerminalVoiceDraft();
   assert.equal(f.draft.value, 'echo intact');
   assert.equal(f.sent[0].submit, true);
+  assert.equal(f.sent[0].separateFinalEnter, undefined, 'ordinary Qoder prompts keep one atomic write');
   assert.equal(typeof f.sent[0].inputId, 'string');
   await f.context.submitTerminalVoiceDraft();
   assert.equal(f.sent.length, 1);
@@ -48,6 +50,24 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.draft.value, '');
   assert.equal(f.state.terminalSubmitPending, null);
   assert.equal(f.timers.size, 0);
+});
+
+test('Qoder slash commands request a separate final Enter', async () => {
+  const f = fixture({ draftValue: '/model' });
+  const pending = f.context.submitTerminalVoiceDraft();
+  assert.equal(f.sent[0].separateFinalEnter, true);
+  f.state.terminalSubmitPending.resolve();
+  await pending;
+});
+
+test('other CLIs keep slash-command submission unchanged', async () => {
+  for (const agentKind of ['codex', 'claude', 'shell']) {
+    const f = fixture({ draftValue: '/model', agentKind });
+    const pending = f.context.submitTerminalVoiceDraft();
+    assert.equal(f.sent[0].separateFinalEnter, undefined, agentKind);
+    f.state.terminalSubmitPending.resolve();
+    await pending;
+  }
 });
 
 test('edits made while waiting for the receipt are never cleared', async () => {

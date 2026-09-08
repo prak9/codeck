@@ -28,6 +28,23 @@ test('local submissions preserve exact bytes and atomically exit copy mode befor
   ]);
 });
 
+test('local Qoder slash commands let the composer apply text before pressing Enter', async () => {
+  const deps = submissionDependencies({
+    separateFinalEnter: true,
+    waitForInputSettle: async () => deps.calls.push(['settled']),
+  });
+  await submitTerminalInput('work', '/model\r', deps);
+  assert.deepEqual(deps.calls, [
+    ['display-message', '-p', '-t', '=work:', '#{session_name}\t#{pane_id}'],
+    ['load', 'codeck-local-test', '/model'],
+    ['display-message', '-p', '-t', '=work:', '#{session_name}\t#{pane_id}'],
+    ['copy-mode', '-q', '-t', '%17', ';', 'paste-buffer', '-r', '-d', '-b', 'codeck-local-test', '-t', '%17'],
+    ['settled'],
+    ['display-message', '-p', '-t', '=work:', '#{session_name}\t#{pane_id}'],
+    ['copy-mode', '-q', '-t', '%17', ';', 'send-keys', '-t', '%17', 'Enter'],
+  ]);
+});
+
 test('local submissions reject unsafe or stale target panes before any input', async () => {
   for (const target of ['other\t%17\n', 'work\twork:0.0\n', 'work\t%17\nwork\t%18\n']) {
     const deps = submissionDependencies({ execTmux: async () => ({ stdout: target }) });
