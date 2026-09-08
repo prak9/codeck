@@ -1,17 +1,17 @@
 # Program: Remote consistency, correctness, and stability
 
-- Overall status: `进行中`
+- Overall status: `阻塞`
 - Profile: `Lite`
-- Active plan node: `NODE-015`
-- Latest evidence: `NODE-015's source-shaped regression fails before and passes after history recovery; consecutive compact roots, preserved-tail de-duplication, fork compaction and abandoned-branch controls pass. 836 full tests and 6 browser journeys pass.`
-- Current blocker: `A-004 still requires the user's other server and physical-phone/live-provider journeys. It does not block a source-shaped Qoder compaction-history regression and scoped repair.`
-- Next step: `NODE-015: complete final-tree verification, commit and push the scoped source/test/plan change, then deploy and verify service/API/V2/tmux survival.`
+- Active plan node: `NODE-004`
+- Latest evidence: `NODE-015 released Qoder pre-compaction history recovery as 9372555; 836/836 tests and 6 browser journeys pass. Service PID 1993433, API/V2/read-only thread and all 8 tmux sessions pass after restart.`
+- Current blocker: `A-004 requires the user's other server, authenticated Claude/Qoder test sessions and physical-phone journeys; none are available to this executor. Owner: user; unblock with an accessible SSH host/test-session names or target-side verification.`
+- Next step: `NODE-004: update and exercise the affected Qoder session on the other server, then complete the remaining live send/status/command/failure/reconnect/scroll/attachment/resume journeys. G-007 half-open recovery remains unresolved.`
 - Next checkpoint: `None`
 - Next human decision: `None`
 - Owner: `Codex`
 - Last updated: `2026-09-08`
 - Clean state: `Not due`
-- Last clean: `2026-09-08: NODE-014 local release evidence reconciled; A-004 and G-007 remain explicitly unverified or unresolved`
+- Last clean: `2026-09-08: NODE-015 local release evidence reconciled; other-server Qoder behavior, A-004 and G-007 remain explicitly unverified or unresolved`
 
 ## Outcome
 
@@ -61,7 +61,7 @@
 | NODE-012 | `完成` | User-authorized local deployment, commit and push of NODE-011 | Full suite, browser fixtures, service/API/V2 stream health and existing tmux session survival | Release `f3d8f6a` pushed to `origin/main`; service restarted at 2026-09-07 22:16:10 CST with PID 1805009 and zero automatic restarts. Authenticated health/sessions, unauthenticated 401, V2 ready/sessions/openThread and all 8 original tmux identities pass | None: scoped release, no new implementation |
 | NODE-013 | `完成` | Hide screenshot-exposed SDK compaction summaries and deploy the scoped fix | A-008; failing-then-passing transcript regression, full suite, browser fixtures and deployment health | Release `cb7d6d5` pushed to `origin/main`; 833 tests and 6 browser journeys pass. Service restarted at 2026-09-08 08:19:42 CST with PID 1910802 and zero automatic restarts; authenticated health/sessions and V2 ready/sessions pass, unauthenticated sessions return 401, and all 8 tmux identities remain | None: one metadata guard; no text heuristics, transport, cache or UI changes |
 | NODE-014 | `完成` | Close NODE-013's Qoder production-path gap without changing SDK branch reconstruction or ordinary history | A-008 and A-002; real Qoder SDK/session-store regression must fail before and pass after, followed by focused/full tests and release health | Release `8542809` pushed to `origin/main`; production-path regression fails before and passes after, 26 focused and 834 full tests pass, and 6 browser journeys have zero errors. Service PID 1963317, API/V2/read-only thread checks and all 8 tmux identities pass after restart | R-014 |
-| NODE-015 | `进行中` | Restore Qoder history across compaction roots while preserving active-branch and summary-filtering semantics | A-009, A-008 and A-002; source-shaped regression must fail before and pass after, then focused/full/browser and release health checks | Regression fails before and passes after; fork and consecutive compaction restore old/current history once, while abandoned branches and summaries stay hidden. 28 focused and 836 full tests pass; 6 browser journeys have zero errors. Release evidence pending | R-015 |
+| NODE-015 | `完成` | Restore Qoder history across compaction roots while preserving active-branch and summary-filtering semantics | A-009, A-008 and A-002; source-shaped regression must fail before and pass after, then focused/full/browser and release health checks | Release `9372555` pushed to `origin/main`; fork and consecutive compaction restore old/current history once, while abandoned branches and summaries stay hidden. 28 focused and 836 full tests pass; 6 browser journeys have zero errors. Service/API/V2/read-only thread and 8 tmux identities pass after restart | R-015 |
 
 ## Abstraction Gate
 
@@ -172,6 +172,7 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 - NODE-014 implementation evidence: the same transcript now reaches the shared converter with its UUID-scoped raw marker restored after SDK branch reconstruction. The regression preserves the preceding/following assistant output and an ordinary user message with identical text. The two focused files pass 26 tests, the full suite passes 834, and six browser journeys pass with zero page errors; artifacts `/data/tmp/codeck-remote-smoke-WMaFL5`.
 - NODE-014 deployment: release `8542809` is pushed to `origin/main`. `codeck.service` restarted at 2026-09-08 12:13:20 CST with PID 1963317 and zero automatic restarts. Authenticated health and 8-session API return 200, unauthenticated sessions returns 401, owner V2 ready/session snapshot and a 20-turn read-only `codeck` open pass. All 8 tmux IDs, names and creation times are unchanged. No CLI input was sent; the other server was not deployed.
 - NODE-015 pre-release evidence: Qoder's installed SDK drops `Old question`/`Old answer` from a source-shaped compacted chain before the repair. The repaired source asks the SDK to resolve the explicit pre-boundary logical parent, recursively covers two compactions, merges preserved UUIDs once, and caches the immutable prefix. A fork-style boundary and abandoned compaction branch are negative controls. 28 focused and 836 full tests pass; six browser journeys pass with zero page errors, artifacts `/data/tmp/codeck-remote-smoke-bGsG0O`.
+- NODE-015 deployment: release `9372555` is pushed to `origin/main`. `codeck.service` restarted at 2026-09-08 13:44:20 CST with PID 1993433 and zero automatic restarts. Authenticated health and 8-session API return 200, unauthenticated sessions returns 401, owner V2 ready/session snapshot and a 20-turn read-only `codeck` open pass. All 8 tmux IDs, names and creation times are unchanged. No CLI input was sent; the affected other-server Qoder session remains unverified and undeployed.
 
 ## Current verification boundary
 
@@ -180,6 +181,7 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 - NODE-011 is deployed on this server through release `f3d8f6a`. It changes only Remote presentation and scroll-intent arbitration; adapter data, transport, delivery, command and ordinary-terminal paths are unchanged.
 - NODE-013 is deployed on this server through release `cb7d6d5`. Its guard works for Claude's raw transcript path and already-normalized inputs, but Qoder's SDK strips the marker before that guard; NODE-014 reopens A-008 for that provider.
 - NODE-014 is deployed on this server through release `8542809`. Qoder's complete raw graph still reaches the SDK first; only afterward is the UUID-scoped `isCompactSummary` fact restored for the shared guard. Normal history, SDK branch semantics, transport and UI are unchanged. The other server remains unverified and undeployed.
+- NODE-015 is deployed on this server through release `9372555`. Remote display history follows each active compact boundary's explicit pre-compaction logical parent, with immutable-prefix caching and UUID de-duplication. It does not restore abandoned branches or internal summaries and does not change Qoder's runtime context, transport or UI. The affected other server remains unverified and undeployed.
 - I-01 through I-04 and local I-05 checks, including authorized local restart/session survival, are verified within the evidence above. A-004 remains blocked, not accepted: obtain the other server/test sessions and run real send/busy/background/commands/failure/reconnect/scroll/attachments/resume journeys on a phone.
 - No parity claim, durable exactly-once guarantee or performance speedup is established by the fixture test counts.
 - Tool-item completion may update an existing item in place. That is not a new conversation item and is not split into an artificial message solely for chronology.
