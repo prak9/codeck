@@ -81,7 +81,7 @@ test('Qoder hides raw compaction summaries after SDK branch reconstruction witho
     { type: 'assistant', uuid: 'assistant-1', sessionId: id, parentUuid: 'user-1',
       message: { role: 'assistant', content: [{ type: 'text', text: 'Checking.' }] } },
     { type: 'system', subtype: 'compact_boundary', uuid: 'compact-boundary', sessionId: id,
-      parentUuid: 'assistant-1', message: { role: 'system', content: '' },
+      parentUuid: null, logicalParentUuid: 'assistant-1', message: { role: 'system', content: '' },
       compactMetadata: { trigger: 'auto' } },
     user('compact-summary', summary, { parentUuid: 'compact-boundary', isCompactSummary: true,
       isVisibleInTranscriptOnly: true }),
@@ -104,6 +104,80 @@ test('Qoder hides raw compaction summaries after SDK branch reconstruction witho
     ['assistant', 'The fix is complete.'],
     ['user', summary],
     ['assistant', 'Ordinary user text is preserved.'],
+  ]);
+});
+
+test('Qoder retains active history that precedes a compaction root', async t => {
+  const { source, write } = await setup(t);
+  const assistant = (uuid, parentUuid, text) => ({
+    type: 'assistant', uuid, sessionId: id, parentUuid,
+    message: { role: 'assistant', content: [{ type: 'text', text }] },
+  });
+  await write([
+    user('user-old', 'Old question'),
+    assistant('assistant-old', 'user-old', 'Old answer'),
+    user('user-preserved', 'Preserved question', { parentUuid: 'assistant-old' }),
+    assistant('assistant-preserved', 'user-preserved', 'Preserved answer'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'compact-boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'assistant-preserved',
+      message: { role: 'system', content: '' },
+      compactMetadata: { trigger: 'auto', preservedSegment: {
+        headUuid: 'user-preserved', anchorUuid: 'compact-summary', tailUuid: 'assistant-preserved',
+      } } },
+    user('compact-summary', 'Internal summary', { parentUuid: 'compact-boundary',
+      isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+    user('user-preserved', 'Preserved question', { parentUuid: 'compact-summary' }),
+    assistant('assistant-preserved', 'user-preserved', 'Preserved answer'),
+    user('user-new', 'New question', { parentUuid: 'assistant-preserved' }),
+    assistant('assistant-new', 'user-new', 'New answer'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'compact-boundary-2', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'assistant-new', message: { role: 'system', content: '' },
+      compactMetadata: { trigger: 'auto', preservedSegment: {
+        headUuid: 'user-new', anchorUuid: 'compact-summary-2', tailUuid: 'assistant-new',
+      } } },
+    user('compact-summary-2', 'Second internal summary', { parentUuid: 'compact-boundary-2',
+      isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+    user('user-new', 'New question', { parentUuid: 'compact-summary-2' }),
+    assistant('assistant-new', 'user-new', 'New answer'),
+    user('user-latest', 'Latest question', { parentUuid: 'assistant-new' }),
+    assistant('assistant-latest', 'user-latest', 'Latest answer'),
+    { type: 'active-leaf', sessionId: id, leafUuid: 'assistant-latest' },
+  ]);
+  const backend = new SdkAgentBackend({ provider: 'qodercli', label: 'QoderCLI', sessionSource: source,
+    getSessionInfo: async () => ({ sessionId: id, cwd, lastModified: 1, fileSize: 1 }) });
+  t.after(() => backend.close());
+
+  const opened = await backend.openThread(id);
+  assert.deepEqual(opened.thread.turns.flatMap(turn => turn.items).map(item => (
+    item.type === 'userMessage' ? item.content[0].text : item.text
+  )), [
+    'Old question', 'Old answer',
+    'Preserved question', 'Preserved answer',
+    'New question', 'New answer',
+    'Latest question', 'Latest answer',
+  ]);
+});
+
+test('Qoder does not restore history from an abandoned compaction branch', async t => {
+  const { source, write } = await setup(t);
+  await write([
+    user('user-main', 'Main question'),
+    { type: 'assistant', uuid: 'assistant-main', sessionId: id, parentUuid: 'user-main',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Main answer' }] } },
+    { type: 'system', subtype: 'compact_boundary', uuid: 'abandoned-boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'assistant-main', message: { role: 'system', content: '' },
+      compactMetadata: { trigger: 'auto' } },
+    user('abandoned-summary', 'Abandoned summary', { parentUuid: 'abandoned-boundary',
+      isCompactSummary: true }),
+    user('abandoned-user', 'Abandoned question', { parentUuid: 'abandoned-summary' }),
+    user('user-current', 'Current question', { parentUuid: 'assistant-main' }),
+    { type: 'assistant', uuid: 'assistant-current', sessionId: id, parentUuid: 'user-current',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Current answer' }] } },
+    { type: 'active-leaf', sessionId: id, leafUuid: 'assistant-current' },
+  ]);
+
+  assert.deepEqual((await source.getSessionMessages(id, { dir: cwd })).map(message => message.uuid), [
+    'user-main', 'assistant-main', 'user-current', 'assistant-current',
   ]);
 });
 

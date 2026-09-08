@@ -8,7 +8,25 @@ import { stripTerminalInputResidue } from '../public/terminal-input.js';
 const RECEIPT_TTL_MS = 24 * 60 * 60_000;
 const RECEIPT_LIMIT = 1024;
 const CONFIRMATION_WAIT_MS = 30_000;
+const COMPACTION_HISTORY_CACHE_LIMIT = 16;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+function mergeMessages(earlier, later) {
+  const seen = new Set();
+  return [...earlier, ...later].filter((message) => {
+    if (!message?.uuid || !seen.has(message.uuid)) {
+      if (message?.uuid) seen.add(message.uuid);
+      return true;
+    }
+    return false;
+  });
+}
+
+function messageWindow(messages, { offset = 0, limit } = {}) {
+  const start = Math.max(0, offset);
+  return limit !== undefined && limit > 0
+    ? messages.slice(start, start + limit) : start > 0 ? messages.slice(start) : messages;
+}
 
 async function readInputLog(file) {
   try {
@@ -27,20 +45,24 @@ function userText(entry) {
     .map(block => block.text || '').join('').trim());
 }
 
-// Keep SDK branch/compaction semantics for display. Delivery evidence instead
-// comes from the immutable prefix + appended user records, before SDK filtering.
+// Keep SDK branch semantics for display, extending a compacted active chain with
+// the SDK-resolved snapshot that immediately preceded its new root. Delivery
+// evidence instead comes from immutable source records before SDK filtering.
 export class QoderSessionSource {
   constructor({ configDir = process.env.QODER_CONFIG_DIR
     || path.join(process.env.QODER_CLI_HOME || os.homedir(), process.env.QODER_CONFIG_DIR_NAME || '.qoder'), now = Date.now } = {}) {
     this.configDir = configDir;
     this.now = now;
     this.receipts = new Map();
+    this.compactionHistory = new Map();
   }
 
   async #read(threadId, options, capture) {
-    const compactSummaryIds = new Set();
+    const { includeSystemMessages = false, limit, offset, ...sdkOptions } = options || {};
+    let snapshot;
     const messages = await getSessionMessages(threadId, {
-      ...options,
+      ...sdkOptions,
+      includeSystemMessages: true,
       sessionStore: {
         // Let the SDK compute projectKey, including realpath and long-path hashing.
         // The store branch propagates I/O errors instead of converting them to [].
@@ -68,22 +90,63 @@ export class QoderSessionSource {
             }
             offset += Buffer.byteLength(line) + 1;
           }
-          const snapshot = { file, identity, bytes, records };
-          for (const { entry } of records) {
-            if (entry.isCompactSummary === true && typeof entry.uuid === 'string') {
-              compactSummaryIds.add(entry.uuid);
-            }
-          }
+          snapshot = { file, identity, bytes, records };
           capture?.(snapshot);
           this.#observe(threadId, snapshot);
           return records.map(record => record.entry);
         },
       },
     });
+    const expanded = snapshot
+      ? await this.#restoreCompactionHistory(threadId, sdkOptions, snapshot, messages) : messages;
+    const compactSummaryIds = new Set((snapshot?.records || [])
+      .filter(({ entry }) => entry.isCompactSummary === true && typeof entry.uuid === 'string')
+      .map(({ entry }) => entry.uuid));
     // The SDK must see the complete graph so it can resolve branches and compaction
     // boundaries, but its normalized SessionMessage drops this raw metadata.
-    return messages.map(message => compactSummaryIds.has(message.uuid)
-      ? { ...message, isCompactSummary: true } : message);
+    const normalized = expanded.map(message => compactSummaryIds.has(message.uuid)
+      ? { ...message, isCompactSummary: true } : message)
+      .filter(message => includeSystemMessages || message.type !== 'system');
+    return messageWindow(normalized, { limit, offset });
+  }
+
+  async #restoreCompactionHistory(threadId, sdkOptions, snapshot, messages, seen = new Set()) {
+    let expanded = messages;
+    for (const boundary of messages.filter(message => (
+      message.type === 'system' && message.subtype === 'compact_boundary'
+    ))) {
+      if (seen.has(boundary.uuid)) continue;
+      const index = snapshot.records.findLastIndex(({ entry }) => entry.uuid === boundary.uuid);
+      const record = index >= 0 ? snapshot.records[index] : null;
+      const parentUuid = record?.entry?.logicalParentUuid;
+      if (typeof parentUuid !== 'string' || !snapshot.records.slice(0, index)
+        .some(({ entry }) => entry.uuid === parentUuid)) continue;
+      const key = [threadId, snapshot.identity, boundary.uuid, record.offset,
+        hash(snapshot.bytes.subarray(0, record.offset))].join('\0');
+      let history = this.compactionHistory.get(key);
+      if (history) {
+        this.compactionHistory.delete(key);
+        this.compactionHistory.set(key, history);
+      } else {
+        const prefix = snapshot.records.slice(0, index).map(({ entry }) => entry);
+        history = await getSessionMessages(threadId, {
+          ...sdkOptions,
+          includeSystemMessages: true,
+          sessionStore: { load: async () => [...prefix, {
+            type: 'active-leaf', sessionId: threadId, leafUuid: parentUuid, explicit: true,
+          }] },
+        });
+        history = await this.#restoreCompactionHistory(
+          threadId, sdkOptions, snapshot, history, new Set([...seen, boundary.uuid]),
+        );
+        this.compactionHistory.set(key, history);
+        while (this.compactionHistory.size > COMPACTION_HISTORY_CACHE_LIMIT) {
+          this.compactionHistory.delete(this.compactionHistory.keys().next().value);
+        }
+      }
+      expanded = mergeMessages(history, expanded);
+    }
+    return expanded;
   }
 
   getSessionMessages(threadId, options) { return this.#read(threadId, options); }
@@ -187,5 +250,8 @@ export class QoderSessionSource {
     }
   }
 
-  close() { this.receipts.clear(); }
+  close() {
+    this.receipts.clear();
+    this.compactionHistory.clear();
+  }
 }
