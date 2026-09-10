@@ -735,6 +735,20 @@ function websocketProtocolToken(value) {
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
 
+function syncTerminalSessionLocation(session) {
+  const params = new URLSearchParams(location.search);
+  if (session) params.set('session', session);
+  else params.delete('session');
+  const query = params.toString();
+  history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash || ''}`);
+}
+
+function terminalSessionForReconnect() {
+  if (state.sessions.some((session) => session.name === state.active)) return state.active;
+  const requested = new URLSearchParams(location.search).get('session') || '';
+  return state.sessions.some((session) => session.name === requested) ? requested : '';
+}
+
 async function refreshSessions() {
   const requestId = ++state.sessionsRefreshSeq;
   const previousActiveSession = state.sessions.find((item) => item.name === state.active);
@@ -1351,6 +1365,7 @@ function markActiveSession(session) {
 
 async function connect(session) {
   if (state.active === session && state.socket && state.socket.readyState <= WebSocket.OPEN) {
+    syncTerminalSessionLocation(session);
     $('#sidebar').classList.remove('open');
     $('#menuButton').setAttribute('aria-expanded', 'false');
     if (state.socket.readyState === WebSocket.OPEN && state.terminalInputReady) focusTerminalInput();
@@ -1377,6 +1392,7 @@ async function connect(session) {
   if (!reuseSocket) state.socket?.close();
   if (!reuseSocket) state.socket = null;
   state.active = session;
+  syncTerminalSessionLocation(session);
   markActiveSession(session);
   void refreshActiveAgentOutput();
   $('#emptyState').hidden = true;
@@ -1568,6 +1584,7 @@ async function renameSession(currentName) {
     });
     if (state.active === currentName) {
       state.active = newName;
+      syncTerminalSessionLocation(newName);
     }
     await refreshSessions();
     if (state.active === newName) {
@@ -1638,14 +1655,15 @@ $('#viewModeButton').addEventListener('click', () => {
 });
 
 $('#reconnectTerminalButton').addEventListener('click', () => {
-  if (!state.active) return;
+  const session = terminalSessionForReconnect();
+  if (!session) return setConnectionMessage('未找到要重连的会话，请从左侧重新选择。');
   // Reconnect only on an explicit click: tmux attach can detach another client.
   // Never automatically replay a draft or take over again after a normal detach.
   $('#reconnectTerminalButton').disabled = true;
   const socket = state.socket;
   state.socket = null;
   socket?.close();
-  void connect(state.active);
+  void connect(session);
 });
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
@@ -1827,6 +1845,7 @@ $('#killButton').addEventListener('click', async () => {
   await api(`/api/sessions/${encodeURIComponent(state.active)}`, { method: 'DELETE' });
   state.socket?.close();
   state.active = null;
+  syncTerminalSessionLocation(null);
   $('#terminalView').hidden = true;
   $('#emptyState').hidden = false;
   await refreshSessions();
@@ -1925,8 +1944,8 @@ $('#sessionList').addEventListener('keydown', (event) => {
 syncSessionVisibilityButton();
 if (state.token) refreshSessions().then(() => {
   // 从对话模式切过来时带着会话名; 只认真实存在的那个, 别让 URL 里的任意字符串生效。
-  const requested = displayParams.get('session') || '';
-  if (requested && state.sessions.some((session) => session.name === requested)) return connect(requested);
+  const requested = terminalSessionForReconnect();
+  if (requested) return connect(requested);
   if (state.openedShareLink && state.sessions.length === 1) connect(state.sessions[0].name);
 }).catch((error) => {
   // A persisted token that the server no longer accepts has to go, or every reload

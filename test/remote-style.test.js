@@ -334,7 +334,8 @@ test('leaving the conversation for the terminal keeps the session you were in', 
   assert.match(remoteJs, /a\[data-terminal-mode\]/);
   assert.match(remoteJs, /\/\?session=\$\{encodeURIComponent\(name\)\}/);
   // 终端页只认真实存在的会话名, 不让 URL 里的任意字符串生效。
-  assert.match(appJs, /state\.sessions\.some\(\(session\) => session\.name === requested\)\) return connect\(requested\)/);
+  assert.match(appJs, /return state\.sessions\.some\(\(session\) => session\.name === requested\) \? requested : '';/);
+  assert.match(appJs, /const requested = terminalSessionForReconnect\(\);\s*if \(requested\) return connect\(requested\);/);
 });
 
 test('the session travels in both directions between the two modes', () => {

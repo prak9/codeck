@@ -31,6 +31,14 @@ test('normal mode enters a created session before refreshing the full session li
   assert.ok(refresh > connect, 'a cold session-list scan cannot block terminal attachment');
 });
 
+test('normal mode persists and restores the selected session for refresh and manual reconnect', () => {
+  assert.match(appJs, /state\.active === session[\s\S]{0,200}?syncTerminalSessionLocation\(session\);/);
+  assert.match(appJs, /state\.active = session;\s*syncTerminalSessionLocation\(session\);/);
+  assert.match(appJs, /const requested = terminalSessionForReconnect\(\);/);
+  assert.match(appJs, /const session = terminalSessionForReconnect\(\);[\s\S]*?void connect\(session\);/);
+  assert.match(appJs, /state\.active = null;\s*syncTerminalSessionLocation\(null\);/);
+});
+
 test('normal session polling does not refit an unchanged desktop terminal', () => {
   const start = appJs.indexOf('async function refreshSessions()');
   const end = appJs.indexOf('\n\nfunction connectedStateLabel()', start);

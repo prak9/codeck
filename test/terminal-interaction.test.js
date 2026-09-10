@@ -22,6 +22,7 @@ function deferred() {
 function fixture() {
   const messages = [];
   const sent = [];
+  const replacedLocations = [];
   const nodes = new Map();
   const $ = (selector) => {
     if (!nodes.has(selector)) nodes.set(selector, {
@@ -34,14 +35,23 @@ function fixture() {
   const socket = { readyState: 1, send: (raw) => sent.push(JSON.parse(raw)), close() { this.readyState = 3; } };
   const state = {
     active: 'a', connectionId: 1, socket, canManage: true, canWrite: true,
-    terminalInputReady: true, sessions: [], canSwitchSession: true,
+    terminalInputReady: true, sessions: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], canSwitchSession: true,
     terminal: { focus() {}, cols: 80, rows: 24, write(_data, done) { done(); } },
   };
   const listeners = new Map();
   $('.mobile-keybar').addEventListener = (type, handler) => listeners.set(type, handler);
   const context = vm.createContext({
     state, $, WebSocket: { OPEN: 1 }, URLSearchParams, TextDecoder, setTimeout, clearTimeout,
-    location: { protocol: 'http:', host: 'localhost' },
+    location: { protocol: 'http:', host: 'localhost', pathname: '/', search: '', hash: '' },
+    history: {
+      replaceState(_state, _title, next) {
+        replacedLocations.push(next);
+        const url = new URL(next, 'http://localhost');
+        context.location.pathname = url.pathname;
+        context.location.search = url.search;
+        context.location.hash = url.hash;
+      },
+    },
     ...terminalUtils,
     ensureTerminal: () => state.terminal,
     resetTerminalInput: async () => {},
@@ -52,17 +62,36 @@ function fixture() {
     shellQuotePath: (path) => `'${path}'`, hasFileDrag: () => true,
     navigator: { clipboard: {} },
   });
-  for (const name of ['captureTerminalTarget', 'isCurrentTerminalTarget', 'rejectTerminalSubmit', 'requestTerminalSubmit', 'showTerminalDisconnect', 'pasteImages', 'handleTerminalDrop', 'connect']) {
+  for (const name of ['captureTerminalTarget', 'isCurrentTerminalTarget', 'rejectTerminalSubmit', 'requestTerminalSubmit', 'showTerminalDisconnect', 'syncTerminalSessionLocation', 'terminalSessionForReconnect', 'pasteImages', 'handleTerminalDrop', 'connect']) {
     vm.runInContext(functionSource(name), context);
   }
   const clickStart = source.indexOf("$('.mobile-keybar').addEventListener('click', async");
   vm.runInContext(source.slice(clickStart, source.indexOf("\n$('#shareButton')", clickStart)), context);
-  return { context, state, socket, sent, messages, $, listeners };
+  return { context, state, socket, sent, messages, replacedLocations, $, listeners };
 }
 
 const imageEvent = () => ({
   clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => ({ type: 'image/png' }) }] },
   preventDefault() {}, stopImmediatePropagation() {},
+});
+
+test('the active terminal session survives refresh without dropping display parameters', () => {
+  const f = fixture();
+  f.context.location.search = '?view=readable&fontSize=15';
+  f.context.syncTerminalSessionLocation('research');
+  assert.equal(f.replacedLocations.at(-1), '/?view=readable&fontSize=15&session=research');
+  f.context.syncTerminalSessionLocation(null);
+  assert.equal(f.replacedLocations.at(-1), '/?view=readable&fontSize=15');
+});
+
+test('manual reconnect recovers a valid URL session when in-memory state was lost', () => {
+  const f = fixture();
+  f.state.active = null;
+  f.state.sessions = [{ name: 'research' }];
+  f.context.location.search = '?session=research';
+  assert.equal(f.context.terminalSessionForReconnect(), 'research');
+  f.context.location.search = '?session=missing';
+  assert.equal(f.context.terminalSessionForReconnect(), '');
 });
 
 function mobileKeyFixture() {
