@@ -16,6 +16,31 @@ const footer = [
   ' Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project',
 ].join('\n');
 
+test('Qoder wrapped empty composer does not leak terminal controls into the final reply', () => {
+  const reply = '修复的当前分支并推送到远端';
+  for (const prompt of [
+    ' * Type your message or\n   @path/to/file',
+    ' > Type your\n   message or\n   @path/to/file',
+    ' * Type\n   your message or @path/to/file',
+  ]) {
+    const screen = [reply, '────────────────────────────────────────',
+      ' YOLO Shift+Tab to Auto Mode', ' 1 AGENTS.md file · 66 skills',
+      '────────────────────────────────────────', prompt,
+      '────────────────────────────────────────', ' Ultimate Model · /ap...ion',
+    ].join('\n');
+    for (const id of [null, 'thread-1']) {
+      assert.equal(resolveAgentSessionLiveOutput({ kind: 'qodercli', id }, false,
+        { busy: false, background: false, animating: false }, screen), reply);
+    }
+  }
+});
+
+test('Qoder preserves ordinary wrapped placeholder text in model output', () => {
+  const reply = 'The placeholder says:\nType your message or\n@path/to/file\nThis is part of the explanation.';
+  assert.equal(resolveAgentSessionLiveOutput({ kind: 'qodercli', id: null }, false,
+    { busy: false, background: false, animating: false }, `${reply}\n${footer}`), reply);
+});
+
 // IMG_1345: Qoder's context-summary badge, separate from the transient wait item.
 const backgroundFooter = [
   '────────────────────────────────────────',

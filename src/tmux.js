@@ -386,7 +386,17 @@ function qoderLiveOutput(rows, end) {
 }
 
 function qoderIdleOutput(rows) {
-  const composerRow = rows.findLastIndex((line) => /Type your message or @path\/to\/file/i.test(line));
+  const composerRow = rows.findLastIndex((line, index) => {
+    if (/Type your message or @path\/to\/file/i.test(line)) return true;
+    // Narrow Qoder panes wrap the placeholder. Require the complete widget text
+    // between separators so wrapped explanation text is not a composer boundary.
+    if (!/^\s*[>*]\s+Type(?:\s|$)/u.test(line)) return false;
+    const previous = rows.slice(0, index).findLast(row => row.trim());
+    if (!previous || !SCREEN_SEPARATOR.test(previous.trim())) return false;
+    const end = rows.findIndex((row, offset) => offset > index && SCREEN_SEPARATOR.test(row.trim()));
+    return end > index && rows.slice(index, end).map(row => row.trim()).join(' ')
+      .replace(/^[>*]\s+/u, '') === 'Type your message or @path/to/file';
+  });
   let end = composerRow >= 0 ? composerRow - 1 : rows.findLastIndex((line) => line.trim());
   if (composerRow >= 0) {
     const boundary = rows.slice(0, composerRow)
