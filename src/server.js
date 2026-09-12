@@ -342,15 +342,19 @@ const THREAD_STREAM_TURN_WINDOW = 20;
 function windowedThread(result, limit = THREAD_STREAM_TURN_WINDOW) {
   const turns = result?.thread?.turns;
   if (!Array.isArray(turns) || turns.length <= limit) return result;
+  const kept = turns.slice(-limit);
   return {
     ...result,
-    thread: { ...result.thread, truncated: true, turns: turns.slice(-limit) },
+    thread: { ...result.thread, truncated: true, turns: kept, oldestTurnId: kept[0]?.id || null },
   };
 }
 
 const threadFeed = createSnapshotFeed(
   async ({ provider, threadId, tmuxSession }) => windowedThread(withPaneExcerpt(
-    await agentRegistry.openThread(provider, threadId, { readOnly: true, turnLimit: THREAD_STREAM_TURN_WINDOW }), tmuxSession,
+    await agentRegistry.openThread(provider, threadId, {
+      readOnly: true, turnLimit: THREAD_STREAM_TURN_WINDOW,
+      deferCompactionRestore: provider === 'qodercli',
+    }), tmuxSession,
   )),
   {
     epoch: protocolEpoch,

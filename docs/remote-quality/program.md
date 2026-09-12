@@ -3,15 +3,15 @@
 - Overall status: `阻塞`
 - Profile: `Lite`
 - Active plan node: `NODE-004`
-- Latest evidence: `NODE-016 released ordinary-terminal picker input and lossless Claude transcript fallback as f54a8c0; 839/839 tests and 6 browser journeys pass. System service PID 2032151, API/V2/read-only thread and all 8 tmux sessions pass after restart.`
+- Latest evidence: `NODE-017 fixes Qoder asynchronous history restoration against a163574; 852 tests and 6 browser journeys pass. User-authorized local deployment on 2026-09-12 passes API/V2/read-only open and preserves all 8 tmux sessions; details below.`
 - Current blocker: `A-004 requires the user's other server, authenticated Claude/Qoder test sessions and physical-phone journeys; none are available to this executor. Owner: user; unblock with an accessible SSH host/test-session names or target-side verification.`
 - Next step: `NODE-004: update and exercise the affected Qoder session on the other server, then complete the remaining live send/status/command/failure/reconnect/scroll/attachment/resume journeys. G-007 half-open recovery remains unresolved.`
 - Next checkpoint: `None`
 - Next human decision: `None`
 - Owner: `Codex`
-- Last updated: `2026-09-08`
+- Last updated: `2026-09-12`
 - Clean state: `Not due`
-- Last clean: `2026-09-08: NODE-016 local release evidence reconciled; other-server live behavior, A-004 and G-007 remain explicitly unverified or unresolved`
+- Last clean: `2026-09-12: NODE-017 local verification distinguished from earlier releases; other-server and physical-phone acceptance A-004 remains unavailable`
 
 ## Outcome
 
@@ -44,6 +44,7 @@
 | A-009 | Qoder compaction does not make older Remote history unreachable | Source-shaped Qoder boundary/summary/preserved-segment regression through the installed SDK, including repeated records and active leaf | Pre-compaction active history, preserved tail and post-compaction messages remain visible once each and in source order; internal summaries and abandoned branches remain hidden |
 | A-010 | Native CLI dialogs remain operable from the ordinary-terminal composer | Real Qoder `/model` probe plus composer key-action regression | Non-empty Enter sends the local draft; empty Enter reaches an already-open picker/confirmation/shell prompt; Shift+Enter and shortcuts retain their existing behavior |
 | A-011 | Claude display history never silently degrades to its post-compaction active chain | Custom `CLAUDE_CONFIG_DIR`, temporary JSONL-read failure and lossy-SDK-fallback regressions | Resolve the complete transcript from the configured Claude root; retain a previously complete cache on transient failure and report an explicit error on first-load failure instead of presenting an incomplete tail |
+| A-012 | Qoder latest reads and sending remain responsive while old history is restored | Installed-SDK fixtures, blocked-history concurrency tests, server window anchor regression, full suite and browser journeys | Cold open advertises older history; paging reaches pre-compaction turns; pending history cannot block live reads or sends, poison the complete cache, replace the live tail, or change pagination anchors |
 
 ## Plan
 
@@ -65,6 +66,7 @@
 | NODE-014 | `完成` | Close NODE-013's Qoder production-path gap without changing SDK branch reconstruction or ordinary history | A-008 and A-002; real Qoder SDK/session-store regression must fail before and pass after, followed by focused/full tests and release health | Release `8542809` pushed to `origin/main`; production-path regression fails before and passes after, 26 focused and 834 full tests pass, and 6 browser journeys have zero errors. Service PID 1963317, API/V2/read-only thread checks and all 8 tmux identities pass after restart | R-014 |
 | NODE-015 | `完成` | Restore Qoder history across compaction roots while preserving active-branch and summary-filtering semantics | A-009, A-008 and A-002; source-shaped regression must fail before and pass after, then focused/full/browser and release health checks | Release `9372555` pushed to `origin/main`; fork and consecutive compaction restore old/current history once, while abandoned branches and summaries stay hidden. 28 focused and 836 full tests pass; 6 browser journeys have zero errors. Service/API/V2/read-only thread and 8 tmux identities pass after restart | R-015 |
 | NODE-016 | `完成` | Restore ordinary-terminal Enter ownership for native dialogs and make Claude compaction history fail visibly instead of falling back to a lossy SDK tail | A-010, A-011 and A-002; real Qoder probe, failing-then-passing regressions, full/browser and release health checks | Release `f54a8c0` pushed to `origin/main`; 839 tests and 6 browser journeys pass with zero errors. System service PID 2032151, authenticated API, V2 session/openThread, deployed asset versions and all 8 tmux identities pass after restart | R-016 |
+| NODE-017 | `完成` | Restore Qoder historical prefixes asynchronously while preserving latest-read, send and pagination behavior | A-009, A-012 and A-002 | `test/qoder-session-source.test.js`: hidden-boundary, deferred read/send, cold-open and stable/window-anchor regressions fail before fixes and pass after. 852/852 tests pass (`/tmp/codeck-release-tests.log`); 6 browser journeys pass; scoped source benchmark and user-authorized local deployment evidence below | R-017 |
 
 ## Abstraction Gate
 
@@ -104,6 +106,7 @@
 | R-014 | NODE-014 | Qoder's real `getSessionMessages` output omits `isCompactSummary` even though the raw JSONL record carries it; the NODE-013 converter fixture bypassed that normalization boundary | A shared converter test cannot prove provider metadata survives its adapter; passing browser fixtures without a compaction source also cannot establish the behavior | Keep the complete raw graph as SDK input and preserve UUID identity through normalization | For provider-specific metadata, exercise the actual adapter/SDK boundary and restore only explicit raw facts after authoritative branch reconstruction |
 | R-015 | NODE-015 | Source-shaped installed-SDK fixture returns only the preserved tail after `compact_boundary`; the older active chain remains in JSONL behind `logicalParentUuid` | Hiding the summary fixed presentation but did not make the SDK's context-oriented active chain a complete display-history source | Let the SDK resolve both the current chain and the immutable pre-compaction snapshot; merge by stable UUID and cache the verified prefix | Context history and display history diverge at compaction; extend only from an active boundary's explicit logical parent, and test repeated compaction plus an abandoned branch |
 | R-016 | NODE-016 | Qoder 1.1.45 opens `/model`, but the browser consumed Enter after clearing its local textarea; Claude's SDK returns only the active parent chain when the complete JSONL cannot be found | Command launch was working, while selection input was not; a fallback documented as complete was semantically incomplete after compaction | Keep non-empty drafts locally composed, pass empty Enter to the terminal owner, and prefer explicit history unavailability over silent data loss | Test ownership transitions at the browser/terminal boundary and distinguish a complete display-history source from a context-oriented SDK projection |
+| R-017 | NODE-017 | Installed-SDK hidden-boundary test, blocked-history read/send probes and assistant-only/window pagination regressions | An async function alone does not remove history from the critical path; shared in-flight loads still block live reads, mutable readiness can cache partial data, and restored context can change turn anchors | Keep SDK active-branch resolution, immutable source receipts, stable IDs and explicit history paging | Cache only historical prefixes; mark completeness on each returned snapshot; separate full/deferred load coalescing; verify anchors through actual cold-open, stream-window and history consumers |
 
 ## Three-layer target contract
 
@@ -181,6 +184,10 @@ Each iteration is an independently reviewable slice; the Plan table owns its sta
 - NODE-016 deployment: release `f54a8c0` is pushed to `origin/main`. The system-level `codeck.service` restarted at 2026-09-08 16:04:24 CST with PID 2032151 and zero automatic restarts; the duplicate inactive user-level unit remains stopped. Authenticated health and 8-session API return 200, unauthenticated sessions returns 401, owner V2 ready/session snapshot and a 20-turn read-only `codeck` open pass. Cookie login serves `app.js?v=107` and `terminal-compose.js?v=6`. All 8 tmux IDs, names and creation times are unchanged. No input was sent into a user's CLI; the other server was not deployed.
 
 ## Current verification boundary
+
+- NODE-017 benchmark: local installed-SDK synthetic JSONL, 3,158,119 bytes, 4,800 messages and 5 compact boundaries, three fresh-source runs. HEAD `a163574` first read: 202.7/160.6/156.4 ms; candidate deferred first read: 62.5/60.7/59.2 ms. Both eventually return all 4,800 messages; candidate first returns the 800-message active chain. This measures source loading only, not phone/network latency. Initial file parsing and each SDK reconstruction still use the Node event loop; yielding between boundaries does not provide worker-thread isolation.
+- NODE-017 browser artifacts: `/data/tmp/codeck-remote-smoke-cXMKmp`; all three providers at 390×844 and 1365×900 complete history/latest/live-output/reading-position/reconnect/command/attachment/receipt journeys with zero errors. Fixture journeys do not establish other-server authenticated CLI parity.
+- NODE-017 deployment: user requested commit/push/deployment. Local `codeck.service` restarted at 2026-09-12 21:51:07 CST, PID 3709523, active/running with zero automatic restarts. Authenticated health/sessions return 200, unauthenticated sessions 401; V2 ready/session snapshot/read-only codeck open (20 turns)/thread snapshot pass. All 8 tmux IDs/names/creation times are unchanged, and no CLI input was sent. Other servers were not deployed.
 
 - NODE-009 deployed and pushed source revision `109ad60`; NODE-010 subsequently updates the server-side Qoder status producer on this server. No other-server rollout is claimed.
 - NODE-010 is deployed with the user's explicit release authorization. Only the Qoder screen-status producer plus tests/this plan changed; input transport, receipt handling, stream protocol and UI source are unchanged.

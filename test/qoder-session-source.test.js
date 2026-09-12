@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { QoderSessionSource } from '../src/qoder-session-source.js';
 import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
+import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
+import { EventEmitter } from 'node:events';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const cwd = '/qoder-test';
@@ -201,6 +203,162 @@ test('Qoder does not restore history from an abandoned compaction branch', async
   assert.deepEqual((await source.getSessionMessages(id, { dir: cwd })).map(message => message.uuid), [
     'user-main', 'assistant-main', 'user-current', 'assistant-current',
   ]);
+});
+
+test('Qoder deferred restoration returns the live tail first and reuses only historical prefixes', async t => {
+  const { source, write, append } = await setup(t);
+  await write([
+    user('old', 'Old question'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'old', message: { role: 'system', content: '' } },
+    user('summary', 'Internal summary', { parentUuid: 'boundary', isCompactSummary: true }),
+    user('latest', 'Latest question', { parentUuid: 'summary' }),
+  ]);
+  const tail = await source.getSessionMessages(id, { dir: cwd, deferCompactionRestore: true });
+  assert.equal(tail.historyPending, true);
+  assert.deepEqual(tail.map(m => m.uuid), ['summary', 'latest']);
+  const state = source.compactionRestoreState.get(id);
+  await state.inFlight;
+  await append([user('newer', 'New input', { parentUuid: 'latest' })]);
+  const complete = await source.getSessionMessages(id, { dir: cwd, deferCompactionRestore: true });
+  assert.equal(source.compactionRestoreState.get(id), state, 'appending live output must not restart historical work');
+  assert.deepEqual(complete.map(m => m.uuid), ['old', 'summary', 'latest', 'newer']);
+  assert.equal(complete.historyPending, false);
+  // Rewriting a boundary's parent must invalidate both restored-state and prefix caches.
+  await write([
+    user('old', 'Old question'),
+    user('alternative', 'Alternative history'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'alternative', message: { role: 'system', content: '' } },
+    user('summary', 'Internal summary', { parentUuid: 'boundary', isCompactSummary: true }),
+    user('latest', 'Latest question', { parentUuid: 'summary' }),
+  ]);
+  await source.getSessionMessages(id, { dir: cwd, deferCompactionRestore: true });
+  assert.notEqual(source.compactionRestoreState.get(id), state);
+  const pending = source.compactionRestoreState.get(id).inFlight;
+  source.close();
+  assert.deepEqual((await pending).map(m => m.uuid), ['alternative']);
+  assert.equal(source.compactionRestoreState.size, 0);
+  assert.equal(source.compactionHistory.size, 0, 'background completion cannot repopulate closed caches');
+});
+
+test('Qoder send preparation does not wait for compaction restoration', async t => {
+  const { source, write } = await setup(t);
+  await write([
+    user('old', 'Old question'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'old', message: { role: 'system', content: '' } },
+    user('latest', 'Latest question', { parentUuid: 'boundary' }),
+  ]);
+  await source.getSessionMessages(id, { dir: cwd, deferCompactionRestore: true });
+  const state = source.compactionRestoreState.get(id);
+  await state.inFlight;
+  state.ready = false;
+  let release;
+  state.inFlight = new Promise(resolve => { release = resolve; });
+  t.after(() => release([]));
+  const baseline = await Promise.race([
+    source.prepare({ threadId: id, cwd, text: 'Continue' }),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('send waited for history')), 1000);
+      timer.unref();
+      t.after(() => clearTimeout(timer));
+    }),
+  ]);
+  assert.ok(baseline.offset > 0);
+  assert.ok(source.compactionRestoreState.get(id).inFlight);
+  const pending = source.compactionRestoreState.get(id).inFlight;
+  source.close();
+  release([]);
+  await pending;
+  assert.equal(source.compactionRestoreState.size, 0, 'completed background work cannot resurrect closed state');
+});
+
+test('Qoder Remote cold open advertises old history and paging cannot block live reads', async t => {
+  const { source, write } = await setup(t);
+  await write([
+    user('old', 'Old question'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'old', message: { role: 'system', content: '' } },
+    user('latest', 'Latest question', { parentUuid: 'boundary' }),
+  ]);
+  const backend = new SdkAgentBackend({ provider: 'qodercli', label: 'QoderCLI', sessionSource: source,
+    getSessionInfo: async () => ({ sessionId: id, cwd, lastModified: 1, fileSize: 1 }) });
+  const registry = new AgentRegistry({ qodercli: backend });
+  t.after(() => registry.close());
+  const socket = new EventEmitter();
+  socket.readyState = 1;
+  const reply = new Promise(resolve => { socket.send = raw => {
+    const message = JSON.parse(raw);
+    if (message.id === 1) resolve(message);
+  }; });
+  const hub = new AgentHub(registry, { threadFeed: { subscribe: () => () => {} } });
+  hub.handleConnection(socket);
+  socket.emit('message', JSON.stringify({ id: 1, type: 'openThread', provider: 'qodercli', threadId: id, readOnly: true }));
+  const opened = await reply;
+  assert.equal(opened.ok, true);
+  assert.equal(opened.result.thread.truncated, true);
+  assert.deepEqual(opened.result.thread.turns.map(turn => turn.id), ['turn-latest']);
+  const state = source.compactionRestoreState.get(id);
+  const history = await state.inFlight;
+  // A deterministic slow historical load must not be shared with the live lane.
+  state.ready = false;
+  let release;
+  state.inFlight = new Promise(resolve => { release = resolve; });
+  t.after(() => release(history));
+  const pagePromise = registry.loadThreadHistory('qodercli', id, { beforeTurnId: 'turn-latest', limit: 20 });
+  await new Promise(resolve => setImmediate(resolve));
+  const live = await Promise.race([
+    backend.openThread(id, { deferCompactionRestore: true }),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('live read waited for pagination')), 1000);
+      timer.unref();
+      t.after(() => clearTimeout(timer));
+    }),
+  ]);
+  assert.equal(live.thread.truncated, true);
+  release(history);
+  const page = await pagePromise;
+  assert.deepEqual(page.turns.map(turn => turn.id), ['turn-old']);
+  assert.equal(page.truncated, false);
+  const full = await backend.openThread(id, { deferCompactionRestore: true });
+  assert.deepEqual(full.thread.turns.map(turn => turn.id), ['turn-old', 'turn-latest']);
+  assert.equal(Boolean(full.thread.truncated), false, 'partial cache cannot hide restored history at the same revision');
+});
+
+test('Qoder post-summary assistant keeps its pagination anchor after history restoration', async t => {
+  const { source, write } = await setup(t);
+  await write([
+    user('old', 'Old question'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'old', message: { role: 'system', content: '' } },
+    user('summary', 'Internal summary', { parentUuid: 'boundary', isCompactSummary: true }),
+    { type: 'assistant', uuid: 'answer', parentUuid: 'summary', sessionId: id,
+      message: { role: 'assistant', content: 'Continued answer' } },
+  ]);
+  const backend = new SdkAgentBackend({ provider: 'qodercli', label: 'QoderCLI', sessionSource: source,
+    getSessionInfo: async () => ({ sessionId: id, cwd, lastModified: 1, fileSize: 1 }) });
+  const registry = new AgentRegistry({ qodercli: backend });
+  t.after(() => registry.close());
+  const { thread } = await backend.openThread(id, { deferCompactionRestore: true });
+  const anchor = thread.oldestTurnId;
+  const page = await registry.loadThreadHistory('qodercli', id, { beforeTurnId: anchor, limit: 20 });
+  assert.deepEqual(page.turns.map(turn => turn.id), ['turn-old']);
+  const complete = await backend.openThread(id);
+  assert.deepEqual(complete.thread.turns.at(-1), thread.turns[0]);
+});
+
+test('server stream window uses a visible pagination anchor while Qoder history is pending', async () => {
+  const server = await fs.readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+  const start = server.indexOf('function windowedThread(');
+  const end = server.indexOf('\nconst threadFeed', start);
+  assert.ok(start >= 0 && end > start);
+  const window = new Function('THREAD_STREAM_TURN_WINDOW',
+    `${server.slice(start, end)}; return windowedThread;`)(20);
+  const turns = Array.from({ length: 30 }, (_, index) => ({ id: `turn-${index}`, items: [] }));
+  const result = window({ thread: { turns, truncated: true, oldestTurnId: 'turn-0' } });
+  assert.equal(result.thread.oldestTurnId, result.thread.turns[0].id);
+  assert.equal(result.thread.turns.length, 20);
 });
 
 test('Qoder exposes an unresolved receipt after a bounded wait and can still confirm it later', async t => {

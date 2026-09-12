@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import { setImmediate as yieldToIO } from 'node:timers/promises';
 import { getSessionMessages } from '@qoder-ai/qoder-agent-sdk';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 
@@ -9,6 +10,7 @@ const RECEIPT_TTL_MS = 24 * 60 * 60_000;
 const RECEIPT_LIMIT = 1024;
 const CONFIRMATION_WAIT_MS = 30_000;
 const COMPACTION_HISTORY_CACHE_LIMIT = 16;
+const COMPACTION_RESTORE_STATE_LIMIT = 16;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function mergeMessages(earlier, later) {
@@ -31,12 +33,14 @@ function messageWindow(messages, { offset = 0, limit } = {}) {
 function buildCompactContext(records) {
   const compactSummaryIds = new Set();
   const boundaryByUuid = new Map();
-  const uuidToIndex = new Map();
+  const uuidToIndexes = new Map();
   for (let index = 0; index < records.length; index += 1) {
     const entry = records[index]?.entry;
     const uuid = typeof entry?.uuid === 'string' ? entry.uuid : null;
     if (!uuid) continue;
-    uuidToIndex.set(uuid, index);
+    const list = uuidToIndexes.get(uuid);
+    if (list) list.push(index);
+    else uuidToIndexes.set(uuid, [index]);
     if (entry?.isCompactSummary === true) compactSummaryIds.add(uuid);
     if (entry?.type === 'system' && entry?.subtype === 'compact_boundary') {
       boundaryByUuid.set(uuid, {
@@ -45,13 +49,18 @@ function buildCompactContext(records) {
       });
     }
   }
-  return { records, compactSummaryIds, boundaryByUuid, uuidToIndex };
+  return { records, compactSummaryIds, boundaryByUuid, uuidToIndexes };
+}
+
+function latestIndexBefore(indexes, beforeIndex) {
+  if (!Array.isArray(indexes) || !Number.isSafeInteger(beforeIndex)) return null;
+  for (let i = indexes.length - 1; i >= 0; i -= 1) {
+    if (indexes[i] < beforeIndex) return indexes[i];
+  }
+  return null;
 }
 
 function activeCompactBoundaryIds(messages, context) {
-  const activeIds = new Set(
-    (Array.isArray(messages) ? messages : []).map((message) => message?.uuid).filter((uuid) => typeof uuid === 'string'),
-  );
   const activeBoundaryIds = new Set();
   const boundaries = context?.boundaryByUuid || new Map();
   for (const message of Array.isArray(messages) ? messages : []) {
@@ -61,8 +70,10 @@ function activeCompactBoundaryIds(messages, context) {
       activeBoundaryIds.add(messageUuid);
       continue;
     }
-    const parentBoundaryUuid = typeof message?.parentUuid === 'string' ? message.parentUuid : null;
-    if (message?.isCompactSummary === true && activeIds.has(messageUuid)
+    const indexes = context?.uuidToIndexes.get(messageUuid);
+    const raw = context?.records[indexes?.at(-1)]?.entry;
+    const parentBoundaryUuid = raw?.parentUuid;
+    if (raw?.isCompactSummary === true
       && parentBoundaryUuid && boundaries.has(parentBoundaryUuid)) {
       activeBoundaryIds.add(parentBoundaryUuid);
     }
@@ -97,10 +108,18 @@ export class QoderSessionSource {
     this.now = now;
     this.receipts = new Map();
     this.compactionHistory = new Map();
+    this.compactionRestoreState = new Map();
+    this.closed = false;
   }
 
   async #read(threadId, options, capture) {
-    const { includeSystemMessages = false, limit, offset, ...sdkOptions } = options || {};
+    const {
+      includeSystemMessages = false,
+      limit,
+      offset,
+      deferCompactionRestore = false,
+      ...sdkOptions
+    } = options || {};
     let snapshot;
     const messages = await getSessionMessages(threadId, {
       ...sdkOptions,
@@ -141,21 +160,62 @@ export class QoderSessionSource {
     });
     const compactContext = snapshot ? buildCompactContext(snapshot.records || []) : null;
     const activeBoundaryIds = compactContext ? activeCompactBoundaryIds(messages, compactContext) : new Set();
-    const expanded = snapshot
-      ? await (activeBoundaryIds.size
-        ? this.#restoreCompactionHistory(
-          threadId, sdkOptions, snapshot, messages,
+    let expanded = messages;
+    let historyPending = false;
+    if (activeBoundaryIds.size) {
+      const prefixEnd = Math.max(...[...activeBoundaryIds].map(uuid => {
+        const index = compactContext.boundaryByUuid.get(uuid).index;
+        return snapshot.records[index + 1]?.offset ?? snapshot.bytes.length;
+      }));
+      const key = JSON.stringify([snapshot.file, snapshot.identity,
+        hash(snapshot.bytes.subarray(0, prefixEnd)), [...activeBoundaryIds].sort()]);
+      let state = this.compactionRestoreState.get(threadId);
+      if (!state || state.key !== key) {
+        state = { key, ready: false, inFlight: null, restored: null };
+        this.compactionRestoreState.set(threadId, state);
+        this.#trimCompactionRestoreState();
+      }
+      if (!state.ready && !state.inFlight) {
+        // Cache only the immutable historical prefix. Each reader merges its own
+        // live chain; append-only output neither restarts nor becomes part of this job.
+        state.inFlight = yieldToIO().then(() => this.#restoreCompactionHistory(
+          threadId, sdkOptions, snapshot, [],
           compactContext, activeBoundaryIds,
-        )
-        : messages)
-      : messages;
+        )).then((restored) => {
+          state.ready = true;
+          state.restored = restored;
+          state.inFlight = null;
+          return restored;
+        }).catch((error) => {
+          state.inFlight = null;
+          state.ready = false;
+          state.restored = null;
+          throw error;
+        });
+      }
+      if (state.ready) {
+        expanded = mergeMessages(state.restored || [], messages);
+      } else if (deferCompactionRestore) {
+        state.inFlight?.catch(() => {});
+        expanded = messages;
+        historyPending = true;
+      } else {
+        expanded = mergeMessages(await state.inFlight, messages);
+      }
+    } else {
+      this.compactionRestoreState.delete(threadId);
+    }
     const compactSummaryIds = compactContext ? compactContext.compactSummaryIds : new Set();
     // The SDK must see the complete graph so it can resolve branches and compaction
     // boundaries, but its normalized SessionMessage drops this raw metadata.
     const normalized = expanded.map(message => compactSummaryIds.has(message.uuid)
       ? { ...message, isCompactSummary: true } : message)
       .filter(message => includeSystemMessages || message.type !== 'system');
-    return messageWindow(normalized, { limit, offset });
+    const result = messageWindow(normalized, { limit, offset });
+    // Completeness belongs to this result, not to mutable background job state.
+    // Keep the SDK-compatible array shape for existing callers and serialization.
+    Object.defineProperty(result, 'historyPending', { value: historyPending });
+    return result;
   }
 
   async #restoreCompactionHistory(threadId, sdkOptions, snapshot, messages, context, activeBoundaryIds, seen = new Set()) {
@@ -168,16 +228,17 @@ export class QoderSessionSource {
       const index = boundary.index;
       const record = index >= 0 ? snapshot.records[index] : null;
       const parentUuid = boundary.logicalParentUuid;
-      const parentIndex = context?.uuidToIndex?.get(parentUuid);
+      const parentIndex = latestIndexBefore(context?.uuidToIndexes?.get(parentUuid), index);
       if (typeof parentUuid !== 'string'
         || !Number.isSafeInteger(parentIndex) || parentIndex >= index || index <= 0) continue;
-      const key = [threadId, snapshot.identity, boundaryUuid, record.offset,
+      const key = [threadId, snapshot.identity, boundaryUuid, parentUuid, record.offset,
         hash(snapshot.bytes.subarray(0, record.offset))].join('\0');
       let history = this.compactionHistory.get(key);
       if (history) {
         this.compactionHistory.delete(key);
-        this.compactionHistory.set(key, history);
+        if (!this.closed) this.compactionHistory.set(key, history);
       } else {
+        await yieldToIO();
         const prefix = snapshot.records.slice(0, index).map(({ entry }) => entry);
         history = await getSessionMessages(threadId, {
           ...sdkOptions,
@@ -188,9 +249,10 @@ export class QoderSessionSource {
         });
         history = await this.#restoreCompactionHistory(
           threadId, sdkOptions, snapshot, history, context,
-          activeCompactBoundaryIds(history, context), new Set([...seen, boundaryUuid]),
+          activeCompactBoundaryIds(history, buildCompactContext(snapshot.records.slice(0, index))),
+          new Set([...seen, boundaryUuid]),
         );
-        this.compactionHistory.set(key, history);
+        if (!this.closed) this.compactionHistory.set(key, history);
         while (this.compactionHistory.size > COMPACTION_HISTORY_CACHE_LIMIT) {
           this.compactionHistory.delete(this.compactionHistory.keys().next().value);
         }
@@ -200,11 +262,17 @@ export class QoderSessionSource {
     return expanded;
   }
 
+  #trimCompactionRestoreState() {
+    while (this.compactionRestoreState.size > COMPACTION_RESTORE_STATE_LIMIT) {
+      this.compactionRestoreState.delete(this.compactionRestoreState.keys().next().value);
+    }
+  }
+
   getSessionMessages(threadId, options) { return this.#read(threadId, options); }
 
   async prepare({ threadId, cwd, text }) {
     let baseline;
-    await this.#read(threadId, { dir: cwd }, ({ file, identity, bytes, records }) => {
+    await this.#read(threadId, { dir: cwd, deferCompactionRestore: true }, ({ file, identity, bytes, records }) => {
       baseline = {
         file, identity, offset: bytes.length, hash: hash(bytes),
         seen: records.filter(({ entry }) => userText(entry) === text).map(({ entry }) => entry.uuid),
@@ -302,7 +370,9 @@ export class QoderSessionSource {
   }
 
   close() {
+    this.closed = true;
     this.receipts.clear();
     this.compactionHistory.clear();
+    this.compactionRestoreState.clear();
   }
 }

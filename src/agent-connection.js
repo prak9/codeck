@@ -576,6 +576,7 @@ export class AgentHub {
         subscription.cursor = null;
         subscription.fresh = true;
         if (options && provider === 'codex' && this.threadFeed) options.progressive = true;
+        if (options && provider === 'qodercli' && this.threadFeed) options.deferCompactionRestore = true;
         const result = this.#windowThread(this.#withPaneExcerpt(
           await this.registry.openThread(provider, threadId, options), target.tmuxSession,
         ));

@@ -96,6 +96,12 @@ function transcriptToTurns(messages) {
   };
 
   for (const entry of messages || []) {
+    // A hidden summary still starts a new context. Keep an assistant-only tail's
+    // turn ID stable when pre-compaction history is restored behind it.
+    if (entry.isCompactSummary) {
+      turn = null;
+      continue;
+    }
     const blocks = contentBlocks(entry);
     if (entry.type === 'user') {
       const text = textFromBlocks(blocks).trim();
@@ -276,12 +282,12 @@ export class SdkAgentBackend extends EventEmitter {
     return { data };
   }
 
-  async openThread(threadId) {
+  async openThread(threadId, { deferCompactionRestore = false } = {}) {
     const info = await this.getSessionInfo(threadId);
     if (!info) throw new Error(`${this.label} session not found`);
     let persistedTurns;
     let historyError;
-    try { persistedTurns = await this.#persistedTurns(threadId, info); }
+    try { persistedTurns = await this.#persistedTurns(threadId, info, { deferCompactionRestore }); }
     catch (error) {
       const previous = this.transcriptCache.get(threadId);
       const canRetainHistory = this.sessionSource || (this.transcriptFile && this.readTranscriptFile);
@@ -300,6 +306,10 @@ export class SdkAgentBackend extends EventEmitter {
       thread.receivedDeliveryIds = await this.sessionSource.received?.(threadId) || [];
       thread.deliveryConfirmations = this.sessionSource.confirmations(threadId);
       thread.unconfirmedDeliveryIds = this.sessionSource.unconfirmed(threadId);
+    }
+    if (persistedTurns.historyPending) {
+      thread.truncated = true;
+      thread.oldestTurnId = thread.turns?.[0]?.id || null;
     }
     return { thread };
   }
@@ -465,9 +475,11 @@ export class SdkAgentBackend extends EventEmitter {
     return { messages, turns: transcriptToTurns(messages), size: Buffer.byteLength(text), dropped };
   }
 
-  async #persistedTurns(threadId, info) {
+  async #persistedTurns(threadId, info, options = {}) {
     const generation = this.transcriptGeneration;
     const revision = transcriptRevision(info);
+    const source = this.sessionSource;
+    const qoderDeferredRestore = this.provider === 'qodercli' && source && options.deferCompactionRestore;
     const cached = revision ? this.transcriptCache.get(threadId) : null;
     if (cached?.revision === revision) {
       this.transcriptCache.delete(threadId);
@@ -498,11 +510,18 @@ export class SdkAgentBackend extends EventEmitter {
       throw new Error(`${this.label} transcript is temporarily unavailable`);
     }
 
-    const loadKey = revision ? `${threadId}\0${revision}` : null;
+    const loadKey = revision ? `${threadId}\0${revision}\0${Boolean(qoderDeferredRestore)}` : null;
     let load = loadKey ? this.transcriptLoads.get(loadKey) : null;
     if (!load) {
-      load = Promise.resolve(this.getSessionMessages(threadId, { dir: info.cwd }))
-        .then((messages) => ({ messages, turns: transcriptToTurns(messages) }));
+      load = Promise.resolve(this.getSessionMessages(threadId, {
+        dir: info.cwd,
+        ...(qoderDeferredRestore ? { deferCompactionRestore: true } : {}),
+      }))
+        .then((messages) => {
+          const turns = transcriptToTurns(messages);
+          Object.defineProperty(turns, 'historyPending', { value: Boolean(messages.historyPending) });
+          return { messages, turns };
+        });
       if (loadKey) {
         this.transcriptLoads.set(loadKey, load);
         load.finally(() => {
@@ -513,13 +532,14 @@ export class SdkAgentBackend extends EventEmitter {
     const { messages, turns } = await load;
     // Qoder's SDK can return [] on a transient read failure. Do not poison a
     // revision indefinitely or replace a known transcript with that empty read.
-    if (this.provider === 'qodercli' && !this.sessionSource && !messages.length) {
+    if (this.provider === 'qodercli' && !source && !messages.length) {
       if (this.transcriptCache.get(threadId)?.turns.length) {
         throw new Error('QoderCLI 历史读取暂时为空，保留原历史并稍后重试');
       }
       return turns;
     }
-    if (revision && generation === this.transcriptGeneration) {
+    const restoreReady = !messages.historyPending;
+    if (revision && generation === this.transcriptGeneration && restoreReady) {
       this.transcriptCache.delete(threadId);
       this.transcriptCache.set(threadId, {
         revision, turns, messages, size: Number(info?.fileSize),
