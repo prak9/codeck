@@ -1037,6 +1037,22 @@ async function openThread(threadId, {
   };
   const sameTarget = state.thread?.provider === provider && state.thread.id === threadId
     && (state.thread.tmux?.name || '') === streamTarget.tmuxSession;
+  // Selecting a session is local UI state; do not leave the old busy conversation on
+  // screen while its replacement history is read from the Agent backend. Moving the
+  // identity first also makes late stream frames from the previous session harmless.
+  if (!sameTarget) {
+    state.activeThreadId = threadId;
+    state.thread = normalizeAgentThread(provider, {
+      id: threadId,
+      preview: listedThread?.tmux?.title || listedThread?.preview,
+      readOnly: directSession || readOnly,
+      turns: [],
+    });
+    if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
+    renderThreadList();
+    scheduleThreadRender(true);
+  }
+  closeDrawer();
   try {
     resetThreadStream(streamTarget);
     const result = await agentRequest('openThread', {
@@ -1061,7 +1077,6 @@ async function openThread(threadId, {
     setLiveMessage(state.thread.historyError || (directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : ''));
     renderThreadList();
     scheduleThreadRender(!quiet || !sameTarget);
-    closeDrawer();
   } finally {
     if (state.threadOpening === opening) {
       state.threadOpening = null;

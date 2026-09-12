@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAgentThread, reconcileAgentThreadRefresh } from '../public/agent-model.js';
+import {
+  findTmuxThreadTarget,
+  normalizeAgentThread,
+  reconcileAgentThreadRefresh,
+} from '../public/agent-model.js';
 
 const source = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
 function load(context, name) {
@@ -35,6 +39,47 @@ test('a server restart marks unresolved Agent delivery bubbles as unknown consis
     assert.equal(state.thread.turns[0].items[0], actual);
     assert.equal(pending.delivery.status, 'accepted', 'do not mutate an old snapshot');
   }
+});
+
+test('switching sessions selects the target before its history request finishes', async () => {
+  let finishOpening;
+  let drawerCloses = 0;
+  const renders = [];
+  const target = {
+    id: 'thread-2', provider: 'codex', readOnly: true,
+    tmux: { name: 'session-2', title: 'Target', status: 'working', activityAt: 2 },
+  };
+  const state = {
+    provider: 'codex', providers: ['codex'], protocolEpoch: 'epoch',
+    activeThreadId: 'thread-1', threads: [target],
+    thread: {
+      id: 'thread-1', provider: 'codex', turns: [{ id: 'old-turn', items: [] }],
+      tmux: { name: 'session-1', title: 'Old', status: 'working' },
+    },
+  };
+  const context = vm.createContext({
+    state, normalizeAgentThread, reconcileAgentThreadRefresh, findTmuxThreadTarget,
+    resumableThreadCursor: () => null,
+    agentRequest: () => new Promise((resolve) => { finishOpening = resolve; }),
+    ...Object.fromEntries(['resetThreadHistory', 'resetThreadStream', 'rememberOpenedThread',
+      'renderComposerState', 'setLiveMessage', 'settleConfirmedDeliveries', 'renderThreadList',
+      'renderProviderControls'].map(name => [name, () => {}])),
+    closeDrawer: () => { drawerCloses += 1; },
+    scheduleThreadRender: force => renders.push({ force, id: state.thread?.id }),
+    localStorage: { setItem() {} },
+  });
+  load(context, 'openThread');
+
+  const opening = context.openThread('thread-2', { provider: 'codex', tmuxSession: 'session-2' });
+  assert.equal(state.activeThreadId, 'thread-2');
+  assert.equal(state.thread.id, 'thread-2');
+  assert.equal(state.thread.tmux.name, 'session-2');
+  assert.deepEqual(renders.at(-1), { force: true, id: 'thread-2' });
+  assert.equal(drawerCloses, 1);
+
+  finishOpening({ thread: { id: 'thread-2', provider: 'codex', turns: [{ id: 'new-turn', items: [] }] } });
+  await opening;
+  assert.deepEqual(Array.from(state.thread.turns, turn => turn.id), ['new-turn']);
 });
 
 for (const provider of ['codex', 'claude', 'qodercli']) {
