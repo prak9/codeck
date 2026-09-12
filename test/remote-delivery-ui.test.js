@@ -82,6 +82,58 @@ test('switching sessions selects the target before its history request finishes'
   assert.deepEqual(Array.from(state.thread.turns, turn => turn.id), ['new-turn']);
 });
 
+test('switching back to a recent session restores its view and stream cursor immediately', async () => {
+  let finishOpening;
+  let requestPayload;
+  const oldCursor = { epoch: 'epoch', sequence: 7 };
+  const targetCursor = { epoch: 'epoch', sequence: 11 };
+  const oldThread = {
+    id: 'thread-1', provider: 'codex', turns: [{ id: 'old-turn', items: [] }],
+    tmux: { name: 'session-1', title: 'Old', status: 'working' },
+  };
+  const cachedThread = {
+    id: 'thread-2', provider: 'codex', turns: [{ id: 'cached-turn', items: [] }],
+    tmux: { name: 'session-2', title: 'Cached', status: 'done' },
+  };
+  const target = {
+    id: 'thread-2', provider: 'codex', readOnly: true,
+    tmux: { name: 'session-2', title: 'Target', status: 'working', activityAt: 3 },
+  };
+  const state = {
+    provider: 'codex', providers: ['codex'], protocolEpoch: 'epoch', streamVersion: 2,
+    activeThreadId: 'thread-1', threads: [target], thread: oldThread,
+    threadStreamKey: 'codex:thread-1:session-1', threadStreamCursor: oldCursor,
+    threadStreamSnapshot: oldThread, threadStreamResyncing: false, threadStreamHealthy: true,
+    threadCompletionRefreshUntil: 0,
+    threadViewCache: new Map([['codex:thread-2:session-2', {
+      thread: cachedThread, cursor: targetCursor, snapshot: cachedThread,
+    }]]),
+  };
+  const context = vm.createContext({
+    state, normalizeAgentThread, reconcileAgentThreadRefresh, findTmuxThreadTarget,
+    THREAD_VIEW_CACHE_LIMIT: 6,
+    agentRequest: (_type, payload) => {
+      requestPayload = payload;
+      return new Promise(resolve => { finishOpening = resolve; });
+    },
+    ...Object.fromEntries(['resetThreadHistory', 'rememberOpenedThread', 'renderComposerState',
+      'setLiveMessage', 'settleConfirmedDeliveries', 'renderThreadList', 'scheduleThreadRender',
+      'closeDrawer', 'renderProviderControls'].map(name => [name, () => {}])),
+    localStorage: { setItem() {} },
+  });
+  for (const name of ['streamTargetKey', 'cacheCurrentThreadView', 'resetThreadStream',
+    'resumableThreadCursor', 'openThread']) load(context, name);
+
+  const opening = context.openThread('thread-2', { provider: 'codex', tmuxSession: 'session-2' });
+  assert.deepEqual(Array.from(state.thread.turns, turn => turn.id), ['cached-turn']);
+  assert.deepEqual(requestPayload.streamCursor, targetCursor);
+  assert.equal(state.threadViewCache.get('codex:thread-1:session-1').thread, oldThread);
+
+  finishOpening({ resumed: true });
+  await opening;
+  assert.deepEqual(Array.from(state.thread.turns, turn => turn.id), ['cached-turn']);
+});
+
 for (const provider of ['codex', 'claude', 'qodercli']) {
 test(`${provider} server restart does not downgrade an observed input receipt`, () => {
   const item = { id: 'delivery:one', type: 'userMessage', delivery: { status: 'received' } };

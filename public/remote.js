@@ -70,6 +70,7 @@ const SESSION_LIST_FALLBACK_MS = 30_000;
 const THREAD_REFRESH_FALLBACK_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
+const THREAD_VIEW_CACHE_LIMIT = 6;
 const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
 let viewportFrame = 0;
 let transcriptScrollFrame = 0;
@@ -95,6 +96,7 @@ const state = {
   threadStreamKey: '',
   threadStreamResyncing: false,
   threadStreamHealthy: false,
+  threadViewCache: new Map(),
   socket: null,
   socketGeneration: 0,
   reconnectTimer: null,
@@ -235,11 +237,35 @@ function streamTargetKey({ provider, threadId, tmuxSession = '' } = {}) {
   return provider && threadId ? `${provider}:${threadId}:${tmuxSession || ''}` : '';
 }
 
+function cacheCurrentThreadView() {
+  const key = streamTargetKey({
+    provider: state.thread?.provider,
+    threadId: state.thread?.id,
+    tmuxSession: state.thread?.tmux?.name || '',
+  });
+  if (!key || key !== state.threadStreamKey || !state.threadStreamSnapshot) return;
+  state.threadViewCache.delete(key);
+  state.threadViewCache.set(key, {
+    thread: state.thread,
+    cursor: state.threadStreamCursor,
+    snapshot: state.threadStreamSnapshot,
+  });
+  while (state.threadViewCache.size > THREAD_VIEW_CACHE_LIMIT) {
+    state.threadViewCache.delete(state.threadViewCache.keys().next().value);
+  }
+}
+
 function resetThreadStream(target = null) {
   const nextKey = streamTargetKey(target || {});
   if (!nextKey || nextKey !== state.threadStreamKey) {
-    state.threadStreamCursor = null;
-    state.threadStreamSnapshot = null;
+    cacheCurrentThreadView();
+    const cached = nextKey ? state.threadViewCache.get(nextKey) : null;
+    if (cached) {
+      state.threadViewCache.delete(nextKey);
+      state.threadViewCache.set(nextKey, cached);
+    }
+    state.threadStreamCursor = cached?.cursor || null;
+    state.threadStreamSnapshot = cached?.snapshot || null;
     state.threadStreamKey = nextKey;
   }
   state.threadStreamResyncing = false;
@@ -594,6 +620,7 @@ async function handleReady(message) {
     state.sessionStreamCursor = null;
     state.sessionStreamSnapshot = null;
     resetThreadStream();
+    state.threadViewCache.clear();
     for (const [key, delivery] of state.pendingDeliveries) {
       if (delivery.serverEpoch !== nextEpoch) {
         state.pendingDeliveries.set(key, { ...delivery, blocked: true, blockReason: 'serverRestart' });
@@ -1037,24 +1064,27 @@ async function openThread(threadId, {
   };
   const sameTarget = state.thread?.provider === provider && state.thread.id === threadId
     && (state.thread.tmux?.name || '') === streamTarget.tmuxSession;
+  resetThreadStream(streamTarget);
+  const cachedView = sameTarget ? null : state.threadViewCache?.get(streamTargetKey(streamTarget));
   // Selecting a session is local UI state; do not leave the old busy conversation on
   // screen while its replacement history is read from the Agent backend. Moving the
   // identity first also makes late stream frames from the previous session harmless.
   if (!sameTarget) {
     state.activeThreadId = threadId;
-    state.thread = normalizeAgentThread(provider, {
-      id: threadId,
-      preview: listedThread?.tmux?.title || listedThread?.preview,
-      readOnly: directSession || readOnly,
-      turns: [],
-    });
-    if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
+    state.thread = cachedView?.thread
+      ? { ...cachedView.thread }
+      : normalizeAgentThread(provider, {
+        id: threadId,
+        preview: listedThread?.tmux?.title || listedThread?.preview,
+        readOnly: directSession || readOnly,
+        turns: [],
+      });
+    if (listedThread?.tmux) state.thread.tmux = { ...state.thread.tmux, ...listedThread.tmux };
     renderThreadList();
     scheduleThreadRender(true);
   }
   closeDrawer();
   try {
-    resetThreadStream(streamTarget);
     const result = await agentRequest('openThread', {
       provider,
       threadId,
