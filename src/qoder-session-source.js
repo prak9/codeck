@@ -112,8 +112,17 @@ export class QoderSessionSource {
 
   async #restoreCompactionHistory(threadId, sdkOptions, snapshot, messages, seen = new Set()) {
     let expanded = messages;
-    for (const boundary of messages.filter(message => (
+    const activeIds = new Set(messages.map(message => message?.uuid).filter(Boolean));
+    const activeBoundaryIds = new Set(messages.filter(message => (
       message.type === 'system' && message.subtype === 'compact_boundary'
+    )).map(message => message.uuid));
+    for (const { entry } of snapshot.records) {
+      if (entry.isCompactSummary === true && activeIds.has(entry.uuid)
+        && typeof entry.parentUuid === 'string') activeBoundaryIds.add(entry.parentUuid);
+    }
+    for (const boundary of snapshot.records.map(({ entry }) => entry).filter(entry => (
+      entry.type === 'system' && entry.subtype === 'compact_boundary'
+      && activeBoundaryIds.has(entry.uuid)
     ))) {
       if (seen.has(boundary.uuid)) continue;
       const index = snapshot.records.findLastIndex(({ entry }) => entry.uuid === boundary.uuid);

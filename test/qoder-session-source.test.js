@@ -158,6 +158,28 @@ test('Qoder retains active history that precedes a compaction root', async t => 
   ]);
 });
 
+test('Qoder restores compacted history when the SDK omits the active boundary', async t => {
+  const { source, write } = await setup(t);
+  await write([
+    user('user-old', 'Old question'),
+    { type: 'assistant', uuid: 'assistant-old', sessionId: id, parentUuid: 'user-old',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Old answer' }] } },
+    { type: 'system', subtype: 'compact_boundary', uuid: 'compact-boundary', sessionId: id,
+      parentUuid: null, logicalParentUuid: 'assistant-old', isMeta: true,
+      message: { role: 'system', content: '' }, compactMetadata: { trigger: 'auto' } },
+    user('compact-summary', 'Internal summary', { parentUuid: 'compact-boundary',
+      isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+    user('user-new', 'New question', { parentUuid: 'compact-summary' }),
+    { type: 'assistant', uuid: 'assistant-new', sessionId: id, parentUuid: 'user-new',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'New answer' }] } },
+    { type: 'active-leaf', sessionId: id, leafUuid: 'assistant-new' },
+  ]);
+
+  assert.deepEqual((await source.getSessionMessages(id, { dir: cwd })).map(message => message.uuid), [
+    'user-old', 'assistant-old', 'compact-summary', 'user-new', 'assistant-new',
+  ]);
+});
+
 test('Qoder does not restore history from an abandoned compaction branch', async t => {
   const { source, write } = await setup(t);
   await write([
