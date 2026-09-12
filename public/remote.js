@@ -18,7 +18,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=43';
+} from './agent-model.js?v=44';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -299,8 +299,10 @@ function applyRefreshedThread(provider, thread) {
     && ['id', 'provider', 'name', 'preview', 'cwd', 'readOnly', 'status', 'truncated', 'oldestTurnId']
       .every((key) => reconciled[key] === current[key]);
   state.thread = reconciled;
-  if (refreshed.historyError && refreshed.historyError !== current?.historyError) setLiveMessage(refreshed.historyError);
-  else if (current?.historyError && !refreshed.historyError && state.liveMessage === current.historyError) setLiveMessage('');
+  const historyNotice = refreshed.historyError || (refreshed.historyLoading ? '正在后台读取对话记录…' : '');
+  const previousNotice = current?.historyError || (current?.historyLoading ? '正在后台读取对话记录…' : '');
+  if (historyNotice && historyNotice !== previousNotice) setLiveMessage(historyNotice);
+  else if (previousNotice && !historyNotice && state.liveMessage === previousNotice) setLiveMessage('');
   settleConfirmedDeliveries();
   if (paneOnly) updateTerminalActivity();
   else scheduleThreadRender(false);
@@ -975,7 +977,7 @@ function handoffTmuxThread(thread) {
     settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = Date.now() + 2_500;
-    setLiveMessage(state.thread.historyError || '已同步对话记录，可直接参与。');
+    setLiveMessage(state.thread.historyError || (state.thread.historyLoading ? '正在后台读取对话记录…' : '已同步对话记录，可直接参与。'));
     renderThreadList();
     scheduleThreadRender(true);
   })();
@@ -1104,7 +1106,7 @@ async function openThread(threadId, {
     settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
-    setLiveMessage(state.thread.historyError || (directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : ''));
+    setLiveMessage(state.thread.historyError || (state.thread.historyLoading ? '正在后台读取对话记录…' : directSession ? '已连接当前终端会话，可直接参与。' : state.thread.readOnly ? '当前以只读方式查看。' : ''));
     renderThreadList();
     scheduleThreadRender(!quiet || !sameTarget);
   } finally {
@@ -2136,6 +2138,7 @@ async function loadEarlierTurns() {
       threadId: thread.id,
       tmuxSession: sessionName,
       beforeTurnId: anchor,
+      cursor: thread.historyCursor || '',
     });
     if (!currentRequest()) return;
     const current = state.thread;
@@ -2156,6 +2159,7 @@ async function loadEarlierTurns() {
     current.turns = [...current.turns.slice(0, anchorIndex), ...missing, ...current.turns.slice(anchorIndex)];
     current.truncated = Boolean(result?.truncated);
     current.oldestTurnId = result?.oldestTurnId || null;
+    current.historyCursor = result?.nextCursor || null;
     scheduleThreadRender(false);
     // Reconnect gaps may be below the viewport. Preserve the visible turn, not
     // the total height added anywhere in the transcript.

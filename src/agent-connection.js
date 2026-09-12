@@ -5,6 +5,7 @@ import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-rec
 import { resolveSessionStatus } from './session-status.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
+import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
 import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
 
@@ -311,7 +312,16 @@ export class AgentRegistry extends EventEmitter {
     const result = await backend.openThread(threadId, { readOnly: true });
     return { text: latestAgentOutputText(result?.thread?.turns) };
   }
-  async loadThreadHistory(provider, threadId, { beforeTurnId, limit }) {
+  async loadThreadHistory(provider, threadId, { beforeTurnId, limit, cursor }) {
+    if (cursor) beforeTurnId = decodeHistoryCursor(cursor, provider, threadId);
+    const page = await this.#historyPage(provider, threadId, { beforeTurnId, limit });
+    // Older clients keep the anchor-only response; cursor clients share one
+    // provider-independent pagination contract, including after worker restarts.
+    return cursor === undefined ? page : { ...page,
+      nextCursor: page.truncated && page.oldestTurnId
+        ? encodeHistoryCursor(provider, threadId, page.oldestTurnId) : null };
+  }
+  async #historyPage(provider, threadId, { beforeTurnId, limit }) {
     const backend = this.backend(provider);
     if (backend.loadThreadHistory) return backend.loadThreadHistory(threadId, { beforeTurnId, limit });
     const result = await backend.openThread(threadId, { readOnly: true });
@@ -545,7 +555,7 @@ export class AgentHub {
       const limit = Number.isSafeInteger(message.limit) && message.limit > 0
         ? Math.min(message.limit, 200)
         : this.threadTurnWindow;
-      return this.registry.loadThreadHistory(provider, threadId, { beforeTurnId, limit });
+      return this.registry.loadThreadHistory(provider, threadId, { beforeTurnId, limit, cursor: message.cursor });
     }
     if (message.type === 'listThreads') return this.registry.listThreads(provider);
     if (message.type === 'openThread') {

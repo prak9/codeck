@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
+import { encodeHistoryCursor, decodeHistoryCursor } from '../src/thread-history-cursor.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -85,9 +86,12 @@ sockets.on('connection', socket => {
     const reply = result => send(socket, { id: request.id, ok: true, result });
     if (request.type === 'openThread') return reply({ thread: thread() });
     if (request.type === 'loadThreadHistory') {
-      const end = fixture.turns.findIndex(turn => turn.id === request.beforeTurnId);
+      const anchor = request.cursor ? decodeHistoryCursor(request.cursor, fixture.provider, 'fixture-thread') : request.beforeTurnId;
+      assert.equal(anchor, request.beforeTurnId, 'cursor follows the current history boundary, including reconnect gaps');
+      const end = fixture.turns.findIndex(turn => turn.id === anchor);
       const start = Math.max(0, end - 20);
-      return reply({ turns: fixture.turns.slice(start, end), truncated: start > 0, oldestTurnId: fixture.turns[start]?.id });
+      return reply({ turns: fixture.turns.slice(start, end), truncated: start > 0, oldestTurnId: fixture.turns[start]?.id,
+        nextCursor: start > 0 ? encodeHistoryCursor(fixture.provider, 'fixture-thread', fixture.turns[start].id) : null });
     }
     if (request.type === 'selectSessionModel') return reply({ completed: true });
     if (request.type === 'dismissSessionCommand') return reply({ dismissed: true });

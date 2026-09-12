@@ -1145,6 +1145,14 @@ test('a windowed refresh keeps the history that falls outside the window', () =>
   assert.equal(reconciled.turns[2].items[0].text, '最近+更新');
 });
 
+test('Qoder background history loading can settle without changing any turns', () => {
+  const current = normalizeAgentThread('qodercli', { id: 'thread', turns: [], historyLoading: true });
+  const settled = normalizeAgentThread('qodercli', { id: 'thread', turns: [] });
+  const result = reconcileAgentThreadRefresh(current, settled);
+  assert.notEqual(result, current);
+  assert.equal(result.historyLoading, undefined);
+});
+
 test('a full refresh still replaces the whole transcript', () => {
   // 没有 truncated 标记时必须保持原语义: 服务端说没有的 turn 就是被删了。
   const current = normalizeAgentThread('claude', {

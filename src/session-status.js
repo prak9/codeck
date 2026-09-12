@@ -27,6 +27,7 @@ function timestampMs(value) {
 const ACTIVE_THREAD_INTERVAL_MS = 350;
 
 export function threadSnapshotRefreshInterval(snapshot, tmuxStatus, now = Date.now()) {
+  if (snapshot?.thread?.historyLoading) return ACTIVE_THREAD_INTERVAL_MS;
   const structuredActive = snapshot?.thread?.status?.type === 'active';
   if (tmuxStatus === 'working' || structuredActive) return ACTIVE_THREAD_INTERVAL_MS;
   if (tmuxStatus === 'background') return 2_000;

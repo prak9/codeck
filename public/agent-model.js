@@ -313,6 +313,7 @@ function renderedThreadMetadata(thread) {
     thread?.receivedDeliveryIds,
     thread?.unconfirmedDeliveryIds,
     thread?.historyError,
+    thread?.historyLoading,
     thread?.truncated,
     thread?.oldestTurnId,
   ]);
@@ -340,6 +341,7 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   if (firstSharedTurn > 0) refreshed = {
     ...refreshed, truncated: Boolean(current.truncated),
     oldestTurnId: current.oldestTurnId || allCurrentTurns[0]?.id || null,
+    historyCursor: current.historyCursor || null,
   };
   const resolvedDeliveries = resolvedDeliveryItems(current, refreshed);
   let retainedChanged = false;

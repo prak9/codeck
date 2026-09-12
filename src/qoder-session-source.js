@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { setImmediate as yieldToIO } from 'node:timers/promises';
 import { getSessionMessages } from '@qoder-ai/qoder-agent-sdk';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
+import { QoderTranscriptCache } from './qoder-transcript.js';
 
 const RECEIPT_TTL_MS = 24 * 60 * 60_000;
 const RECEIPT_LIMIT = 1024;
@@ -12,6 +13,32 @@ const CONFIRMATION_WAIT_MS = 30_000;
 const COMPACTION_HISTORY_CACHE_LIMIT = 16;
 const COMPACTION_RESTORE_STATE_LIMIT = 16;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+async function resolveMessages(threadId, options) {
+  let originals;
+  const messages = await getSessionMessages(threadId, {
+    ...options,
+    sessionStore: { load: async key => {
+      const entries = await options.sessionStore.load(key);
+      originals = new Map(entries.filter(entry => entry.uuid).map(entry => [entry.uuid, entry]));
+      // The SDK serializes and parses its store entries again. Keep graph/tool IDs
+      // and message metadata but avoid copying potentially huge payloads through it.
+      return entries.map(entry => !entry.message ? entry : { ...entry, toolUseResult: undefined, message: {
+        ...entry.message,
+        content: Array.isArray(entry.message.content) ? entry.message.content.map(block => {
+          if (!block || typeof block !== 'object') return block;
+          const { text, thinking, input, content, source, ...identity } = block;
+          return identity;
+        }) : '',
+      } });
+    } },
+  });
+  return messages.map(message => {
+    const original = originals.get(message.uuid);
+    return { ...message, message: original?.message || message.message,
+      ...(original?.type === 'user' && original.toolUseResult !== undefined ? { tool_use_result: original.toolUseResult } : {}) };
+  });
+}
 
 function mergeMessages(earlier, later) {
   const seen = new Set();
@@ -103,13 +130,16 @@ function userText(entry) {
 // evidence instead comes from immutable source records before SDK filtering.
 export class QoderSessionSource {
   constructor({ configDir = process.env.QODER_CONFIG_DIR
-    || path.join(process.env.QODER_CLI_HOME || os.homedir(), process.env.QODER_CONFIG_DIR_NAME || '.qoder'), now = Date.now } = {}) {
+    || path.join(process.env.QODER_CLI_HOME || os.homedir(), process.env.QODER_CONFIG_DIR_NAME || '.qoder'), now = Date.now, sessionFile } = {}) {
     this.configDir = configDir;
+    this.sessionFile = sessionFile;
     this.now = now;
     this.receipts = new Map();
     this.compactionHistory = new Map();
     this.compactionRestoreState = new Map();
     this.closed = false;
+    this.transcripts = new QoderTranscriptCache();
+    this.readStats = this.transcripts.stats;
   }
 
   async #read(threadId, options, capture) {
@@ -121,7 +151,7 @@ export class QoderSessionSource {
       ...sdkOptions
     } = options || {};
     let snapshot;
-    const messages = await getSessionMessages(threadId, {
+    const messages = await resolveMessages(threadId, {
       ...sdkOptions,
       includeSystemMessages: true,
       sessionStore: {
@@ -130,31 +160,12 @@ export class QoderSessionSource {
         load: async ({ projectKey, sessionId }) => {
           if (!/^[a-zA-Z0-9-]+$/u.test(projectKey)
             || !/^[a-fA-F0-9-]{36}$/u.test(sessionId)) throw new Error('Invalid Qoder session path');
-          const file = path.join(this.configDir, 'projects', projectKey, `${sessionId}.jsonl`);
-          const handle = await fs.open(file, 'r');
-          let bytes;
-          let identity;
-          try {
-            const stat = await handle.stat();
-            identity = `${stat.dev}:${stat.ino}`;
-            bytes = await handle.readFile();
-          } finally { await handle.close(); }
-          const records = [];
-          let offset = 0;
-          for (const line of bytes.toString('utf8').split('\n')) {
-            if (line.trim()) {
-              try {
-                const entry = JSON.parse(line);
-                if (entry && typeof entry === 'object' && !Array.isArray(entry)) records.push({ offset, entry });
-              }
-              catch { /* A malformed or partially written line loses only itself. */ }
-            }
-            offset += Buffer.byteLength(line) + 1;
-          }
-          snapshot = { file, identity, bytes, records };
+          const file = this.sessionFile?.(sessionId) || path.join(this.configDir, 'projects', projectKey, `${sessionId}.jsonl`);
+          const pendingReceipt = [...this.receipts.values()].some(receipt => receipt.threadId === threadId && receipt.baseline);
+          snapshot = await this.transcripts.load(file, { fresh: Boolean(capture || pendingReceipt) });
           capture?.(snapshot);
           this.#observe(threadId, snapshot);
-          return records.map(record => record.entry);
+          return snapshot.records.map(record => record.entry);
         },
       },
     });
@@ -240,7 +251,7 @@ export class QoderSessionSource {
       } else {
         await yieldToIO();
         const prefix = snapshot.records.slice(0, index).map(({ entry }) => entry);
-        history = await getSessionMessages(threadId, {
+        history = await resolveMessages(threadId, {
           ...sdkOptions,
           includeSystemMessages: true,
           sessionStore: { load: async () => [...prefix, {
@@ -272,12 +283,22 @@ export class QoderSessionSource {
 
   async prepare({ threadId, cwd, text }) {
     let baseline;
-    await this.#read(threadId, { dir: cwd, deferCompactionRestore: true }, ({ file, identity, bytes, records }) => {
+    const capture = ({ file, identity, bytes, records }) => {
       baseline = {
         file, identity, offset: bytes.length, hash: hash(bytes),
         seen: records.filter(({ entry }) => userText(entry) === text).map(({ entry }) => entry.uuid),
       };
-    });
+    };
+    const resolvedFile = this.sessionFile?.(threadId);
+    if (resolvedFile) {
+      // Receipt preparation needs immutable raw evidence, not a display graph.
+      // The worker catalog has already resolved this exact session's file.
+      const snapshot = await this.transcripts.load(resolvedFile, { fresh: true });
+      capture(snapshot);
+      this.#observe(threadId, snapshot);
+    } else {
+      await this.#read(threadId, { dir: cwd, deferCompactionRestore: true }, capture);
+    }
     if (baseline) {
       const file = path.join(this.configDir, 'tmp', path.basename(path.dirname(baseline.file)), 'logs.json');
       const entries = await readInputLog(file);
@@ -374,5 +395,6 @@ export class QoderSessionSource {
     this.receipts.clear();
     this.compactionHistory.clear();
     this.compactionRestoreState.clear();
+    this.transcripts.clear();
   }
 }
