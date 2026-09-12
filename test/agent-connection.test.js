@@ -124,18 +124,39 @@ function send(socket, message) {
 }
 
 function setup({
-  listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession,
+  listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
   sessionFeed, threadFeed, protocolEpoch = 'test-epoch',
 } = {}) {
   const backends = Object.fromEntries(['codex', 'claude', 'qodercli'].map((provider) => [provider, new FakeBackend(provider)]));
   const registry = new AgentRegistry(backends, {
-    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession,
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
   });
   const hub = new AgentHub(registry, {
     defaultCwd: '/srv/codeck', hostname: 'devbox', sessionFeed, threadFeed, protocolEpoch,
   });
   return { backends, registry, hub };
 }
+
+test('native question answers are bound to the active provider/thread/tmux subscription', async () => {
+  const calls = [];
+  const sessionFeed = new FakeSnapshotFeed();
+  const { hub } = setup({ sessionFeed, answerTmuxQuestion: async params => { calls.push(params); return { submitted: true }; } });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  send(socket, { type: 'openThread', id: 1, provider: 'qodercli', threadId: 'thread', tmuxSession: 'qoder', readOnly: true });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  const answer = { type: 'answerSessionQuestion', provider: 'qodercli', threadId: 'thread', tmuxSession: 'qoder',
+    questionId: 'question', answer: 'Skip scan' };
+  send(socket, { ...answer, id: 2, tmuxSession: 'other' });
+  send(socket, { ...answer, id: 3, provider: 'codex' });
+  send(socket, { ...answer, id: 4 });
+  await waitFor(() => socket.sent.some(message => message.id === 4));
+  assert.equal(socket.sent.find(message => message.id === 2).ok, false);
+  assert.equal(socket.sent.find(message => message.id === 3).ok, false);
+  assert.deepEqual(calls, [{ provider: 'qodercli', threadId: 'thread', sessionName: 'qoder', questionId: 'question', answer: 'Skip scan' }]);
+  assert.ok(sessionFeed.invalidations.includes('sessions'));
+  socket.close();
+});
 
 test('latest-output requests neither create nor replace a thread subscription', async () => {
   const threadFeed = new FakeSnapshotFeed();

@@ -92,7 +92,7 @@ export function isUserMessageDeliveryReceived(thread, delivery) {
 }
 
 export function threadExecutionState(thread, { waitingForInput = false } = {}) {
-  if (waitingForInput) return 'waitingForInput';
+  if (waitingForInput || thread?.tmux?.question) return 'waitingForInput';
   if (thread?.tmux?.status === 'working' || latestRunningTurn(thread)
     || thread?.status?.type === 'active') return 'working';
   if (thread?.tmux?.status === 'background') return 'background';
@@ -221,6 +221,7 @@ export function tmuxSessionsToThreads(sessions) {
           ? session.status
           : 'done',
         available,
+        ...(provider === 'qodercli' && session.agent?.question ? { question: session.agent.question } : {}),
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
         ...(liveOutput ? { liveOutput } : {}),
       },

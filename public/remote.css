@@ -296,6 +296,16 @@ a.header-button { text-decoration: none; }
 .command-sheet .sheet-head { margin-bottom: 12px; }
 .command-sheet .close-button { width: 44px; height: 44px; }
 .command-dialog-summary { min-height: 14px; }
+#nativeQuestionDialog > .sheet-head { padding: 20px 20px 0; margin: 0; }
+#nativeQuestionDialog .question-card { margin: 0; padding: 20px; border: 0; background: none; box-shadow: none; }
+#nativeQuestionDialog .question-field > p { color: var(--ink); font-size: 16px; }
+#nativeQuestionDialog .question-option { display: flex; margin: 0; min-height: 48px; color: var(--ink); font-size: 14px; }
+#nativeQuestionDialog .question-option input { width: 18px; height: 18px; padding: 0; flex: none; }
+#nativeQuestionDialog .question-option strong { font-size: 14px; }
+#nativeQuestionDialog .question-option small { font-size: 12px; }
+#nativeQuestionDialog .question-error { color: var(--danger); font-size: 12px; }
+#nativeQuestionDialog .sheet-note { font-size: 12px; }
+#nativeQuestionDialog .question-actions button { font-size: 13px; }
 .command-sheet .model-panel, .command-sheet .skills-panel, .command-sheet .command-output-body { max-height: min(520px, 60dvh); margin-top: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
 .command-sheet .model-row { min-height: 50px; }
 .command-sheet .terminal-live-output { margin-top: 0; }

@@ -18,7 +18,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=44';
+} from './agent-model.js?v=45';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -134,6 +134,7 @@ const state = {
   sessionClosePending: false,
   sessionCloseTarget: null,
   pendingDeliveries: new Map(),
+  dismissedNativeQuestion: '',
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -1007,11 +1008,13 @@ async function loadThreads({ quiet = false } = {}) {
       .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
     const activeThread = findTmuxThreadTarget(state.threads, state.thread);
     if (activeThread?.tmux && state.thread) {
+      const previousQuestion = state.thread.tmux?.question?.id;
       if (applyTmuxSnapshot(state.thread, activeThread.tmux)) {
         state.threadRefreshUntil = Date.now() + THREAD_COMPLETION_REFRESH_MS;
         state.threadCompletionRefreshUntil = state.threadRefreshUntil;
         refreshActiveThread({ force: true }).catch(() => {});
       }
+      if (previousQuestion !== state.thread.tmux?.question?.id) scheduleThreadRender(false);
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
     if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
@@ -1339,7 +1342,7 @@ function threadRow(thread, index) {
   const status = execution === 'idle' ? 'done' : execution;
   const statusText = status === 'working'
     ? '正在干活'
-    : status === 'background' ? '后台运行' : status === 'done' ? '已就绪'
+    : status === 'waitingForInput' ? '等待你的回答' : status === 'background' ? '后台运行' : status === 'done' ? '已就绪'
       : status === 'failed' ? '任务失败' : '状态待确认';
   const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
   copy.append(
@@ -1947,11 +1950,41 @@ function approvalNode(key, entry) {
   return card;
 }
 
+function nativeQuestionEntry() {
+  const thread = state.thread;
+  const question = thread?.tmux?.question;
+  if (state.provider !== 'qodercli' || !question) return null;
+  return { native: true, provider: state.provider, tmuxSession: thread.tmux.name,
+    request: { id: question.id, params: { threadId: thread.id, questions: [{
+      id: 'native', header: '等待你的回答', question: question.question, options: question.options,
+    }] } } };
+}
+
+function syncNativeQuestionDialog(entry) {
+  const dialog = $('#nativeQuestionDialog');
+  if (!entry || state.threadOpening || state.threadHandoff || !state.connected) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  const key = `${entry.tmuxSession}:${entry.request.params.threadId}:${entry.request.id}`;
+  if (dialog.dataset.questionKey !== key) {
+    dialog.dataset.questionKey = key;
+    $('#nativeQuestionContent').replaceChildren(interactionNode(key, entry));
+  }
+  if (!dialog.open && state.dismissedNativeQuestion !== key) dialog.showModal();
+}
+
+function dismissNativeQuestionDialog() {
+  const dialog = $('#nativeQuestionDialog');
+  state.dismissedNativeQuestion = dialog.dataset.questionKey || '';
+  dialog.close(); // Close the browser surface, never send Escape to the CLI.
+}
+
 function interactionNode(key, entry) {
   const questions = normalizeInteractionQuestions(entry.request.params);
   const form = element('form', 'question-card');
   form.dataset.requestKey = key;
-  form.append(
+  if (!entry.native) form.append(
     element('span', 'question-kicker', `${providerDetails(entry.provider).name} 需要你的回答`),
     element('h3', '', questions.length > 1 ? '继续前请确认以下问题' : questions[0]?.header || '需要补充信息'),
   );
@@ -2002,6 +2035,7 @@ function interactionNode(key, entry) {
   submit.type = 'submit';
   actions.append(submit);
   form.append(error, actions);
+  if (entry.native) form.append(element('p', 'sheet-note', '自定义答案和多选请在普通终端操作。关闭弹窗不会取消询问。'));
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     resolveInteraction(key, entry, questions, form).catch((resolveError) => setLiveMessage(resolveError.message));
@@ -2027,7 +2061,16 @@ async function resolveInteraction(key, entry, questions, form) {
   form.querySelector('.question-error').textContent = '';
   for (const control of form.querySelectorAll('button, input')) control.disabled = true;
   try {
-    await agentRequest('resolveInteraction', {
+    if (entry.native) {
+      await agentRequest('answerSessionQuestion', {
+        provider: entry.provider, threadId: entry.request.params.threadId, tmuxSession: entry.tmuxSession,
+        questionId: entry.request.id, answer: answers.native[0],
+      });
+      if (state.provider === entry.provider && state.thread?.id === entry.request.params.threadId
+        && state.thread?.tmux?.name === entry.tmuxSession && state.thread.tmux.question?.id === entry.request.id) {
+        delete state.thread.tmux.question;
+      }
+    } else await agentRequest('resolveInteraction', {
       provider: entry.provider,
       requestId: entry.request.id,
       answers,
@@ -2036,6 +2079,7 @@ async function resolveInteraction(key, entry, questions, form) {
     scheduleThreadRender(false);
   } catch (error) {
     for (const control of form.querySelectorAll('button, input')) control.disabled = false;
+    form.querySelector('.question-error').textContent = error.message;
     if (/already resolved|expired/i.test(error.message)) {
       state.interactions.delete(key);
       scheduleThreadRender(false);
@@ -2111,6 +2155,8 @@ function loadEarlierNode() {
 }
 
 function resetThreadHistory() {
+  const questionDialog = $('#nativeQuestionDialog');
+  if (questionDialog?.open) questionDialog.close();
   // Also invalidate queued scroll work when reopening the same target (A → B → A).
   state.historyGeneration += 1;
   const wasLoading = state.loadingEarlier;
@@ -2216,6 +2262,8 @@ function renderThread() {
     entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
     && (entry.tmuxSession == null || entry.tmuxSession === (state.thread?.tmux?.name || ''))
   ));
+  const nativeQuestion = nativeQuestionEntry();
+  if (nativeQuestion) interactions.unshift([`native:${nativeQuestion.request.id}`, nativeQuestion]);
   const existingRequests = new Map([...$('#approvalStack').children]
     .filter((node) => node.dataset.requestKey)
     .map((node) => [node.dataset.requestKey, node]));
@@ -2224,6 +2272,7 @@ function renderThread() {
     ...approvals.map(([key, entry]) => existingRequests.get(key) || approvalNode(key, entry)),
   );
   syncCommandDialog(terminalContent.kind === 'command' ? terminalContent.commandOutput : null);
+  syncNativeQuestionDialog(nativeQuestion);
   renderHeader();
   if (forceBottom || nearBottom) requestAnimationFrame(() => {
     if (!forceBottom && transcriptScrollRevision !== scrollRevision) {
@@ -2243,7 +2292,7 @@ function renderComposerState() {
   if (!input || !sendButton) return;
   const activity = agentActivityText(state.thread);
   const sessionName = state.thread?.tmux?.name;
-  const waitingForInput = [state.approvals, state.interactions].some(entries => [...entries.values()].some(entry => (
+  const waitingForInput = Boolean(state.thread?.tmux?.question) || [state.approvals, state.interactions].some(entries => [...entries.values()].some(entry => (
     entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
     && (entry.tmuxSession == null || entry.tmuxSession === (sessionName || ''))
   )));
@@ -2923,6 +2972,11 @@ $('#chooseFilesButton').addEventListener('click', () => chooseAttachments($('#at
 $('#attachmentImageInput').addEventListener('change', () => handleAttachmentInput($('#attachmentImageInput')));
 $('#attachmentFileInput').addEventListener('change', () => handleAttachmentInput($('#attachmentFileInput')));
 $('#commandDialogClose').addEventListener('click', () => closeCommandDialog());
+$('#nativeQuestionClose').addEventListener('click', dismissNativeQuestionDialog);
+$('#nativeQuestionDialog').addEventListener('cancel', event => {
+  event.preventDefault();
+  dismissNativeQuestionDialog();
+});
 $('#commandDialog').addEventListener('cancel', (event) => {
   event.preventDefault();
   closeCommandDialog();

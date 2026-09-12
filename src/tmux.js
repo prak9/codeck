@@ -3,8 +3,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
 import { clampTerminalGrid } from '../public/terminal-utils.js';
+import { parseQoderQuestion, QoderQuestionTracker } from './qoder-question.js';
+export { parseQoderQuestion } from './qoder-question.js';
 
 const exec = promisify(execFile);
+const qoderQuestions = new QoderQuestionTracker();
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const THREAD_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/;
 const PANE_ID = /^%\d+$/;
@@ -795,15 +798,17 @@ export async function listSessions({ refreshAgentIdentities = false, refreshPane
         const liveOutput = resolveAgentSessionLiveOutput(
           detectedAgent, hasRunningProcess, screenSignals, screenBySession.get(session.name),
         );
+        const question = qoderQuestions.observe(session.name, detectedAgent, screenBySession.get(session.name));
         const agent = detectedAgent ? {
           ...detectedAgent,
+          ...(question ? { question } : {}),
           ...(hasBackgroundProcess ? { hasBackgroundProcess: true } : {}),
           ...(activity ? { activity } : {}),
           ...(liveOutput ? { liveOutput } : {}),
         } : null;
         const shellLiveOutput = !agent ? resolveShellLiveOutput(screenBySession.get(session.name)) : '';
         const paneScreen = paneScreenCache.get(session.name);
-        if (paneScreen) paneScreen.working = Boolean(detectedAgent && hasRunningProcess);
+        if (paneScreen) paneScreen.working = Boolean(detectedAgent && (hasRunningProcess || question));
         return {
           ...session,
           agent,
@@ -1523,6 +1528,69 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       throw error;
     }
     return finishAgentInput();
+  });
+}
+
+export async function answerSessionQuestion({ provider, sessionName, threadId, questionId, answer }, overrides = {}) {
+  if (provider !== 'qodercli' || !validateSessionName(sessionName)
+    || typeof questionId !== 'string' || !questionId || typeof answer !== 'string' || !answer || answer.length > 4_000) {
+    throw new Error('无效的终端询问回答');
+  }
+  return queueSessionInput(sessionName, async () => {
+    const listTmuxSessions = overrides.listTmuxSessions || listSessions;
+    const tracker = overrides.questionTracker || qoderQuestions;
+    const capture = overrides.capturePane || capturePane;
+    const target = { provider, sessionName, threadId };
+    const first = await verifiedSessionTarget(target, listTmuxSessions);
+    // Refresh both identity and the actual visible screen immediately before input.
+    const latest = await verifiedSessionTarget(target, listTmuxSessions);
+    if (latest.paneId !== first.paneId) throw new Error('终端 pane 已变化，回答未发送');
+    const screen = await capture(latest.paneId);
+    const active = tracker.observe(sessionName, latest.session.agent, screen);
+    const picker = parseQoderQuestion(screen);
+    if (!active || active.id !== questionId || !picker) throw new Error('询问已变化或已回答，回答未发送');
+    const selected = picker.options.findIndex(option => option.label === answer);
+    if (selected < 0) throw new Error('回答选项已变化，回答未发送');
+    const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
+    const waitForQuestion = overrides.waitForQuestion || (() => new Promise(resolve => setTimeout(resolve, 50)));
+    const verifyPicker = async () => {
+      const current = await verifiedSessionTarget(target, listTmuxSessions);
+      if (current.paneId !== latest.paneId) throw new Error('终端 pane 已变化，回答未发送');
+      const visible = await capture(current.paneId);
+      const observed = tracker.observe(sessionName, current.session.agent, visible);
+      if (observed?.id !== questionId) throw new Error('询问已变化或已回答，回答未发送');
+      return parseQoderQuestion(visible);
+    };
+    let cursor = picker.cursor;
+    while (cursor !== selected) {
+      const direction = selected > cursor ? 'Down' : 'Up';
+      const expected = cursor + (direction === 'Down' ? 1 : -1);
+      await execTmux(exitPaneModeThen(latest.paneId, ['send-keys', '-t', latest.paneId, direction]));
+      let moved = false;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await waitForQuestion();
+        const frame = await verifyPicker();
+        if (frame.cursor === expected) { moved = true; break; }
+        if (frame.cursor !== cursor) throw new Error('终端选项位置已变化，回答未发送');
+      }
+      if (!moved) throw new Error('终端选项尚未更新，回答未发送，请重试');
+      cursor = expected;
+    }
+    if ((await verifyPicker()).cursor !== selected) throw new Error('终端选项位置已变化，回答未发送');
+    // Consume before the write: an ambiguous tmux failure must never replay Enter.
+    tracker.consume(sessionName, questionId);
+    try { await execTmux(exitPaneModeThen(latest.paneId, ['send-keys', '-t', latest.paneId, 'Enter'])); }
+    catch { throw new Error('回答送达状态未知，请检查普通终端，勿重复提交'); }
+    paneScreenCache.delete(sessionName);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await waitForQuestion();
+      const after = await capture(latest.paneId);
+      const next = parseQoderQuestion(after);
+      if (after.trim() && (next ? next.fingerprint !== picker.fingerprint : !/^\s*Asking User\s*$/mu.test(after))) {
+        return { submitted: true };
+      }
+    }
+    throw new Error('选择已发送但终端未确认，请检查普通终端，勿重复提交');
   });
 }
 

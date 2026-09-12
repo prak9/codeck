@@ -8,6 +8,7 @@ export function resolveSessionStatus(session) {
 }
 
 export function sessionSnapshotRefreshInterval(snapshot) {
+  if (snapshot?.sessions?.some(session => session.agent?.question)) return 750;
   const statuses = snapshot?.sessions?.map((session) => session.status) || [];
   if (statuses.includes('working')) return 750;
   return statuses.includes('background') ? 2_000 : 5_000;

@@ -261,12 +261,13 @@ function tmuxThreads(provider, sessions, threads) {
 
 export class AgentRegistry extends EventEmitter {
   constructor(backends, {
-    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession,
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
   } = {}) {
     super();
     this.backends = new Map(Object.entries(backends || {}));
     this.listTmuxSessions = listTmuxSessions;
     this.sendTmuxMessage = sendTmuxMessage;
+    this.answerTmuxQuestion = answerTmuxQuestion;
     this.selectTmuxModel = selectTmuxModel;
     this.dismissTmuxCommand = dismissTmuxCommand;
     this.interruptTmuxSession = interruptTmuxSession;
@@ -351,6 +352,11 @@ export class AgentRegistry extends EventEmitter {
     this.backend(provider);
     if (!this.dismissTmuxCommand) throw new Error('当前服务不支持关闭原生命令菜单');
     return this.dismissTmuxCommand({ provider, ...params });
+  }
+  answerSessionQuestion(provider, params) {
+    this.backend(provider);
+    if (!this.answerTmuxQuestion) throw new Error('当前服务不支持回答原生终端询问');
+    return this.answerTmuxQuestion({ provider, ...params });
   }
   recordSessionMessage(provider, params) {
     if (cleanProvider(provider) === 'shell') return;
@@ -706,6 +712,18 @@ export class AgentHub {
       }
       await this.#respondOnce(provider, cleanRequestId(message.requestId), { decision: message.decision });
       return {};
+    }
+    if (message.type === 'answerSessionQuestion') {
+      const threadId = cleanId(message.threadId, 'Thread');
+      const sessionName = cleanId(message.tmuxSession, 'tmux session');
+      const target = this.clients.get(socket)?.threadSubscription?.target;
+      if (provider !== 'qodercli' || target?.provider !== provider || target.threadId !== threadId
+        || target.tmuxSession !== sessionName) throw new Error('询问不属于当前会话，回答未发送');
+      const result = await this.registry.answerSessionQuestion(provider, {
+        threadId, sessionName, questionId: cleanId(message.questionId, 'Question'), answer: cleanMessage(message.answer),
+      });
+      this.#invalidateSessionFeed();
+      return result;
     }
     if (message.type === 'resolveInteraction') {
       await this.#respondOnce(provider, cleanRequestId(message.requestId), { answers: cleanAnswers(message.answers) });

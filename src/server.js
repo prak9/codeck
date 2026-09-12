@@ -10,7 +10,7 @@ import { authenticateToken, createShareToken, terminalAccessForAuth } from './au
 import { createAuthRateLimiter, requestClientAddress } from './auth-rate-limit.js';
 import { createAgentBackends } from './agent-backends.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
-import { createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
+import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { loadTlsOptions } from './tls.js';
 import { createSessionSnapshotLoader } from './session-snapshot.js';
@@ -197,6 +197,7 @@ async function sessionSnapshotForAuth(auth) {
         id: session.agent.id,
         name: session.agent.name,
         activity: session.agent.activity,
+        ...(auth.owner && session.agent.question ? { question: session.agent.question } : {}),
         ...(auth.owner && threadless && session.agent.liveOutput
           ? { liveOutput: session.agent.liveOutput } : {}),
       } : null,
@@ -310,6 +311,7 @@ const agentWss = new WebSocketServer({ noServer: true, ...AGENT_WEBSOCKET_OPTION
 const agentRegistry = new AgentRegistry(createAgentBackends(), {
   listTmuxSessions: listSessions,
   sendTmuxMessage: sendSessionMessage,
+  answerTmuxQuestion: answerSessionQuestion,
   selectTmuxModel: selectSessionModel,
   dismissTmuxCommand: dismissSessionCommand,
   interruptTmuxSession: interruptSession,

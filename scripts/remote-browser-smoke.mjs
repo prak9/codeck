@@ -27,7 +27,8 @@ function reset(provider) {
 }
 function snapshot() {
   return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status,
-    agent: { kind: fixture.provider, id: 'fixture-thread', name: 'Remote fixture' } }] };
+    agent: { kind: fixture.provider, id: 'fixture-thread', name: 'Remote fixture',
+      ...(fixture.question ? { question: fixture.question } : {}) } }] };
 }
 function thread() {
   return { id: 'fixture-thread', provider: fixture.provider, readOnly: true, turns: fixture.turns.slice(-20),
@@ -85,6 +86,19 @@ sockets.on('connection', socket => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });
     if (request.type === 'openThread') return reply({ thread: thread() });
+    if (request.type === 'answerSessionQuestion') {
+      assert.equal(request.questionId, fixture.question.id);
+      assert.equal(request.tmuxSession, 'fixture');
+      if (fixture.failQuestion) {
+        fixture.failQuestion = false;
+        return send(socket, { id: request.id, ok: false, error: '终端选项尚未更新，回答未发送，请重试' });
+      }
+      fixture.answer = request.answer;
+      fixture.question = null;
+      reply({ submitted: true });
+      publishSessions();
+      return;
+    }
     if (request.type === 'loadThreadHistory') {
       const anchor = request.cursor ? decodeHistoryCursor(request.cursor, fixture.provider, 'fixture-thread') : request.beforeTurnId;
       assert.equal(anchor, request.beforeTurnId, 'cursor follows the current history boundary, including reconnect gaps');
@@ -219,6 +233,41 @@ try {
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('等待你的确认'));
       await page.getByRole('button', { name: '允许一次', exact: true }).click();
       await page.waitForSelector('.approval-card', { state: 'detached' });
+
+      if (provider === 'qodercli') {
+        fixture.question = { id: 'native-question', question: '是否现在对部署后的最终提交运行 L3 深度安全扫描？',
+          options: [{ label: 'Run L3 deep security review', description: '立即审查当前最终提交集。' },
+            { label: 'Skip scan', description: '保持现状，不运行扫描。' }] };
+        publishSessions();
+        const dialog = page.locator('#nativeQuestionDialog');
+        await page.waitForSelector('#nativeQuestionDialog[open]');
+        await dialog.getByRole('button', { name: '回答并继续' }).click();
+        assert.match(await dialog.locator('.question-error').textContent(), /请回答/);
+        await dialog.getByRole('radio', { name: /Skip scan/ }).check();
+        publishSessions();
+        publishThread();
+        assert.equal(await dialog.getByRole('radio', { name: /Skip scan/ }).isChecked(), true);
+        fixture.failQuestion = true;
+        await dialog.getByRole('button', { name: '回答并继续' }).click();
+        await page.waitForFunction(() => document.querySelector('#nativeQuestionDialog .question-error').textContent.includes('回答未发送'));
+        assert.equal(await dialog.getByRole('radio', { name: /Skip scan/ }).isChecked(), true);
+        const box = await dialog.boundingBox();
+        assert.ok(box.x >= 0 && box.x + box.width <= viewport.width + 1);
+        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-native-question.png`) });
+        await dialog.getByRole('button', { name: '回答并继续' }).click();
+        await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
+        assert.equal(fixture.answer, 'Skip scan');
+        fixture.question = { id: 'next-question', question: '继续下一步？', options: [{ label: 'Continue' }] };
+        publishSessions();
+        await page.waitForSelector('#nativeQuestionDialog[open]');
+        await page.getByRole('button', { name: '稍后回答' }).click();
+        publishSessions();
+        assert.equal(await dialog.getAttribute('open'), null);
+        assert.equal(fixture.question.id, 'next-question', 'closing browser modal does not answer or cancel native prompt');
+        fixture.question = null;
+        publishSessions();
+        await page.waitForSelector('#approvalStack .question-card', { state: 'detached' });
+      }
 
       fixture.status = 'background'; publishSessions();
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('后台任务'));

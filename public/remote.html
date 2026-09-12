@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=37">
+  <link rel="stylesheet" href="/remote.css?v=38">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -154,6 +154,11 @@
     </form>
   </dialog>
 
+  <dialog class="sheet command-sheet" id="nativeQuestionDialog" aria-labelledby="nativeQuestionTitle">
+    <div class="sheet-head"><h2 id="nativeQuestionTitle">QoderCLI 需要你的回答</h2><button class="close-button" id="nativeQuestionClose" type="button" aria-label="稍后回答">×</button></div>
+    <div id="nativeQuestionContent"></div>
+  </dialog>
+
   <dialog class="sheet settings-sheet" id="newSessionDialog">
     <form method="dialog" id="newSessionForm">
       <div class="sheet-head"><div><p class="eyebrow">SESSION</p><h2>新建会话</h2></div><button class="close-button" value="cancel" formnovalidate aria-label="关闭">×</button></div>
@@ -218,6 +223,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=90"></script>
+  <script type="module" src="/remote.js?v=91"></script>
 </body>
 </html>
