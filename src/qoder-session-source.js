@@ -28,6 +28,48 @@ function messageWindow(messages, { offset = 0, limit } = {}) {
     ? messages.slice(start, start + limit) : start > 0 ? messages.slice(start) : messages;
 }
 
+function buildCompactContext(records) {
+  const compactSummaryIds = new Set();
+  const boundaryByUuid = new Map();
+  const uuidToIndex = new Map();
+  for (let index = 0; index < records.length; index += 1) {
+    const entry = records[index]?.entry;
+    const uuid = typeof entry?.uuid === 'string' ? entry.uuid : null;
+    if (!uuid) continue;
+    uuidToIndex.set(uuid, index);
+    if (entry?.isCompactSummary === true) compactSummaryIds.add(uuid);
+    if (entry?.type === 'system' && entry?.subtype === 'compact_boundary') {
+      boundaryByUuid.set(uuid, {
+        index,
+        logicalParentUuid: typeof entry.logicalParentUuid === 'string' ? entry.logicalParentUuid : null,
+      });
+    }
+  }
+  return { records, compactSummaryIds, boundaryByUuid, uuidToIndex };
+}
+
+function activeCompactBoundaryIds(messages, context) {
+  const activeIds = new Set(
+    (Array.isArray(messages) ? messages : []).map((message) => message?.uuid).filter((uuid) => typeof uuid === 'string'),
+  );
+  const activeBoundaryIds = new Set();
+  const boundaries = context?.boundaryByUuid || new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const messageUuid = typeof message?.uuid === 'string' ? message.uuid : null;
+    if (message?.type === 'system' && message?.subtype === 'compact_boundary'
+      && messageUuid && boundaries.has(messageUuid)) {
+      activeBoundaryIds.add(messageUuid);
+      continue;
+    }
+    const parentBoundaryUuid = typeof message?.parentUuid === 'string' ? message.parentUuid : null;
+    if (message?.isCompactSummary === true && activeIds.has(messageUuid)
+      && parentBoundaryUuid && boundaries.has(parentBoundaryUuid)) {
+      activeBoundaryIds.add(parentBoundaryUuid);
+    }
+  }
+  return activeBoundaryIds;
+}
+
 async function readInputLog(file) {
   try {
     const entries = JSON.parse(await fs.readFile(file, 'utf8'));
@@ -97,11 +139,17 @@ export class QoderSessionSource {
         },
       },
     });
+    const compactContext = snapshot ? buildCompactContext(snapshot.records || []) : null;
+    const activeBoundaryIds = compactContext ? activeCompactBoundaryIds(messages, compactContext) : new Set();
     const expanded = snapshot
-      ? await this.#restoreCompactionHistory(threadId, sdkOptions, snapshot, messages) : messages;
-    const compactSummaryIds = new Set((snapshot?.records || [])
-      .filter(({ entry }) => entry.isCompactSummary === true && typeof entry.uuid === 'string')
-      .map(({ entry }) => entry.uuid));
+      ? await (activeBoundaryIds.size
+        ? this.#restoreCompactionHistory(
+          threadId, sdkOptions, snapshot, messages,
+          compactContext, activeBoundaryIds,
+        )
+        : messages)
+      : messages;
+    const compactSummaryIds = compactContext ? compactContext.compactSummaryIds : new Set();
     // The SDK must see the complete graph so it can resolve branches and compaction
     // boundaries, but its normalized SessionMessage drops this raw metadata.
     const normalized = expanded.map(message => compactSummaryIds.has(message.uuid)
@@ -110,27 +158,20 @@ export class QoderSessionSource {
     return messageWindow(normalized, { limit, offset });
   }
 
-  async #restoreCompactionHistory(threadId, sdkOptions, snapshot, messages, seen = new Set()) {
+  async #restoreCompactionHistory(threadId, sdkOptions, snapshot, messages, context, activeBoundaryIds, seen = new Set()) {
     let expanded = messages;
-    const activeIds = new Set(messages.map(message => message?.uuid).filter(Boolean));
-    const activeBoundaryIds = new Set(messages.filter(message => (
-      message.type === 'system' && message.subtype === 'compact_boundary'
-    )).map(message => message.uuid));
-    for (const { entry } of snapshot.records) {
-      if (entry.isCompactSummary === true && activeIds.has(entry.uuid)
-        && typeof entry.parentUuid === 'string') activeBoundaryIds.add(entry.parentUuid);
-    }
-    for (const boundary of snapshot.records.map(({ entry }) => entry).filter(entry => (
-      entry.type === 'system' && entry.subtype === 'compact_boundary'
-      && activeBoundaryIds.has(entry.uuid)
-    ))) {
-      if (seen.has(boundary.uuid)) continue;
-      const index = snapshot.records.findLastIndex(({ entry }) => entry.uuid === boundary.uuid);
+    if (!activeBoundaryIds?.size) return expanded;
+    for (const boundaryUuid of activeBoundaryIds) {
+      if (seen.has(boundaryUuid)) continue;
+      const boundary = context?.boundaryByUuid?.get(boundaryUuid);
+      if (!boundary) continue;
+      const index = boundary.index;
       const record = index >= 0 ? snapshot.records[index] : null;
-      const parentUuid = record?.entry?.logicalParentUuid;
-      if (typeof parentUuid !== 'string' || !snapshot.records.slice(0, index)
-        .some(({ entry }) => entry.uuid === parentUuid)) continue;
-      const key = [threadId, snapshot.identity, boundary.uuid, record.offset,
+      const parentUuid = boundary.logicalParentUuid;
+      const parentIndex = context?.uuidToIndex?.get(parentUuid);
+      if (typeof parentUuid !== 'string'
+        || !Number.isSafeInteger(parentIndex) || parentIndex >= index || index <= 0) continue;
+      const key = [threadId, snapshot.identity, boundaryUuid, record.offset,
         hash(snapshot.bytes.subarray(0, record.offset))].join('\0');
       let history = this.compactionHistory.get(key);
       if (history) {
@@ -146,7 +187,8 @@ export class QoderSessionSource {
           }] },
         });
         history = await this.#restoreCompactionHistory(
-          threadId, sdkOptions, snapshot, history, new Set([...seen, boundary.uuid]),
+          threadId, sdkOptions, snapshot, history, context,
+          activeCompactBoundaryIds(history, context), new Set([...seen, boundaryUuid]),
         );
         this.compactionHistory.set(key, history);
         while (this.compactionHistory.size > COMPACTION_HISTORY_CACHE_LIMIT) {
