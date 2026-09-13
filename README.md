@@ -13,7 +13,7 @@ npm start
 
 打开终端中显示的 HTTPS 地址，并输入同一处显示的访问令牌。默认监听 `0.0.0.0:4310`，适合不经过 nginx 的可信内网；公网通过 nginx 反向代理时，应显式设置 `HOST=127.0.0.1`，再由 nginx 在外网监听 `3392`。代理必须允许 `/ws` 和 `/agent` 的 WebSocket Upgrade。所有会话 API 和加密 WebSocket 连接都必须提供访问令牌。未设置 `CODECK_TOKEN` 时，每次启动会自动生成一个随机令牌。
 
-首次启动会通过 `openssl` 在 `~/.codeck` 生成并保存自签名 TLS 证书。浏览器会提示该证书不受信任，需要手动确认。正式部署可使用受信任证书：
+首次启动会通过 `openssl` 在 `~/.codeck` 生成并保存自签名 TLS 证书（设置 `CODECK_DATA_DIR` 时使用该目录），兼容不支持 `-addext` 的旧版 OpenSSL。启动时会检查有效期、私钥匹配、自签名和 localhost / 127.0.0.1 SAN；缺失或无效时，在临时目录生成并验证后替换。自动重建后浏览器可能需要重新确认信任。通过环境变量指定的证书不会被自动替换。浏览器会提示自签名证书不受信任，需要手动确认。正式部署可使用受信任证书：
 
 ```bash
 CODECK_TLS_CERT=/path/to/fullchain.pem CODECK_TLS_KEY=/path/to/privkey.pem npm start
