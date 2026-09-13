@@ -191,6 +191,13 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .dialog-actions { align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .dialog-actions .primary-button { margin-top: 0; }
 .form-error { min-height: 18px; margin: 9px 0 0; color: var(--danger); font-size: 11px; }
+#terminalSelectionDialog { width: min(720px, calc(100vw - 24px)); }
+.terminal-selection-body { padding: 18px; }
+.terminal-selection-body .dialog-head { align-items: center; gap: 12px; }
+.terminal-selection-body h2 { margin: 0; font-size: 19px; }
+.terminal-selection-body button { min-height: 44px; flex-shrink: 0; }
+#terminalSelectionText { display: block; width: 100%; height: min(50dvh, 440px); min-height: 100px; padding: 12px; resize: none; border: 1px solid var(--line-strong); border-radius: 9px; background: #2e3436; color: #d3d7cf; font: 16px/1.5 "Courier New", "Noto Sans SC Variable", monospace; -webkit-user-select: text; user-select: text; touch-action: auto; }
+#terminalSelectionStatus { min-height: 20px; margin-bottom: 0; }
 .session-visibility-dialog { width: min(520px, calc(100vw - 30px)); }
 .session-prefix-input { width: 100%; min-height: 104px; padding: 11px 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: #11111499; color: var(--ink); font-size: 16px; line-height: 1.5; }
 .session-visibility-summary { min-height: 18px; margin: 9px 0 0; color: #d7d7da; }

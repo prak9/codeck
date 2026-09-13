@@ -1,4 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { bindTerminalTextSelection } from './terminal-text-selection.js?v=1';
 import {
   activateTerminalWebgl,
   bindTerminalRenderWatchdog,
@@ -1751,9 +1752,17 @@ function visibleScreenText(terminal) {
   return lines.join('\n').replace(/\n+$/, '');
 }
 
+const openTerminalTextSelection = bindTerminalTextSelection({
+  dialog: $('#terminalSelectionDialog'), text: $('#terminalSelectionText'),
+  status: $('#terminalSelectionStatus'), copy: $('#copyTerminalSelection'),
+  close: $('#closeTerminalSelection'),
+  getSnapshot: () => state.terminal ? visibleScreenText(state.terminal) : '',
+});
+
 $('.mobile-keybar').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-terminal-action]');
   if (!button || !state.terminal) return;
+  if (button.dataset.terminalAction === 'select') return openTerminalTextSelection();
   if (button.dataset.terminalAction === 'copy') {
     // Prefer whatever is actually selected — the browser's own selection on touch, or
     // xterm's on a pointer device — and fall back to the visible screen.

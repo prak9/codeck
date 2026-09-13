@@ -75,6 +75,26 @@ const imageEvent = () => ({
   preventDefault() {}, stopImmediatePropagation() {},
 });
 
+test('mobile selection entry is available readonly and never writes terminal input', async () => {
+  const f = fixture();
+  let opened = 0;
+  f.context.openTerminalTextSelection = () => { opened += 1; };
+  f.state.canWrite = false;
+  await f.listeners.get('click')({ target: { closest: () => ({ dataset: { terminalAction: 'select' } }) } });
+  assert.equal(opened, 1);
+  assert.deepEqual(f.sent, []);
+});
+
+test('selection snapshot reads the visible history viewport, not the latest bottom screen', () => {
+  const f = fixture();
+  vm.runInContext(functionSource('visibleScreenText'), f.context);
+  const rows = ['old', '历史第一行', '<script>普通文本', 'new output'];
+  const terminal = { rows: 2, buffer: { active: { viewportY: 1,
+    getLine: n => ({ translateToString: () => rows[n] }),
+  } } };
+  assert.equal(f.context.visibleScreenText(terminal), '历史第一行\n<script>普通文本');
+});
+
 test('the active terminal session survives refresh without dropping display parameters', () => {
   const f = fixture();
   f.context.location.search = '?view=readable&fontSize=15';
