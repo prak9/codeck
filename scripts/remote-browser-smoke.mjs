@@ -158,6 +158,17 @@ try {
       page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
+      if (viewport.width < 720) await page.click('#drawerButton');
+      await page.fill('#sessionSearch', 'NO-MATCH');
+      assert.equal(await page.locator('#threadList .thread-row').count(), 0);
+      assert.match(await page.textContent('#threadList'), /没有匹配/);
+      await page.fill('#sessionSearch', 'FIXT');
+      assert.equal(await page.locator('#threadList .thread-row').count(), 1);
+      publishSessions();
+      assert.equal(await page.inputValue('#sessionSearch'), 'FIXT');
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-search.png`) });
+      await page.fill('#sessionSearch', '');
+      if (viewport.width < 720) await page.click('#drawerScrim', { position: { x: viewport.width - 5, y: 10 } });
       await page.locator('#transcript').evaluate(node => { node.scrollTop = 0; });
       await page.getByRole('button', { name: '加载更早的对话' }).click();
       await page.waitForSelector('[data-turn-id="turn-41"]');

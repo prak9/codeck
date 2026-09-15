@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=66">
+    <link rel="stylesheet" href="/styles.css?v=67">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -34,6 +34,7 @@
           <button class="icon-button" id="newButton" aria-label="新建会话">＋</button>
         </div>
       </div>
+      <div class="session-search"><input id="sessionSearch" type="search" placeholder="搜索会话名称" aria-label="搜索会话名称" aria-controls="sessionList" autocomplete="off" spellcheck="false"></div>
       <div class="session-list" id="sessionList" aria-live="polite" aria-label="会话快速切换"></div>
       <button class="new-session-button" id="newButtonBottom"><span>＋</span> 新建会话</button>
       <footer><button id="quickSwitchButton" type="button" aria-label="打开会话快速切换"><kbd>⌘ K</kbd><span>/</span><kbd>Alt K</kbd><span>快速切换</span></button></footer>
@@ -146,6 +147,6 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
-  <script type="module" src="/app.js?v=112"></script>
+  <script type="module" src="/app.js?v=113"></script>
 </body>
 </html>

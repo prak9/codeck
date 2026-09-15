@@ -1,4 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { filterSessionNames } from './session-search.js?v=1';
 import { bindTerminalTextSelection } from './terminal-text-selection.js?v=1';
 import {
   activateTerminalWebgl,
@@ -691,7 +692,7 @@ function renderSessions({ force = false } = {}) {
     active: state.active || '',
     canManage: state.canManage,
     extra: [
-      state.overview, state.expandedSessionFolders.join(','),
+      $('#sessionSearch')?.value || '', state.overview, state.expandedSessionFolders.join(','),
       state.folderSessionPrefixes.join(','), state.hiddenSessionPrefixes.join(','),
     ].join('|'),
   });
@@ -708,7 +709,13 @@ function renderSessions({ force = false } = {}) {
     return;
   }
   const indexByName = new Map(visible.map((session, index) => [session.name, index]));
-  const entries = groupSessionsByPrefix(visible, state.folderSessionPrefixes);
+  const query = $('#sessionSearch')?.value || '';
+  const matches = filterSessionNames(visible, query);
+  if (!matches.length) {
+    list.textContent = '没有匹配的会话，请更换关键词';
+    return;
+  }
+  const entries = query.trim() ? matches.map(item => ({ type: 'session', item })) : groupSessionsByPrefix(matches, state.folderSessionPrefixes);
   list.innerHTML = entries.map((entry) => entry.type === 'folder'
     ? sessionFolderHtml(entry, indexByName)
     : sessionEntryHtml(entry.item, indexByName.get(entry.item.name))).join('');
@@ -722,6 +729,8 @@ function renderSessions({ force = false } = {}) {
   }
   list.scrollTop = scrollTop;
 }
+
+$('#sessionSearch').addEventListener('input', () => renderSessions());
 
 function escapeHtml(value) {
   const node = document.createElement('span');

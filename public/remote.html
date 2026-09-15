@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=38">
+  <link rel="stylesheet" href="/remote.css?v=39">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -37,6 +37,7 @@
           <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建会话">＋</button>
         </div>
       </div>
+      <div class="session-search"><input id="sessionSearch" type="search" placeholder="搜索会话名称" aria-label="搜索会话名称" aria-controls="threadList" autocomplete="off" spellcheck="false"></div>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
         <span><i class="connection-dot" id="drawerConnectionDot"></i><span id="drawerConnectionText">正在连接</span></span>
@@ -223,6 +224,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=91"></script>
+  <script type="module" src="/remote.js?v=92"></script>
 </body>
 </html>

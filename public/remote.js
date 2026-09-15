@@ -1,3 +1,4 @@
+import { filterSessionNames } from './session-search.js?v=1';
 import {
   agentActivityText,
   applyAcceptedUserMessage,
@@ -1395,6 +1396,8 @@ function threadFolder(entry, indexByThread) {
   return folder;
 }
 
+$('#sessionSearch').addEventListener('input', () => renderThreadList());
+
 function renderThreadList() {
   const list = $('#threadList');
   const scrollTop = list.scrollTop;
@@ -1410,7 +1413,13 @@ function renderThreadList() {
     return;
   }
   const indexByThread = new Map(visible.map((thread, index) => [thread, index]));
-  const entries = groupSessionsByPrefix(visible, state.folderSessionPrefixes, (thread) => thread.tmux?.name);
+  const query = $('#sessionSearch')?.value || '';
+  const matches = filterSessionNames(visible, query, thread => thread.tmux?.name || thread.name || thread.preview);
+  if (!matches.length) {
+    list.textContent = '没有匹配的会话，请更换关键词';
+    return;
+  }
+  const entries = query.trim() ? matches.map(item => ({ type: 'session', item })) : groupSessionsByPrefix(matches, state.folderSessionPrefixes, (thread) => thread.tmux?.name);
   const rows = entries.map((entry) => entry.type === 'folder'
     ? threadFolder(entry, indexByThread)
     : threadRow(entry.item, indexByThread.get(entry.item)));
