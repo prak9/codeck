@@ -95,7 +95,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
   assert.match(html, /\/remote\.css\?v=39/);
-  assert.match(html, /\/remote\.js\?v=92/);
+  assert.match(html, /\/remote\.js\?v=93/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -386,6 +386,6 @@ test('the conversation surface is the terminal surface', () => {
   assert.doesNotMatch(css, /\.conversation-shell \{[^}]*radial-gradient/s);
   assert.match(css, /\.turns \{[^}]*color: var\(--terminal-ink\)[^}]*"Courier New"/s);
   // xterm 的前景色就是这个值, 两边必须同源。
-  assert.match(appJs, /foreground: '#d3d7cf'/);
+  assert.match(fs.readFileSync(new URL('../public/terminal-palette.js', import.meta.url), 'utf8'), /foreground: '#d3d7cf'/);
   assert.match(css, /--terminal-ink:\s*#d3d7cf/i);
 });

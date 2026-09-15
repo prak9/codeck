@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as terminalUtils from '../public/terminal-utils.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
+import { clipboardFiles, readClipboardPayload } from '../public/clipboard-files.js';
 
 const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -41,7 +42,7 @@ function fixture() {
   const listeners = new Map();
   $('.mobile-keybar').addEventListener = (type, handler) => listeners.set(type, handler);
   const context = vm.createContext({
-    state, $, WebSocket: { OPEN: 1 }, URLSearchParams, TextDecoder, setTimeout, clearTimeout,
+    state, $, clipboardFiles, readClipboardPayload: () => readClipboardPayload(context.navigator.clipboard), WebSocket: { OPEN: 1 }, URLSearchParams, TextDecoder, setTimeout, clearTimeout,
     location: { protocol: 'http:', host: 'localhost', pathname: '/', search: '', hash: '' },
     history: {
       replaceState(_state, _title, next) {
@@ -83,6 +84,27 @@ test('mobile selection entry is available readonly and never writes terminal inp
   await f.listeners.get('click')({ target: { closest: () => ({ dataset: { terminalAction: 'select' } }) } });
   assert.equal(opened, 1);
   assert.deepEqual(f.sent, []);
+});
+
+test('Windows screenshot pasted into local composer appends a path without sending the draft', async () => {
+  const f = fixture();
+  const draft = f.$('#terminalVoiceDraft');
+  draft.focus = () => {};
+  f.context.resizeTerminalVoiceDraft = () => {};
+  f.context.api = async () => ({ path: '/tmp/screenshot.png' });
+  const event = imageEvent();
+  event.currentTarget = draft;
+  await f.context.pasteImages(event);
+  assert.equal(draft.value, "unsent draft '/tmp/screenshot.png' ");
+  assert.deepEqual(f.sent, []);
+});
+
+test('paste button reads a screenshot and inserts its path, never an Enter', async () => {
+  const f = fixture();
+  f.context.navigator.clipboard.read = async () => [{ types: ['image/png'], getType: async () => ({ type: 'image/png' }) }];
+  f.context.api = async () => ({ path: '/tmp/screenshot.png' });
+  await f.listeners.get('click')({ target: { closest: () => ({ dataset: { terminalAction: 'paste' } }) } });
+  assert.deepEqual(f.sent, [{ type: 'input', data: "'/tmp/screenshot.png'" }]);
 });
 
 test('selection snapshot reads the visible history viewport, not the latest bottom screen', () => {
@@ -353,7 +375,7 @@ test('wheel wiring captures before xterm, keeps readonly scroll, and cancels acr
       onData() {} onSelectionChange() {} onResize() {}
     },
     FitAddon: class {}, ResizeObserver: class { observe() {} },
-    activateTerminalWebgl() {}, bindTerminalRenderWatchdog() {}, bindMobileScroll() {},
+    activateTerminalWebgl() {}, bindTerminalRenderWatchdog() {}, bindMobileScroll() {}, bindTerminalPalette() {},
     handleTerminalDragEnter() {}, handleTerminalDragOver() {}, handleTerminalDragLeave() {}, handleTerminalDragStart() {},
     touchLog() {},
     createTerminalWheelScroller: (send) => terminalUtils.createTerminalWheelScroller(send, {

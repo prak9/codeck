@@ -1,0 +1,69 @@
+/* Theme colors only: terminal geometry and input stay unchanged. */
+#terminalThemeSelect { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--base); color: var(--ink); font: inherit; font-size: 16px; }
+#terminalThemeSelect:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:root[data-terminal-theme="mac"] {
+  color-scheme: light;
+  --ink: #202020;
+  --muted: #595959;
+  --subtle: #666666;
+  --line: #00000016;
+  --line-strong: #00000028;
+  --panel: #fafafbea;
+  --base: #ffffff;
+  --terminal: #ffffff;
+  --raised: #00000006;
+  --selected: #e9e9e9;
+  --accent: #202020;
+  --accent-hover: #383838;
+  --danger: #b42318;
+}
+:root[data-terminal-theme="mac"] body { font-family: -apple-system, BlinkMacSystemFont, "Inter Variable", "Noto Sans SC Variable", sans-serif; }
+:root[data-terminal-theme="mac"] .topbar { background: #ffffff; box-shadow: none; border-bottom-color: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-terminal-theme="mac"] .sidebar { background: #f9f9f9; border-right-color: #e6e6e6; backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-terminal-theme="mac"] .workspace { background: #ffffff; }
+:root[data-terminal-theme="mac"] .brand { letter-spacing: .06em; }
+:root[data-terminal-theme="mac"] .brand-mark { color: var(--ink); background: transparent; box-shadow: none; }
+:root[data-terminal-theme="mac"] :is(.icon-button, .secondary-button, .terminal-tool-button, .view-mode-button, .new-session-button, .mobile-keybar button) { background: transparent; color: var(--ink); box-shadow: none; border-color: transparent; }
+:root[data-terminal-theme="mac"] :is(.icon-button, .secondary-button, .terminal-tool-button, .new-session-button):hover { background: #eaeaea; border-color: transparent; }
+:root[data-terminal-theme="mac"] :is(.remote-entry, .session-folder.contains-active > .session-folder-summary, .session-visibility-note code) { color: var(--accent); }
+:root[data-terminal-theme="mac"] .remote-entry { border-color: var(--line); background: transparent; border-radius: 18px; }
+:root[data-terminal-theme="mac"] .primary-button { box-shadow: none; border-radius: 20px; }
+:root[data-terminal-theme="mac"] .session-row.active { border-color: transparent; box-shadow: none; }
+:root[data-terminal-theme="mac"] .session-icon { color: #555555; border-color: transparent; background: transparent; }
+:root[data-terminal-theme="mac"] .session-row.active .session-icon { color: var(--ink); border-color: transparent; background: transparent; }
+:root[data-terminal-theme="mac"] .session-list { scrollbar-color: #00000030 transparent; }
+:root[data-terminal-theme="mac"] .session-visibility-count { border-color: #f9f9f9; }
+:root[data-terminal-theme="mac"] :is(.session-visibility-summary, label, legend) { color: var(--ink); }
+:root[data-terminal-theme="mac"] .prompt-glyph { background: transparent; color: var(--accent); border-color: transparent; box-shadow: none; }
+:root[data-terminal-theme="mac"] .danger-button { color: #b42318; border-color: #b4231828; background: #b4231808; }
+:root[data-terminal-theme="mac"] .terminal-disconnect { color: #9b3317; }
+:root[data-terminal-theme="mac"] .view-mode-button[aria-pressed="true"] { color: var(--ink); border-color: var(--line); background: #f0f0f0; }
+:root[data-terminal-theme="mac"] [data-agent-output-copy][data-copy-state="success"] { color: #176b32; border-color: #176b3260; }
+:root[data-terminal-theme="mac"] [data-agent-output-copy][data-copy-state="error"] { color: #b42318; border-color: #b4231860; }
+:root[data-terminal-theme="mac"] dialog { background: #ffffff; box-shadow: 0 12px 40px #0000001f; backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-terminal-theme="mac"] dialog::backdrop { background: #00000030; backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-terminal-theme="mac"] :is(input[type="text"], input[type="password"], input:not([type]), .session-prefix-input) { background: #fff; }
+:root[data-terminal-theme="mac"] :is(.switch-row.active, .client-options input:checked + span) { background: #f0f0f0; border-color: #909090; }
+:root[data-terminal-theme="mac"] :is(button, input, textarea, .client-options input + span):focus-visible { outline-color: var(--accent); }
+:root[data-terminal-theme="mac"] .presence.done { background: #258345; box-shadow: none; }
+:root[data-terminal-theme="mac"] :is(.presence.working, .presence.background) { background: #996600; box-shadow: none; }
+:root[data-terminal-theme="mac"] #terminalSelectionText { background: var(--terminal); color: #24292f; }
+:root[data-terminal-theme="mac"] .terminal-voice-prompt { color: var(--accent); }
+:root[data-terminal-theme="mac"] .terminal-voice-composer.handoff .terminal-voice-hint { color: #95501b; }
+:root[data-terminal-theme="mac"] .terminal-voice-composer:focus-within { border-color: #b5b5b5; }
+:root[data-terminal-theme="mac"] .terminal-voice-capture.listening { color: #b42318; background: #b4231810; }
+:root[data-terminal-theme="mac"] .terminal-voice-send:disabled { background: #e6e8eb; color: #626975; }
+:root[data-terminal-theme="mac"] .xterm .xterm-viewport { scrollbar-color: #00000030 transparent; }
+:root[data-terminal-theme="mac"] .xterm .xterm-viewport::-webkit-scrollbar-thumb { background-color: #00000030; }
+:root[data-terminal-theme="mac"] .terminal-voice-composer { background: #f4f4f4; border-radius: 22px; border-color: #eeeeee; box-shadow: none; }
+:root[data-terminal-theme="mac"] .terminal-voice-send { border-radius: 50%; box-shadow: none; }
+:root[data-terminal-theme="mac"] .terminal-frame { border-color: transparent; box-shadow: none; }
+:root[data-terminal-theme="mac"] .terminal-view:has(#terminalVoiceComposer[hidden]) .terminal-frame { border-color: transparent; box-shadow: none; }
+:root[data-terminal-theme="mac"] .session-copy b { font-weight: 400; font-size: 15px; }
+:root[data-terminal-theme="mac"] .session-copy small { font-size: 11px; }
+:root[data-terminal-theme="mac"] .session-folder-name { font-weight: 500; font-size: 13px; }
+:root[data-terminal-theme="mac"] .session-search input { background: #f0f0f0; border-color: transparent; border-radius: 8px; }
+:root[data-terminal-theme="mac"] .session-row { border-radius: 8px; }
+:root[data-terminal-theme="mac"] .server-state { border-color: transparent; background: transparent; }
+:root[data-terminal-theme="mac"] .sidebar:not(.open) { box-shadow: none; }
+:root[data-terminal-theme="mac"] .sidebar.open { box-shadow: 8px 0 24px #00000014; }

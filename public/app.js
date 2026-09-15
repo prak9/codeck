@@ -1,4 +1,6 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
+import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { filterSessionNames } from './session-search.js?v=1';
 import { bindTerminalTextSelection } from './terminal-text-selection.js?v=1';
 import {
@@ -1169,9 +1171,7 @@ function showTerminalDisconnect(message) {
 }
 
 async function pasteImages(event) {
-  const images = [...(event.clipboardData?.items || [])]
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    .map((item) => item.getAsFile()).filter(Boolean);
+  const images = clipboardFiles(event.clipboardData).filter(file => file.type.startsWith('image/'));
   if (!images.length) return;
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -1180,6 +1180,7 @@ async function pasteImages(event) {
   }
   const target = captureTerminalTarget();
   if (!isCurrentTerminalTarget(target)) return setConnectionMessage('终端尚未连接');
+  const draft = event.currentTarget === $('#terminalVoiceDraft') ? $('#terminalVoiceDraft') : null;
   setConnectionMessage(images.length > 1 ? `正在上传 ${images.length} 张图片…` : '正在上传图片…', false);
   try {
     const uploads = await Promise.all(images.map((file) => api('/api/uploads/images', {
@@ -1187,9 +1188,14 @@ async function pasteImages(event) {
     })));
     if (!isCurrentTerminalTarget(target)) throw new Error('会话已切换或断开，未插入上传路径');
     const paths = uploads.map((upload) => shellQuotePath(upload.path)).join(' ');
-    target.socket.send(JSON.stringify({ type: 'input', data: paths }));
+    if (draft) {
+      draft.value += `${draft.value && !/\s$/.test(draft.value) ? ' ' : ''}${paths} `;
+      resizeTerminalVoiceDraft();
+      syncTerminalVoiceControls();
+    } else target.socket.send(JSON.stringify({ type: 'input', data: paths }));
     setConnectionMessage(images.length > 1 ? `已粘贴 ${images.length} 张图片` : '图片已粘贴');
-    state.terminal.focus();
+    if (draft) draft.focus();
+    else state.terminal.focus();
   } catch (error) {
     setConnectionMessage(error.message === 'UNAUTHORIZED' ? '令牌已失效' : `图片上传失败：${error.message}`);
   }
@@ -1255,15 +1261,8 @@ function ensureTerminal() {
     disableStdin: !state.canWrite,
     fontFamily: '"Courier New", "Noto Sans SC Variable", monospace',
     fontSize: 16, lineHeight: 1.2, scrollback: 5000,
-    theme: {
-      background: '#2e3436', foreground: '#d3d7cf', cursor: '#eeeeec', cursorAccent: '#2e3436',
-      selectionBackground: '#e9542066', selectionForeground: '#ffffff',
-      black: '#2e3436', red: '#cc0000', green: '#4e9a06', yellow: '#c4a000',
-      blue: '#3465a4', magenta: '#75507b', cyan: '#06989a', white: '#d3d7cf',
-      brightBlack: '#555753', brightRed: '#ef2929', brightGreen: '#8ae234', brightYellow: '#fce94f',
-      brightBlue: '#729fcf', brightMagenta: '#ad7fa8', brightCyan: '#34e2e2', brightWhite: '#eeeeec',
-    },
   });
+  bindTerminalPalette(terminal);
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
@@ -1728,6 +1727,7 @@ $('#terminalVoiceComposer').addEventListener('submit', (event) => {
   submitTerminalVoiceDraft();
 });
 $('#terminalVoiceDraft').addEventListener('focus', () => endTerminalHandoff({ focus: false }));
+$('#terminalVoiceDraft').addEventListener('paste', pasteImages);
 $('#terminalVoiceDraft').addEventListener('input', () => {
   resizeTerminalVoiceDraft();
   syncTerminalVoiceControls();
@@ -1790,8 +1790,12 @@ $('.mobile-keybar').addEventListener('click', async (event) => {
     try {
       // Reading the clipboard needs the user gesture this click provides; iOS additionally
       // shows its own confirmation before handing the text over.
-      const text = await navigator.clipboard.readText();
+      const { images, text } = await readClipboardPayload();
       if (!isCurrentTerminalTarget(target)) return setConnectionMessage('会话已切换或断开，未粘贴剪贴板内容');
+      if (images.length) {
+        await pasteImages({ clipboardData: { files: images }, preventDefault() {}, stopImmediatePropagation() {} });
+        return;
+      }
       if (text) {
         const receipt = requestTerminalSubmit(target, text);
         syncTerminalVoiceControls();

@@ -1,4 +1,5 @@
 import { filterSessionNames } from './session-search.js?v=1';
+import { clipboardFiles } from './clipboard-files.js?v=1';
 import {
   agentActivityText,
   applyAcceptedUserMessage,
@@ -2743,10 +2744,7 @@ function hasDraggedFiles(event) {
 }
 
 function handleAttachmentPaste(event) {
-  const files = [...(event.clipboardData?.items || [])]
-    .filter((item) => item.kind === 'file')
-    .map((item) => item.getAsFile())
-    .filter(Boolean);
+  const files = clipboardFiles(event.clipboardData);
   if (!files.length) return;
   event.preventDefault();
   addAttachmentFiles(files);

@@ -296,6 +296,16 @@ try {
       await page.locator('#sendButton').click();
       await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
       assert.equal(await page.getByText('消息确认', { exact: true }).count(), 1);
+      const sentBeforePaste = fixture.sent.length;
+      await page.evaluate(() => {
+        const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII='), ch => ch.charCodeAt(0));
+        const data = new DataTransfer();
+        data.items.add(new File([bytes], 'windows-screenshot.png', { type: 'image/png' }));
+        document.querySelector('#composerInput').dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+      });
+      assert.equal(await page.locator('.attachment-item').count(), 1);
+      assert.equal(fixture.sent.length, sentBeforePaste);
+      await page.getByRole('button', { name: '移除附件 windows-screenshot.png' }).click();
       await page.locator('#attachmentFileInput').setInputFiles({ name: 'report.txt', mimeType: 'text/plain', buffer: Buffer.from('Fixture attachment') });
       await page.locator('#composerInput').fill('附件检查');
       await page.locator('#sendButton').click();

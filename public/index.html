@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
+  <script src="/terminal-theme.js?v=1"></script>
   <title>Codeck · Agent sessions</title>
   <link rel="icon" href="data:,">
   <script>
@@ -13,6 +14,7 @@
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
     <link rel="stylesheet" href="/styles.css?v=67">
+  <link rel="stylesheet" href="/terminal-theme.css?v=4">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -130,6 +132,12 @@
   <dialog id="settingsDialog">
     <form method="dialog">
       <h2>终端设置</h2>
+      <label for="terminalThemeSelect">界面主题</label>
+      <select id="terminalThemeSelect" aria-describedby="terminalThemeHint">
+        <option value="classic">经典深色</option>
+        <option value="mac">ChatGPT 风格 · 浅色</option>
+      </select>
+      <p id="terminalThemeHint">普通模式的浅色界面与终端配色。CLI 自带的固定背景不受此设置控制。</p>
       <label class="setting-row">
         <input type="checkbox" id="localInputToggle">
         <span><strong>本地输入</strong><span>先在输入框里编辑，回车整行发送。关闭则每个按键直达 CLI，跟原生终端一致。</span></span>
@@ -147,6 +155,6 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
-  <script type="module" src="/app.js?v=113"></script>
+  <script type="module" src="/app.js?v=114"></script>
 </body>
 </html>
