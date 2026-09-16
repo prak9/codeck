@@ -927,7 +927,8 @@ async function releaseCodexQueuedInput({ paneId, execTmux, captureSessionPane, w
 const SUBMIT_CONFIRM_ATTEMPTS = 3;
 const SUBMIT_CONFIRM_DELAY_MS = 200;
 const CODEX_PLACEHOLDER = 'Ask Codex to do anything';
-const CODEX_CLIPPED_FOOTER = /^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*…$/iu;
+// The goal badge can remain visible to the right of a clipped model/path.
+const CODEX_CLIPPED_FOOTER = /^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*…(?:\s+Goal achieved \([^()\n]+\))?$/iu;
 
 function hasDimComposerText(line, prefixLength) {
   let dim = false;

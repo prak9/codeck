@@ -52,6 +52,8 @@ const NARROW_CODEX_REASONING_PICKER = `
 const NARROW_CODEX_COMPOSERS = [
   '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anyth\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…',
   '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fast\x1b[2m\x1b[39m · …',
+  // research at 37 columns: the clipped model is followed by a goal badge.
+  '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra …\x1b[39m \x1b[38;5;5mGoal achieved (11m)',
 ];
 
 test('parses tmux list output into typed session records', () => {
@@ -2501,4 +2503,26 @@ test('narrow Codex preflight preserves real drafts resembling truncated placehol
     }), /消息未发送/);
     assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
   }
+});
+
+test('Codex goal footer preserves drafts and confirms only the exact submitted draft', async () => {
+  const footer = '  gpt-6-astra … Goal achieved (11m)';
+  const commands = [];
+  await assert.rejects(sendSessionMessage({
+    provider: 'codex', sessionName: 'goal-draft', threadId: 'thread-1', text: 'New message',
+  }, {
+    listTmuxSessions: async () => [{ name: 'goal-draft', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    execTmux: async (args) => commands.push(args),
+    capturePane: async () => `› Local draft\n  second line\n\n${footer}`,
+  }), /已有草稿/);
+  assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
+
+  let enters = 0;
+  const result = await ensureAgentInputSubmitted({
+    paneId: '%7', text: 'New message', verifyPane: async () => true,
+    waitForSubmit: async () => {}, execTmux: async () => { enters += 1; },
+    capturePane: async () => enters ? NARROW_CODEX_COMPOSERS.at(-1) : `› New message\n\n${footer}`,
+  });
+  assert.equal(result, 'submitted');
+  assert.equal(enters, 1);
 });
