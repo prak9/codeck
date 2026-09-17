@@ -12,6 +12,7 @@ import { createAgentBackends } from './agent-backends.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
 import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
+import { createTerminalHistoryLinkReader } from './terminal-history-links.js';
 import { loadTlsOptions } from './tls.js';
 import { createSessionSnapshotLoader } from './session-snapshot.js';
 import { createSnapshotFeed } from './snapshot-feed.js';
@@ -45,6 +46,7 @@ const accessToken = configuredAccessToken || crypto.randomBytes(18).toString('ba
 const webAuthEnabled = process.env.CODECK_WEB_AUTH === '1';
 const publicDir = path.join(dirname, '../public');
 const app = express();
+const terminalHistoryLinks = createTerminalHistoryLinkReader();
 const sessionSnapshots = createSessionSnapshotLoader(listSessions);
 const protocolEpoch = crypto.randomUUID();
 const sessionStatusByName = new Map();
@@ -227,6 +229,13 @@ app.get('/api/sessions', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/sessions/:name/terminal-links', async (req, res, next) => {
+  if (!req.auth.owner && req.auth.session !== req.params.name) return res.sendStatus(403);
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await terminalHistoryLinks(req.params.name)); }
+  catch (error) { next(error); }
+});
+
 app.post('/api/sessions', ownerOnly, async (req, res, next) => {
   try {
     await createSession(req.body || {});
@@ -292,6 +301,7 @@ app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xte
 app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
 app.use('/vendor/fit', express.static(path.join(dirname, '../node_modules/@xterm/addon-fit/lib')));
 app.use('/vendor/webgl', express.static(path.join(dirname, '../node_modules/@xterm/addon-webgl/lib')));
+app.use('/vendor/web-links', express.static(path.join(dirname, '../node_modules/@xterm/addon-web-links/lib')));
 app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@fontsource-variable/inter')));
 app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
 app.use(express.static(publicDir));

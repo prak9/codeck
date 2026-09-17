@@ -1,6 +1,7 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
+import { enableTerminalLinks } from './terminal-links.js?v=2';
 import { filterSessionNames } from './session-search.js?v=1';
 import { bindTerminalTextSelection } from './terminal-text-selection.js?v=1';
 import {
@@ -1266,6 +1267,12 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
+  enableTerminalLinks(terminal, {
+    getContext: () => ({ session: state.active, connectionId: state.connectionId }),
+    readHistoryLinks: ({ session }) => api(`/api/sessions/${encodeURIComponent(session)}/terminal-links`, {
+      signal: AbortSignal.timeout(2000),
+    }),
+  });
   activateTerminalWebgl(terminal, globalThis.WebglAddon?.WebglAddon);
   bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden });
   // 桌面上滚轮原本滚的是 xterm 自己的缓冲, 而那对全屏 TUI 只是一帧帧重绘的残片:
