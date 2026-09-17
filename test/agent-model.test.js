@@ -13,6 +13,7 @@ import {
   normalizeAgentThread,
   normalizeInteractionQuestions,
   reconcileAgentThreadRefresh,
+  sessionDeliveryReceipts,
   shouldRefreshTmuxThread,
   shouldShowTerminalActivity,
   turnErrorText,
@@ -20,6 +21,69 @@ import {
   userMessageDeliveryBaseline,
   userMessageText,
 } from '../public/agent-model.js';
+
+test('server-managed Codex confirmations are not bypassed by snapshots or item events', () => {
+  const anchor = { id: 'anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  let thread = normalizeAgentThread('codex', { id: 'thread', deliveryConfirmationMode: 'server',
+    turns: [{ id: 'turn', status: 'completed', items: [anchor] }] });
+  const baseline = userMessageDeliveryBaseline(thread, '可以');
+  thread = applyAcceptedUserMessage(thread, { ...baseline, commandId: 'command-1', text: '可以' });
+  const actual = { id: 'actual', type: 'userMessage', content: [{ type: 'text', text: '可以' }] };
+  const event = applyAgentEvent(thread, 'item/completed', { threadId: 'thread', turnId: 'turn', item: actual });
+  assert.equal(event.turns.flatMap(turn => turn.items).some(item => item.delivery), true);
+  assert.equal(isUserMessageDeliveryConfirmed(event, { ...baseline, commandId: 'command-1', text: '可以' }), false);
+  const confirmed = reconcileAgentThreadRefresh(event, { ...event,
+    deliveryConfirmations: [{ commandId: 'command-1', itemId: 'actual' }],
+    turns: [{ id: 'turn', status: 'completed', items: [anchor, actual] }],
+  });
+  assert.equal(confirmed.turns.flatMap(turn => turn.items).some(item => item.delivery), false);
+});
+
+test('reconnect hints include accepted cards and uncertain sends but never another session or slash command', () => {
+  const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'research' };
+  const baseline = { baselineVersion: 2, baselineUserMessageId: 'anchor', baselineTurnId: 'turn', baselineMatchingTextCount: 0 };
+  let thread = { id: target.threadId, provider: target.provider, tmux: { name: 'research' }, turns: [] };
+  thread = applyAcceptedUserMessage(thread, { ...baseline, commandId: 'command-card', text: '可以' });
+  const attempts = [
+    { ...target, ...baseline, commandId: 'command-lost', text: 'Lost response', blocked: true },
+    { ...target, ...baseline, commandId: 'command-card', text: '可以', blocked: true },
+    { ...target, ...baseline, commandId: 'command-other', text: 'Other', tmuxSession: 'other', blocked: true },
+    { ...target, ...baseline, commandId: 'command-slash', text: '/status', blocked: true },
+    { ...target, ...baseline, commandId: 'command-flight', text: 'Sending', blocked: false },
+  ];
+  const hints = sessionDeliveryReceipts(thread, attempts, target);
+  assert.deepEqual(hints.map(hint => hint.commandId), ['command-card', 'command-lost']);
+  assert.equal(hints.some(hint => 'submissionStatus' in hint || 'blocked' in hint), false);
+  assert.deepEqual(sessionDeliveryReceipts(thread, attempts, { ...target, provider: 'claude' }), []);
+});
+
+test('reconnect hints fit the WebSocket byte limit even with multibyte text', () => {
+  const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'research' };
+  const attempts = Array.from({ length: 40 }, (_, i) => ({ ...target, baselineVersion: 2,
+    commandId: `command-${i}`, text: '汉字'.repeat(10000), blocked: true }));
+  const hints = sessionDeliveryReceipts(null, attempts, target);
+  assert.ok(hints.length > 0 && hints.length < attempts.length);
+  assert.ok(Buffer.byteLength(JSON.stringify(hints)) <= 120_000);
+});
+
+test('restoring a pending receipt in another turn cannot duplicate its old in-turn card', () => {
+  const original = { id: 'turn', status: 'completed', items: [] };
+  const current = applyAcceptedUserMessage({ id: 'thread', deliveryConfirmationMode: 'server', turns: [original] }, {
+    turnId: 'turn', commandId: 'command-restored', text: '可以', baselineVersion: 2,
+    baselineTurnId: 'turn', baselineUserMessageId: null, baselineMatchingTextCount: 0,
+  });
+  const pending = current.turns[0].items[0];
+  for (const truncated of [false, true]) {
+    const result = reconcileAgentThreadRefresh(current, { id: 'thread', deliveryConfirmationMode: 'server', truncated,
+      turns: [truncated ? { id: 'later', items: [] } : original,
+        { id: 'delivery-turn:command-restored', deliveryOnly: true,
+          items: [{ ...pending, delivery: { ...pending.delivery, status: 'unknown' } }] }],
+    });
+    const cards = result.turns.flatMap(turn => turn.items).filter(item => item.delivery);
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].delivery.status, 'unknown');
+  }
+});
 
 test('formats structured Agent errors without losing their message', () => {
   assert.equal(turnErrorText('request failed'), 'request failed');

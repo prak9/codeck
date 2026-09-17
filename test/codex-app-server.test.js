@@ -117,3 +117,37 @@ test('rejects pending requests when the app-server exits', async () => {
   process.emit('close', 17, null);
   await assert.rejects(request, /exited.*17/i);
 });
+
+test('aborted background reads release pending RPCs and ignore late responses without stopping other requests', async () => {
+  const process = new FakeProcess();
+  const app = new CodexAppServer({ spawnProcess: () => process });
+  const { request } = await initialize(app, process);
+  process.answer(process.messages[2].id, { data: [] });
+  await request;
+  const controller = new AbortController();
+  const reading = app.request('thread/items/list', { threadId: 'thread' }, { signal: controller.signal });
+  await waitFor(() => process.messages.length === 4);
+  const readId = process.messages.at(-1).id;
+  controller.abort(new Error('deadline'));
+  await assert.rejects(reading, /deadline/);
+  assert.equal(app.pending.size, 0);
+  process.answer(readId, { data: [{ stale: true }] });
+  const next = app.request('thread/read', { threadId: 'thread' });
+  await waitFor(() => process.messages.length === 5);
+  process.answer(process.messages.at(-1).id, { thread: { id: 'thread' } });
+  assert.deepEqual(await next, { thread: { id: 'thread' } });
+  app.close();
+});
+
+test('a background read aborted during initialization is never sent later', async () => {
+  const process = new FakeProcess();
+  const app = new CodexAppServer({ spawnProcess: () => process });
+  const controller = new AbortController();
+  const reading = app.request('thread/items/list', {}, { signal: controller.signal });
+  controller.abort(new Error('deadline'));
+  await assert.rejects(reading, /deadline/);
+  process.answer(process.messages[0].id, {});
+  await new Promise(setImmediate);
+  assert.equal(process.messages.some(message => message.method === 'thread/items/list'), false);
+  app.close();
+});

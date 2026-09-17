@@ -15,6 +15,7 @@ import {
   query as queryQoder,
 } from '@qoder-ai/qoder-agent-sdk';
 import { CodexAppServer } from './codex-app-server.js';
+import { CodexDeliveryRecovery } from './codex-delivery-recovery.js';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
 import { QoderAgentBackend } from './qoder-agent-backend.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
@@ -49,6 +50,7 @@ function codexUserItemText(item) {
 }
 
 function codexTurnConfirmsDelivery(turn, item) {
+  if (item.delivery?.serverManaged) return false;
   if (item.delivery?.baselineVersion === 2) {
     return isUserMessageDeliveryConfirmed({ turns: [turn] }, { text: codexUserItemText(item), ...item.delivery });
   }
@@ -154,9 +156,15 @@ export class CodexAgentBackend extends EventEmitter {
     this.pendingRequests = new Map();
     this.userMessages = new Map();
     this.userMessageLoads = new Map();
+    this.userMessageReloads = new Map();
     this.hydratedUserMessages = new Set();
     this.historyPositions = new Map();
     this.interruptedMessages = new Map();
+    this.deliveryRecovery = new CodexDeliveryRecovery({
+      read: (params, options) => this.appServer.request('thread/items/list', params, options),
+      observe: (threadId, turn) => this.#cacheTurnUsers(threadId, turn, { replace: true }),
+      changed: threadId => this.emit('notification', { method: 'codeck/deliveryUpdated', params: { threadId } }),
+    });
     appServer.on('notification', (message) => {
       this.#observeNotification(message);
       this.emit('notification', message);
@@ -311,16 +319,19 @@ export class CodexAgentBackend extends EventEmitter {
     const exactTurns = !progressive
       ? await this.#hydrateInterruptedTurns(threadId, summaryTurns, fullTurn?.id)
       : summaryTurns;
-    const turns = this.#reconcileUserDeliveries(threadId, exactTurns.map((turn) => (
+    const merged = exactTurns.map((turn) => (
       turn.id === fullTurn?.id
         ? mergeCodexFullTurn(turn, fullTurn, cachedUsers?.get(turn.id))
         : mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id))
-    )));
+    ));
+    const delivery = this.deliveryRecovery.update(threadId, merged, cachedUsers);
+    const turns = this.#reconcileUserDeliveries(threadId, merged, delivery);
     return {
       ...result,
       thread: {
         ...result.thread,
         turns,
+        ...delivery,
         truncated: Boolean(turnPage?.nextCursor),
         readOnly,
         ...(readOnly ? { readOnlyReason: 'activeWriter' } : {}),
@@ -352,15 +363,20 @@ export class CodexAgentBackend extends EventEmitter {
   }
 
   recordSessionMessage({
-    threadId, turnId, text, commandId, submissionStatus,
+    threadId, turnId, text, commandId, submissionStatus, restored,
     baselineVersion, baselineUserMessageId, baselineTurnId, baselineMatchingTextCount, baselineLastItemId,
   }) {
+    const serverManaged = this.deliveryRecovery.record({
+      threadId, turnId, text, commandId, submissionStatus, restored,
+      baselineVersion, baselineUserMessageId, baselineTurnId, baselineMatchingTextCount, baselineLastItemId,
+    });
     if (!threadId || !turnId || typeof text !== 'string' || !text.trim()) return;
     this.#cacheObservedItem(threadId, turnId, {
       id: `delivery:${commandId || crypto.randomUUID()}`,
       type: 'userMessage',
       content: [{ type: 'text', text }],
       delivery: {
+        ...(serverManaged ? { serverManaged: true, commandId } : {}),
         status: 'accepted',
         submissionStatus: submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed',
         ...(baselineVersion === 2 ? {
@@ -394,9 +410,11 @@ export class CodexAgentBackend extends EventEmitter {
   }
 
   close() {
+    this.deliveryRecovery.close();
     this.pendingRequests.clear();
     this.userMessages.clear();
     this.userMessageLoads.clear();
+    this.userMessageReloads.clear();
     this.hydratedUserMessages.clear();
     this.historyPositions.clear();
     this.interruptedMessages.clear();
@@ -412,20 +430,23 @@ export class CodexAgentBackend extends EventEmitter {
     return turns;
   }
 
-  #reconcileUserDeliveries(threadId, turns) {
+  #reconcileUserDeliveries(threadId, turns, delivery = this.deliveryRecovery.snapshot(threadId)) {
     const resolved = new Set();
     for (const turn of turns) {
       for (const item of codexUserItems(turn)) {
         if (item.delivery?.baselineVersion === 2 && isUserMessageDeliveryConfirmed(
-          { turns }, { text: codexUserItemText(item), ...item.delivery },
+          { turns, ...delivery }, { text: codexUserItemText(item), ...item.delivery },
         )) resolved.add(item.id);
       }
     }
-    if (!resolved.size) return turns;
+    const unknown = new Set(delivery.unconfirmedDeliveryIds || []);
+    if (!resolved.size && !unknown.size) return turns;
     const cachedUsers = this.userMessages.get(threadId);
     return turns.map((turn) => {
-      const items = (turn.items || []).filter((item) => !resolved.has(item.id));
-      if (items.length === (turn.items || []).length) return turn;
+      const items = (turn.items || []).filter((item) => !resolved.has(item.id)).map(item => (
+        unknown.has(item.delivery?.commandId)
+          ? { ...item, delivery: { ...item.delivery, status: 'unknown' } } : item
+      ));
       const cached = cachedUsers?.get(turn.id);
       if (cached) cachedUsers.set(turn.id, { ...cached, items: cached.items.filter((item) => !resolved.has(item.id)) });
       return { ...turn, items };
@@ -477,7 +498,10 @@ export class CodexAgentBackend extends EventEmitter {
 
   #hydrateUserMessages(threadId, { force = false, limit = CODEX_RECENT_USER_TURN_LIMIT } = {}) {
     const inFlight = this.userMessageLoads.get(threadId);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      if (force) this.userMessageReloads.set(threadId, Math.max(limit, this.userMessageReloads.get(threadId) || 0));
+      return inFlight;
+    }
     if (!force && this.hydratedUserMessages.has(threadId)) return Promise.resolve();
     const load = this.appServer.request('thread/turns/list', {
       threadId,
@@ -493,7 +517,11 @@ export class CodexAgentBackend extends EventEmitter {
       // Full user-message hydration is an enhancement over the summary transcript.
       // Keep the thread readable if the optional view is unavailable.
     }).finally(() => {
-      if (this.userMessageLoads.get(threadId) === load) this.userMessageLoads.delete(threadId);
+      if (this.userMessageLoads.get(threadId) !== load) return;
+      this.userMessageLoads.delete(threadId);
+      const reloadLimit = this.userMessageReloads.get(threadId);
+      this.userMessageReloads.delete(threadId);
+      if (reloadLimit) return this.#hydrateUserMessages(threadId, { force: true, limit: reloadLimit });
     });
     this.userMessageLoads.set(threadId, load);
     return load;

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { COMMAND_RECEIPT_TTL_MS, createCommandReceiptCache } from './command-receipts.js';
+import { COMMAND_RECEIPT_TTL_MS, cleanCommandId, createCommandReceiptCache } from './command-receipts.js';
 import { resolveSessionStatus } from './session-status.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
@@ -130,6 +130,7 @@ function sessionUserMessageEntries(thread) {
 
 function sessionMessageReceiptResolved(thread, receipt) {
   if (isUserMessageDeliveryConfirmed(thread, receipt)) return true;
+  if (thread?.deliveryConfirmationMode === 'server') return false;
   if (receipt.baselineVersion !== 2) return false;
   const users = sessionUserMessageEntries(thread);
   let candidates;
@@ -138,7 +139,7 @@ function sessionMessageReceiptResolved(thread, receipt) {
   // 让那条乐观回显永远挂着, 表现为一条重复的待发消息。
   // A missing anchor cannot prove that an input whose submission was unconfirmed
   // ever left the CLI draft. Keep its receipt until the transcript can confirm it.
-  const outOfWindow = receipt.provider !== 'qodercli'
+  const outOfWindow = receipt.provider !== 'qodercli' && receipt.provider !== 'codex'
     && Boolean(thread?.truncated) && receipt.submissionStatus !== 'unconfirmed';
   if (receipt.baselineUserMessageId) {
     const anchorIndex = users.findIndex(({ item }) => item.id === receipt.baselineUserMessageId);
@@ -567,6 +568,26 @@ export class AgentHub {
     if (message.type === 'openThread') {
       const threadId = cleanId(message.threadId, 'Thread');
       this.registry.backend(provider);
+      // Hints rebuild read-only confirmation state after a service restart. Never
+      // trust a client's submitted/confirmed status and never invoke the sender.
+      const hints = provider === 'codex' ? message.deliveryReceipts : undefined;
+      if (hints !== undefined) {
+        if (!Array.isArray(hints) || hints.length > 32 || Buffer.byteLength(JSON.stringify(hints)) > 120_000) {
+          throw new Error('Invalid delivery receipts');
+        }
+        const restored = hints.map(hint => {
+          const baseline = cleanDeliveryBaseline(hint || {});
+          if (baseline.baselineVersion !== 2) throw new Error('Invalid delivery baseline');
+          const text = cleanMessage(hint.text);
+          if (text.startsWith('/')) throw new Error('Commands cannot be restored as messages');
+          return { threadId, commandId: cleanCommandId(hint.commandId), text, ...baseline,
+            restored: true, submissionStatus: 'unconfirmed', confirmationTimedOut: true };
+        });
+        for (const receipt of restored) {
+          this.registry.recordSessionMessage(provider, receipt);
+          this.#recordSessionMessageReceipt(provider, receipt);
+        }
+      }
       const target = {
         provider,
         threadId,
@@ -580,6 +601,7 @@ export class AgentHub {
       try {
         const options = message.readOnly === true ? { readOnly: true } : undefined;
         const resumable = client?.streamVersion === 2 && streamCursor
+          && !hints?.length
           && (message.readOnly === true || target.tmuxSession)
           && !this.#hasSessionMessageReceipts(provider, threadId)
           && this.threadFeed?.canResume(target, streamCursor);
@@ -1028,7 +1050,7 @@ export class AgentHub {
         type: 'event', provider, method, params,
         tmuxSession: subscription.target.tmuxSession,
       });
-      if (method === 'turn/completed') {
+      if (method === 'turn/completed' || method === 'codeck/deliveryUpdated') {
         refreshTargets.set(JSON.stringify(subscription.target), subscription.target);
       }
     }

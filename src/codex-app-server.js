@@ -31,10 +31,24 @@ export class CodexAppServer extends EventEmitter {
     this.closed = false;
   }
 
-  async request(method, params = {}) {
+  async request(method, params = {}, { signal } = {}) {
     if (this.closed) throw new Error('Codex app-server is closed');
-    await this.#ensureReady();
-    return this.#sendRequest(method, params);
+    signal?.throwIfAborted();
+    if (!signal) {
+      await this.#ensureReady();
+    } else {
+      let abort;
+      try {
+        await Promise.race([this.#ensureReady(), new Promise((_, reject) => {
+          abort = () => reject(signal.reason);
+          signal.addEventListener('abort', abort, { once: true });
+        })]);
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    }
+    signal?.throwIfAborted();
+    return this.#sendRequest(method, params, signal);
   }
 
   async respond(id, result) {
@@ -93,15 +107,26 @@ export class CodexAppServer extends EventEmitter {
     return this.ready;
   }
 
-  #sendRequest(method, params) {
+  #sendRequest(method, params, signal) {
     const id = this.nextId;
     this.nextId += 1;
-    const result = new Promise((resolve, reject) => this.pending.set(String(id), { resolve, reject, method }));
+    let abort;
+    const result = new Promise((resolve, reject) => {
+      this.pending.set(String(id), { resolve, reject, method });
+      if (signal) {
+        abort = () => {
+          this.pending.delete(String(id));
+          reject(signal.reason);
+        };
+        signal.addEventListener('abort', abort, { once: true });
+      }
+    }).finally(() => { if (abort) signal.removeEventListener('abort', abort); });
     try {
       this.#write({ id, method, params });
     } catch (error) {
+      const pending = this.pending.get(String(id));
       this.pending.delete(String(id));
-      return Promise.reject(error);
+      pending?.reject(error);
     }
     return result;
   }

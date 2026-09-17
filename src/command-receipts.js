@@ -1,7 +1,7 @@
 const COMMAND_ID = /^[A-Za-z0-9._:-]{8,128}$/;
 export const COMMAND_RECEIPT_TTL_MS = 10 * 60_000;
 
-function cleanCommandId(value) {
+export function cleanCommandId(value) {
   const commandId = typeof value === 'string' ? value.trim() : '';
   if (!COMMAND_ID.test(commandId)) throw new Error('Invalid command id');
   return commandId;

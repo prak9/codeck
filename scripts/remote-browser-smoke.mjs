@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from '../src/thread-history-cursor.js';
+import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -22,8 +23,17 @@ const turn = n => ({ id: `turn-${n}`, status: 'completed', items: [
   { id: `answer-${n}`, type: 'agentMessage', text: `回答 ${n}\n稳定的历史输出。\n第二行结果。` },
 ] });
 function reset(provider) {
+  fixture?.recovery?.close();
   fixture = { provider, turns: Array.from({ length: 80 }, (_, i) => turn(i + 1)),
     status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [] };
+  if (provider === 'codex') fixture.recovery = createFixtureRecovery();
+}
+function createFixtureRecovery() {
+  return new CodexDeliveryRecovery({
+    read: async ({ turnId }) => ({ data: [...(fixture.turns.find(turn => turn.id === turnId)?.items || [])]
+      .reverse().map(item => ({ turnId, item })) }),
+    observe() {},
+  });
 }
 function snapshot() {
   return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status,
@@ -34,6 +44,8 @@ function thread() {
   return { id: 'fixture-thread', provider: fixture.provider, readOnly: true, turns: fixture.turns.slice(-20),
     truncated: fixture.turns.length > 20, oldestTurnId: fixture.turns.at(-20)?.id,
     receivedDeliveryIds: fixture.receivedDeliveryIds,
+    ...(fixture.recovery ? fixture.holdConfirmation ? fixture.recovery.snapshot('fixture-thread')
+      : fixture.recovery.update('fixture-thread', fixture.turns) : {}),
     ...(fixture.liveOutput ? { liveOutput: fixture.liveOutput } : {}) };
 }
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
@@ -85,7 +97,12 @@ sockets.on('connection', socket => {
   socket.on('message', raw => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });
-    if (request.type === 'openThread') return reply({ thread: thread() });
+    if (request.type === 'openThread') {
+      for (const receipt of request.deliveryReceipts || []) {
+        fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
+      }
+      return reply({ thread: thread() });
+    }
     if (request.type === 'answerSessionQuestion') {
       assert.equal(request.questionId, fixture.question.id);
       assert.equal(request.tmuxSession, 'fixture');
@@ -121,15 +138,29 @@ sockets.on('connection', socket => {
         { id: `sent-user-${fixture.sent.length}`, type: 'userMessage', content: [{ type: 'text', text: request.text }] },
         { id: `sent-answer-${fixture.sent.length}`, type: 'agentMessage', text: '已处理 fixture 消息' },
       ] };
+      fixture.recovery?.record(request);
       if (request.text === 'lost response') {
         fixture.turns.push(accepted);
+        fixture.recovery?.close();
+        if (fixture.provider === 'codex') fixture.recovery = createFixtureRecovery();
+        fixture.receivedDeliveryIds = [];
         fixture.epoch = 'fixture-restarted';
         socket.close();
         return;
       }
       reply({ submissionStatus: 'unconfirmed', inputWasQueued: true });
+      if (request.text === '延迟确认') fixture.holdConfirmation = true;
       setTimeout(() => {
         fixture.turns.push(accepted);
+        if (request.text === '延迟确认') {
+          fixture.confirmDelivery = () => {
+            fixture.holdConfirmation = false;
+            publishThread();
+          };
+          publishEvent('item/completed', { turnId: accepted.id, item: accepted.items[0] });
+          publishThread();
+          return;
+        }
         fixture.receivedDeliveryIds.push(request.commandId);
         publishThread();
       }, 100);
@@ -292,6 +323,18 @@ try {
         else await page.locator('#commandDialogClose').click();
         await page.waitForSelector('#commandDialog[open]', { state: 'detached' });
       }
+      if (provider === 'codex') {
+        await page.locator('#composerInput').fill('延迟确认');
+        await page.locator('#sendButton').click();
+        await page.waitForSelector(`[data-turn-id="sent-${fixture.sent.length}"]`);
+        assert.match(await page.locator('#transcript').textContent(), /等待 Agent 确认/,
+          'raw user events and snapshots must not bypass the server confirmation');
+        assert.equal(await page.inputValue('#composerInput'), '延迟确认');
+        fixture.confirmDelivery();
+        await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
+        assert.equal(await page.getByText('延迟确认', { exact: true }).count(), 1);
+        assert.equal(fixture.sent.filter(request => request.text === '延迟确认').length, 1);
+      }
       await page.locator('#composerInput').fill('消息确认');
       await page.locator('#sendButton').click();
       await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
@@ -350,6 +393,7 @@ try {
   }
   console.log(JSON.stringify({ artifacts, results }, null, 2));
 } finally {
+  fixture?.recovery?.close();
   await browser.close();
   for (const socket of sockets.clients) socket.terminate();
   await new Promise(resolve => sockets.close(resolve));

@@ -868,6 +868,121 @@ test('Qoder captures its source boundary before injection and accepts source rec
   socket.close();
 });
 
+test('Codex no-turn receipt recovers a missed completed-turn input and notifies the subscribed feed', async () => {
+  const anchor = { id: 'anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const actual = { id: 'actual', type: 'userMessage', content: [{ type: 'text', text: '可以' }] };
+  const output = { id: 'output', type: 'agentMessage', text: 'Earlier answer' };
+  const old = { id: 'turn', status: 'completed', items: [anchor, output] };
+  const app = new EventEmitter();
+  let release;
+  let fullReads = 0;
+  app.close = () => {};
+  app.request = async (method, params) => {
+    if (method === 'thread/read') return { thread: { id: 'thread' } };
+    if (method === 'thread/items/list') return new Promise(resolve => { release = () => resolve({
+      data: [actual, output, anchor].map(item => ({ turnId: 'turn', item })),
+    }); });
+    if (params.itemsView === 'full') fullReads++;
+    return { data: [old] };
+  };
+  const backend = new CodexAgentBackend(app);
+  let sends = 0;
+  const registry = new AgentRegistry({ codex: backend }, {
+    sendTmuxMessage: async () => { sends++; return { submissionStatus: 'submitted' }; },
+  });
+  const feed = new FakeSnapshotFeed();
+  const hub = new AgentHub(registry, { threadFeed: feed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+  const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'research' };
+  await backend.openThread('thread', { readOnly: true });
+  send(socket, { id: 1, type: 'sendSessionMessage', ...target, commandId: 'command-recovery', text: '可以',
+    baselineVersion: 2, baselineUserMessageId: 'anchor', baselineTurnId: 'turn', baselineMatchingTextCount: 0,
+  });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  send(socket, { id: 2, type: 'openThread', ...target, readOnly: true });
+  await waitFor(() => socket.sent.some(message => message.id === 2));
+  assert.equal(socket.sent.find(message => message.id === 2).result.thread.turns
+    .flatMap(turn => turn.items).some(item => item.delivery), true, 'openThread must return before the held page');
+  const invalidations = feed.invalidations.length;
+  release();
+  await waitFor(() => feed.invalidations.length > invalidations);
+  const recovered = await backend.openThread('thread', { readOnly: true });
+  feed.publish(target, { kind: 'snapshot', epoch: 'test', sequence: 1, snapshot: recovered });
+  assert.equal(hub.sessionMessageReceipts.size, 0);
+  const final = socket.sent.at(-1).thread;
+  assert.deepEqual(final.turns[0].items.map(item => item.id), ['anchor', 'output', 'actual']);
+  assert.deepEqual(final.deliveryConfirmations, [{ commandId: 'command-recovery', itemId: 'actual' }]);
+  assert.equal(sends, 1);
+  assert.equal(fullReads, 1, 'recovery must not force another full transcript read');
+  socket.close();
+  backend.close();
+});
+
+test('Codex reconnect restores confirmation hints without injecting terminal input', async () => {
+  const anchor = { id: 'anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const actual = { id: 'actual', type: 'userMessage', content: [{ type: 'text', text: '可以' }] };
+  const app = new EventEmitter();
+  app.close = () => {};
+  app.request = async method => method === 'thread/read' ? { thread: { id: 'thread' } }
+    : { data: [{ id: 'turn', status: 'completed', items: [anchor, actual] }] };
+  const backend = new CodexAgentBackend(app);
+  let injections = 0;
+  const registry = new AgentRegistry({ codex: backend }, { sendTmuxMessage: async () => { injections++; } });
+  const hub = new AgentHub(registry);
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  const hint = { commandId: 'command-restored', text: '可以', baselineVersion: 2,
+    baselineUserMessageId: 'anchor', baselineTurnId: 'turn', baselineMatchingTextCount: 0 };
+  send(socket, { id: 1, type: 'openThread', provider: 'codex', threadId: 'thread', readOnly: true,
+    tmuxSession: 'research', deliveryReceipts: [hint] });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  const response = socket.sent.find(message => message.id === 1);
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.result.thread.deliveryConfirmations, [{ commandId: hint.commandId, itemId: 'actual' }]);
+  assert.equal(injections, 0);
+  socket.close();
+  backend.close();
+});
+
+test('restored Codex hints remain unknown without transcript evidence and reject malformed batches atomically', async () => {
+  const app = new EventEmitter();
+  app.close = () => {};
+  app.request = async method => method === 'thread/read' ? { thread: { id: 'thread' } } : { data: [] };
+  const backend = new CodexAgentBackend(app);
+  const registry = new AgentRegistry({ codex: backend }, { sendTmuxMessage: async () => { throw new Error('must not send'); } });
+  const hub = new AgentHub(registry);
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  const target = { type: 'openThread', provider: 'codex', threadId: 'thread', readOnly: true, tmuxSession: 'research' };
+  const hint = { commandId: 'command-restored', text: '可以', baselineVersion: 2,
+    baselineUserMessageId: 'anchor', baselineTurnId: 'turn', baselineMatchingTextCount: 0,
+    submissionStatus: 'submitted', itemId: 'forged-confirmation' };
+  send(socket, { ...target, id: 1, deliveryReceipts: [hint, { ...hint, commandId: 'bad' }] });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  assert.equal(socket.sent.find(message => message.id === 1).ok, false);
+  assert.equal(backend.deliveryRecovery.receipts.size, 0);
+  for (const id of [2, 3]) {
+    send(socket, { ...target, id, deliveryReceipts: [hint] });
+    await waitFor(() => socket.sent.some(message => message.id === id));
+    const thread = socket.sent.find(message => message.id === id).result.thread;
+    assert.deepEqual(thread.deliveryConfirmations, []);
+    assert.deepEqual(thread.unconfirmedDeliveryIds, ['command-restored']);
+    assert.equal(thread.turns.flatMap(turn => turn.items).find(item => item.delivery)?.delivery.status, 'unknown');
+  }
+  assert.equal(backend.deliveryRecovery.receipts.size, 1);
+  socket.close();
+  backend.close();
+});
+
+test('Codex submitted receipts need evidence even when their anchors leave the window', async () => {
+  const { resolvedForTest } = await import('../src/agent-connection.js');
+  assert.equal(resolvedForTest({ truncated: true, turns: [] }, {
+    provider: 'codex', baselineVersion: 2, baselineUserMessageId: 'old', baselineMatchingTextCount: 0,
+    text: '可以', submissionStatus: 'submitted',
+  }), false);
+});
+
 test('Codex cold reconnect clears an unconfirmed old-turn delivery only after a matching real user in a new turn', async () => {
   const text = 'Check the skills implementation';
   const user = (id) => ({ id, type: 'userMessage', content: [{ type: 'text', text }] });

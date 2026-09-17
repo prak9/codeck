@@ -67,6 +67,7 @@ function matchingUserAfterDeliveryBaseline(thread, deliveryItem) {
     .find(entry => entry.commandId === commandId && typeof entry.itemId === 'string' && entry.itemId);
   if (confirmation) return threadUserMessages(thread).find(item => item.id === confirmation.itemId)
     || { id: confirmation.itemId, type: 'userMessage' };
+  if (thread?.deliveryConfirmationMode === 'server' || deliveryItem.delivery?.serverManaged) return null;
   const candidates = usersAfterDeliveryBaseline(thread, deliveryItem.delivery);
   if (!candidates) return null;
   const ordinal = Number.isSafeInteger(deliveryItem.delivery?.baselineMatchingTextCount)
@@ -145,7 +146,7 @@ function mergeObservedItem(current, incoming) {
   return merged;
 }
 
-function mergeTurnItems(current, incoming, resolvedDeliveries = new Map()) {
+function mergeTurnItems(current, incoming, resolvedDeliveries = new Map(), incomingItemIds = new Set()) {
   const currentItems = asArray(current?.items);
   const incomingItems = asArray(incoming?.items);
   if (!currentItems.length) return incoming;
@@ -161,6 +162,7 @@ function mergeTurnItems(current, incoming, resolvedDeliveries = new Map()) {
   for (let currentIndex = 0; currentIndex < currentItems.length; currentIndex += 1) {
     const currentItem = currentItems[currentIndex];
     if (resolvedDeliveries.has(currentItem.id)
+      || (currentItem.delivery && incomingItemIds.has(currentItem.id))
       || items.some((item) => item.id === currentItem.id)) continue;
     let insertionIndex = -1;
     for (let index = currentIndex - 1; index >= 0; index -= 1) {
@@ -291,6 +293,40 @@ export function userMessageDeliveryBaseline(thread, text) {
   };
 }
 
+// Reconnect hints contain evidence to look up, not instructions to submit input.
+// Include failed-RPC attempts as well as accepted cards; an accepted send may
+// have left pendingDeliveries before the server lost its confirmation cache.
+export function sessionDeliveryReceipts(thread, attempts, target) {
+  if (target?.provider !== 'codex') return [];
+  const matching = candidate => candidate?.provider === target.provider
+    && (candidate.threadId || candidate.id) === target.threadId
+    && (candidate.tmuxSession || candidate.tmux?.name || '') === (target.tmuxSession || '');
+  const candidates = matching(thread) ? threadUserMessages(thread)
+    .filter(item => item.delivery).map(item => ({ ...item.delivery, text: userMessageText(item),
+      commandId: item.delivery.commandId || item.id?.slice(9) })) : [];
+  candidates.push(...asArray(attempts).filter(attempt => attempt.blocked && matching(attempt)));
+  const receipts = new Map();
+  let size = 2;
+  for (const candidate of candidates) {
+    if (candidate.baselineVersion !== 2 || !candidate.commandId || !candidate.text
+      || candidate.text.startsWith('/') || receipts.has(candidate.commandId)) continue;
+    const receipt = {
+      commandId: candidate.commandId, text: candidate.text, baselineVersion: 2,
+      baselineUserMessageId: candidate.baselineUserMessageId || null,
+      baselineTurnId: candidate.baselineTurnId || null,
+      baselineMatchingTextCount: candidate.baselineMatchingTextCount || 0,
+      ...(candidate.baselineLastItemId ? { baselineLastItemId: candidate.baselineLastItemId } : {}),
+    };
+    const length = new TextEncoder().encode(JSON.stringify(receipt)).byteLength + 1;
+    // Leave room for the openThread envelope under the 128 KiB WS limit.
+    if (receipts.size >= 32) break;
+    if (size + length > 120_000) continue;
+    receipts.set(receipt.commandId, receipt);
+    size += length;
+  }
+  return [...receipts.values()];
+}
+
 // An input belongs after what was visible when sent, not before every output in
 // its turn. Keep consecutive receipts at the same anchor in submission order.
 export function deliveryInsertionIndex(items, lastItemId) {
@@ -311,6 +347,7 @@ function renderedThreadMetadata(thread) {
     thread?.status,
     thread?.liveOutput,
     thread?.deliveryConfirmations,
+    thread?.deliveryConfirmationMode,
     thread?.receivedDeliveryIds,
     thread?.unconfirmedDeliveryIds,
     thread?.historyError,
@@ -345,23 +382,24 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
     historyCursor: current.historyCursor || null,
   };
   const resolvedDeliveries = resolvedDeliveryItems(current, refreshed);
+  const refreshedItemIds = new Set(asArray(refreshed.turns).flatMap((turn) => (
+    asArray(turn?.items).map((item) => item?.id).filter(Boolean)
+  )));
   let retainedChanged = false;
   const retained = (windowStart > 0 ? allCurrentTurns.slice(0, windowStart) : []).flatMap(turn => {
-    const items = asArray(turn.items).filter(item => !resolvedDeliveries.has(item.id));
+    const items = asArray(turn.items).filter(item => !resolvedDeliveries.has(item.id)
+      && !(item.delivery && refreshedItemIds.has(item.id)));
     if (items.length === asArray(turn.items).length) return [turn];
     retainedChanged = true;
     return !items.length && turn.deliveryOnly ? [] : [{ ...turn, items }];
   });
   const currentTurns = windowStart > 0 ? allCurrentTurns.slice(windowStart) : allCurrentTurns;
   const currentById = new Map(currentTurns.map((turn) => [turn.id, turn]));
-  const refreshedItemIds = new Set(asArray(refreshed.turns).flatMap((turn) => (
-    asArray(turn?.items).map((item) => item?.id).filter(Boolean)
-  )));
   const refreshedTurnIds = new Set(asArray(refreshed.turns).map((turn) => turn.id));
   const turns = asArray(refreshed.turns).flatMap((turn) => {
     const existing = currentById.get(turn.id);
     if (!existing) return [turn];
-    const merged = mergeTurnItems(existing, turn, resolvedDeliveries);
+    const merged = mergeTurnItems(existing, turn, resolvedDeliveries, refreshedItemIds);
     if (merged.deliveryOnly && !asArray(merged.items).length) return [];
     return [JSON.stringify(existing) === JSON.stringify(merged) ? existing : merged];
   });
@@ -441,7 +479,7 @@ export function applyAgentEvent(currentThread, method, params = {}) {
     const item = copyItem(params.item);
     let thread = currentThread;
     const targetTurn = asArray(thread.turns).find((turn) => turn.id === params.turnId);
-    if (item.type === 'userMessage'
+    if (thread.deliveryConfirmationMode !== 'server' && item.type === 'userMessage'
       && !asArray(targetTurn?.items).some((candidate) => candidate.id === item.id)) {
       const text = userMessageText(item);
       const delivery = text && threadUserMessages(thread).find((candidate) => (
@@ -452,7 +490,7 @@ export function applyAgentEvent(currentThread, method, params = {}) {
     return updateTurn(thread, params.turnId, (turn) => {
       const items = asArray(turn.items);
       let index = items.findIndex((candidate) => candidate.id === item.id);
-      if (index < 0 && item.type === 'userMessage') {
+      if (index < 0 && thread.deliveryConfirmationMode !== 'server' && item.type === 'userMessage') {
         index = items.findIndex((candidate) => (
           candidate.type === 'userMessage'
           && candidate.delivery

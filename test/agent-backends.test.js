@@ -297,6 +297,29 @@ test('Codex receipt replacement and turn completion preserve the chronological p
   backend.close();
 });
 
+test('completion during an older hydration schedules a fresh read instead of losing the invalidation', async () => {
+  const first = { id: 'anchor', type: 'userMessage', content: [{ type: 'text', text: 'Start' }] };
+  const actual = { id: 'actual', type: 'userMessage', content: [{ type: 'text', text: '可以' }] };
+  const old = { id: 'turn', status: 'completed', items: [first] };
+  let release;
+  let reads = 0;
+  const app = new FakeAppServer(async (method, params) => {
+    if (method === 'thread/read') return { thread: { id: 'thread' } };
+    if (params.itemsView === 'summary') return { data: [old] };
+    if (++reads === 1) return new Promise(resolve => { release = () => resolve({ data: [old] }); });
+    return { data: [{ ...old, items: [first, actual] }] };
+  });
+  const backend = new CodexAgentBackend(app);
+  await backend.openThread('thread', { readOnly: true, progressive: true });
+  app.emit('notification', { method: 'turn/completed', params: { threadId: 'thread', turn: old } });
+  release();
+  await new Promise(setImmediate);
+  const result = await backend.openThread('thread', { readOnly: true });
+  assert.equal(reads, 2);
+  assert.deepEqual(result.thread.turns[0].items.map(item => item.id), ['anchor', 'actual']);
+  backend.close();
+});
+
 test('starts recent Codex user hydration without waiting for the long summary page', async () => {
   let resolveSummary;
   const summary = new Promise((resolve) => { resolveSummary = resolve; });
