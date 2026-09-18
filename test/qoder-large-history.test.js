@@ -8,6 +8,8 @@ import { QoderAgentBackend } from '../src/qoder-agent-backend.js';
 import { QoderTranscriptCache } from '../src/qoder-transcript.js';
 import { getSessionMessages } from '@qoder-ai/qoder-agent-sdk';
 import { threadSnapshotRefreshInterval } from '../src/session-status.js';
+import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
+import { EventEmitter } from 'node:events';
 
 const threadId = '11111111-1111-4111-8111-111111111111';
 const user = (uuid, parentUuid = null) => ({ type: 'user', uuid, parentUuid, sessionId: threadId,
@@ -103,6 +105,120 @@ test('Qoder worker receipt survives reader restart without resending user input'
   await reader.terminate();
   const result = await backend.read('open', { threadId, receipts: [...backend.readReceipts.values()] });
   assert.deepEqual(result.thread.deliveryConfirmations, observed.deliveryConfirmations);
+});
+
+test('Qoder send preparation is independent of a busy history worker', async t => {
+  const { backend, file } = await fixture(t, [user('one')]);
+  await backend.read('open', { threadId });
+  backend.reader.postMessage = () => {}; // Deterministically hold the history lane.
+  const blocked = backend.read('open', { threadId }).catch(() => {});
+  t.after(() => { backend.close(); return blocked; });
+  const baseline = await backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'command' });
+  assert.equal(baseline.offset, (await fs.stat(file)).size);
+  assert.notEqual(backend.preparer, backend.reader);
+  assert.equal(backend.pendingReads.size, 1);
+});
+
+test('Qoder input-log parsing stays off the service event loop', async t => {
+  const { backend, root } = await fixture(t, [user('one')]);
+  const logFile = path.join(root, 'tmp', '-fixture', 'logs.json');
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+  await fs.writeFile(logFile, JSON.stringify([{ sessionId: threadId, messageId: 7,
+    message: 'input-log-thread-isolation-' + 'x'.repeat(65536), type: 'user' }]));
+  const parse = JSON.parse;
+  let mainThreadParses = 0;
+  JSON.parse = (...args) => {
+    if (String(args[0]).includes('input-log-thread-isolation-')) mainThreadParses += 1;
+    return parse(...args);
+  };
+  try {
+    const baseline = await backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'command' });
+    assert.equal(baseline.inputLog.lastId, 7);
+    assert.equal(mainThreadParses, 0, 'input logs must not be parsed on the main thread');
+  } finally { JSON.parse = parse; }
+});
+
+test('Qoder preparation timeout/close cancel only preparation, not the history reader', async t => {
+  const { backend } = await fixture(t, [user('one')]);
+  await backend.read('open', { threadId });
+  const reader = backend.reader;
+  backend.readTimeoutMs = 1; // Cold preparation worker cannot finish startup in 1ms.
+  await assert.rejects(backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'one' }), /发送准备超时/);
+  assert.equal(backend.preparer, null);
+  assert.equal(backend.reader, reader);
+  backend.readTimeoutMs = 30_000;
+  assert.equal((await backend.read('open', { threadId })).thread.turns.length, 1);
+  assert.ok(await backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'retry' }));
+  const preparing = backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'two' });
+  backend.close();
+  await assert.rejects(preparing, /closed/);
+  assert.equal(backend.pendingReads.size, 0);
+  assert.equal(backend.preparer, null);
+  await assert.rejects(backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'three' }), /closed/);
+});
+
+test('Qoder history worker exit does not reject pending preparation or its replacement worker', async t => {
+  const { backend } = await fixture(t, [user('one')]);
+  await backend.read('open', { threadId });
+  const params = { threadId, text: 'two', commandId: 'command' };
+  await backend.prepareSessionMessage(params);
+  const reader = backend.reader;
+  const preparer = backend.preparer;
+  const postPrepare = preparer.postMessage.bind(preparer);
+  let held;
+  preparer.postMessage = message => { held = message; };
+  const preparing = backend.prepareSessionMessage(params);
+  reader.postMessage = () => {};
+  const reading = backend.read('open', { threadId });
+  const failed = assert.rejects(reading, /reader exited/);
+  await reader.terminate();
+  await failed;
+  assert.equal(backend.preparer, preparer);
+  assert.equal(backend.pendingReads.size, 1);
+  postPrepare(held);
+  assert.ok((await preparing).hash);
+  assert.equal((await backend.read('open', { threadId })).thread.turns.length, 1);
+  assert.notEqual(backend.reader, reader);
+  assert.equal(backend.pendingReads.size, 0);
+});
+
+test('Qoder Remote send RPC finishes once while display reads remain blocked', async t => {
+  const { backend } = await fixture(t, [user('one')]);
+  let unblock;
+  const read = backend.read.bind(backend);
+  backend.read = (method, params) => method === 'prepare' ? read(method, params)
+    : new Promise(resolve => { unblock = resolve; });
+  t.after(() => unblock?.({ thread: { id: threadId, turns: [] } }));
+  assert.equal((await backend.openThread(threadId)).thread.historyLoading, true);
+  let writes = 0;
+  const registry = new AgentRegistry({ qodercli: backend }, {
+    sendTmuxMessage: async () => { writes += 1; return { submissionStatus: 'submitted' }; },
+  });
+  t.after(() => registry.close());
+  const socket = new EventEmitter();
+  socket.readyState = 1;
+  const replies = [];
+  socket.send = raw => replies.push(JSON.parse(raw));
+  const hub = new AgentHub(registry, { threadFeed: {
+    subscribeFrom: () => () => {}, invalidate: async () => {}, refreshSubscribed: async () => {},
+  } });
+  hub.handleConnection(socket, { streamVersion: 2 });
+  const message = { type: 'sendSessionMessage', provider: 'qodercli', threadId,
+    tmuxSession: 'fixture', text: 'two', commandId: 'send-once', id: 1 };
+  socket.emit('message', JSON.stringify(message));
+  const deadline = Date.now() + 5000;
+  while (!replies.some(reply => reply.id === 1) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(replies.find(reply => reply.id === 1)?.ok, true, JSON.stringify(replies));
+  assert.equal(backend.openReads.size, 1, 'display work remains blocked throughout sending');
+  socket.emit('message', JSON.stringify({ ...message, id: 2 }));
+  while (!replies.some(reply => reply.id === 2) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(replies.find(reply => reply.id === 2)?.ok, true);
+  assert.equal(writes, 1, 'retrying the same command must not paste twice');
+  socket.emit('close');
 });
 
 test('Qoder worker pagination reaches pre-compaction history without moving the live anchor', async t => {

@@ -41,7 +41,8 @@ async function dispatch(method, params) {
 }
 
 // One reader owns file snapshots; concurrent revisions do not multiply 115 MB
-// parses. Send/stop and terminal streaming remain on the parent event loop.
+// parses. The parent routes preparation to a separate instance of this worker,
+// so input-log parsing blocks neither history reads nor the service event loop.
 parentPort.on('message', ({ id, method, params }) => {
   queue = queue.then(async () => {
     const started = performance.now();

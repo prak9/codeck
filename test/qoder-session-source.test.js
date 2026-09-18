@@ -405,10 +405,64 @@ test('Qoder confirms CLI receipt while queued input has no new transcript revisi
   assert.deepEqual(received.unconfirmedDeliveryIds, []);
   assert.deepEqual(received.deliveryConfirmations, [], 'CLI receipt is not a fabricated transcript message');
   assert.equal(received.turns.length, 1);
+  const before = source.readStats.readBytes;
+  await source.getSessionMessages(id, { dir: cwd });
+  await source.getSessionMessages(id, { dir: cwd });
+  assert.equal(source.readStats.readBytes, before, 'CLI-acknowledged input must not force unchanged transcript reads');
   await append([user('actual', 'Continue', { parentUuid: 'old' })]);
   revision += 1;
   assert.deepEqual((await backend.openThread(id)).thread.deliveryConfirmations,
     [{ commandId: 'command-1', itemId: 'actual' }]);
+});
+
+test('Qoder pending receipts do not reread unchanged history or output without matching input', async t => {
+  const { source, write, append } = await setup(t);
+  await write([user('old', 'Start')]);
+  const baseline = await source.prepare({ threadId: id, cwd, text: 'Continue' });
+  source.record({ threadId: id, commandId: 'pending', text: 'Continue', deliveryBaseline: baseline });
+  await source.getSessionMessages(id, { dir: cwd });
+  const before = source.readStats.readBytes;
+  await source.getSessionMessages(id, { dir: cwd });
+  assert.equal(source.readStats.readBytes, before);
+  await append([user('other', 'Different')]);
+  const load = source.transcripts.load.bind(source.transcripts);
+  source.transcripts.load = (file, options) => {
+    assert.notEqual(options?.fresh, true, 'unrelated output needs no delivery proof read');
+    return load(file, options);
+  };
+  await source.getSessionMessages(id, { dir: cwd });
+  assert.deepEqual(source.confirmations(id), []);
+});
+
+test('Qoder preparation captures a prefix proof without parsing display history', async t => {
+  const { source, file, write } = await setup(t);
+  await write([user('old', 'Continue')]);
+  source.transcripts.load = () => assert.fail('send preparation must not load/parse history');
+  const baseline = await source.prepare({ threadId: id, cwd, text: 'Continue' });
+  assert.equal(baseline.file, file);
+  assert.equal(baseline.offset, (await fs.stat(file)).size);
+  assert.match(baseline.hash, /^[a-f0-9]{64}$/);
+});
+
+test('Qoder verifies the entire prefix before confirming an incrementally detected candidate', async t => {
+  const { source, file, write, append } = await setup(t);
+  await write([user('old', 'x'.repeat(20_000))]);
+  const deliveryBaseline = await source.prepare({ threadId: id, cwd, text: 'Continue' });
+  source.record({ threadId: id, commandId: 'pending', text: 'Continue', deliveryBaseline });
+  await source.getSessionMessages(id, { dir: cwd });
+  // Alter the middle, outside both incremental cache samples, then append a
+  // candidate. Trusting the sampled display cache here would falsely confirm it.
+  const handle = await fs.open(file, 'r+');
+  try { await handle.write(Buffer.from('y'), 0, 1, 10_000); }
+  finally { await handle.close(); }
+  await append([user('new', 'Continue')]);
+  const before = source.readStats.readBytes;
+  await source.getSessionMessages(id, { dir: cwd });
+  assert.ok(source.readStats.readBytes - before >= (await fs.stat(file)).size);
+  assert.deepEqual(source.confirmations(id), []);
+  const verified = source.readStats.readBytes;
+  await source.getSessionMessages(id, { dir: cwd });
+  assert.equal(source.readStats.readBytes, verified, 'an invalid proof does not force rereads of the same revision');
 });
 
 test('Qoder input receipts reject replay, replacement and duplicate matches, and recover from partial log writes', async t => {

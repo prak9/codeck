@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { setImmediate as yieldToIO } from 'node:timers/promises';
 import { getSessionMessages } from '@qoder-ai/qoder-agent-sdk';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
-import { QoderTranscriptCache } from './qoder-transcript.js';
+import { QoderSessionCatalog, QoderTranscriptCache } from './qoder-transcript.js';
 
 const RECEIPT_TTL_MS = 24 * 60 * 60_000;
 const RECEIPT_LIMIT = 1024;
@@ -139,10 +139,11 @@ export class QoderSessionSource {
     this.compactionRestoreState = new Map();
     this.closed = false;
     this.transcripts = new QoderTranscriptCache();
+    this.catalog = new QoderSessionCatalog(configDir);
     this.readStats = this.transcripts.stats;
   }
 
-  async #read(threadId, options, capture) {
+  async #read(threadId, options) {
     const {
       includeSystemMessages = false,
       limit,
@@ -161,10 +162,8 @@ export class QoderSessionSource {
           if (!/^[a-zA-Z0-9-]+$/u.test(projectKey)
             || !/^[a-fA-F0-9-]{36}$/u.test(sessionId)) throw new Error('Invalid Qoder session path');
           const file = this.sessionFile?.(sessionId) || path.join(this.configDir, 'projects', projectKey, `${sessionId}.jsonl`);
-          const pendingReceipt = [...this.receipts.values()].some(receipt => receipt.threadId === threadId && receipt.baseline);
-          snapshot = await this.transcripts.load(file, { fresh: Boolean(capture || pendingReceipt) });
-          capture?.(snapshot);
-          this.#observe(threadId, snapshot);
+          snapshot = await this.transcripts.load(file);
+          snapshot = await this.#observe(threadId, snapshot);
           return snapshot.records.map(record => record.entry);
         },
       },
@@ -281,24 +280,32 @@ export class QoderSessionSource {
 
   getSessionMessages(threadId, options) { return this.#read(threadId, options); }
 
-  async prepare({ threadId, cwd, text }) {
-    let baseline;
-    const capture = ({ file, identity, bytes, records }) => {
-      baseline = {
-        file, identity, offset: bytes.length, hash: hash(bytes),
-        seen: records.filter(({ entry }) => userText(entry) === text).map(({ entry }) => entry.uuid),
-      };
-    };
-    const resolvedFile = this.sessionFile?.(threadId);
-    if (resolvedFile) {
-      // Receipt preparation needs immutable raw evidence, not a display graph.
-      // The worker catalog has already resolved this exact session's file.
-      const snapshot = await this.transcripts.load(resolvedFile, { fresh: true });
-      capture(snapshot);
-      this.#observe(threadId, snapshot);
-    } else {
-      await this.#read(threadId, { dir: cwd, deferCompactionRestore: true }, capture);
+  async prepare({ threadId }) {
+    let file = this.sessionFile?.(threadId);
+    if (!file) {
+      await this.catalog.get(threadId);
+      file = this.catalog.files.get(threadId);
     }
+    if (!file) return undefined; // A new CLI may not have created its transcript yet.
+    const handle = await fs.open(file, 'r');
+    let baseline;
+    try {
+      const stat = await handle.stat();
+      const digest = createHash('sha256');
+      const buffer = Buffer.allocUnsafe(1024 * 1024);
+      let offset = 0;
+      // Proof only: no SDK graph, JSON parsing, or retained full-file allocation.
+      // Each bounded read yields to I/O, independent of the history worker queue.
+      while (offset < stat.size) {
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+        if (!bytesRead) throw new Error('Qoder transcript changed during send preparation');
+        digest.update(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+      baseline = {
+        file, identity: `${stat.dev}:${stat.ino}`, offset, hash: digest.digest('hex'),
+      };
+    } finally { await handle.close(); }
     if (baseline) {
       const file = path.join(this.configDir, 'tmp', path.basename(path.dirname(baseline.file)), 'logs.json');
       const entries = await readInputLog(file);
@@ -322,24 +329,39 @@ export class QoderSessionSource {
     });
   }
 
-  #observe(threadId, { file, identity, bytes, records }) {
+  async #observe(threadId, snapshot, verified = false) {
+    const { file, identity, bytes, records, mtimeMs, ctimeMs } = snapshot;
+    const revision = JSON.stringify([file, identity, bytes.length, mtimeMs, ctimeMs]);
     this.#prune();
     const receipts = [...this.receipts.values()].filter(receipt => receipt.threadId === threadId);
     const used = new Set(receipts.map(receipt => receipt.itemId).filter(Boolean));
     for (const receipt of receipts) {
       const base = receipt.baseline;
       if (receipt.itemId || !base || base.file !== file || base.identity !== identity
-        || bytes.length < base.offset || hash(bytes.subarray(0, base.offset)) !== base.hash) continue;
+        || bytes.length <= base.offset || receipt.observedRevision === revision) continue;
+      // The validated prefix can supply old UUIDs at observation time; send
+      // preparation no longer has to parse it just to build a duplicate-ID list.
+      const seen = new Set(base.seen || []);
+      for (const { offset, entry } of records) {
+        if (offset >= base.offset) break;
+        if (entry.uuid) seen.add(entry.uuid);
+      }
       const matched = records.find(({ offset, entry }) => offset >= base.offset
         && (entry.sessionId || entry.session_id) === threadId
-        && !used.has(entry.uuid) && !base.seen.includes(entry.uuid)
+        && !used.has(entry.uuid) && !seen.has(entry.uuid)
         && userText(entry) === receipt.text);
+      // Incremental display snapshots only locate candidates. Re-read exact bytes
+      // before accepting evidence: sampled cache checks cannot prove an intact prefix.
+      if (matched && !verified) return this.#observe(threadId, await this.transcripts.load(file, { fresh: true }), true);
+      receipt.observedRevision = revision;
       if (!matched) continue;
+      if (hash(bytes.subarray(0, base.offset)) !== base.hash) continue;
       receipt.itemId = matched.entry.uuid;
       used.add(receipt.itemId);
       // The UUID is durable evidence for this process; do not retain the baseline.
       delete receipt.baseline;
     }
+    return snapshot;
   }
 
   confirmations(threadId) {
@@ -371,6 +393,8 @@ export class QoderSessionSource {
           && !used.has(`${file}:${entry.messageId}`));
         if (!entry) continue;
         receipt.inputId = `${file}:${entry.messageId}`;
+        // Keep the transcript boundary for eventual item-ID reconciliation.
+        // A retained baseline alone no longer forces full-file reads.
         used.add(receipt.inputId);
       }
     }

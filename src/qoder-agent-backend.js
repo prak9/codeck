@@ -9,6 +9,7 @@ export class QoderAgentBackend extends SdkAgentBackend {
     this.configDir = configDir;
     this.readTimeoutMs = readTimeoutMs;
     this.reader = null;
+    this.preparer = null;
     this.readSequence = 0;
     this.pendingReads = new Map();
     this.openReads = new Map();
@@ -19,48 +20,55 @@ export class QoderAgentBackend extends SdkAgentBackend {
 
   read(method, params = {}) {
     if (this.closed) return Promise.reject(new Error('QoderCLI backend is closed'));
-    if (!this.reader) {
+    // Separate queues and event loops: input-log parsing must neither block the
+    // service nor wait for display/history parsing. Both lanes are read-only.
+    const lane = method === 'prepare' ? 'preparer' : 'reader';
+    if (!this[lane]) {
       const reader = new Worker(new URL('./qoder-read-worker.js', import.meta.url), {
         workerData: { configDir: this.configDir }, execArgv: [],
       });
-      this.reader = reader;
+      this[lane] = reader;
       reader.on('message', message => {
         const pending = this.pendingReads.get(message.id);
-        if (!pending) return;
+        if (!pending || pending.reader !== reader) return;
         this.pendingReads.delete(message.id);
         clearTimeout(pending.timer);
         if (message.durationMs >= 1000) console.warn(`[qoder-read] ${pending.method} ${Math.round(message.durationMs)}ms`);
         if (message.error) pending.reject(new Error(message.error));
         else pending.resolve(message.result);
-        if (!this.pendingReads.size) reader.unref();
+        if (![...this.pendingReads.values()].some(pending => pending.reader === reader)) reader.unref();
       });
       reader.on('error', error => this.#stopReader(reader, error));
       reader.on('exit', code => this.#stopReader(reader, new Error(`Qoder history reader exited (${code})`)));
     }
-    const reader = this.reader;
+    const reader = this[lane];
     reader.ref();
     const id = ++this.readSequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.#stopReader(reader, new Error('Qoder 历史读取超时，请重试')), this.readTimeoutMs);
-      this.pendingReads.set(id, { resolve, reject, timer, method });
+      const timer = setTimeout(() => this.#stopReader(reader, new Error(
+        method === 'prepare' ? 'Qoder 发送准备超时，请重试' : 'Qoder 历史读取超时，请重试',
+      )), this.readTimeoutMs);
+      this.pendingReads.set(id, { resolve, reject, timer, method, reader });
       try { reader.postMessage({ id, method, params }); }
       catch (error) {
         this.pendingReads.delete(id);
         clearTimeout(timer);
-        if (!this.pendingReads.size) reader.unref();
+        if (![...this.pendingReads.values()].some(pending => pending.reader === reader)) reader.unref();
         reject(error);
       }
     });
   }
 
   #stopReader(reader, error) {
-    if (this.reader !== reader) return;
-    this.reader = null;
-    for (const pending of this.pendingReads.values()) {
+    if (this.reader === reader) this.reader = null;
+    else if (this.preparer === reader) this.preparer = null;
+    else return;
+    for (const [id, pending] of this.pendingReads) {
+      if (pending.reader !== reader) continue;
       clearTimeout(pending.timer);
       pending.reject(error);
+      this.pendingReads.delete(id);
     }
-    this.pendingReads.clear();
     reader.terminate().catch(() => {});
   }
 
@@ -120,7 +128,11 @@ export class QoderAgentBackend extends SdkAgentBackend {
     return [...this.readReceipts.values()].filter(receipt => receipt.threadId === threadId);
   }
 
-  prepareSessionMessage(params) { return this.read('prepare', params); }
+  async prepareSessionMessage(params) {
+    if (this.closed) throw new Error('QoderCLI backend is closed');
+    if (!params.commandId || params.text.startsWith('/')) return undefined;
+    return this.read('prepare', params);
+  }
   recordSessionMessage(params) {
     if (!params.commandId || params.text?.startsWith('/') || this.readReceipts.has(params.commandId)) return;
     this.readReceipts.set(params.commandId, { ...params, expiresAt: Date.now() + 24 * 60 * 60_000 });
@@ -133,6 +145,7 @@ export class QoderAgentBackend extends SdkAgentBackend {
 
   close() {
     super.close();
+    if (this.preparer) this.#stopReader(this.preparer, new Error('QoderCLI backend is closed'));
     if (this.reader) this.#stopReader(this.reader, new Error('QoderCLI backend is closed'));
     this.latestReads.clear();
     this.readErrors.clear();
