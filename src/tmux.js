@@ -1128,6 +1128,14 @@ function codexPickerRows(output) {
   return rows.slice(prompt + 1, end);
 }
 
+function hasCodexInputModal(output) {
+  if (codexPickerRows(output)) return true;
+  const rows = cleanScreenRows(output).map((line) => line.trim()).filter(Boolean);
+  if (rows.at(-1) === 'Press enter to continue' && rows.some((line) => /^›\s+\d+\./u.test(line))) return true;
+  const end = rows.findLastIndex((line) => line.startsWith('Press enter to confirm'));
+  return end >= 0 && /^Press enter to confirm or esc to cancel(?: or .*|\.)?$/iu.test(rows.slice(end).join(' '));
+}
+
 function codexModelPicker(output) {
   const rows = codexPickerRows(output);
   if (!rows) return null;
@@ -1298,39 +1306,56 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     // Qoder input follows ordinary terminal semantics. Its screen is used only
     // for best-effort confirmation after sending, never as a layout-based gate.
     let activeCodexInput = false;
-    const requireEmptyCodexComposer = async (matchingDraft = '') => {
-      let state = 'unknown';
+    const prepareCodexComposer = async (matchingDraft = '') => {
       let screen = '';
       try {
-        if (await verifyPane()) {
-          screen = await captureInputPane(paneId, { joinWrapped: true });
-          state = agentComposerState(screen, '');
-        }
-      } catch { /* A failed read cannot authorize adding to an unseen draft. */ }
-      if (state === 'empty') return false;
-      if (!command && state === 'unknown' && hasCodexActiveTurn(screen)) {
-        activeCodexInput = true;
-        return false;
-      }
+        screen = await captureInputPane(paneId, { joinWrapped: true });
+      } catch { /* Screen recognition is not an authorization gate for input. */ }
+      if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+      activeCodexInput = !command && hasCodexActiveTurn(screen);
       if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
-      const localPicker = matchingDraft && codexLocalCommandPicker(screen);
+      const localPicker = codexLocalCommandPicker(screen);
       if (matchingDraft === '/model' && localPicker === 'model' && codexModelPicker(screen)) {
         return 'model-picker';
       }
-      if (localPicker) {
+      if (hasCodexInputModal(screen)) {
         if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Escape']));
         await waitForPaste(pasteDelay);
         if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
         screen = await captureInputPane(paneId, { joinWrapped: true });
-        state = agentComposerState(screen, '');
-        if (state === 'empty') return false;
+        if (hasCodexInputModal(screen)) throw new Error('终端弹窗尚未关闭，消息未发送，请先取消弹窗后重试');
       }
       if (matchingDraft && (agentComposerState(screen, matchingDraft) === 'draft'
         || hasCodexSlashCompletionDraft(screen, matchingDraft))) return true;
-      throw new Error(state === 'other' || state === 'draft'
-        ? 'Codex 终端中已有草稿，消息未发送。请先在终端处理草稿后重试。'
-        : '无法安全确认 Codex 输入框为空，消息未发送。请先在终端检查后重试。');
+      const initialRows = cleanScreenRows(screen);
+      const lastPrompt = initialRows.findLastIndex((line) => /^[»›>❯](?:\s|$)/u.test(line));
+      // An undimmed literal placeholder can itself be a user-authored draft.
+      if (agentComposerState(screen, '') === 'empty'
+        && (initialRows[lastPrompt]?.slice(2) !== CODEX_PLACEHOLDER
+          || hasDimComposerText(String(screen).split('\n')[lastPrompt] || '', 2))) return false;
+      if (activeCodexInput && (lastPrompt < 0 || hasCodexActiveTurn(initialRows.slice(lastPrompt + 1).join('\n')))) return false;
+      // Ctrl+U/K delete towards both ends, including hard newlines at a line
+      // boundary. Unlike Ctrl+C or a blind Escape they do not interrupt a turn.
+      // Repeat for multi-line drafts; never depend on recognizing a model footer.
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+        const keys = Array.from({ length: 32 }, () => ['C-u', 'C-k']).flat();
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, ...keys]));
+        await waitForPaste(pasteDelay);
+        let next = '';
+        try { next = await captureInputPane(paneId, { joinWrapped: true }); } catch { /* Best effort. */ }
+        if (hasCodexInputModal(next)) throw new Error('终端弹窗尚未关闭，消息未发送，请先取消弹窗后重试');
+        const state = agentComposerState(next, '');
+        const rows = cleanScreenRows(next);
+        const promptIndex = rows.findLastIndex((line) => /^[»›>❯](?:\s|$)/u.test(line));
+        const promptText = rows[promptIndex]?.slice(1).trim() || '';
+        const placeholder = CODEX_PLACEHOLDER.startsWith(promptText)
+          && hasDimComposerText(String(next).split('\n')[promptIndex] || '', 2);
+        const visibleDraft = state === 'other' || (promptText && !placeholder && promptText !== CODEX_PLACEHOLDER);
+        if (!visibleDraft) return false;
+      }
+      throw new Error('终端草稿未能清除，消息未发送，请检查终端后重试');
     };
     const inputWasQueued = () => provider !== 'shell'
       && Boolean(session.hasRunningProcess || activeCodexInput);
@@ -1419,13 +1444,13 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       const bareCodexCommand = provider === 'codex' && text.trim() === command;
       const otherCodexCommand = provider === 'codex' && !SLASH_COMMAND_OUTPUT_COMMANDS.has(command);
       const composerRecovery = provider === 'codex'
-        ? await requireEmptyCodexComposer(bareCodexCommand ? command : '')
+        ? await prepareCodexComposer(bareCodexCommand ? command : '')
         : false;
       const existingCommand = composerRecovery === true;
       const existingUsagePicker = composerRecovery === 'usage-picker';
       const existingModelPicker = composerRecovery === 'model-picker';
-      const initialScreen = await captureCommandPane(paneId);
-      if (provider === 'qodercli' && !await verifyPane()) {
+      const initialScreen = await captureCommandPane(paneId).catch(() => '');
+      if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) {
         throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       }
       if (existingUsagePicker) {
@@ -1438,7 +1463,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
             : bareCodexCommand ? `${command} ` : text],
         ));
         await waitForPaste(pasteDelay);
-        if (provider === 'qodercli' && !await verifyPane()) return { submissionStatus: 'unconfirmed' };
+        if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) return { submissionStatus: 'unconfirmed' };
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
       }
       if (!SLASH_COMMAND_OUTPUT_COMMANDS.has(command) && !otherCodexCommand) return {};
@@ -1503,8 +1528,8 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     await loadBuffer(bufferName, text);
     let pasted = false;
     try {
-      if (provider === 'codex') await requireEmptyCodexComposer();
-      if (provider === 'qodercli' && !await verifyPane()) {
+      if (provider === 'codex') await prepareCodexComposer();
+      if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) {
         throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       }
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same

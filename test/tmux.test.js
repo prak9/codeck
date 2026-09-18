@@ -353,7 +353,7 @@ test('accepts Codex input when an active turn hides the composer', async () => {
   assert.equal(commands.filter((args) => args.includes('Enter')).length, 1);
 });
 
-test('an active Codex marker never bypasses a later draft, picker, or slash-command preflight', async () => {
+test('an active Codex marker permits draft replacement but never confirms a stuck picker', async () => {
   const cases = [
     ['Continue', '◦ Working (12s • esc to interrupt)\n» Existing draft'],
     ['Continue', '• Waiting for background terminal (2h 04m)\n» Existing draft'],
@@ -366,7 +366,7 @@ test('an active Codex marker never bypasses a later draft, picker, or slash-comm
   ];
   for (const [text, screen] of cases) {
     const commands = [];
-    await assert.rejects(sendSessionMessage({
+    const sending = sendSessionMessage({
       provider: 'codex', sessionName: 'research', threadId: 'thread-1', text,
     }, {
       listTmuxSessions: async () => [{
@@ -375,9 +375,19 @@ test('an active Codex marker never bypasses a later draft, picker, or slash-comm
       }],
       loadBuffer: async () => {},
       execTmux: async (args) => commands.push(args),
-      capturePane: async () => screen,
-    }), /消息未发送/);
-    assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+      waitForQueuedInput: async () => {}, waitForSlashOutput: async () => {},
+      capturePane: async () => commands.some((args) => args.includes('C-u'))
+        ? '› \n\n  gpt-6-astra · /project' : screen,
+    });
+    if (screen.includes('Choose response')) {
+      await assert.rejects(sending, /弹窗尚未关闭/);
+      assert.equal(commands.some((args) => args.includes('Enter') || args.includes('paste-buffer')), false);
+    } else {
+      await sending;
+      assert.equal(commands.filter((args) => args.includes('Enter')).length, 1);
+      assert.equal(commands.some((args) => args.includes('Escape') || args.includes('C-c')), false);
+    }
   }
 });
 
@@ -2343,7 +2353,7 @@ test('submission confirmation requests tmux soft-wrap joining without erasing ha
   assert.equal(enters, 1);
 });
 
-test('Codex preflight rejects occupied or unreadable composers without sending any pane input', async () => {
+test('Codex replaces occupied or unreadable composers without a layout gate', async () => {
   const screens = [
     '» 分析下BABA当前投资价值 推送到notion\n\n  gpt-6-astra · /project',
     '› 怎么样了\n\n  gpt-6-astra · /project',
@@ -2356,29 +2366,34 @@ test('Codex preflight rejects occupied or unreadable composers without sending a
     '» \n  gpt-fake · /pretend-footer\n  Existing second line\n\n  gpt-6-astra · /project',
     '» \n  gpt-fake · /pretend-footer\n\n  gpt-6-astra · /project',
     '» [Pasted Content 1234 chars]\n\n  gpt-6-astra · /project',
-    'Choose response\n› 1. Approve\n  2. Deny\nPress enter to confirm or esc to go back',
     '', 'redrawing', null,
   ];
   for (const text of ['怎么样了', '/status', '/model', '/usage']) {
     for (const screen of screens) {
       const commands = [];
       let loads = 0;
-      await assert.rejects(sendSessionMessage({
+      await sendSessionMessage({
         provider: 'codex', sessionName: 'preflight', threadId: 'thread-1', text,
       }, {
         listTmuxSessions: async () => [{ name: 'preflight', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
         loadBuffer: async () => { loads += 1; },
         execTmux: async (args) => commands.push(args),
         waitForPaste: async () => {}, waitForSubmit: async () => {}, waitForSlashOutput: async () => {},
-        capturePane: async () => { if (screen === null) throw new Error('capture failed'); return screen; },
-      }), /消息未发送.*终端|终端.*消息未发送/, `${text}: ${screen}`);
-      assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys') || args.includes('copy-mode')), false);
-      assert.equal(commands.filter((args) => args[0] === 'delete-buffer').length, loads, 'only the unused temporary buffer is cleaned up');
+        capturePane: async () => {
+          if (screen === null) throw new Error('capture failed');
+          if (commands.some((args) => args.includes('Enter') || args.includes('C-u'))) return '› \n\n  gpt-6-astra · /project';
+          return screen;
+        },
+      });
+      assert.equal(commands.filter((args) => args.includes('Enter')).length, 1, `${text}: ${screen}`);
+      assert.equal(commands.some((args) => args.includes('C-u') && args.includes('C-k')), true);
+      assert.equal(commands.some((args) => args.includes('Escape') || args.includes('C-c')), false);
+      assert.equal(loads, text.startsWith('/') ? 0 : 1);
     }
   }
 });
 
-test('ordinary messages never dismiss a local command picker', async () => {
+test('ordinary messages cancel a local command picker but do not send while it remains visible', async () => {
   const commands = [];
   const picker = [
     'Skills',
@@ -2393,9 +2408,11 @@ test('ordinary messages never dismiss a local command picker', async () => {
       name: 'preflight', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' },
     }],
     execTmux: async (args) => commands.push(args),
+    loadBuffer: async () => {}, waitForPaste: async () => {},
     capturePane: async () => picker,
   }), /消息未发送.*终端|终端.*消息未发送/);
-  assert.equal(commands.some((args) => args[0] !== 'delete-buffer'), false);
+  assert.equal(commands.some((args) => args.includes('Escape')), true);
+  assert.equal(commands.some((args) => args.includes('Enter') || args.includes('paste-buffer')), false);
 });
 
 test('Codex preflight allows a complete empty or placeholder composer even during a running turn', async () => {
@@ -2415,8 +2432,8 @@ test('Codex preflight allows a complete empty or placeholder composer even durin
   }
 });
 
-test('Codex preflight checks the draft and pane identity after the asynchronous buffer load', async () => {
-  for (const change of ['draft', 'pane', 'agent', 'thread']) {
+test('Codex replacement checks pane identity after the asynchronous buffer load', async () => {
+  for (const change of ['pane', 'agent', 'thread']) {
     let loaded = false;
     const commands = [];
     await assert.rejects(sendSessionMessage({
@@ -2432,7 +2449,7 @@ test('Codex preflight checks the draft and pane identity after the asynchronous 
       loadBuffer: async () => { loaded = true; }, execTmux: async (args) => commands.push(args),
       waitForPaste: async () => {}, waitForSubmit: async () => {},
       capturePane: async () => `» ${loaded && change === 'draft' ? 'Typed locally while loading' : ''}\n\n  gpt-6-astra · /project`,
-    }), /消息未发送.*终端|终端.*消息未发送/, change);
+    }), /pane 已变化/, change);
     assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false, change);
     assert.equal(commands.filter((args) => args[0] === 'delete-buffer').length, 1, change);
   }
@@ -2486,7 +2503,7 @@ test('narrow Codex confirmation retries only the exact draft then recognizes the
   }
 });
 
-test('narrow Codex preflight preserves real drafts resembling truncated placeholders and footers', async () => {
+test('narrow Codex replacement clears drafts resembling truncated placeholders and footers', async () => {
   for (const draft of [
     'Ask Codex to do anyth', '\x1b[38;2;2;2;2mAsk Codex to do anyth',
     '\x1b[2;22mAsk Codex to do anyth', '\x1b[2mAsk Codex\x1b[0m to do anyth',
@@ -2494,28 +2511,33 @@ test('narrow Codex preflight preserves real drafts resembling truncated placehol
     '\n  gpt-6-astra xhigh fas…\n  keep this second line',
   ]) {
     const commands = [];
-    await assert.rejects(sendSessionMessage({
+    await sendSessionMessage({
       provider: 'codex', sessionName: 'narrow', threadId: 'thread-1', text: 'Continue',
     }, {
       listTmuxSessions: async () => [{ name: 'narrow', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
       loadBuffer: async () => {}, execTmux: async (args) => commands.push(args),
-      capturePane: async () => `\x1b[1m›\x1b[0m ${draft}\n \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…`,
-    }), /消息未发送/);
-    assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+      capturePane: async () => commands.some((args) => args.includes('C-u')) ? NARROW_CODEX_COMPOSERS[0]
+        : `\x1b[1m›\x1b[0m ${draft}\n \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…`,
+    });
+    assert.equal(commands.some((args) => args.includes('C-u') && args.includes('C-k')), true);
+    assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1);
   }
 });
 
-test('Codex goal footer preserves drafts and confirms only the exact submitted draft', async () => {
+test('Codex goal footer permits replacement and confirms only the exact submitted draft', async () => {
   const footer = '  gpt-6-astra … Goal achieved (11m)';
   const commands = [];
-  await assert.rejects(sendSessionMessage({
+  await sendSessionMessage({
     provider: 'codex', sessionName: 'goal-draft', threadId: 'thread-1', text: 'New message',
   }, {
     listTmuxSessions: async () => [{ name: 'goal-draft', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
     execTmux: async (args) => commands.push(args),
-    capturePane: async () => `› Local draft\n  second line\n\n${footer}`,
-  }), /已有草稿/);
-  assert.equal(commands.some((args) => args.includes('paste-buffer') || args.includes('send-keys')), false);
+    loadBuffer: async () => {}, waitForPaste: async () => {}, waitForSubmit: async () => {},
+    capturePane: async () => `› ${commands.some((args) => args.includes('C-u')) ? '' : 'Local draft\n  second line'}\n\n${footer}`,
+  });
+  assert.equal(commands.some((args) => args.includes('C-u') && args.includes('C-k')), true);
+  assert.equal(commands.filter((args) => args.includes('paste-buffer')).length, 1);
 
   let enters = 0;
   const result = await ensureAgentInputSubmitted({
