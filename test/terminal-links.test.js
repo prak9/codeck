@@ -10,12 +10,15 @@ test('terminal links open without modifiers but never open a drag selection or r
   let activate;
   let selected = false;
   const opened = [];
+  const previews = [];
   globalThis.WebLinksAddon = { WebLinksAddon: class {
     constructor(handler) { activate = handler; }
   } };
   globalThis.window = { open: (...args) => opened.push(args) };
   try {
-    enableTerminalLinks({ loadAddon() {}, hasSelection: () => selected });
+    enableTerminalLinks({ loadAddon() {}, hasSelection: () => selected }, {
+      previewImage: uri => { previews.push(uri); return uri.endsWith('.png'); },
+    });
     const url = 'https://example.com/path?q=1&lang=zh#details';
     activate({ button: 0, ctrlKey: false }, url);
     assert.deepEqual(opened, [[url, '_blank', 'noopener,noreferrer']]);
@@ -24,6 +27,11 @@ test('terminal links open without modifiers but never open a drag selection or r
     selected = false;
     activate({ button: 2 }, url);
     assert.equal(opened.length, 1);
+    assert.deepEqual(previews, [url], 'selection and right click must not preview');
+    activate({ button: 0 }, 'https://example.com/a.png');
+    assert.equal(opened.length, 1, 'preview consumes image click');
+    activate({ button: 0, ctrlKey: true }, 'https://example.com/a.png');
+    assert.equal(opened.length, 2, 'modified image click opens original');
   } finally {
     if (previousAddon === undefined) delete globalThis.WebLinksAddon;
     else globalThis.WebLinksAddon = previousAddon;

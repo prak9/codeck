@@ -1,7 +1,8 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
-import { enableTerminalLinks } from './terminal-links.js?v=2';
+import { enableTerminalLinks } from './terminal-links.js?v=3';
+import { createTerminalImagePreview } from './terminal-image-preview.js?v=1';
 import { filterSessionNames } from './session-search.js?v=1';
 import { bindTerminalTextSelection } from './terminal-text-selection.js?v=1';
 import {
@@ -1268,6 +1269,7 @@ function ensureTerminal() {
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
   enableTerminalLinks(terminal, {
+    previewImage: createTerminalImagePreview(),
     getContext: () => ({ session: state.active, connectionId: state.connectionId }),
     readHistoryLinks: ({ session }) => api(`/api/sessions/${encodeURIComponent(session)}/terminal-links`, {
       signal: AbortSignal.timeout(2000),

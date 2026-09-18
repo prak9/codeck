@@ -375,6 +375,7 @@ test('wheel wiring captures before xterm, keeps readonly scroll, and cancels acr
       onData() {} onSelectionChange() {} onResize() {}
     },
     FitAddon: class {}, ResizeObserver: class { observe() {} },
+    createTerminalImagePreview() {},
     activateTerminalWebgl() {}, bindTerminalRenderWatchdog() {}, bindMobileScroll() {}, bindTerminalPalette() {}, enableTerminalLinks() {},
     handleTerminalDragEnter() {}, handleTerminalDragOver() {}, handleTerminalDragLeave() {}, handleTerminalDragStart() {},
     touchLog() {},

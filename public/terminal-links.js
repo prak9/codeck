@@ -1,13 +1,14 @@
 import { matchTerminalHistoryLinks } from './terminal-history-links.js?v=1';
 
 // Let xterm own hover/click hit testing so dragging still selects terminal text.
-export function enableTerminalLinks(terminal, { getContext = () => null, readHistoryLinks } = {}) {
+export function enableTerminalLinks(terminal, { getContext = () => null, readHistoryLinks, previewImage } = {}) {
   let revision = 0;
   let cache;
   const key = () => `${revision}:${terminal.buffer?.active.viewportY || 0}:${JSON.stringify(getContext())}`;
   const open = (event, uri) => {
     // xterm 5.5 also activates on mouseup after dragging within the same link.
     if (event.button !== 0 || terminal.hasSelection()) return;
+    if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && previewImage?.(uri)) return;
     window.open(uri, '_blank', 'noopener,noreferrer');
   };
   if (readHistoryLinks) {
