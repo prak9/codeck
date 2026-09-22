@@ -263,6 +263,7 @@ function tmuxThreads(provider, sessions, threads) {
 export class AgentRegistry extends EventEmitter {
   constructor(backends, {
     listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
+    decorateTranscript = value => value,
   } = {}) {
     super();
     this.backends = new Map(Object.entries(backends || {}));
@@ -272,8 +273,9 @@ export class AgentRegistry extends EventEmitter {
     this.selectTmuxModel = selectTmuxModel;
     this.dismissTmuxCommand = dismissTmuxCommand;
     this.interruptTmuxSession = interruptTmuxSession;
+    this.decorateTranscript = decorateTranscript;
     for (const [provider, backend] of this.backends) {
-      backend.on('notification', (message) => this.emit('notification', { provider, ...message }));
+      backend.on('notification', (message) => this.emit('notification', { provider, ...this.decorateTranscript(message) }));
       backend.on('serverRequest', (message) => this.emit('serverRequest', { provider, ...message }));
       backend.on('backendError', (error) => this.emit('backendError', { provider, error }));
     }
@@ -307,7 +309,9 @@ export class AgentRegistry extends EventEmitter {
     const [result, sessions] = await Promise.all([backend.listThreads(), this.listTmuxSessions()]);
     return { ...(result || {}), data: tmuxThreads(provider, sessions, result?.data) };
   }
-  openThread(provider, threadId, options) { return this.backend(provider).openThread(threadId, options); }
+  async openThread(provider, threadId, options) {
+    return this.decorateTranscript(await this.backend(provider).openThread(threadId, options));
+  }
   async readLatestAgentOutput(provider, threadId) {
     const backend = this.backend(provider);
     if (backend.readLatestAgentOutput) return backend.readLatestAgentOutput(threadId);
@@ -316,7 +320,7 @@ export class AgentRegistry extends EventEmitter {
   }
   async loadThreadHistory(provider, threadId, { beforeTurnId, limit, cursor }) {
     if (cursor) beforeTurnId = decodeHistoryCursor(cursor, provider, threadId);
-    const page = await this.#historyPage(provider, threadId, { beforeTurnId, limit });
+    const page = this.decorateTranscript(await this.#historyPage(provider, threadId, { beforeTurnId, limit }));
     // Older clients keep the anchor-only response; cursor clients share one
     // provider-independent pagination contract, including after worker restarts.
     return cursor === undefined ? page : { ...page,

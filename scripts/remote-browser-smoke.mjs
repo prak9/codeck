@@ -51,6 +51,11 @@ function thread() {
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://fixture');
+  if (url.pathname === '/api/agent-turn-images') {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ images: [] }));
+    return;
+  }
   if (url.pathname === '/api/sessions') {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify(snapshot()));
@@ -93,7 +98,7 @@ function publishEvent(method, params) {
 sockets.on('connection', socket => {
   send(socket, { type: 'ready', hostname: 'isolated-fixture', defaultCwd: '/fixture',
     protocol: { version: 1, epoch: fixture.epoch, commandReceiptTtlMs: 600_000 },
-    providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, ...sessionCommandCapabilities(id) } })) });
+    providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
   socket.on('message', raw => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });

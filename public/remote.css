@@ -136,6 +136,18 @@ a.header-button { text-decoration: none; }
 .user-message { max-width: min(76%, 620px); margin: 0 0 22px auto; padding: 12px 15px; border: 1px solid #ff8c6340; border-radius: 18px 18px 5px 18px; background: linear-gradient(145deg, #ff6b3529, #ff6b3518); color: #fff7f3; box-shadow: 0 8px 24px #00000016; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .message-delivery-status { display: block; margin-top: 7px; color: #f0c9b9; font: 12px/1.55 "Inter Variable", "Noto Sans SC Variable", sans-serif; white-space: normal; }
 .assistant-message { max-width: 78ch; margin: 0 0 15px; color: #ebe8e5; font-size: 14px; line-height: 1.72; white-space: pre-wrap; }
+.remote-image { width: min(100%, 720px); min-width: 0; margin: 12px 0; white-space: normal; }
+.remote-image-stage { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 3 / 2; max-height: 420px; min-height: 120px; padding: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--raised); cursor: zoom-in; }
+.remote-image-stage img { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+.remote-image-status { padding: 20px; color: var(--muted); font-size: 13px; }
+.remote-image figcaption { padding: 8px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.sheet.remote-image-dialog { width: min(1100px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 18px; }
+.remote-image-dialog .sheet-head { align-items: center; }
+.sheet.remote-image-dialog h2 { margin: 0; overflow-wrap: anywhere; font-size: 16px; }
+.remote-image-dialog .close-button { width: 44px; height: 44px; }
+.remote-image-full { display: block; width: 100%; max-height: 72dvh; object-fit: contain; }
+.remote-image-download, .remote-image-retry { display: inline-flex; align-items: center; min-height: 44px; color: var(--ink); font-size: 13px; }
+.remote-image-retry { border: 0; background: transparent; text-decoration: underline; }
 .assistant-message.streaming::after { content: ''; width: 6px; height: 16px; margin-left: 3px; background: #ff8b64; display: inline-block; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
 .agent-message-actions { min-height: 34px; margin: -6px 0 5px; display: flex; align-items: center; }
 .message-copy-button { min-width: 72px; min-height: 34px; padding: 0 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; transition: color 120ms ease, background 120ms ease, border-color 120ms ease; }

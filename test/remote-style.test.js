@@ -94,8 +94,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=39/);
-  assert.match(html, /\/remote\.js\?v=94/);
+  assert.match(html, /\/remote\.css\?v=40/);
+  assert.match(html, /\/remote\.js\?v=95/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {

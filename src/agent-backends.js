@@ -15,6 +15,7 @@ import {
   query as queryQoder,
 } from '@qoder-ai/qoder-agent-sdk';
 import { CodexAppServer } from './codex-app-server.js';
+import { imageReferences } from './agent-images.js';
 import { CodexDeliveryRecovery } from './codex-delivery-recovery.js';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
 import { QoderAgentBackend } from './qoder-agent-backend.js';
@@ -147,6 +148,7 @@ export class CodexAgentBackend extends EventEmitter {
     this.label = 'Codex';
     this.capabilities = {
       structuredTranscript: true,
+      turnImages: true,
       liveEvents: true,
       directTmuxInput: true,
       slashCommands: true,
@@ -194,6 +196,29 @@ export class CodexAgentBackend extends EventEmitter {
       sortKey: 'updated_at',
       sortDirection: 'desc',
     });
+  }
+
+  // Summary turns omit imageView. Read only the requested visible turn on a
+  // separate, cancellable path; do not hydrate tool logs in the snapshot feed.
+  async readTurnImages(threadId, turnId, { signal } = {}) {
+    const images = new Map();
+    const visited = new Set();
+    let cursor;
+    do {
+      if (visited.has(cursor)) throw new Error('Thread image cursor did not advance');
+      visited.add(cursor);
+      const page = await this.appServer.request('thread/items/list', {
+        threadId, turnId, limit: 100, sortDirection: 'asc', ...(cursor ? { cursor } : {}),
+      }, { signal });
+      for (const entry of page.data || []) {
+        if (entry.turnId !== turnId) continue;
+        for (const ref of imageReferences(entry.item)) {
+          if (!images.has(ref.path)) images.set(ref.path, { path: ref.path, alt: ref.alt });
+        }
+      }
+      cursor = page.nextCursor;
+    } while (cursor && images.size < 32);
+    return [...images.values()].slice(0, 32);
   }
 
   async readLatestAgentOutput(threadId) {

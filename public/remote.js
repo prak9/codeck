@@ -1,5 +1,6 @@
 import { filterSessionNames } from './session-search.js?v=1';
 import { clipboardFiles } from './clipboard-files.js?v=1';
+import { createRemoteImages } from './remote-images.js?v=1';
 import {
   agentActivityText,
   applyAcceptedUserMessage,
@@ -1705,9 +1706,15 @@ function syncCommandDialog(commandOutput) {
   $('#commandDialogContent').replaceChildren();
 }
 
+let remoteImages;
+function imageRenderer() {
+  return remoteImages ||= createRemoteImages({ root: $('#transcript'), getToken: () => state.token });
+}
+
 function itemNode(item, turn) {
   if (item.type === 'userMessage') {
     const node = element('div', 'message user-message', userMessageText(item));
+    if (item.codeckImages?.length) imageRenderer().renderMessage(node, item, { inline: false });
     if (['accepted', 'received', 'unknown'].includes(item.delivery?.status)) {
       node.append(element('small', 'message-delivery-status', item.delivery.status === 'received'
         ? 'Agent 已接收'
@@ -1721,7 +1728,13 @@ function itemNode(item, turn) {
   }
   if (item.type === 'agentMessage') {
     const node = element('div', 'message assistant-message', item.text || '');
+    if (item.codeckImages?.length) imageRenderer().renderMessage(node, item);
     if (turn.status === 'inProgress' && item === turn.items.at(-1)) node.classList.add('streaming');
+    return node;
+  }
+  if (item.codeckImages?.length) {
+    const node = element('div', 'message image-message');
+    imageRenderer().renderMessage(node, item, { inline: false });
     return node;
   }
   if (item.type === 'reasoning') {
@@ -1810,6 +1823,9 @@ function renderTurn(turn) {
       foot.textContent = `${statusText(turn.status)}${duration}`;
     }
     section.append(foot);
+  }
+  if (state.providerCapabilities.get(state.provider)?.turnImages === true) {
+    imageRenderer().observeTurn(section, { provider: state.provider, threadId: state.thread?.id, turn });
   }
   return section;
 }
@@ -2266,6 +2282,7 @@ function renderThread() {
       : terminalActivityNode(terminalContent));
   }
   reconcileChildOrder(turnContainer, nodes);
+  remoteImages?.prune();
   for (const details of turnContainer.querySelectorAll('details')) {
     if (openItems.has(details.dataset.itemId)) details.open = true;
   }

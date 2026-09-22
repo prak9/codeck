@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import { authenticateToken, createShareToken, terminalAccessForAuth } from './auth.js';
 import { createAuthRateLimiter, requestClientAddress } from './auth-rate-limit.js';
 import { createAgentBackends } from './agent-backends.js';
+import { createAgentImages } from './agent-images.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
 import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
@@ -43,6 +44,7 @@ const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 4310);
 const configuredAccessToken = process.env.CODECK_TOKEN;
 const accessToken = configuredAccessToken || crypto.randomBytes(18).toString('base64url');
+const agentImages = createAgentImages(accessToken);
 const webAuthEnabled = process.env.CODECK_WEB_AUTH === '1';
 const publicDir = path.join(dirname, '../public');
 const app = express();
@@ -296,6 +298,24 @@ app.get('/api/download', ownerOnly, (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/agent-images/:token', ownerOnly, agentImages.serve);
+app.get('/api/agent-turn-images', ownerOnly, async (req, res) => {
+  const { provider, threadId, turnId } = req.query;
+  if (provider !== 'codex' || ![threadId, turnId].every(value => typeof value === 'string' && /^[\w.:-]{1,200}$/u.test(value))) {
+    return res.status(400).json({ error: '图片会话信息无效' });
+  }
+  const controller = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const refs = await agentRegistry.backend(provider).readTurnImages(threadId, turnId, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    res.set('Cache-Control', 'private, no-store').json({ images: agentImages.describe(refs) });
+  } catch {
+    if (!res.destroyed) res.status(503).json({ error: '图片信息暂时无法读取，可稍后重试' });
+  }
+});
+
 app.use(requireWebSession);
 app.use('/vendor', express.static(path.join(dirname, '../node_modules/@xterm/xterm/css')));
 app.use('/vendor/xterm', express.static(path.join(dirname, '../node_modules/@xterm/xterm/lib')));
@@ -319,6 +339,7 @@ const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
 const wss = new WebSocketServer({ noServer: true, ...TERMINAL_WEBSOCKET_OPTIONS });
 const agentWss = new WebSocketServer({ noServer: true, ...AGENT_WEBSOCKET_OPTIONS });
 const agentRegistry = new AgentRegistry(createAgentBackends(), {
+  decorateTranscript: agentImages.decorate,
   listTmuxSessions: listSessions,
   sendTmuxMessage: sendSessionMessage,
   answerTmuxQuestion: answerSessionQuestion,
