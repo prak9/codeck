@@ -1,0 +1,18 @@
+不运行正式大规模性能结论，不修改现有项目，
+不提交或推送代码，除非用户另行明确要求。
+─────────────────────────────────────
+
+Qoder has written up a plan and is
+ready to execute. Would you like to
+proceed?
+
+❯ 1. Yes, start executing
+     Keep current permission mode a…
+  2. Yes, execute as Goal
+     Start the goal loop.
+  3. Refuse and say something
+     Reject this plan and provide f…
+  4. Reject plan
+     Reject this plan without provi…
+
+Ctrl+X to edit plan

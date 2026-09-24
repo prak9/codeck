@@ -1,9 +1,52 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+// ExitPlanMode has its own layout, not the Asking User footer. Keep the exact
+// native option order: the feedback editor occupies index 2 but cannot be
+// submitted as a plain choice. Include the visible plan in the approval identity.
+function parseQoderPlan(lines) {
+  const header = lines.findLastIndex(line => line.trim() === "Here is Qoder's plan:");
+  const start = Math.max(0, header);
+  const prompt = lines.findIndex((line, index) => index > start && /^\s*Qoder has written up a plan/u.test(line));
+  const first = lines.findIndex((line, index) => index > prompt && /^\s*[❯›>]?\s*1\. /u.test(line));
+  if (prompt < 0 || first < 0 || lines.slice(prompt, first).join(' ').trim().replace(/\s+/gu, ' ')
+    !== 'Qoder has written up a plan and is ready to execute. Would you like to proceed?') return null;
+  const plan = lines.slice(header < 0 ? start : start + 1, prompt).map(line => line.trim()).filter(Boolean);
+  if (plan.length < 2 || !/^[─━-]{4,}$/u.test(plan.at(-1))
+    || (header >= 0 && (plan.length < 3 || !/^[─━-]{4,}$/u.test(plan[0])))) return null;
+  const labels = ['Yes, start executing', 'Yes, execute as Goal', 'Refuse and say something', 'Reject plan'];
+  const rows = [];
+  let last = -1;
+  for (let index = first; index < lines.length; index += 1) {
+    const row = /^\s*(❯|›|>)?\s*(\d+)\.\s+(.+?)\s*$/u.exec(lines[index]);
+    if (row) {
+      if (Number(row[2]) !== rows.length + 1 || row[3] !== labels[rows.length]) return null;
+      rows.push({ label: row[3], description: '', cursor: Boolean(row[1]) });
+      if (rows.length === 4) { last = index; break; }
+    } else if (rows.length && lines[index].trim()) {
+      rows.at(-1).description += `${rows.at(-1).description ? '\n' : ''}${lines[index].trim()}`;
+    }
+  }
+  if (last < 0 || rows.filter(row => row.cursor).length !== 1) return null;
+  const tail = lines.slice(last + 1).map(line => line.trim()).filter(Boolean);
+  const description = tail.shift() || '';
+  if (!description || !'Reject this plan without providing feedback.'.startsWith(description.replace(/…$/u, ''))) return null;
+  rows[3].description = description;
+  const footer = tail.filter(line => !/^(?:Plan|YOLO) mode$/u.test(line)).join(' ');
+  if ((header < 0 || footer) && !/^(?:ctrl[+-][a-z]|⌃[a-z]) to edit plan$/iu.test(footer)) return null;
+  const cursor = rows.findIndex(row => row.cursor);
+  if (cursor === 2) return null; // Numeric keys belong to the native feedback editor.
+  const options = rows.flatMap(({ label, description }, index) => index === 2 ? [] : [{ label, description, index }]);
+  const question = `${header < 0 ? '以下为终端可见计划片段，请在普通终端核对完整计划。\n\n' : ''}${lines.slice(start, first).map(line => line.trim()).join('\n').trim()}\n\n文字反馈请使用普通终端。`;
+  const fingerprint = createHash('sha256').update(JSON.stringify(['plan', question, options])).digest('hex');
+  return { question, options, cursor, fingerprint, selectByNumber: true };
+}
+
 // Only the complete native single-choice layout is actionable. Tool history,
 // multi-select/review tabs and partially visible menus are not input evidence.
 export function parseQoderQuestion(screen) {
   const lines = String(screen || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n');
+  const plan = parseQoderPlan(lines);
+  if (plan) return plan;
   const start = lines.findLastIndex(line => line.trim() === 'Asking User');
   const divider = lines.findIndex((line, index) => index > start && line.trim());
   if (start < 0 || !/^\s*[─━-]{4,}\s*$/u.test(lines[divider] || '')) return null;

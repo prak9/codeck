@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from '../src/thread-history-cursor.js';
 import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
+import { QoderQuestionTracker } from '../src/qoder-question.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -331,6 +332,20 @@ try {
         fixture.question = null;
         publishSessions();
         await page.waitForSelector('#approvalStack .question-card', { state: 'detached' });
+        const planFile = viewport.width < 500 ? 'qoder-plan-screen-clipped.txt' : 'qoder-plan-screen.txt';
+        const planScreen = await fs.readFile(path.join(root, 'test/fixtures', planFile), 'utf8');
+        fixture.question = new QoderQuestionTracker().observe('fixture',
+          { kind: provider, id: 'fixture-thread', paneId: '%42' }, planScreen);
+        assert.ok(fixture.question);
+        publishSessions();
+        await page.waitForSelector('#nativeQuestionDialog[open]');
+        assert.match(await dialog.textContent(), viewport.width < 500 ? /不提交或推送代码/ : /Fix history reads and run tests/);
+        assert.equal(await dialog.getByRole('radio').count(), 3);
+        await dialog.getByRole('radio', { name: /^Reject plan/ }).check();
+        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-plan-approval.png`) });
+        await dialog.getByRole('button', { name: '回答并继续' }).click();
+        await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
+        assert.equal(fixture.answer, 'Reject plan');
         // Reload discarded the earlier pages used by the reconnect-gap journey below.
         for (let pageIndex = 0; pageIndex < 3 && !await page.locator('[data-turn-id="turn-41"]').count(); pageIndex += 1) {
           await page.getByRole('button', { name: '加载更早的对话' }).click();

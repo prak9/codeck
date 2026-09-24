@@ -1,0 +1,20 @@
+Here is Qoder's plan:
+
+─────────────────────────────────────
+Fix history reads and run tests.
+─────────────────────────────────────
+
+Qoder has written up a plan and is
+ready to execute. Would you like to
+proceed?
+
+❯ 1. Yes, start executing
+     Keep current permission mode
+  2. Yes, execute as Goal
+     Start the goal loop.
+  3. Refuse and say something
+     Reject this plan and provide
+  4. Reject plan
+     Reject this plan without
+
+Ctrl+G to edit plan

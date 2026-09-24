@@ -1575,8 +1575,12 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
     const active = tracker.observe(sessionName, latest.session.agent, screen);
     const picker = parseQoderQuestion(screen);
     if (!active || active.id !== questionId || !picker) throw new Error('询问已变化或已回答，回答未发送');
-    const selected = picker.options.findIndex(option => option.label === answer);
-    if (selected < 0) throw new Error('回答选项已变化，回答未发送');
+    const selectedOption = picker.options.findIndex(option => option.label === answer);
+    if (selectedOption < 0) throw new Error('回答选项已变化，回答未发送');
+    const selected = picker.options[selectedOption].index ?? selectedOption;
+    // Qoder Plan's numeric keys select immediately. Do not traverse its feedback
+    // editor: highlighting that row changes the visible plan and captures input.
+    const selectionKey = picker.selectByNumber ? String(selected + 1) : 'Enter';
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const waitForQuestion = overrides.waitForQuestion || (() => new Promise(resolve => setTimeout(resolve, 50)));
     const verifyPicker = async () => {
@@ -1588,7 +1592,7 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
       return parseQoderQuestion(visible);
     };
     let cursor = picker.cursor;
-    while (cursor !== selected) {
+    while (!picker.selectByNumber && cursor !== selected) {
       const direction = selected > cursor ? 'Down' : 'Up';
       const expected = cursor + (direction === 'Down' ? 1 : -1);
       await execTmux(exitPaneModeThen(latest.paneId, ['send-keys', '-t', latest.paneId, direction]));
@@ -1602,17 +1606,18 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
       if (!moved) throw new Error('终端选项尚未更新，回答未发送，请重试');
       cursor = expected;
     }
-    if ((await verifyPicker()).cursor !== selected) throw new Error('终端选项位置已变化，回答未发送');
-    // Consume before the write: an ambiguous tmux failure must never replay Enter.
+    if ((await verifyPicker()).cursor !== cursor) throw new Error('终端选项位置已变化，回答未发送');
+    // Consume before the write: an ambiguous tmux failure must never replay selection.
     tracker.consume(sessionName, questionId);
-    try { await execTmux(exitPaneModeThen(latest.paneId, ['send-keys', '-t', latest.paneId, 'Enter'])); }
+    try { await execTmux(exitPaneModeThen(latest.paneId, ['send-keys', '-t', latest.paneId, selectionKey])); }
     catch { throw new Error('回答送达状态未知，请检查普通终端，勿重复提交'); }
     paneScreenCache.delete(sessionName);
     for (let attempt = 0; attempt < 10; attempt += 1) {
       await waitForQuestion();
       const after = await capture(latest.paneId);
       const next = parseQoderQuestion(after);
-      if (after.trim() && (next ? next.fingerprint !== picker.fingerprint : !/^\s*Asking User\s*$/mu.test(after))) {
+      if (after.trim() && (next ? next.fingerprint !== picker.fingerprint
+        : !/^\s*Asking User\s*$|Would\s+you\s+like\s+to\s+proceed\?/mu.test(after))) {
         return { submitted: true };
       }
     }
