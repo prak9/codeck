@@ -249,8 +249,8 @@ a.header-button { text-decoration: none; }
 .composer-meta, .composer-stack, .composer-hint { width: min(100%, var(--content)); margin-inline: auto; }
 .composer-meta { min-height: 26px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--subtle); font-size: 9px; }
 .composer-meta > span { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
-#composerStatus { min-width: 0; color: var(--muted); font-size: 11px; white-space: normal; }
-.composer-meta button { min-width: 0; padding: 4px 0 4px 12px; border: 0; background: transparent; color: var(--subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+#composerStatus { min-width: 0; flex: 1; color: var(--muted); font-size: 11px; white-space: normal; }
+.composer-meta #cwdButton { min-width: 0; padding: 4px 0 4px 12px; border: 0; background: transparent; color: var(--subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .composer-stack { min-width: 0; position: relative; }
 .attachment-tray { min-width: 0; width: 100%; max-width: 100%; margin: 0 0 7px; padding: 1px 1px 3px; display: flex; gap: 7px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
 .attachment-item { min-width: 0; width: min(270px, calc(100vw - 34px)); height: 58px; flex: 0 0 auto; padding: 6px 5px 6px 6px; border: 1px solid var(--line); border-radius: 13px; background: #ffffff08; display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; gap: 8px; scroll-snap-align: start; }
@@ -273,17 +273,15 @@ a.header-button { text-decoration: none; }
 .slash-command-option code { color: #ff9a77; font: 600 12px "Courier New", Courier, monospace; }
 .slash-command-option span { color: var(--muted); font-size: 10px; }
 .composer { width: 100%; min-height: 58px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 18px; background: #262629ed; box-shadow: 0 14px 35px #0000003a, inset 0 1px #ffffff0b; display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: end; gap: 4px; }
-.composer.progress-enabled { grid-template-columns: 44px 44px minmax(0, 1fr) 44px; }
 .speech-input .composer { grid-template-columns: 44px minmax(0, 1fr) 44px 44px; }
-.speech-input .composer.progress-enabled { grid-template-columns: 44px 44px minmax(0, 1fr) 44px 44px; }
 .composer:focus-within { border-color: #ff8b6457; box-shadow: 0 0 0 3px #ff6b3510, 0 14px 35px #0000003a; }
 .composer.read-only { border-color: var(--line); background: #202023; box-shadow: none; }
-.composer-plus, .progress-button, .voice-input-button, .send-button { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 13px; place-items: center; transition: transform 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease; }
-.composer-plus, .progress-button, .send-button { display: grid; }
+.composer-plus, .voice-input-button, .send-button { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 13px; place-items: center; transition: transform 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease; }
+.composer-plus, .send-button { display: grid; }
 .composer-plus { background: transparent; color: var(--muted); font-size: 27px; font-weight: 300; }
 .composer-plus:hover { background: #ffffff08; }
-.progress-button { width: 44px; height: 44px; border: 1px solid #ff6b3538; background: var(--accent-soft); color: #ff9a77; font: 700 18px "Courier New", Courier, monospace; }
-.progress-button:hover { border-color: #ff6b3566; background: #ff6b3528; color: #ffb095; }
+.progress-button { min-width: 44px; min-height: 44px; flex: none; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.progress-button:hover { color: var(--ink); }
 .voice-input-button { width: 44px; height: 44px; display: none; background: transparent; color: var(--muted); }
 .speech-input .voice-input-button { display: grid; }
 .voice-input-button:hover { background: #ffffff08; color: var(--ink); }
@@ -567,7 +565,7 @@ a.header-button { text-decoration: none; }
   .welcome { padding: 48px 22px 70px; }
   .composer-area { padding-top: 4px; }
   .slash-command-menu { left: 0; width: 100%; max-height: 300px; max-height: min(300px, 38dvh); }
-  .composer-meta button { display: none; }
+  .composer-meta #cwdButton { display: none; }
   .composer-hint { display: none; }
   .sheet { margin-block: auto max(8px, env(safe-area-inset-bottom)); border-radius: 18px 18px 15px 15px; }
   .sheet form { padding: 22px; }
@@ -592,7 +590,7 @@ a.header-button { text-decoration: none; }
   .conversation-header { padding-top: env(safe-area-inset-top); }
   .conversation-heading h2 { margin-bottom: 0; }
   .provider-trigger { display: none; }
-  .composer-meta { display: none; }
+  .composer-meta:not(:has(.progress-button:not([hidden]))) { display: none; }
   .composer-area { padding-top: 5px; padding-bottom: max(5px, env(safe-area-inset-bottom)); }
   .composer { min-height: 56px; }
   .composer textarea { min-height: 44px; padding-block: 8px; }
