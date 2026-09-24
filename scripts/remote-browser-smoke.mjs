@@ -107,6 +107,10 @@ sockets.on('connection', socket => {
       for (const receipt of request.deliveryReceipts || []) {
         fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
       }
+      if (fixture.holdOpenThread) {
+        fixture.finishOpening = () => reply({ thread: thread() });
+        return;
+      }
       return reply({ thread: thread() });
     }
     if (request.type === 'answerSessionQuestion') {
@@ -288,9 +292,16 @@ try {
         fixture.question = { id: 'native-question', question: '是否现在对部署后的最终提交运行 L3 深度安全扫描？',
           options: [{ label: 'Run L3 deep security review', description: '立即审查当前最终提交集。' },
             { label: 'Skip scan', description: '保持现状，不运行扫描。' }] };
-        publishSessions();
+        // A slow transcript must not hide a live question on session entry/reconnect.
+        fixture.holdOpenThread = true;
+        await page.reload();
         const dialog = page.locator('#nativeQuestionDialog');
         await page.waitForSelector('#nativeQuestionDialog[open]');
+        await page.waitForFunction(() => document.querySelector('#composerInput').disabled);
+        assert.ok(fixture.finishOpening, 'history response is still pending when the question appears');
+        fixture.holdOpenThread = false;
+        fixture.finishOpening();
+        await page.waitForFunction(() => !document.querySelector('#composerInput').disabled);
         await dialog.getByRole('button', { name: '回答并继续' }).click();
         assert.match(await dialog.locator('.question-error').textContent(), /请回答/);
         await dialog.getByRole('radio', { name: /Skip scan/ }).check();
@@ -320,6 +331,12 @@ try {
         fixture.question = null;
         publishSessions();
         await page.waitForSelector('#approvalStack .question-card', { state: 'detached' });
+        // Reload discarded the earlier pages used by the reconnect-gap journey below.
+        for (let pageIndex = 0; pageIndex < 3 && !await page.locator('[data-turn-id="turn-41"]').count(); pageIndex += 1) {
+          await page.getByRole('button', { name: '加载更早的对话' }).click();
+          await page.getByRole('button', { name: '加载更早的对话' }).waitFor();
+        }
+        await page.waitForSelector('[data-turn-id="turn-41"]');
       }
 
       fixture.status = 'background'; publishSessions();

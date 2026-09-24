@@ -82,6 +82,52 @@ test('switching sessions selects the target before its history request finishes'
   assert.deepEqual(Array.from(state.thread.turns, turn => turn.id), ['new-turn']);
 });
 
+test('a native question opens while transcript history is loading and remains dismissible', () => {
+  const dialog = { open: false, dataset: {}, showModal() { this.open = true; }, close() { this.open = false; } };
+  const content = { replaceChildren() {} };
+  const state = { connected: true, threadOpening: {}, threadHandoff: null, dismissedNativeQuestion: '' };
+  const entry = { tmuxSession: 'qoder', request: { id: 'question', params: { threadId: 'thread' } } };
+  const context = vm.createContext({ state, $: id => id === '#nativeQuestionDialog' ? dialog : content, interactionNode() {} });
+  load(context, 'syncNativeQuestionDialog');
+  load(context, 'dismissNativeQuestionDialog');
+  context.syncNativeQuestionDialog(entry);
+  assert.equal(dialog.open, true);
+  state.threadOpening = null;
+  state.threadHandoff = {};
+  context.syncNativeQuestionDialog(entry);
+  assert.equal(dialog.open, true);
+  context.dismissNativeQuestionDialog();
+  context.syncNativeQuestionDialog(entry);
+  assert.equal(dialog.open, false, 'an explicitly dismissed question stays dismissed');
+  context.syncNativeQuestionDialog({ ...entry, request: { ...entry.request, id: 'next-question' } });
+  assert.equal(dialog.open, true);
+  state.connected = false;
+  context.syncNativeQuestionDialog(entry);
+  assert.equal(dialog.open, false);
+});
+
+for (const answered of [false, true]) test(`opening preserves a question ${answered ? 'removed' : 'received'} while history loads`, async () => {
+  let finishOpening;
+  const question = { id: 'question-new', question: 'Continue?', options: [{ label: 'Yes' }] };
+  const target = { id: 'thread', provider: 'qodercli', tmux: { name: 'qoder', ...(answered ? { question } : {}) } };
+  const state = { provider: 'qodercli', threads: [target], thread: null };
+  const context = vm.createContext({
+    state, normalizeAgentThread, reconcileAgentThreadRefresh, findTmuxThreadTarget,
+    resumableThreadCursor: () => null,
+    agentRequest: () => new Promise(resolve => { finishOpening = resolve; }),
+    ...Object.fromEntries(['resetThreadHistory', 'resetThreadStream', 'rememberOpenedThread',
+      'renderComposerState', 'setLiveMessage', 'settleConfirmedDeliveries', 'renderThreadList',
+      'scheduleThreadRender', 'closeDrawer'].map(name => [name, () => {}])),
+  });
+  load(context, 'openThread');
+  const opening = context.openThread('thread', { provider: 'qodercli', tmuxSession: 'qoder' });
+  state.threads = [{ ...target, tmux: { name: 'qoder', ...(answered ? {} : { question }) } }];
+  state.thread.tmux = { ...state.threads[0].tmux };
+  finishOpening({ thread: { id: 'thread', turns: [] } });
+  await opening;
+  assert.deepEqual(state.thread.tmux.question, answered ? undefined : question);
+});
+
 test('switching back to a recent session restores its view and stream cursor immediately', async () => {
   let finishOpening;
   let requestPayload;

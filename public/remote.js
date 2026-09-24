@@ -985,7 +985,8 @@ function handoffTmuxThread(thread) {
       rememberOpenedThread(streamTarget, result.thread);
       state.thread = normalizeAgentThread(provider, result.thread);
     }
-    state.thread.tmux = { ...thread.tmux };
+    const latestTarget = findTmuxThreadTarget(state.threads, thread);
+    state.thread.tmux = { ...(latestTarget?.tmux || thread.tmux) };
     settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = Date.now() + 2_500;
@@ -1110,13 +1111,16 @@ async function openThread(threadId, {
     });
     if (state.threadOpening !== opening) return;
     state.activeThreadId = threadId;
+    // Session snapshots can deliver or clear a question while history is loading.
+    // Preserve that current pane state instead of restoring the opening snapshot.
+    const latestTmux = state.thread?.tmux;
     if (!result?.resumed) {
       rememberOpenedThread(streamTarget, result.thread);
       const opened = normalizeAgentThread(provider, result.thread);
       state.thread = sameTarget
         ? reconcileAgentThreadRefresh(state.thread, opened) : opened;
     }
-    if (listedThread?.tmux) state.thread.tmux = { ...listedThread.tmux };
+    if (latestTmux) state.thread.tmux = { ...latestTmux };
     settleConfirmedDeliveries();
     state.threadStreamHealthy = result?.resumed ? false : Boolean(state.protocolEpoch);
     state.threadRefreshUntil = directSession ? Date.now() + 2_500 : 0;
@@ -1996,7 +2000,8 @@ function nativeQuestionEntry() {
 
 function syncNativeQuestionDialog(entry) {
   const dialog = $('#nativeQuestionDialog');
-  if (!entry || state.threadOpening || state.threadHandoff || !state.connected) {
+  // Native questions come from the live pane, independently of transcript loading.
+  if (!entry || !state.connected) {
     if (dialog.open) dialog.close();
     return;
   }
