@@ -2365,11 +2365,11 @@ function renderComposerState() {
   $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected || !attachmentsSupported;
   const progressButton = $('#progressButton');
   const progressUnavailable = !state.thread || state.provider === 'shell' || readOnly;
-  const progressLabel = waitingForInput ? '去回答' : '问进度';
+  const progressHint = waitingForInput ? '处理 Agent 等待的问题' : '询问进度，无需决策则继续执行';
   progressButton.hidden = progressUnavailable;
   progressButton.disabled = progressUnavailable || opening || closing || pending || !state.connected;
-  progressButton.textContent = progressLabel;
-  progressButton.title = waitingForInput ? '处理 Agent 等待的问题' : '询问进度，无需决策则继续执行';
+  progressButton.setAttribute('aria-label', progressHint);
+  progressButton.title = progressHint;
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();

@@ -283,7 +283,7 @@ try {
       for (const socket of sockets.clients) send(socket, { type: 'approval', provider,
         tmuxSession: 'fixture', request: { id: 'fixture-approval', params: { threadId: 'fixture-thread', title: 'Fixture approval' } } });
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('等待你的确认'));
-      await page.getByRole('button', { name: '去回答', exact: true }).click();
+      await page.getByRole('button', { name: '处理 Agent 等待的问题', exact: true }).click();
       assert.equal(await page.getByRole('button', { name: '允许一次', exact: true }).evaluate(node => node === document.activeElement), true);
       await page.getByRole('button', { name: '允许一次', exact: true }).click();
       await page.waitForSelector('.approval-card', { state: 'detached' });
@@ -325,7 +325,7 @@ try {
         publishSessions();
         assert.equal(await dialog.getAttribute('open'), null);
         assert.equal(fixture.question.id, 'next-question', 'closing browser modal does not answer or cancel native prompt');
-        await page.getByRole('button', { name: '去回答', exact: true }).click();
+        await page.getByRole('button', { name: '处理 Agent 等待的问题', exact: true }).click();
         await page.waitForSelector('#nativeQuestionDialog[open]');
         await page.getByRole('button', { name: '稍后回答' }).click();
         fixture.question = null;
@@ -342,7 +342,7 @@ try {
       fixture.status = 'background'; publishSessions();
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('后台任务'));
       await page.locator('#composerInput').fill('正在写的草稿');
-      const progress = page.getByRole('button', { name: '问进度', exact: true });
+      const progress = page.getByRole('button', { name: '询问进度，无需决策则继续执行', exact: true });
       const progressBox = await progress.boundingBox();
       const inputBox = await page.locator('#composerInput').boundingBox();
       assert.ok(progressBox.width >= 44 && progressBox.height >= 44);

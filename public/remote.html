@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=42">
+  <link rel="stylesheet" href="/remote.css?v=43">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -89,7 +89,7 @@
         <div class="composer-meta" id="composerMeta">
           <span id="composerStatus" role="status" aria-live="polite"><i class="connection-dot"></i>正在连接</span>
           <button id="cwdButton" type="button" title="更改工作目录"><span id="cwdLabel">工作目录</span></button>
-          <button class="progress-button" id="progressButton" type="button" title="询问 Agent 进度" hidden>问进度</button>
+          <button class="progress-button" id="progressButton" type="button" title="询问 Agent 进度" aria-label="询问 Agent 进度" hidden>?</button>
         </div>
         <div class="composer-stack">
           <div class="slash-command-menu" id="slashCommandMenu" role="listbox" aria-label="内置命令" hidden></div>
@@ -225,6 +225,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=98"></script>
+  <script type="module" src="/remote.js?v=99"></script>
 </body>
 </html>

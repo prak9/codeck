@@ -94,8 +94,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=42/);
-  assert.match(html, /\/remote\.js\?v=98/);
+  assert.match(html, /\/remote\.css\?v=43/);
+  assert.match(html, /\/remote\.js\?v=99/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -299,16 +299,16 @@ test('remote composer exposes an accessible image and file attachment flow', () 
   assert.match(css, /\.attachment-tray\s*\{[^}]*max-width:\s*100%/s);
 });
 
-test('an open Agent session has a touch-sized text progress shortcut above the composer', () => {
-  assert.match(html, /id="progressButton"[^>]*type="button"[^>]*hidden>问进度<\/button>/);
+test('an open Agent session has a labelled touch-sized progress shortcut above the composer', () => {
+  assert.match(html, /id="progressButton"[^>]*type="button"[^>]*aria-label="询问 Agent 进度"[^>]*hidden>\?<\/button>/);
   assert.ok(html.indexOf('id="progressButton"') < html.indexOf('id="composerForm"'));
   assert.match(css, /\.progress-button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px/s);
   assert.match(css, /\.composer\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\) 44px/s);
   assert.doesNotMatch(css, /progress-enabled/);
   assert.match(remoteJs, /现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。/);
   assert.match(remoteJs, /progressButton'\)\.addEventListener\('click', askProgress\)/);
-  assert.match(html, /remote\.css\?v=42/);
-  assert.match(html, /remote\.js\?v=98/);
+  assert.match(html, /remote\.css\?v=43/);
+  assert.match(html, /remote\.js\?v=99/);
 });
 
 test('the load-earlier control is styled', () => {

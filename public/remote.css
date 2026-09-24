@@ -280,7 +280,7 @@ a.header-button { text-decoration: none; }
 .composer-plus, .send-button { display: grid; }
 .composer-plus { background: transparent; color: var(--muted); font-size: 27px; font-weight: 300; }
 .composer-plus:hover { background: #ffffff08; }
-.progress-button { min-width: 44px; min-height: 44px; flex: none; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.progress-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex: none; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 20px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .progress-button:hover { color: var(--ink); }
 .voice-input-button { width: 44px; height: 44px; display: none; background: transparent; color: var(--muted); }
 .speech-input .voice-input-button { display: grid; }
