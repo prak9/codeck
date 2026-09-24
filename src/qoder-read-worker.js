@@ -40,9 +40,9 @@ async function dispatch(method, params) {
     truncated: Boolean(result.thread.truncated || turns.length > limit), oldestTurnId: kept[0]?.id || null } };
 }
 
-// One reader owns file snapshots; concurrent revisions do not multiply 115 MB
-// parses. The parent routes preparation to a separate instance of this worker,
-// so input-log parsing blocks neither history reads nor the service event loop.
+// Each lane owns its snapshots and serializes revisions. The parent isolates
+// large histories and input preparation from small histories/metadata, so neither
+// expensive parse blocks the interactive lane or the service event loop.
 parentPort.on('message', ({ id, method, params }) => {
   queue = queue.then(async () => {
     const started = performance.now();

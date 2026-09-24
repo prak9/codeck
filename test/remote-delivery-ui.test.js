@@ -15,6 +15,23 @@ function load(context, name) {
   vm.runInContext(source.slice(start, start + source.slice(start).search(/^}$/m) + 1), context);
 }
 
+test('a completed history snapshot clears the loading notice without needing new turns', () => {
+  const ready = { id: 'thread', provider: 'qodercli', turns: [] };
+  for (const notice of ['正在后台读取对话记录…', '读取失败，正在重试']) {
+    const state = { thread: normalizeAgentThread('qodercli', { ...ready, historyLoading: true,
+      ...(notice.includes('失败') ? { historyError: notice } : {}) }), liveMessage: notice };
+    const context = vm.createContext({ state, normalizeAgentThread, reconcileAgentThreadRefresh,
+      setLiveMessage: message => { state.liveMessage = message; },
+      settleConfirmedDeliveries() {}, scheduleThreadRender() {}, updateTerminalActivity() {},
+    });
+    load(context, 'applyRefreshedThread');
+    assert.equal(context.applyRefreshedThread('qodercli', ready), true);
+    assert.equal(state.thread.historyLoading, undefined);
+    assert.equal(state.thread.historyError, undefined);
+    assert.equal(state.liveMessage, '');
+  }
+});
+
 test('unknown delivery has an explicit terminal-check warning instead of a waiting label', () => {
   const context = vm.createContext({
     userMessageText: () => 'Continue',

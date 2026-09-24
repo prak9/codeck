@@ -92,6 +92,84 @@ test('Qoder cold opens share one read and surface delayed errors instead of load
   assert.equal((await backend.openThread(threadId)).thread.historyLoading, undefined);
 });
 
+test('Qoder publishes a deferred result before starting another slow refresh', async t => {
+  const backend = new QoderAgentBackend();
+  t.after(() => backend.close());
+  let finish;
+  let reads = 0;
+  backend.read = () => {
+    reads += 1;
+    return new Promise(resolve => { finish = resolve; });
+  };
+  assert.equal((await backend.openThread(threadId)).thread.historyLoading, true);
+  const pending = [...backend.openReads.values()][0];
+  finish({ thread: { id: threadId, turns: [{ id: 'loaded', items: [] }] } });
+  await pending;
+  const refreshed = await backend.openThread(threadId);
+  assert.equal(refreshed.thread.historyLoading, undefined);
+  assert.equal(refreshed.thread.turns[0].id, 'loaded');
+  assert.equal(reads, 1, 'deliver the completed snapshot without queuing a new read');
+  assert.equal((await backend.openThread(threadId)).thread.historyLoading, true);
+  assert.equal(reads, 2, 'later polls still refresh the transcript');
+  finish({ thread: { id: threadId, turns: [] } });
+  await [...backend.openReads.values()][0];
+});
+
+test('Qoder large history cannot block small history, metadata, or evict its cache', async t => {
+  const { backend, root } = await fixture(t, [user('one')]);
+  const largeId = '22222222-2222-4222-8222-222222222222';
+  const file = path.join(root, 'projects', '-fixture', `${largeId}.jsonl`);
+  await fs.writeFile(file, JSON.stringify({ ...user('large'), sessionId: largeId }) + '\n'
+    + JSON.stringify({ padding: 'x'.repeat(17 * 1024 * 1024) }) + '\n');
+  await backend.read('open', { threadId });
+  const smallReader = backend.reader;
+  const before = await backend.read('stats');
+  await backend.read('open', { threadId: largeId });
+  assert.ok(backend.largeReader, 'oversized history needs an independent worker and cache');
+  assert.notEqual(backend.largeReader, smallReader);
+  const largeBefore = await backend.read('stats', { threadId: largeId });
+  await backend.read('open', { threadId });
+  await backend.read('open', { threadId: largeId });
+  assert.equal((await backend.read('stats', { threadId: largeId })).parsedRecords, largeBefore.parsedRecords);
+  backend.largeReader.postMessage = () => {};
+  const blocked = backend.read('open', { threadId: largeId }).catch(() => {});
+  t.after(() => { backend.close(); return blocked; });
+  const result = await backend.read('open', { threadId });
+  assert.equal(result.thread.turns.length, 1);
+  assert.equal((await backend.read('info', { threadId })).sessionId, threadId);
+  assert.equal((await backend.listThreads()).data.length, 2);
+  const after = await backend.read('stats', { threadId });
+  assert.equal(after.parsedRecords, before.parsedRecords, 'small history remains hot');
+  assert.equal(backend.reader, smallReader);
+  const largeReader = backend.largeReader;
+  await largeReader.terminate();
+  await blocked;
+  assert.equal(backend.reader, smallReader, 'large worker failure cannot reset the interactive worker');
+  assert.equal((await backend.read('open', { threadId: largeId })).thread.turns.length, 1);
+  assert.notEqual(backend.largeReader, largeReader);
+  backend.close();
+  assert.equal(backend.largeReader, null);
+  assert.equal(backend.pendingReads.size, 0);
+});
+
+test('Qoder growing history migrates lanes without losing delivery receipts', async t => {
+  const { backend, file } = await fixture(t, [user('one')]);
+  await backend.read('open', { threadId });
+  assert.equal(backend.largeReader, null);
+  const deliveryBaseline = await backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'migrate' });
+  backend.recordSessionMessage({ threadId, text: 'two', commandId: 'migrate', deliveryBaseline });
+  await fs.appendFile(file, JSON.stringify({ padding: 'x'.repeat(17 * 1024 * 1024) }) + '\n'
+    + JSON.stringify(user('two', 'one')) + '\n');
+  await backend.openThread(threadId);
+  if (backend.openReads.size) await [...backend.openReads.values()][0];
+  const result = await backend.openThread(threadId);
+  assert.ok(backend.largeReader);
+  assert.equal(result.thread.historyLoading, undefined);
+  assert.equal(result.thread.turns.length, 2);
+  assert.deepEqual(result.thread.deliveryConfirmations, [{ commandId: 'migrate', itemId: 'two' }]);
+  assert.equal((await backend.loadThreadHistory(threadId, { limit: 1 })).turns.length, 1);
+});
+
 test('Qoder worker receipt survives reader restart without resending user input', async t => {
   const { backend, file } = await fixture(t, [user('one')]);
   const deliveryBaseline = await backend.prepareSessionMessage({ threadId, text: 'two', commandId: 'command' });

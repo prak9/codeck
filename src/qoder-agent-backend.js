@@ -1,6 +1,10 @@
 import { Worker } from 'node:worker_threads';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
 
+// Keep potentially multi-second parses and their oversized caches off the
+// interactive lane. Two display workers bound concurrency regardless of sessions.
+const LARGE_HISTORY_BYTES = 16 * 1024 * 1024;
+
 export class QoderAgentBackend extends SdkAgentBackend {
   constructor({ configDir, readTimeoutMs = 30_000, ...options } = {}) {
     super({ ...options, provider: 'qodercli', label: 'QoderCLI',
@@ -9,20 +13,37 @@ export class QoderAgentBackend extends SdkAgentBackend {
     this.configDir = configDir;
     this.readTimeoutMs = readTimeoutMs;
     this.reader = null;
+    this.largeReader = null;
     this.preparer = null;
     this.readSequence = 0;
     this.pendingReads = new Map();
     this.openReads = new Map();
     this.latestReads = new Map();
+    this.readyReads = new Set();
     this.readErrors = new Map();
     this.readReceipts = new Map();
   }
 
   read(method, params = {}) {
     if (this.closed) return Promise.reject(new Error('QoderCLI backend is closed'));
+    if (params.threadId && ['open', 'history', 'latest', 'stats'].includes(method)) {
+      // Metadata reads only bounded head/tail samples, never the full transcript.
+      // Recheck size so a growing transcript can migrate out of the small lane.
+      return this.#read('reader', 'info', { threadId: params.threadId }).then(info =>
+        this.#read(info?.fileSize > LARGE_HISTORY_BYTES ? 'largeReader' : 'reader', method, params));
+    }
+    if (method === 'stats' && this.largeReader) {
+      return Promise.all(['reader', 'largeReader'].map(lane => this.#read(lane, method, params)))
+        .then(stats => ({ readBytes: stats.reduce((sum, value) => sum + value.readBytes, 0),
+          parsedRecords: stats.reduce((sum, value) => sum + value.parsedRecords, 0) }));
+    }
+    return this.#read(method === 'prepare' ? 'preparer' : 'reader', method, params);
+  }
+
+  #read(lane, method, params) {
+    if (this.closed) return Promise.reject(new Error('QoderCLI backend is closed'));
     // Separate queues and event loops: input-log parsing must neither block the
-    // service nor wait for display/history parsing. Both lanes are read-only.
-    const lane = method === 'prepare' ? 'preparer' : 'reader';
+    // service nor wait for display/history parsing. All lanes are read-only.
     if (!this[lane]) {
       const reader = new Worker(new URL('./qoder-read-worker.js', import.meta.url), {
         workerData: { configDir: this.configDir }, execArgv: [],
@@ -61,6 +82,7 @@ export class QoderAgentBackend extends SdkAgentBackend {
 
   #stopReader(reader, error) {
     if (this.reader === reader) this.reader = null;
+    else if (this.largeReader === reader) this.largeReader = null;
     else if (this.preparer === reader) this.preparer = null;
     else return;
     for (const [id, pending] of this.pendingReads) {
@@ -74,6 +96,9 @@ export class QoderAgentBackend extends SdkAgentBackend {
 
   async openThread(threadId, { turnLimit = 20 } = {}) {
     const key = `${threadId}:${turnLimit}`;
+    // A read that finished between polls must be delivered once before starting
+    // another refresh; otherwise every slow poll reintroduces historyLoading.
+    if (this.readyReads.delete(key)) return this.#withRuntime(threadId, this.latestReads.get(key));
     const previousError = this.readErrors.get(key);
     if (previousError) {
       this.readErrors.delete(key);
@@ -90,7 +115,12 @@ export class QoderAgentBackend extends SdkAgentBackend {
       loading = this.read('open', { threadId, limit: turnLimit, receipts }).then(result => {
         this.latestReads.delete(key);
         this.latestReads.set(key, result);
-        if (this.latestReads.size > 16) this.latestReads.delete(this.latestReads.keys().next().value);
+        this.readyReads.add(key);
+        if (this.latestReads.size > 16) {
+          const oldest = this.latestReads.keys().next().value;
+          this.latestReads.delete(oldest);
+          this.readyReads.delete(oldest);
+        }
         return result;
       }).catch(error => {
         this.readErrors.set(key, error);
@@ -109,7 +139,7 @@ export class QoderAgentBackend extends SdkAgentBackend {
     if (!result) {
       const cached = this.latestReads.get(key);
       result = { thread: { ...(cached?.thread || { id: threadId, turns: [], truncated: true }), historyLoading: true } };
-    }
+    } else if (this.latestReads.get(key) === result) this.readyReads.delete(key);
     return this.#withRuntime(threadId, result);
   }
 
@@ -147,7 +177,9 @@ export class QoderAgentBackend extends SdkAgentBackend {
     super.close();
     if (this.preparer) this.#stopReader(this.preparer, new Error('QoderCLI backend is closed'));
     if (this.reader) this.#stopReader(this.reader, new Error('QoderCLI backend is closed'));
+    if (this.largeReader) this.#stopReader(this.largeReader, new Error('QoderCLI backend is closed'));
     this.latestReads.clear();
+    this.readyReads.clear();
     this.readErrors.clear();
     this.readReceipts.clear();
   }
