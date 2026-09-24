@@ -36,6 +36,43 @@ function fixture({ legacy = false, draftValue = 'echo intact', agentKind = 'qode
   return { context, state, draft, sent, socket, feedback, timers };
 }
 
+function progressFixture({
+  agentKind = 'codex', question = null, canManage = true, canWrite = true, sessionFeedReady = true,
+} = {}) {
+  const requests = [], feedback = [];
+  const draft = { value: '尚未发送的草稿' };
+  const button = {
+    hidden: true, disabled: false, title: '', attributes: {},
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+  };
+  let terminalFocuses = 0;
+  let resolveRequest;
+  const request = new Promise((resolve) => { resolveRequest = resolve; });
+  const state = {
+    active: 'one', canManage, canWrite, sessionFeedReady, terminalProgressPending: null,
+    sessions: [{
+      name: 'one',
+      agent: agentKind ? { kind: agentKind, id: 'thread-1', ...(question ? { question } : {}) } : null,
+    }],
+    terminal: { focus: () => { terminalFocuses += 1; } },
+  };
+  const context = vm.createContext({
+    state,
+    $: (selector) => selector === '#terminalProgressButton' ? button : draft,
+    crypto: { randomUUID: () => 'progress-command' },
+    sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
+    setConnectionMessage: (message, restore) => feedback.push({ message, restore }),
+    PROGRESS_PROMPT: '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。',
+  });
+  for (const name of ['activeAgentSessionTarget', 'syncTerminalProgressButton', 'askTerminalProgress']) {
+    vm.runInContext(functionSource(source, name), context);
+  }
+  return {
+    context, state, draft, button, requests, feedback,
+    resolveRequest, terminalFocuses: () => terminalFocuses,
+  };
+}
+
 test('whole draft submission waits for server receipt and does not send twice while pending', async () => {
   const f = fixture();
   const pending = f.context.submitTerminalVoiceDraft();
@@ -138,4 +175,56 @@ test('server advertises receipt support without broadening owner or share permis
     assert.equal(snapshot.capabilities.canManage, auth.owner);
     assert.equal(snapshot.capabilities.canWrite, auth.canWrite);
   }
+});
+
+test('normal terminal progress button sends one verified Agent message without touching the draft', async () => {
+  const f = progressFixture();
+  f.context.syncTerminalProgressButton();
+  assert.equal(f.button.hidden, false);
+  assert.equal(f.button.disabled, false);
+  assert.equal(f.button.attributes['aria-label'], '询问 Agent 进度');
+
+  const pending = f.context.askTerminalProgress();
+  assert.deepEqual(f.requests, [{
+    type: 'sendSessionMessage',
+    provider: 'codex',
+    threadId: 'thread-1',
+    tmuxSession: 'one',
+    text: '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。',
+    commandId: 'progress-command',
+  }]);
+  assert.equal(f.state.terminalProgressPending.commandId, 'progress-command');
+  assert.equal(f.button.disabled, true, 'a second click must be blocked while delivery is pending');
+  assert.equal(f.draft.value, '尚未发送的草稿');
+
+  f.resolveRequest({ submissionStatus: 'submitted' });
+  await pending;
+  assert.equal(f.state.terminalProgressPending, null);
+  assert.equal(f.button.disabled, false);
+  assert.deepEqual(f.feedback.at(-1), { message: '已询问 Agent 进度', restore: undefined });
+  assert.equal(f.draft.value, '尚未发送的草稿');
+});
+
+test('normal terminal progress button focuses a known waiting question instead of sending over it', async () => {
+  const f = progressFixture({ question: { prompt: '请选择部署环境' } });
+  f.context.syncTerminalProgressButton();
+  assert.equal(f.button.hidden, false);
+  assert.equal(f.button.disabled, false);
+  assert.equal(f.button.attributes['aria-label'], '处理 Agent 等待的问题');
+  await f.context.askTerminalProgress();
+  assert.deepEqual(f.requests, []);
+  assert.equal(f.terminalFocuses(), 1);
+  assert.match(f.feedback.at(-1).message, /正在等待回答/);
+});
+
+test('normal terminal progress button stays hidden outside an owned Agent session', () => {
+  for (const options of [{ agentKind: 'shell' }, { agentKind: null }, { canManage: false }, { canWrite: false }]) {
+    const f = progressFixture(options);
+    f.context.syncTerminalProgressButton();
+    assert.equal(f.button.hidden, true);
+  }
+  const connecting = progressFixture({ sessionFeedReady: false });
+  connecting.context.syncTerminalProgressButton();
+  assert.equal(connecting.button.hidden, false);
+  assert.equal(connecting.button.disabled, true);
 });

@@ -76,6 +76,7 @@ const THREAD_COMPLETION_REFRESH_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 const THREAD_VIEW_CACHE_LIMIT = 6;
 const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
+const PROGRESS_PROMPT = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
 let viewportFrame = 0;
 let transcriptScrollFrame = 0;
 let transcriptScrollRevision = 0;
@@ -324,12 +325,14 @@ function settleConfirmedDeliveries() {
     state.pendingDeliveries.delete(key);
     if (state.liveMessage === SUBMISSION_UNCONFIRMED_MESSAGE
       || (attempt.errorMessage && state.liveMessage === attempt.errorMessage)) setLiveMessage('');
-    clearAttachments(state.attachments.filter(attachment => attempt.attachmentIds?.includes(attachment.id)));
-    const input = $('#composerInput');
-    if (typeof attempt.draft === 'string' && input.value === attempt.draft) {
-      input.value = '';
-      clearedDraft = true;
-      resizeComposer();
+    if (!attempt.preserveComposer) {
+      clearAttachments(state.attachments.filter(attachment => attempt.attachmentIds?.includes(attachment.id)));
+      const input = $('#composerInput');
+      if (typeof attempt.draft === 'string' && input.value === attempt.draft) {
+        input.value = '';
+        clearedDraft = true;
+        resizeComposer();
+      }
     }
   }
   return clearedDraft;
@@ -2318,16 +2321,21 @@ function renderThread() {
   state.forceScroll = false;
 }
 
+function currentThreadWaitingForInput() {
+  const sessionName = state.thread?.tmux?.name;
+  return Boolean(state.thread?.tmux?.question) || [state.approvals, state.interactions].some(entries => [...entries.values()].some(entry => (
+    entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
+    && (entry.tmuxSession == null || entry.tmuxSession === (sessionName || ''))
+  )));
+}
+
 function renderComposerState() {
   const input = $('#composerInput');
   const sendButton = $('#sendButton');
   if (!input || !sendButton) return;
   const activity = agentActivityText(state.thread);
   const sessionName = state.thread?.tmux?.name;
-  const waitingForInput = Boolean(state.thread?.tmux?.question) || [state.approvals, state.interactions].some(entries => [...entries.values()].some(entry => (
-    entry.provider === state.provider && entry.request.params?.threadId === state.thread?.id
-    && (entry.tmuxSession == null || entry.tmuxSession === (sessionName || ''))
-  )));
+  const waitingForInput = currentThreadWaitingForInput();
   const execution = threadExecutionState(state.thread, { waitingForInput });
   const active = execution === 'working';
   const background = execution === 'background';
@@ -2342,13 +2350,22 @@ function renderComposerState() {
   const controls = composerControlState({
     active, connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
   });
+  const composer = $('.composer');
   sendButton.classList.toggle('stop-mode', controls.stopMode && !shellAttachmentOnly);
   input.disabled = readOnly || opening || closing;
-  $('.composer').classList.toggle('read-only', readOnly);
-  $('.composer').setAttribute('aria-busy', String(pending || opening || closing));
+  composer.classList.toggle('read-only', readOnly);
+  composer.setAttribute('aria-busy', String(pending || opening || closing));
   sendButton.disabled = controls.disabled || Boolean(shellAttachmentOnly);
   sendButton.setAttribute('aria-label', shellAttachmentOnly ? '请先输入 Shell 命令' : controls.ariaLabel);
   $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected || !attachmentsSupported;
+  const progressButton = $('#progressButton');
+  const progressUnavailable = !state.thread || state.provider === 'shell' || readOnly;
+  const progressLabel = waitingForInput ? '处理 Agent 等待的问题' : '询问 Agent 进度';
+  progressButton.hidden = progressUnavailable;
+  progressButton.disabled = progressUnavailable || opening || closing || pending || !state.connected;
+  composer.classList.toggle('progress-enabled', !progressUnavailable);
+  progressButton.setAttribute('aria-label', progressLabel);
+  progressButton.title = progressLabel;
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
@@ -2465,17 +2482,18 @@ function resizeComposer() {
   renderComposerState();
 }
 
-async function submitComposer({ explicitInterrupt = false } = {}) {
+async function submitComposer({ explicitInterrupt = false, presetText = null } = {}) {
   if (composerRequestGate.pending || state.threadOpening) return;
-  if (settleConfirmedDeliveries()) return;
-  abortSpeechInput();
+  const usesPreset = typeof presetText === 'string';
+  if (!usesPreset && settleConfirmedDeliveries()) return;
+  if (!usesPreset) abortSpeechInput();
   const input = $('#composerInput');
-  const draft = input.value;
+  const draft = usesPreset ? presetText : input.value;
   const text = draft.trim();
   const running = latestRunningTurn(state.thread);
   const sessionName = state.thread?.tmux?.name;
   const active = threadExecutionState(state.thread) === 'working';
-  const attachments = [...state.attachments];
+  const attachments = usesPreset ? [] : [...state.attachments];
   const submitAction = composerSubmitAction({
     active, attachmentCount: attachments.length, explicitInterrupt,
     provider: state.provider, text,
@@ -2551,6 +2569,7 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
         serverEpoch: state.protocolEpoch,
         receiptTtlMs: state.commandReceiptTtlMs,
       });
+      if (usesPreset) delivery.preserveComposer = true;
       state.pendingDeliveries.set(deliveryKey, delivery);
       if (delivery.blocked) {
         if (delivery.blockReason === 'submissionUnconfirmed') {
@@ -2687,9 +2706,11 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
       if (state.pendingDeliveries.get(deliveryKey) === delivery) state.pendingDeliveries.delete(deliveryKey);
       if (state.provider !== targetProvider || state.thread?.id !== targetThreadId
         || (state.thread?.tmux?.name || null) !== targetSessionName) return;
-      input.value = draftAfterSuccessfulSend(input.value, draft);
-      clearAttachments(attachments);
-      resizeComposer();
+      if (!usesPreset) {
+        input.value = draftAfterSuccessfulSend(input.value, draft);
+        clearAttachments(attachments);
+        resizeComposer();
+      }
       setLiveMessage(sentPendingSession ? '消息已发送，正在同步对话…' : '');
     } catch (error) {
       const uncertain = shouldKeepDeliveryAttempt(error);
@@ -2707,7 +2728,34 @@ async function submitComposer({ explicitInterrupt = false } = {}) {
         && (state.thread?.tmux?.name || '') === (delivery.tmuxSession || ''))) setLiveMessage(errorMessage);
     }
   });
-  settleConfirmedDeliveries();
+  if (!usesPreset) settleConfirmedDeliveries();
+}
+
+function focusPendingAgentRequest() {
+  const nativeQuestion = nativeQuestionEntry();
+  if (nativeQuestion) {
+    state.dismissedNativeQuestion = '';
+    syncNativeQuestionDialog(nativeQuestion);
+    requestAnimationFrame(() => {
+      const dialog = $('#nativeQuestionDialog');
+      dialog.querySelector('input:not(:disabled), button:not(:disabled)')?.focus();
+    });
+    return;
+  }
+  const request = $('#approvalStack').querySelector('[data-request-key]');
+  if (!request) return;
+  request.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  request.querySelector('input:not(:disabled), button:not(:disabled)')?.focus({ preventScroll: true });
+}
+
+async function askProgress() {
+  const button = $('#progressButton');
+  if (button.hidden || button.disabled) return;
+  if (currentThreadWaitingForInput()) {
+    focusPendingAgentRequest();
+    return;
+  }
+  await submitComposer({ presetText: PROGRESS_PROMPT });
 }
 
 function toggleSpeechInput() {
@@ -2991,6 +3039,7 @@ $('#providerButton').addEventListener('click', openProviderDialog);
 $('#settingsButton').addEventListener('click', openSettings);
 $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
+$('#progressButton').addEventListener('click', askProgress);
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });

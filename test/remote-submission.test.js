@@ -72,6 +72,28 @@ test('unconfirmed submission preserves the draft and original command without cl
   assert.match(f.message, /提交未确认.*勿重复发送/);
 });
 
+test('the progress shortcut sends its own prompt without touching the draft or attachments', async () => {
+  const f = fixture({ submissionStatus: 'unconfirmed' });
+  const progressPrompt = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
+  const attachment = { id: 'attachment-1', path: '/uploads/report.txt', status: 'uploaded' };
+  f.input.value = '我正在写另一条消息';
+  f.state.attachments = [attachment];
+
+  await f.context.submitComposer({ presetText: progressPrompt });
+
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].text, progressPrompt);
+  assert.equal(f.input.value, '我正在写另一条消息');
+  assert.deepEqual(f.state.attachments, [attachment]);
+  assert.equal(f.state.attachments[0], attachment);
+
+  const attempt = [...f.state.pendingDeliveries.values()][0];
+  f.input.value = progressPrompt;
+  f.state.thread.receivedDeliveryIds = [attempt.commandId];
+  f.context.settleConfirmedDeliveries();
+  assert.equal(f.input.value, progressPrompt, 'a later shortcut receipt must not clear an identical draft');
+});
+
 for (const provider of ['codex', 'claude', 'qodercli']) {
   test(`${provider} composer captures send-time order before a delayed response`, async () => {
     const f = fixture(() => {

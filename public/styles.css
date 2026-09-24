@@ -116,6 +116,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 
 .terminal-view { height: 100%; padding: 16px 18px 18px; display: flex; flex-direction: column; }
 .terminal-header { position: relative; min-height: 52px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; }
+.terminal-header > div:first-child { min-width: 0; }
 .terminal-header .eyebrow { margin-bottom: 4px; }
 .terminal-header h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
 .terminal-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; }
@@ -127,6 +128,10 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-disconnect button { flex: none; min-height: 44px; }
 .terminal-tool-button, .view-mode-button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff08; color: var(--muted); cursor: pointer; }
 .terminal-tool-button:disabled { opacity: .55; cursor: wait; }
+.terminal-progress-button { width: 44px; height: 44px; flex: 0 0 44px; padding: 0; border: 1px solid #ff6b3548; border-radius: 12px; background: #ff6b3510; color: #ff9a78; display: grid; place-items: center; cursor: pointer; font: 700 18px/1 "Courier New", Courier, monospace; transition: background 160ms ease, border-color 160ms ease, transform 160ms ease; }
+.terminal-progress-button:hover { border-color: #ff6b3570; background: #ff6b351d; }
+.terminal-progress-button:active { transform: scale(.96); }
+.terminal-progress-button:disabled { opacity: .5; cursor: wait; }
 [data-agent-output-copy][data-copy-state="success"] { border-color: #65d46e55; color: #8ee69a; }
 [data-agent-output-copy][data-copy-state="error"] { border-color: #ff6f6f55; color: #ff9b9b; }
 [data-agent-output-copy][data-output-state="empty"]:disabled { cursor: default; }

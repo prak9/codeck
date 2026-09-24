@@ -107,6 +107,7 @@ const state = {
   terminalSubmitSupported: false,
   terminalSubmitPending: null,
   nextTerminalSubmitId: 0,
+  terminalProgressPending: null,
   // `?view=readable` skips the overview font-shrink below so the terminal keeps a fixed,
   // legible size and actually resizes the tmux window to the viewport instead of cramming
   // the desktop pane's full grid onto a phone screen. Bookmarking a link with this plus
@@ -139,6 +140,7 @@ function localInputEnabled() {
 }
 
 const TERMINAL_KEY_HINT = '回车发送 · \u2303J 换行 · @ Tab Esc 直达 CLI';
+const PROGRESS_PROMPT = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
 
 function setTerminalVoiceState(active, message = '') {
   const capture = $('#terminalVoiceCaptureButton');
@@ -773,20 +775,81 @@ async function refreshSessions() {
   if (state.canManage) connectSessionFeed();
 }
 
-function activeAgentOutputTarget() {
+function activeAgentSessionTarget() {
   if (!state.canManage) return null;
   const session = state.sessions.find((item) => item.name === state.active);
   const provider = session?.agent?.kind;
   const threadId = session?.agent?.id;
   if (!provider || provider === 'shell' || !threadId) return null;
-  const status = resolveSessionStatus(session);
   return {
-    provider,
-    threadId,
-    status,
+    provider, threadId, session,
+    tmuxSession: session.name,
+    question: session.agent.question || null,
     key: `${provider}:${threadId}`,
-    refreshKey: status === 'done' ? `${status}:${session.activityAt || 0}` : status,
+    progressKey: `${provider}:${threadId}:${session.name}`,
   };
+}
+
+function activeAgentOutputTarget() {
+  const target = activeAgentSessionTarget();
+  if (!target) return null;
+  const status = resolveSessionStatus(target.session);
+  return {
+    provider: target.provider,
+    threadId: target.threadId,
+    status,
+    key: target.key,
+    refreshKey: status === 'done' ? `${status}:${target.session.activityAt || 0}` : status,
+  };
+}
+
+function syncTerminalProgressButton() {
+  const button = $('#terminalProgressButton');
+  const target = state.canWrite ? activeAgentSessionTarget() : null;
+  const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
+  const label = target?.question ? '处理 Agent 等待的问题' : '询问 Agent 进度';
+  button.hidden = !target;
+  button.disabled = !target || pending || (!target.question && !state.sessionFeedReady);
+  button.setAttribute('aria-label', label);
+  button.setAttribute('aria-busy', String(pending));
+  button.title = label;
+}
+
+async function askTerminalProgress() {
+  const button = $('#terminalProgressButton');
+  const target = state.canWrite ? activeAgentSessionTarget() : null;
+  if (!target || button.hidden || button.disabled) return;
+  if (target.question) {
+    state.terminal?.focus();
+    setConnectionMessage('Agent 正在等待回答，请在终端中处理。');
+    return;
+  }
+  const attempt = { key: target.progressKey, commandId: crypto.randomUUID() };
+  state.terminalProgressPending = attempt;
+  syncTerminalProgressButton();
+  setConnectionMessage('正在询问 Agent 进度…', false);
+  try {
+    const result = await sessionFeedRequest('sendSessionMessage', {
+      provider: target.provider,
+      threadId: target.threadId,
+      tmuxSession: target.tmuxSession,
+      text: PROGRESS_PROMPT,
+      commandId: attempt.commandId,
+    });
+    if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;
+    if (result?.submissionStatus === 'unconfirmed') {
+      setConnectionMessage('询问已送达，但终端未确认提交；请检查终端，勿重复点击。', false);
+    } else {
+      setConnectionMessage('已询问 Agent 进度');
+    }
+  } catch (error) {
+    if (activeAgentSessionTarget()?.progressKey === attempt.key) {
+      setConnectionMessage(`进度询问未确认：${error.message}。请检查终端后再试。`, false);
+    }
+  } finally {
+    if (state.terminalProgressPending === attempt) state.terminalProgressPending = null;
+    syncTerminalProgressButton();
+  }
 }
 
 function syncAgentOutputCopyButtons() {
@@ -964,6 +1027,7 @@ function connectSessionFeed() {
   const socket = new WebSocket(`${protocol}//${location.host}/agent?streamVersion=2`, `codeck.${websocketProtocolToken(state.token)}`);
   state.sessionFeedSocket = socket;
   state.sessionFeedReady = false;
+  syncTerminalProgressButton();
   socket.addEventListener('message', (event) => {
     if (generation !== state.sessionFeedGeneration) return;
     let message;
@@ -980,6 +1044,7 @@ function connectSessionFeed() {
     }
     if (message.type === 'ready') {
       state.sessionFeedReady = true;
+      syncTerminalProgressButton();
       if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) {
         state.sessionStreamCursor = null;
         state.sessionStreamSnapshot = null;
@@ -1048,6 +1113,7 @@ function connectSessionFeed() {
     state.sessionStreamHealthy = false;
     rejectSessionFeedRequests('Agent 连接已断开');
     syncAgentOutputCopyButtons();
+    syncTerminalProgressButton();
     scheduleSessionFeedReconnect();
   });
   socket.addEventListener('error', () => {
@@ -1069,6 +1135,7 @@ function syncTerminalAccess() {
   // 输入条里, 回车才发一次; 补全/中断等按键仍逐键直达 CLI, 见 terminal-compose.js。
   if (writable && localInputEnabled()) openTerminalComposer();
   syncTerminalVoiceControls();
+  syncTerminalProgressButton();
 }
 
 function terminalOutputForSession(output, sessionName) {
@@ -1683,6 +1750,8 @@ $('#reconnectTerminalButton').addEventListener('click', () => {
   socket?.close();
   void connect(session);
 });
+
+$('#terminalProgressButton').addEventListener('click', askTerminalProgress);
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
   button.addEventListener('click', copyLatestAgentOutput);

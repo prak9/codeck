@@ -38,6 +38,7 @@ try {
     await page.evaluate(async () => {
       document.querySelector('#emptyState').hidden = true;
       document.querySelector('#terminalView').hidden = false;
+      document.querySelector('#terminalProgressButton').hidden = false;
       document.querySelector('#sessionList').innerHTML = ['research', 'codeck', '量化特征与创新', '理解无相概念', 'report'].map((name, i) => `<button class="session-row ${i === 1 ? 'active' : ''}"><span class="session-index">${i + 1}</span><span class="session-icon">C›</span><span class="session-copy"><b>${name}</b><small>已就绪 · 刚刚</small></span><span class="presence done"></span></button>`).join('');
       const { bindTerminalPalette } = await import('/terminal-palette.js');
       window.fixtureTerminal = new Terminal({ cols: innerWidth < 720 ? 34 : 100, rows: 24, fontSize: 16 });
@@ -53,6 +54,11 @@ try {
     assert.equal(await page.locator('#sidebar').evaluate(el => getComputedStyle(el).borderRightColor), 'rgb(230, 230, 230)');
     assert.equal(await page.locator('.terminal-voice-composer textarea').evaluate(el => getComputedStyle(el).color), 'rgb(32, 32, 32)');
     assert.equal(await page.evaluate(() => window.fixtureTerminal.options.theme.background), '#ffffff');
+    assert.deepEqual(await page.locator('#terminalProgressButton').evaluate(el => ({
+      width: el.getBoundingClientRect().width,
+      height: el.getBoundingClientRect().height,
+    })), { width: 44, height: 44 });
+    assert.equal(await page.locator('.terminal-header').evaluate(el => el.scrollWidth <= el.clientWidth), true);
     await page.screenshot({ path: path.join(artifacts, `${width}-terminal.png`) });
     if (width === 390) {
       await page.evaluate(() => document.querySelector('#sidebar').classList.add('open'));
@@ -70,7 +76,7 @@ try {
     await page.reload();
     assert.equal(await page.getAttribute('html', 'data-terminal-theme'), 'classic');
     assert.deepEqual(errors, []);
-    console.log(`PASS ${width}: theme, persistence, draft, geometry`);
+    console.log(`PASS ${width}: theme, progress action, persistence, draft, geometry`);
     await context.close();
   }
   console.log(`Artifacts: ${artifacts}`);

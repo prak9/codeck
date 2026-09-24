@@ -17,6 +17,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-remote-smoke-'));
 console.log(`Browser artifacts: ${artifacts}`);
 const providers = ['codex', 'claude', 'qodercli'];
+const progressPrompt = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
 let fixture;
 const turn = n => ({ id: `turn-${n}`, status: 'completed', items: [
   { id: `user-${n}`, type: 'userMessage', content: [{ type: 'text', text: `问题 ${n}` }] },
@@ -278,6 +279,8 @@ try {
       for (const socket of sockets.clients) send(socket, { type: 'approval', provider,
         tmuxSession: 'fixture', request: { id: 'fixture-approval', params: { threadId: 'fixture-thread', title: 'Fixture approval' } } });
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('等待你的确认'));
+      await page.getByRole('button', { name: '处理 Agent 等待的问题' }).click();
+      assert.equal(await page.getByRole('button', { name: '允许一次', exact: true }).evaluate(node => node === document.activeElement), true);
       await page.getByRole('button', { name: '允许一次', exact: true }).click();
       await page.waitForSelector('.approval-card', { state: 'detached' });
 
@@ -311,6 +314,9 @@ try {
         publishSessions();
         assert.equal(await dialog.getAttribute('open'), null);
         assert.equal(fixture.question.id, 'next-question', 'closing browser modal does not answer or cancel native prompt');
+        await page.getByRole('button', { name: '处理 Agent 等待的问题' }).click();
+        await page.waitForSelector('#nativeQuestionDialog[open]');
+        await page.getByRole('button', { name: '稍后回答' }).click();
         fixture.question = null;
         publishSessions();
         await page.waitForSelector('#approvalStack .question-card', { state: 'detached' });
@@ -318,6 +324,12 @@ try {
 
       fixture.status = 'background'; publishSessions();
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('后台任务'));
+      await page.locator('#composerInput').fill('正在写的草稿');
+      await page.getByRole('button', { name: '询问 Agent 进度' }).click();
+      await page.getByText(progressPrompt, { exact: true }).last().waitFor();
+      assert.equal(fixture.sent.at(-1).text, progressPrompt);
+      assert.equal(await page.inputValue('#composerInput'), '正在写的草稿');
+      await page.locator('#composerInput').fill('');
       for (const command of ['/status', '/usage', '/model']) {
         await page.locator('#composerInput').fill(command);
         await page.locator('#sendButton').click();
@@ -392,7 +404,7 @@ try {
       assert.deepEqual(errors, []);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-conversation.png`) });
       results.push({ provider, viewport: viewport.width, eventRenderMs,
-        journeys: 'history/latest/live-output/reading-position/reconnect-gap/background/failure/approval/commands/selection/attachment/copy/receipt/lost-response/restart/geometry', errors: 0 });
+        journeys: 'history/latest/live-output/reading-position/reconnect-gap/background/failure/approval/progress/commands/selection/attachment/copy/receipt/lost-response/restart/geometry', errors: 0 });
       await context.close();
     }
   }
