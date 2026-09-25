@@ -1141,7 +1141,13 @@ function codexModelPicker(output) {
   if (!rows) return null;
   const titleRow = rows.findLastIndex((line) => CODEX_MODEL_PICKER_TITLE.test(line));
   const options = [];
-  for (const line of rows.slice(titleRow + 1)) {
+  for (const rawLine of rows.slice(titleRow + 1)) {
+    // At 37 columns, Medium (default)'s entire (current) badge becomes “…”.
+    // Normalize only known reasoning labels, not arbitrary clipped menu text.
+    const line = rawLine.replace(
+      /^([›>❯]?\s*\d+\.\s+(?:Low|Medium|High|Extra high|Max|Ultra)(?: \(default\))?)\s+…(?=\s|$)/u,
+      '$1 (current) ',
+    );
     const match = /^([›>❯])?\s*\d+\.\s+(.+)$/u.exec(line.trim());
     if (!match) {
       if (options.length) options.at(-1).display += ` ${line}`;

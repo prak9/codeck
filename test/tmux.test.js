@@ -823,6 +823,48 @@ test('model selection returns the real clipped reasoning menu instead of claimin
   assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Enter']]);
 });
 
+test('model selection recognizes a fully clipped current badge after the default reasoning label', async () => {
+  // Codex 0.153.2, 37x21, after selecting the current model at medium effort.
+  const screen = `
+  1. Low                Fast
+                        responses
+                        with
+                        lighter
+                        reasoning
+› 2. Medium (default) … Balances
+                        speed and
+                        reasoning
+                        depth for
+                        everyday
+                        tasks
+  3. High               Greater
+                        reasoning
+                        depth for
+                        complex
+                        problems
+  4. Extra high         Extra high
+
+  Press enter to confirm or esc to go
+`;
+  const commands = [];
+  const target = { provider: 'codex', sessionName: 'work', threadId: 'thread-1' };
+  const overrides = {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => commands.length ? screen : NARROW_CODEX_MODEL_PICKER,
+    execTmux: async args => commands.push(args),
+    waitForSlashOutput: async () => {},
+  };
+  const result = await selectSessionModel({ ...target, option: 'gpt-6-astra' }, overrides);
+  const output = normalizeSessionCommandOutput('codex', '/model', result);
+  assert.match(output.parsed.heading, /Select Reasoning Level/);
+  assert.deepEqual(output.parsed.items.map(item => item.label), ['Low', 'Medium (default)', 'High', 'Extra high']);
+  const completed = await selectSessionModel({ ...target, option: output.parsed.items[1].label }, {
+    ...overrides,
+    capturePane: async () => commands.length === 1 ? screen : EMPTY_CODEX_COMPOSER,
+  });
+  assert.equal(completed.completed, true);
+});
+
 test('an old model picker followed by a composer is not selectable', async () => {
   const commands = [];
   await assert.rejects(selectSessionModel({
