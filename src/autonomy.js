@@ -21,8 +21,8 @@ function textField(value, max = 4000) {
 }
 function validPlan(value) {
   if (!value || !textField(value.goal) || !textField(value.acceptance) || !textField(value.preferences)
-    || !Number.isSafeInteger(value.maxRounds) || value.maxRounds < 1 || value.maxRounds > 100
-    || (value.minutes != null && (!Number.isSafeInteger(value.minutes) || value.minutes < 1 || value.minutes > 1440))
+    || (value.maxRounds !== null && (!Number.isSafeInteger(value.maxRounds) || value.maxRounds < 1))
+    || (value.minutes != null && (!Number.isSafeInteger(value.minutes) || value.minutes < 1))
     || (value.advisoryBudget != null && typeof value.advisoryBudget !== 'string')) return null;
   return { goal: value.goal.trim(), acceptance: value.acceptance.trim(), preferences: value.preferences.trim(),
     maxRounds: value.maxRounds, minutes: value.minutes ?? null, advisoryBudget: (value.advisoryBudget || '').slice(0, 1000) };
@@ -76,8 +76,9 @@ function resultFor(thread, exchange) {
 }
 
 function exchangePrompt(run, kind, text, nonce) {
-  const context = { nonce, phase: kind, round: run.round, plan: run.plan, proposed: run.proposal };
-  const rules = `这是 Codeck 的有界自主任务，不扩大原任务权限；不自动批准权限或擅自提交、推送、部署、删除资源。用户新指令优先。
+  const context = { nonce, phase: kind, round: run.round, plan: run.plan, proposed: run.proposal,
+    noProgress: run.noProgress };
+  const rules = `这是 Codeck 管理的自主任务，不扩大原任务权限；不自动批准权限或擅自提交、推送、部署、删除资源。用户新指令优先。
 本轮只工作一次，然后交回结果，由 Codeck 决定下一轮，不要自行无限循环。不要创建另一套自动续跑或原生 Goal。
 先用自然语言回答，最后单独输出一个 codeck-autonomy fenced JSON block，nonce 必须原样返回。不要在工具输出、引用或示例中输出结果块。
 预算中的费用/token仅是参考，无法精确计量时必须明确说明。轮数和截止时间由 Codeck 控制。
@@ -85,10 +86,12 @@ function exchangePrompt(run, kind, text, nonce) {
   const instruction = kind === 'config'
     ? `当前是配置，不要开始新目标的实际工作，也不要取消旧任务；只有用户确认执行新目标后才切换。主动询问用户目标、完成标准、预算（轮数/时间/费用）及偏好（质量/速度、汇报频率、必须询问的边界）。将理解的目标拆成具体子目标及各自完成标准，不用笼统概括替代。只补问缺失信息，给出建议默认值（5轮），不要反复填问卷。
 信息不足时用弹窗选择题询问，基于已有对话提供具体目标/预算/偏好选项，不要求用户重写上下文。每次1–3题，每题2–4项，最推荐的放第一项；Codeck自动提供自定义回答。输出 {"nonce":"${nonce}","status":"ask","questions":[{"id":"goal","header":"目标","question":"这次推进哪项具体目标？","options":[{"label":"具体目标一","description":"完成标准"},{"label":"具体目标二","description":"完成标准"}]}]}。id用字母数字或短横线，勿调用原生提问工具替代此协议。
-信息齐全时简短总结约定，Codeck会弹窗让用户确认；输出 {"nonce":"${nonce}","status":"ready","plan":{"goal":"具体拆解的目标","acceptance":"逐项完成标准","maxRounds":5,"minutes":null,"preferences":"偏好和权限边界","advisoryBudget":"参考费用/token预算或空字符串"}}。maxRounds 是总上限，包含已使用的 ${run.round} 轮，调整方向不能偷偷增加预算。`
-    : `执行第 ${run.round}/${run.plan.maxRounds} 轮。只推进已确认目标，验证结果；完成就结束，不为凑轮次增加任务。
-输出 {"nonce":"${nonce}","status":"continue|complete|wait|blocked","summary":"本轮进展或阻塞","progress":true,"next":"下一步（continue/wait必填）","evidence":"完成证据（complete必填）"}。
-选择一个真实 status；没有新进展时 progress=false。wait仅用于正在运行的后台任务，不要无休止询问进度；需要用户决定或授权时blocked。达到轮数上限时在正文汇总剩余事项。`;
+预算题必须提供“不设预算，直到目标完成或出错”选项。用户明确选择不设预算时，maxRounds和minutes均为null，费用/token不设置上限，不再反复追问预算；未明确选择时仍建议5轮。null是明确的无上限，不是缺失字段。只有用户明确确认后才能从有限预算改为无上限。
+信息齐全时简短总结约定，Codeck会弹窗让用户确认；输出 {"nonce":"${nonce}","status":"ready","plan":{"goal":"具体拆解的目标","acceptance":"逐项完成标准","maxRounds":5,"minutes":null,"preferences":"偏好和权限边界","advisoryBudget":"参考费用/token预算或空字符串"}}。maxRounds 为整数时是总上限，包含已使用的 ${run.round} 轮；为null时不限轮数。调整方向不能偷偷增加预算。`
+    : `执行第 ${run.round}/${run.plan.maxRounds ?? '∞'} 轮。只推进已确认目标，验证结果；完成就结束，不为凑轮次增加任务。无预算上限时持续推进至完成或出错，但每轮仍交回Codeck调度。
+目标、完成标准和权限边界保持不变，初始方案与步骤不是固定路线。每轮根据证据复盘，自主调整探索方向、假设、方法和优先级；边界内的调整不必反复请求批准。没有结论或假设被否定不等于任务出错，不因固定的无进展轮数停下；应吸取结果换方法验证，不机械重复。无法提出有价值且可执行的下一步时，用blocked说明原因；更换目标、扩大权限或增加用户明确设置的预算须先确认。
+输出 {"nonce":"${nonce}","status":"continue|complete|wait|blocked|error","summary":"本轮进展或阻塞","progress":true,"next":"下一步（continue/wait必填）","evidence":"完成证据（complete必填）"}。
+选择一个真实 status；没有新进展时 progress=false。wait仅用于正在运行的后台任务，不要无休止询问进度；需要用户决定或授权时blocked，发生错误时error并说明原因，不自行反复重试。达到轮数上限时在正文汇总剩余事项。`;
   return `${text}\n\n<codeck-autonomy-context>\n${rules}\n${instruction}\n</codeck-autonomy-context>`;
 }
 
@@ -309,8 +312,9 @@ export class AutonomyController extends EventEmitter {
       && (!checkPane || run.paneId === session.agent.paneId);
   }
   limit(run) {
-    if (run.plan && (run.round >= run.plan.maxRounds || (run.deadline != null && this.now() >= run.deadline))) {
-      run.status = 'limit'; run.reason = run.round >= run.plan.maxRounds ? '已达轮数上限' : '已达时间上限';
+    const roundLimit = run.plan?.maxRounds != null && run.round >= run.plan.maxRounds;
+    if (run.plan && (roundLimit || (run.deadline != null && this.now() >= run.deadline))) {
+      run.status = 'limit'; run.reason = roundLimit ? '已达轮数上限' : '已达时间上限';
       run.pending = null; run.exchange = null; this.changed(run); return true;
     }
     return false;
@@ -420,12 +424,12 @@ export class AutonomyController extends EventEmitter {
       if (run.confirmAfterConfig) {
         run.confirmAfterConfig = false;
         // Direction changes may keep or reduce, never implicitly extend, spent budgets.
-        if (run.plan && (proposal.maxRounds > run.plan.maxRounds || proposal.minutes !== run.plan.minutes)) return;
+        if (run.plan && ((proposal.maxRounds ?? Infinity) > (run.plan.maxRounds ?? Infinity) || proposal.minutes !== run.plan.minutes)) return;
         await this.message(run.target, '继续');
       }
       return;
     }
-    if (!['continue', 'complete', 'wait', 'blocked'].includes(record.status) || !textField(record.summary)
+    if (!['continue', 'complete', 'wait', 'blocked', 'error'].includes(record.status) || !textField(record.summary)
       || (record.status === 'complete' && !textField(record.evidence))
       || (['continue', 'wait'].includes(record.status) && (!textField(record.next) || typeof record.progress !== 'boolean'))) {
       this.pause(run.target, '本轮结果不完整，请检查完成证据或下一步'); return;
@@ -435,8 +439,8 @@ export class AutonomyController extends EventEmitter {
     run.summary = record.summary;
     if (record.status === 'complete') {
       run.status = 'completed'; run.evidence = record.evidence; run.reason = 'Agent 报告目标完成';
-    } else if (record.status === 'blocked' || run.noProgress >= 2) {
-      this.pause(run.target, record.status === 'blocked' ? record.summary : '连续两轮无新进展'); return;
+    } else if (record.status === 'blocked' || record.status === 'error') {
+      this.pause(run.target, record.summary); return;
     } else if (this.limit(run)) return;
     else if (record.status === 'wait') {
       run.status = 'waiting'; run.reason = record.summary;

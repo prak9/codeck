@@ -15,6 +15,11 @@ export function autonomyKey({ provider, threadId, tmuxSession }) {
   return JSON.stringify([provider, threadId, tmuxSession]);
 }
 
+export function autonomyBudgetText(plan, round) {
+  const rounds = plan.maxRounds === null ? plan.minutes == null ? '不设预算上限' : '不限轮数' : `${plan.maxRounds} 轮`;
+  return `${rounds}${plan.minutes == null ? '' : ` · ${plan.minutes} 分钟`}（已用 ${round} 轮）`;
+}
+
 export function autonomyPresentation(run, session) {
   const needsAnswer = Boolean(run?.requestId && run?.questions?.length);
   const labels = { configuring: needsAnswer ? '待回答' : '配置中',
@@ -22,7 +27,7 @@ export function autonomyPresentation(run, session) {
     blocked: '待处理', paused: '已暂停', completed: '已完成', limit: '已达上限' };
   const active = ['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked'].includes(run?.status);
   const budget = run?.plan || run?.proposal;
-  const count = budget ? `${run.round}/${budget.maxRounds}` : '';
+  const count = budget ? `${run.round}/${budget.maxRounds ?? '∞'}` : '';
   const activity = session?.agent?.question ? '待处理' : session?.hasRunningProcess ? '执行中'
     : session?.agent?.hasBackgroundProcess ? '后台执行中' : '';
   const phase = run && activity && !['configuring', 'confirming', 'switching', 'stopping'].includes(run.status)

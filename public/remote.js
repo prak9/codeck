@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=6';
+import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=7';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -2080,7 +2080,7 @@ function interactionNode(key, entry) {
     const details = element('dl', 'autonomy-plan');
     for (const [label, value] of [
       ['目标', entry.plan.goal], ['完成标准', entry.plan.acceptance],
-      ['预算', `${entry.plan.maxRounds} 轮${entry.plan.minutes == null ? '' : ` · ${entry.plan.minutes} 分钟`}（已用 ${entry.round} 轮）`],
+      ['预算', autonomyBudgetText(entry.plan, entry.round)],
       ['偏好与边界', entry.plan.preferences], ['参考预算', entry.plan.advisoryBudget],
     ]) if (value) details.append(element('dt', '', label), element('dd', '', value));
     form.append(details);

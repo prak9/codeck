@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AutonomyController } from '../src/autonomy.js';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomyBudgetText, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 
 const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'work' };
 const plan = { goal: 'Fix the picker', acceptance: 'Regression passes', maxRounds: 3,
@@ -233,6 +233,110 @@ test('autonomy asks for configuration before dispatching any work and requires h
   assert.equal(f.state().round, 1); assert.equal(f.sent.length, 2);
 });
 
+test('explicit unlimited budget runs past 100 rounds and stops on completion', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  assert.match(f.sent[0], /不设预算/);
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: null, minutes: null } }); await f.manager.tick();
+  assert.equal(f.state().status, 'confirming');
+  await f.manager.message(target, '开始'); await f.manager.tick();
+  for (let n = 1; n <= 101; n++) {
+    f.now += 60_000;
+    f.reply({ status: 'continue', summary: `Done ${n}`, next: 'Next', progress: true });
+    await f.manager.tick(); await f.manager.tick();
+  }
+  assert.equal(f.state().round, 102); assert.equal(f.state().status, 'running');
+  assert.match(autonomyPresentation(f.state()).text, /102\/∞/);
+  assert.doesNotMatch(f.sent.at(-1), /102\/null/);
+  f.reply({ status: 'complete', summary: 'Done', evidence: 'Tests passed' }); await f.manager.tick();
+  assert.equal(f.state().status, 'completed');
+});
+
+test('rejected unlimited setup recovers to confirmation without dispatching work', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: null, minutes: null } });
+  f.manager.pause(target, '配置结果无效，请明确目标、预算和偏好');
+  f.manager.restoreProposal(target, { id: target.threadId, ...f.thread });
+  assert.equal(f.state().status, 'confirming');
+  assert.equal(f.state().proposal.maxRounds, null); assert.equal(f.state().proposal.minutes, null);
+  await f.manager.tick(); assert.equal(f.sent.length, 1); assert.equal(f.state().round, 0);
+});
+
+test('unlimited rounds still honor a configured time limit', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: null, minutes: 1 } }); await f.manager.tick();
+  await f.manager.message(target, '开始'); await f.manager.tick();
+  f.now += 60_001;
+  f.reply({ status: 'continue', summary: 'Progress', next: 'Next', progress: true });
+  await f.manager.tick(); await f.manager.tick();
+  assert.equal(f.state().status, 'limit'); assert.equal(f.state().reason, '已达时间上限');
+  assert.equal(f.sent.length, 2);
+});
+
+test('unlimited plan survives restart without automatic continuation', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-unlimited-'));
+  try {
+    const file = path.join(dir, 'runs.json'); const f = fixture({ file });
+    await f.manager.start(target); await f.manager.tick();
+    f.reply({ status: 'ready', plan: { ...plan, maxRounds: null, minutes: null } }); await f.manager.tick();
+    await f.manager.message(target, '开始'); await f.manager.tick(); f.manager.close();
+    const restored = fixture({ file });
+    assert.equal(restored.state().status, 'paused'); assert.equal(restored.state().plan.maxRounds, null);
+    assert.equal(restored.state().deadline, null);
+    await restored.manager.tick(); assert.deepEqual(restored.sent, []);
+    restored.manager.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('both modes share explicit unlimited and finite budget labels', () => {
+  assert.equal(autonomyBudgetText({ maxRounds: null, minutes: null }, 0), '不设预算上限（已用 0 轮）');
+  assert.equal(autonomyBudgetText({ maxRounds: null, minutes: 30 }, 1), '不限轮数 · 30 分钟（已用 1 轮）');
+  assert.equal(autonomyBudgetText(plan, 2), '3 轮 · 30 分钟（已用 2 轮）');
+});
+
+test('user budgets have no arbitrary round or duration ceiling', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: 1000, minutes: 10080 } });
+  await f.manager.tick(); assert.equal(f.state().status, 'confirming');
+  await f.manager.message(target, '开始'); await f.manager.tick();
+  assert.equal(f.state().status, 'running'); assert.equal(f.state().plan.maxRounds, 1000);
+  assert.equal(f.state().deadline, f.now + 10080 * 60000);
+});
+
+test('exploration can adapt after inconclusive rounds without changing the approved goal', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: null, minutes: null } }); await f.manager.tick();
+  await f.manager.message(target, '开始'); await f.manager.tick();
+  for (let i = 0; i < 3; i++) {
+    f.reply({ status: 'continue', summary: '尚无结论', next: `验证另一假设 ${i}`, progress: false });
+    await f.manager.tick(); await f.manager.tick();
+  }
+  assert.equal(f.state().status, 'running'); assert.equal(f.state().round, 4);
+  assert.equal(f.state().plan.goal, plan.goal);
+  assert.match(f.sent.at(-1), /调整.*假设.*方法/);
+  assert.match(f.sent.at(-1), /验证另一假设 2/);
+  f.reply({ status: 'blocked', summary: '需要用户授权读取额外数据' }); await f.manager.tick();
+  assert.equal(f.state().status, 'paused');
+});
+
+test('removing a finite budget cannot be implicitly approved by a direction change', async () => {
+  const f = fixture(); await f.run();
+  await f.manager.message(target, '调整方向，继续'); await f.manager.tick();
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: null } }); await f.manager.tick();
+  assert.equal(f.state().status, 'confirming'); assert.equal(f.state().plan.maxRounds, 3);
+});
+
+test('unlimited execution stops on an error and an omitted budget never becomes unlimited', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  const missing = { ...plan }; delete missing.maxRounds;
+  f.reply({ status: 'ready', plan: missing }); await f.manager.tick(); assert.equal(f.state().status, 'paused');
+  await f.manager.message(target, '不设预算'); await f.manager.tick();
+  f.reply({ status: 'ready', plan: { ...plan, maxRounds: null, minutes: null } }); await f.manager.tick();
+  await f.manager.message(target, '开始'); await f.manager.tick();
+  f.reply({ status: 'error', summary: '构建失败，需要检查依赖' }); await f.manager.tick();
+  assert.equal(f.state().status, 'paused'); assert.match(f.state().reason, /构建失败/);
+  const sent = f.sent.length; await f.manager.tick(); assert.equal(f.sent.length, sent);
+});
+
 test('autonomy continues once per result without browser subscribers and stops at the round limit', async () => {
   const f = fixture(); await f.run();
   for (let round = 1; round <= 3; round++) {
@@ -412,19 +516,13 @@ test('redirection invalidates prior responses and preserves used budget until a 
   await f.manager.tick(); assert.notEqual(f.state().status, 'completed');
 });
 
-test('unconfirmed sends, changed pane and two no-progress rounds pause without retries', async () => {
+test('unconfirmed sends and changed pane pause without retries', async () => {
   const uncertain = fixture({ send: async () => ({ submissionStatus: 'unconfirmed' }) });
   await uncertain.manager.start(target); await uncertain.manager.tick();
   assert.equal(uncertain.state().status, 'paused'); assert.match(uncertain.state().reason, /未确认/);
   const f = fixture(); await f.run();
   f.session.agent.paneId = '%8'; await f.manager.tick();
   assert.equal(f.state().status, 'paused'); assert.equal(f.sent.length, 2);
-  const stuck = fixture(); await stuck.run();
-  for (let n = 0; n < 2; n++) {
-    stuck.reply({ status: 'continue', summary: 'Same failure', next: 'Retry', progress: false });
-    await stuck.manager.tick(); await stuck.manager.tick();
-  }
-  assert.equal(stuck.state().status, 'paused'); assert.equal(stuck.state().round, 2);
 });
 
 test('background wait spends no rounds; deadline stops further dispatch', async () => {
@@ -450,7 +548,8 @@ test('a separate progress response does not hide a completed autonomous result',
 });
 
 test('invalid plans, missing completion evidence and unrelated human input cannot continue', async () => {
-  for (const change of [{ maxRounds: 0 }, { maxRounds: 101 }, { acceptance: '' }, { minutes: -1 }]) {
+  for (const change of [{ maxRounds: 0 }, { maxRounds: 1.5 }, { maxRounds: '100' },
+    { maxRounds: Number.MAX_SAFE_INTEGER + 1 }, { acceptance: '' }, { minutes: -1 }, { minutes: '30' }]) {
     const f = fixture(); await f.manager.start(target); await f.manager.tick();
     f.reply({ status: 'ready', plan: { ...plan, ...change } }); await f.manager.tick();
     assert.equal(f.state().status, 'paused'); assert.equal(f.state().round, 0);

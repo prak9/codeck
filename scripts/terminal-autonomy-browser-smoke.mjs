@@ -130,6 +130,15 @@ try {
     assert.match(fixture.sent.at(-1), /预算：3 轮 \/ 30 分钟/);
     assert.match(fixture.sent.at(-1), /偏好：最小修改，不部署/);
     assert.equal(fixture.stops, 0);
+    const setup = fixture.autonomy.runs.values().next().value;
+    const finite = setup.proposal;
+    setup.proposal = { ...finite, maxRounds: null, minutes: null };
+    setup.requestId += '-unlimited'; fixture.autonomy.changed(setup);
+    await page.getByText('不设预算上限（已用 0 轮）', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('#terminalAutonomyStatus').textContent === '0/∞ 待确认');
+    assert.equal(fixture.stops, 0, 'showing unlimited configuration cannot authorize work');
+    setup.proposal = finite; setup.requestId += '-finite'; fixture.autonomy.changed(setup);
+    await page.getByText('3 轮 · 30 分钟（已用 0 轮）', { exact: true }).waitFor();
     await page.click('#closeTerminalAutonomy'); await a.click();
     await page.waitForFunction(() => !document.querySelector('#terminalAutonomyDialog').open);
     await fixture.autonomy.tick();

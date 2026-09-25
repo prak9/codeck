@@ -679,6 +679,15 @@ try {
       await dialog.getByRole('heading', { name: '确认自主目标' }).waitFor();
       assert.match(await dialog.locator('.autonomy-plan').textContent(), /修复选择器.*回归测试通过.*3 轮.*30 分钟.*不提交部署/);
       assert.equal(fixture.autonomySent.length, 2, 'a proposed plan is not yet authorized work');
+      const setup = fixture.autonomy.runs.values().next().value;
+      const finite = setup.proposal;
+      setup.proposal = { ...finite, maxRounds: null, minutes: null };
+      setup.requestId += '-unlimited'; fixture.autonomy.changed(setup);
+      await dialog.getByText('不设预算上限（已用 0 轮）', { exact: true }).waitFor();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/∞ 待确认');
+      assert.equal(fixture.autonomyStops, 0, 'unlimited configuration cannot authorize work');
+      setup.proposal = finite; setup.requestId += '-finite'; fixture.autonomy.changed(setup);
+      await dialog.getByText('3 轮 · 30 分钟（已用 0 轮）', { exact: true }).waitFor();
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-confirm.png`) });
       assert.equal(await page.inputValue('#composerInput'), '');
       // report regression: the final ready reply exists, but a failed send check

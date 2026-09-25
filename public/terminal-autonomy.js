@@ -1,4 +1,4 @@
-import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=6';
+import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=7';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
 import { chooseStopScope } from './session-stop.js?v=1';
 
@@ -57,7 +57,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       const plan = run.proposal, details = element('dl', 'terminal-autonomy-plan');
       for (const [label, value] of [
         ['目标', plan.goal], ['完成标准', plan.acceptance],
-        ['预算', `${plan.maxRounds} 轮${plan.minutes == null ? '' : ` · ${plan.minutes} 分钟`}（已用 ${run.round} 轮）`],
+        ['预算', autonomyBudgetText(plan, run.round)],
         ['偏好与边界', plan.preferences], ['参考预算', plan.advisoryBudget],
       ]) if (value) details.append(element('dt', '', label), element('dd', '', value));
       form.append(details);
