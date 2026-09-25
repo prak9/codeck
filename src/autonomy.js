@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { autonomyKey, isProgressPrompt, isAutonomyObservation, AUTONOMY_DECISIONS } from '../public/remote-autonomy.js';
-import { contextGoals } from '../public/autonomy-definition.js';
+import { contextDefinition } from '../public/autonomy-definition.js';
 
 const ACTIVE = new Set(['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked', 'exiting']);
 const TERMINAL = new Set(['completed', 'limit', 'off']);
@@ -234,6 +234,11 @@ export class AutonomyController extends EventEmitter {
   async configure(target) {
     if (!targetIsValid(target)) throw new Error('自主迭代需要已绑定的 Agent 会话');
     const key = autonomyKey(target), old = this.runs.get(key);
+    if (old?.setup && old.status === 'configuring' && old.definition?.fieldsVersion !== 3 && !old.definition?.loading) {
+      old.definition = { ...old.definition, version: 2, loading: true };
+      this.loadDefinitionSuggestions(old); this.changed(old);
+      return this.snapshot(target);
+    }
     if (old?.status === 'stopping' || (old && ACTIVE.has(old.status))) return this.snapshot(target);
     if (this.runs.size >= 100 && !old) throw new Error('自主任务记录已达上限');
     const run = { id: crypto.randomUUID(), target: { ...target }, mode: 'simple', round: 0,
@@ -273,9 +278,9 @@ export class AutonomyController extends EventEmitter {
   async loadDefinitionSuggestions(run) {
     const requestId = run.requestId;
     try {
-      const result = await this.readThread(run.target);
+      const result = await this.readThread(run.target, undefined, { waitForReady: true });
       if (this.closed || this.runs.get(autonomyKey(run.target)) !== run || !run.setup || run.requestId !== requestId) return;
-      run.definition.suggestions = contextGoals(result?.thread);
+      Object.assign(run.definition, contextDefinition(result?.thread));
     } catch { /* Suggestions never gate configuration or trigger terminal input. */ }
     if (!this.closed && this.runs.get(autonomyKey(run.target)) === run && run.setup && run.requestId === requestId) {
       run.definition.loading = false; this.changed(run);
@@ -457,27 +462,32 @@ export class AutonomyController extends EventEmitter {
     }
     if (!answers || typeof answers !== 'object' || Array.isArray(answers)) throw new Error('请完成选择');
     if (run.setup) {
-      if (!Object.hasOwn(answers, 'strategy')) {
-        const keys = ['goal', 'budget', 'constraints', 'acceptance', 'deliverable', 'rounds', 'continuation'];
+      if (!Object.hasOwn(answers, 'strategy') || Object.hasOwn(answers, 'problem')) {
+        const expanded = Object.hasOwn(answers, 'problem');
+        const keys = expanded ? ['problem', 'goal', 'strategy', 'acceptance', 'budget', 'constraints', 'continuation']
+          : ['goal', 'budget', 'constraints', 'acceptance', 'deliverable', 'rounds', 'continuation'];
         if (Object.keys(answers).length !== keys.length || keys.some(key => !Array.isArray(answers[key])
           || answers[key].length !== 1 || typeof answers[key][0] !== 'string' || answers[key][0].length > 4000)) throw new Error('任务定义格式无效');
         const values = Object.fromEntries(keys.map(key => [key, answers[key][0].trim()]));
-        if (!values.goal || !values.acceptance || !values.deliverable || !['true', 'false'].includes(values.continuation)) throw new Error('请填写目标、验收与交付物');
+        if (!values.goal || !values.acceptance || (expanded ? !values.problem || !values.strategy : !values.deliverable)
+          || !['true', 'false'].includes(values.continuation)) throw new Error('请填写问题定义、目标、策略、验证方法和预算轮次');
         let plan, remainingMs;
         if (values.continuation === 'true') {
           const old = run.previous;
-          if (!old || ['goal', 'acceptance', 'deliverable'].some(key => values[key] !== (old.plan[key] || ''))
+          if (!old || (expanded ? ['problem', 'goal', 'strategy', 'acceptance'] : ['goal', 'acceptance', 'deliverable']).some(key => values[key] !== (old.plan[key] || ''))
             || values.constraints !== (old.plan.constraints || '')) throw new Error('继续任务不能改变目标、验收或约束；请作为新目标开始');
           if (old.remainingMs === 0 || (old.plan.maxRounds != null && old.round >= old.plan.maxRounds)) throw new Error('上次预算已用完，请明确设置新目标和预算');
           plan = structuredClone(old.plan); remainingMs = old.remainingMs;
           run.round = old.round; run.summary = old.summary; run.checkpoint = old.checkpoint; run.best = old.best;
         } else {
-          const match = /^(\d+)\s*分钟$/u.exec(values.budget);
-          const minutes = values.budget === '不限' ? null : match ? Number(match[1]) : NaN;
-          const maxRounds = values.rounds ? Number(values.rounds) : null;
+          const match = expanded ? /^(?:(\d+)\s*轮)?\s*(?:[/／,，]\s*)?(?:(\d+)\s*分钟)?$/u.exec(values.budget) : /^(\d+)\s*分钟$/u.exec(values.budget);
+          if (expanded && values.budget !== '不限' && (!match || (!match[1] && !match[2]))) throw new Error('预算请填写正整数轮数或分钟，或不限');
+          const minutes = values.budget === '不限' ? null : expanded ? (match[2] ? Number(match[2]) : null) : match ? Number(match[1]) : NaN;
+          const maxRounds = expanded ? (match?.[1] ? Number(match[1]) : null) : values.rounds ? Number(values.rounds) : null;
           if ((minutes !== null && (!Number.isSafeInteger(minutes) || minutes < 1 || !Number.isSafeInteger(minutes * 60000)))
-            || (maxRounds !== null && (!/^\d+$/u.test(values.rounds) || !Number.isSafeInteger(maxRounds) || maxRounds < 1))) throw new Error('预算须为正整数，或选择不限');
-          plan = { definitionVersion: 2, goal: values.goal, acceptance: values.acceptance, deliverable: values.deliverable,
+            || (maxRounds !== null && ((!expanded && !/^\d+$/u.test(values.rounds)) || !Number.isSafeInteger(maxRounds) || maxRounds < 1))) throw new Error('预算须为正整数，或选择不限');
+          plan = { definitionVersion: 2, ...(expanded ? { problem: values.problem, strategy: values.strategy } : {}),
+            goal: values.goal, acceptance: values.acceptance, deliverable: values.deliverable || values.goal,
             constraints: values.constraints, preferences: values.constraints || '继承当前项目和既有权限；根据每轮证据自主调整方法。',
             minutes, maxRounds, advisoryBudget: '' };
           remainingMs = minutes == null ? null : minutes * 60000;

@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { createAutonomyForm } from './autonomy-form.js?v=1';
+import { createAutonomyForm } from './autonomy-form.js?v=2';
 import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=9';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
@@ -2929,7 +2929,10 @@ async function toggleAutonomy() {
   if (!state.simpleAutonomy && currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
   if (state.simpleAutonomy) state.autonomyDialogIntent = autonomyKey({ provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name });
   const question = autonomyQuestionEntry();
-  if (question && !question.plan) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
+  if (question && !question.plan) {
+    state.dismissedAutonomyQuestion = ''; syncAutonomyDialog();
+    if (!state.simpleAutonomy || !question.setup) return;
+  }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
   const active = autonomyPresentation(currentAutonomy()).active;
   const before = currentAutonomy();

@@ -1,7 +1,7 @@
 import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=9';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { createAutonomyForm } from './autonomy-form.js?v=1';
+import { createAutonomyForm } from './autonomy-form.js?v=2';
 
 // The terminal and Remote are views of the same server-owned run, not two loops.
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
@@ -162,9 +162,9 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       content.replaceChildren(buildForm(run, questions));
     }
     const form = content.querySelector('form');
-    form?.updateDefinition?.(run);
     if (form?.setPending) form.setPending(pending);
     else for (const input of content.querySelectorAll('input, button')) input.disabled = pending;
+    form?.updateDefinition?.(run);
     if (!dialog.open && dismissed !== nextKey && !document.querySelector('dialog[open]')) dialog.showModal();
   }
   button.addEventListener('click', async () => {
@@ -172,7 +172,11 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     if (targetNow()?.question && !simple) { focusTerminal(); message('Agent 正在等待回答，请在终端中处理。'); return; }
     const run = current(), questions = questionFor(run);
     setupOpened = true;
-    if (questions && !run.proposal) { dismissed = ''; sync(); return; }
+    if (questions && !run.proposal) {
+      dismissed = ''; sync();
+      if (simple && run.setup) { try { await act('startAutonomy', { simple: true }); } catch { /* act displays errors. */ } }
+      return;
+    }
     try {
       await act(!simple && questions && run.proposal ? 'answerAutonomy' : autonomyPresentation(run).active ? 'pauseAutonomy' : 'startAutonomy',
         simple ? { simple: true } : questions && run.proposal ? { requestId: run.requestId, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {});

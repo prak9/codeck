@@ -1781,15 +1781,33 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       return !currentSession.hasRunningProcess && !currentSession.agent?.question;
     };
     const idle = check(paneId, session);
-    if (waitForIdle && idle && !(stopBackground && ['codex', 'qodercli'].includes(provider))) return;
+    let interruptForeground = !waitForIdle || !idle;
+    if (waitForIdle && provider === 'codex') {
+      const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
+      const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+      check(current.paneId, current.session);
+      const screen = await capture(paneId);
+      if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未发送中断键');
+      // Activity caches include repaint/scrolling. Escape on an idle Codex composer
+      // navigates history instead of cancelling work; require live busy evidence.
+      const tail = cleanScreenRows(screen).filter(line => line.trim()).slice(-5).join(' ');
+      if (hasCodexInputModal(screen) || /(?:q to quit|esc\/← to edit prev|enter to edit message)/iu.test(tail)) {
+        throw new Error('终端处于历史浏览或弹窗，请先返回正常输入框；未发送中断键');
+      }
+      interruptForeground = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex).busy || hasCodexQueuedInput(screen);
+      if (!interruptForeground && agentComposerState(screen, '') !== 'empty') {
+        throw new Error('终端输入框未就绪，请先处理草稿或弹窗；未发送中断键');
+      }
+    }
+    if (waitForIdle && idle && !interruptForeground && !(stopBackground && ['codex', 'qodercli'].includes(provider))) return;
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
-    if (!waitForIdle || !idle) await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
+    if (interruptForeground) await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
     if (!waitForIdle) return;
     const waitForStop = overrides.waitForStop || (() => new Promise(resolve => setTimeout(resolve, 250)));
-    let foregroundStopped = idle;
+    let foregroundStopped = idle && !interruptForeground;
     // The activity heuristic retains a repaint for six seconds on every provider.
     // Verification must outlast it, including Qoder foreground cancellation.
     const stopChecks = 40;

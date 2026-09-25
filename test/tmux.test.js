@@ -1393,6 +1393,7 @@ test('goal switching interrupts once and verifies the exact Agent pane has stopp
       listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: busy,
         agent: { kind: provider, id: 'thread-1', paneId: '%7' } }],
       execTmux: async args => commands.push(args),
+      capturePane: async () => `• Working (1s • esc to interrupt)\n${EMPTY_CODEX_COMPOSER}`,
       waitForStop: async () => { waits++; busy = false; },
     });
     assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']], provider);
@@ -1409,6 +1410,7 @@ test('explicit foreground stop verifies foreground idle while preserving backgro
       listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: busy,
         agent: { kind: provider, id: 'thread-1', paneId: '%7', hasBackgroundProcess: true } }],
       execTmux: async args => commands.push(args), waitForStop: async () => { busy = false; },
+      capturePane: async () => `• Working (1s • esc to interrupt)\n${EMPTY_CODEX_COMPOSER}`,
     });
     assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']]);
   }
@@ -1434,6 +1436,7 @@ test('goal switching preserves unrelated background tasks and rejects stale canc
         agent: { kind: 'codex', id: 'thread-1', paneId: scenario === 'replaced' ? '%8' : '%7',
           hasBackgroundProcess: scenario === 'background' } }],
       execTmux: async args => commands.push(args), waitForStop: async () => {},
+      capturePane: async () => EMPTY_CODEX_COMPOSER,
     });
     if (scenario === 'idle') await stopped;
     else await assert.rejects(stopped, /后台|暂停|变化/);
@@ -1451,6 +1454,7 @@ test('goal switching fails closed on timeout, replacement, background work or pa
         agent: { kind: 'codex', id: 'thread-1', paneId: scenario === 'replacement' && waits ? '%8' : '%7',
           hasBackgroundProcess: scenario === 'background' && waits > 0 } }],
       execTmux: async args => commands.push(args), waitForStop: async () => { waits++; },
+      capturePane: async () => `• Working (1s • esc to interrupt)\n${EMPTY_CODEX_COMPOSER}`,
     }), /停止|后台|变化|暂停/);
     assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']], scenario);
     assert.ok(waits <= 40, 'stop confirmation has a finite timeout');
@@ -1464,7 +1468,7 @@ function codexStopFixture({ busy = false, goal = true, background = true } = {})
   f.options = {
     listTmuxSessions: async () => [{ name: 'research', hasRunningProcess: f.busy,
       agent: { kind: 'codex', id: 'thread-1', paneId: f.pane, hasBackgroundProcess: f.background } }],
-    capturePane: async () => `${f.background ? '2 background terminals running · /ps to view · /stop to close\n' : ''}\n» ${f.draft}\n\n  gpt-6-astra ultra · ~/py${f.goal ? '    Goal stalled (/goal resume)' : ''}`,
+    capturePane: async () => `${f.busy ? '• Working (1s • esc to interrupt)\n' : ''}${f.background ? '2 background terminals running · /ps to view · /stop to close\n' : ''}\n» ${f.draft}\n\n  gpt-6-astra ultra · ~/py${f.goal ? '    Goal stalled (/goal resume)' : ''}`,
     execTmux: async args => {
       f.commands.push(args);
       if (args.includes('Escape')) f.busy = false;

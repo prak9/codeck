@@ -73,7 +73,7 @@ function reset(provider) {
         }, {
           listTmuxSessions: async () => [{ name: 'fixture', hasRunningProcess: fixture.status === 'working',
             agent: { kind: provider, id: 'fixture-thread', paneId: '%7', hasBackgroundProcess: background } }],
-          capturePane: async () => `» ${draft}\n\n  gpt-6-astra ultra · /fixture${goal ? '   Goal stalled (/goal resume)' : ''}`,
+          capturePane: async () => `${fixture.status === 'working' ? '• Working (1s • esc to interrupt)\n' : ''}» ${draft}\n\n  gpt-6-astra ultra · /fixture${goal ? '   Goal stalled (/goal resume)' : ''}`,
           execTmux: async args => {
             if (args.includes('Escape')) fixture.status = background ? 'background' : 'done';
             if (args.includes('-l')) draft = args.at(-1).trimEnd();
@@ -339,13 +339,19 @@ try {
         await auto.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
         assert.equal(fixture.autonomySent.length, 0); assert.equal(fixture.autonomyStops, 1);
         await dialog.getByRole('textbox', { name: '目标', exact: true }).fill('修复终端宽度，回归通过');
-        await dialog.getByRole('textbox', { name: '怎样算有效' }).fill('37列到140列恢复，验证通过');
+        await dialog.getByRole('textbox', { name: '验证方法' }).fill('37列到140列恢复，验证通过');
         const draftRun = fixture.autonomy.runs.values().next().value;
-        draftRun.definition.suggestions = ['修复会话切换后输入丢失的问题']; fixture.autonomy.changed(draftRun);
+        Object.assign(draftRun.definition, { goal: '迟到目标不得覆盖', acceptance: '迟到验收', suggestions: ['修复会话切换后输入丢失的问题'] }); fixture.autonomy.changed(draftRun);
         await dialog.getByRole('button', { name: '修复会话切换后输入丢失的问题', exact: true }).waitFor();
-        assert.equal(await dialog.getByRole('textbox', { name: '怎样算有效' }).inputValue(), '37列到140列恢复，验证通过');
-        await dialog.locator('summary').click();
-        await dialog.getByRole('textbox', { name: '轮数上限（可选）' }).fill('5');
+        assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '37列到140列恢复，验证通过');
+        await dialog.getByRole('textbox', { name: '问题定义' }).fill('桌面继承了手机宽度');
+        await dialog.getByRole('textbox', { name: '策略', exact: true }).fill('复现后最小修复');
+        await dialog.getByRole('textbox', { name: '预算轮次' }).fill('5轮 / 30分钟');
+        assert.equal(await dialog.getByRole('button', { name: '开始', exact: true }).evaluate(el => {
+          const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; el.append(probe);
+          const matches = getComputedStyle(el).backgroundColor === getComputedStyle(probe).color; probe.remove(); return matches;
+        }), true, 'start uses the current Codeck theme accent');
+        assert.equal(await dialog.locator('form').evaluate(el => el.scrollWidth <= el.clientWidth), true);
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-setup.png`) });
         await page.keyboard.press('Escape'); assert.equal(fixture.autonomySent.length, 0);
         await auto.click();
