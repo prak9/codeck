@@ -5,9 +5,38 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import https from 'node:https';
+import vm from 'node:vm';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
+
+test('server forwards phase-specific send guards and verified task cancellation to the tmux adapter', async () => {
+  const source = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+  let options; const sends = []; const stops = [];
+  const agentRegistry = {
+    prepareSessionMessage: async () => ({}), recordSessionMessage() {},
+    sendSessionMessage: async (provider, params) => { sends.push({ provider, ...params }); return { submissionStatus: 'submitted' }; },
+    interruptSession: async (provider, params) => { stops.push({ provider, ...params }); },
+  };
+  vm.runInNewContext(source.slice(source.indexOf('const autonomy = new AutonomyController('), source.indexOf('const sessionFeed =')), {
+    AutonomyController: function (value) { options = value; },
+    path, os, process: { env: {} }, crypto: { randomUUID: () => 'fixture-command' },
+    agentRegistry, invalidateSessionSnapshots: async () => {},
+  });
+  const target = { provider: 'codex', tmuxSession: 'research', threadId: 'thread-1', paneId: '%7' };
+  const guard = () => true;
+  await options.send(target, 'Setup', guard, { requireIdle: false, nonInterrupting: true });
+  await options.send(target, 'Round', guard, { requireIdle: true, nonInterrupting: true });
+  await options.stop(target, guard);
+  assert.deepEqual(sends.map(value => value.requireIdle), [false, true]);
+  for (const value of [...sends, ...stops]) {
+    assert.equal(value.provider, 'codex'); assert.equal(value.sessionName, 'research');
+    assert.equal(value.threadId, 'thread-1'); assert.equal(value.expectedPaneId, '%7');
+    assert.equal(value.isCurrent, guard);
+  }
+  assert.equal(sends.every(value => value.nonInterrupting), true);
+  assert.equal(stops[0].waitForIdle, true);
+});
 
 test('isolated server restores autonomy paused and exposes it only to the owner API', { timeout: 15_000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-autonomy-server-'));

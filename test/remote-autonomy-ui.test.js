@@ -50,3 +50,18 @@ test('A opens a pending native question without automatically answering or pausi
   await f.context.toggleAutonomy();
   assert.deepEqual(f.calls, [{ type: 'native-dialog' }]);
 });
+
+test('a failed switch displays its reason for the current session, not another session', () => {
+  const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'report' };
+  const messages = []; const runs = new Map();
+  const context = vm.createContext({ state: { autonomyRuns: runs }, autonomyKey,
+    currentAutonomy: () => runs.get(autonomyKey(target)), renderComposerState() {},
+    setLiveMessage: text => messages.push(text),
+  });
+  const start = source.indexOf('function handleSocketMessage(');
+  vm.runInContext(source.slice(start, start + source.slice(start).search(/^}$/m) + 1), context);
+  const reason = '旧任务仍有后台执行，新目标未启动';
+  context.handleSocketMessage({ type: 'autonomyState', run: { target, status: 'paused', reason } });
+  context.handleSocketMessage({ type: 'autonomyState', run: { target: { ...target, tmuxSession: 'other' }, status: 'paused', reason: 'Other failure' } });
+  assert.deepEqual(messages, [reason]);
+});

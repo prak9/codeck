@@ -33,11 +33,19 @@ function reset(provider) {
     status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [], dismissed: new Set() };
   if (provider === 'codex') fixture.recovery = createFixtureRecovery();
   fixture.autonomySent = [];
+  fixture.autonomyStops = 0;
   fixture.autonomy = new AutonomyController({
     schedule: () => 1, cancel() {},
     readSession: async () => ({ name: 'fixture', hasRunningProcess: fixture.status === 'working',
-      agent: { kind: provider, id: 'fixture-thread', paneId: '%7', question: fixture.question } }),
+      agent: { kind: provider, id: 'fixture-thread', paneId: '%7', question: fixture.question,
+        hasBackgroundProcess: fixture.status === 'background' } }),
     readThread: async () => ({ thread: thread() }),
+    stop: async (_target, guard) => {
+      assert.equal(guard(), true); fixture.autonomyStops++;
+      if (fixture.holdAutonomyStop) await new Promise(resolve => { fixture.finishStop = resolve; });
+      if (fixture.failAutonomyStop) { fixture.failAutonomyStop = false; throw new Error('旧任务未停止，新目标未启动'); }
+      fixture.status = 'done'; publishSessions();
+    },
     send: async (_target, text, guard) => {
       assert.equal(guard(), true);
       fixture.autonomySent.push(text);
@@ -552,19 +560,15 @@ try {
       assert.equal(await auto.locator('.autonomy-icon').textContent(), 'A');
       assert.equal(await auto.locator('#autonomyStatus').textContent(), '');
       await page.locator('#composerInput').fill('保留自主配置前的草稿');
-      fixture.status = 'working'; publishSessions();
+      fixture.holdAutonomyConfig = true;
+      fixture.status = viewport.width < 500 ? 'background' : 'working'; publishSessions();
       await auto.click();
       const dialog = page.locator('#autonomyDialog');
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '等空闲');
-      assert.match(await auto.getAttribute('aria-label'), /取消等待自主配置/);
-      assert.equal(fixture.autonomySent.length, 0, 'starting A must not interrupt a busy Agent');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '配置中');
+      assert.match(await auto.getAttribute('aria-label'), /暂停自主配置/);
+      assert.equal(fixture.autonomySent.length, 1, 'A sends configuration even while foreground/background work runs');
+      assert.equal(fixture.autonomyStops, 0, 'configuration must not cancel the old task');
       assert.equal(await dialog.evaluate(node => node.open), false);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-queued-config.png`) });
-      await auto.click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '已暂停');
-      await auto.click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '等空闲');
-      assert.equal(fixture.autonomySent.length, 0, 'cancelling and requeuing cannot submit into a busy Agent');
       if (provider === 'qodercli') {
         fixture.question = { id: 'autonomy-native-question', question: '是否执行终端操作？', options: [{ label: 'No' }, { label: 'Yes' }] };
         publishSessions(); await fixture.autonomy.tick();
@@ -579,10 +583,9 @@ try {
         await native.getByRole('button', { name: '回答并继续' }).click();
         await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
         await fixture.autonomy.tick();
-        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '等空闲');
-        assert.equal(fixture.autonomySent.length, 0);
+        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '配置中');
+        assert.equal(fixture.autonomySent.length, 1);
       }
-      fixture.holdAutonomyConfig = true; fixture.status = 'done'; publishSessions();
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '配置中');
       assert.match(await auto.getAttribute('aria-label'), /暂停自主配置/);
@@ -620,6 +623,9 @@ try {
       await page.reload();
       await dialog.getByRole('heading', { name: '确认自主目标' }).waitFor();
       assert.equal(fixture.autonomySent.length, 2, 'recovering a proposal must not resend setup');
+      assert.equal(fixture.autonomyStops, 0);
+      await dialog.getByText('确认停止旧任务，按此目标和预算执行？', { exact: true }).waitFor();
+      fixture.holdAutonomyStop = true; fixture.failAutonomyStop = true; fixture.status = 'working'; publishSessions();
       // Keep explicit choice confirmation covered on desktop; mobile uses A itself.
       if (viewport.width < 500) {
         await page.keyboard.press('Escape');
@@ -630,7 +636,17 @@ try {
         await dialog.getByRole('radio', { name: '按此目标开始', exact: true }).check();
         await dialog.getByRole('button', { name: '确认选择' }).click();
       }
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 切换中');
+      assert.equal(fixture.autonomySent.length, 2, 'new goal cannot start until old work is stopped');
+      assert.equal(fixture.autonomyStops, 1);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-switching.png`) });
+      fixture.holdAutonomyStop = false; fixture.finishStop();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 已暂停');
+      await page.locator('#liveStatus').getByText('自主任务已暂停：旧任务未停止，新目标未启动', { exact: true }).waitFor();
+      assert.equal(fixture.autonomySent.length, 2, 'failed cancellation spends no round and dispatches no work');
+      await auto.click();
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      assert.equal(fixture.autonomyStops, 2, 'only explicit retry can attempt cancellation again');
       assert.equal(await page.inputValue('#composerInput'), viewport.width < 500 ? '保留确认前草稿' : '');
       assert.equal(await auto.getAttribute('aria-pressed'), 'true');
       const box = await auto.boundingBox(); assert.ok(box.width >= 44 && box.height >= 44);

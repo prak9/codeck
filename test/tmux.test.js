@@ -28,6 +28,22 @@ test('progress input preserves Codex native queue without forcing Escape or clea
   }
 });
 
+test('research setup can be sent with background terminals and a stalled Goal without interrupting', async () => {
+  const commands = []; let pasted = false;
+  const footer = '2 background terminals running · /ps to view · /stop to close\n\n» \n\n  gpt-6-astra ultra · ~/py     Goal stalled (/goal resume)';
+  const result = await sendSessionMessage({ provider: 'codex', sessionName: 'research', threadId: 'thread-1',
+    expectedPaneId: '%7', text: '请确认自主目标', requireIdle: false, nonInterrupting: true, isCurrent: () => true,
+  }, {
+    listTmuxSessions: async () => [{ name: 'research', hasRunningProcess: false,
+      agent: { kind: 'codex', id: 'thread-1', paneId: '%7', hasBackgroundProcess: true } }],
+    capturePane: async () => pasted ? `» 请确认自主目标\n${footer}` : footer,
+    execTmux: async args => { commands.push(args); if (args.includes('paste-buffer')) pasted = true; },
+    loadBuffer: async () => {}, waitForPaste: async () => {}, waitForSubmit: async () => {},
+  });
+  assert.equal(result.submissionStatus, 'submitted');
+  assert.equal(commands.some(args => args.some(key => ['Escape', 'C-c', 'C-u', 'C-k'].includes(key))), false);
+});
+
 test('pausing an autonomous write during paste prevents Enter for every provider', async () => {
   for (const provider of ['codex', 'claude', 'qodercli']) {
     let current = true; const commands = [];
@@ -1365,6 +1381,55 @@ test('interrupts the exact verified Agent pane with Escape', async () => {
   });
   assert.deepEqual(listOptions, { refreshAgentIdentities: true, refreshPaneSession: 'work' });
   assert.deepEqual(calls, [['invalidate', 'work'], ['send-keys', '-t', '%42', 'Escape']]);
+});
+
+test('goal switching interrupts once and verifies the exact Agent pane has stopped', async () => {
+  for (const provider of ['codex', 'claude', 'qodercli']) {
+    const commands = []; let busy = true; let waits = 0;
+    await interruptSession({ provider, sessionName: 'work', threadId: 'thread-1',
+      expectedPaneId: '%7', isCurrent: () => true, waitForIdle: true,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: busy,
+        agent: { kind: provider, id: 'thread-1', paneId: '%7' } }],
+      execTmux: async args => commands.push(args),
+      waitForStop: async () => { waits++; busy = false; },
+    });
+    assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']], provider);
+    assert.equal(waits, 1, provider);
+  }
+});
+
+test('goal switching preserves unrelated background tasks and rejects stale cancellation without keys', async () => {
+  for (const scenario of ['background', 'cancelled', 'replaced', 'idle']) {
+    const commands = [];
+    const stopped = interruptSession({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+      expectedPaneId: '%7', isCurrent: () => scenario !== 'cancelled', waitForIdle: true,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: scenario !== 'idle',
+        agent: { kind: 'codex', id: 'thread-1', paneId: scenario === 'replaced' ? '%8' : '%7',
+          hasBackgroundProcess: scenario === 'background' } }],
+      execTmux: async args => commands.push(args), waitForStop: async () => {},
+    });
+    if (scenario === 'idle') await stopped;
+    else await assert.rejects(stopped, /后台|暂停|变化/);
+    assert.deepEqual(commands, [], scenario);
+  }
+});
+
+test('goal switching fails closed on timeout, replacement, background work or pause during stop', async () => {
+  for (const scenario of ['timeout', 'replacement', 'background', 'pause']) {
+    const commands = []; let waits = 0;
+    await assert.rejects(interruptSession({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+      expectedPaneId: '%7', isCurrent: () => scenario !== 'pause' || !waits, waitForIdle: true,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: true,
+        agent: { kind: 'codex', id: 'thread-1', paneId: scenario === 'replacement' && waits ? '%8' : '%7',
+          hasBackgroundProcess: scenario === 'background' && waits > 0 } }],
+      execTmux: async args => commands.push(args), waitForStop: async () => { waits++; },
+    }), /停止|后台|变化|暂停/);
+    assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']], scenario);
+    assert.ok(waits <= 20, 'stop confirmation has a finite timeout');
+  }
 });
 
 test('sends shell input and Ctrl-C only to the exact verified shell pane', async () => {

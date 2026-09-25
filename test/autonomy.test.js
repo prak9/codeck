@@ -145,29 +145,94 @@ test('completion requires current final assistant evidence, not stale, tool or u
   await f.manager.tick(); assert.equal(f.state().status, 'completed'); assert.equal(f.state().round, 1);
 });
 
-test('busy startup waits and native questions never trigger automatic approval', async () => {
-  const f = fixture(); f.session.hasRunningProcess = true;
-  await f.manager.start(target); await f.manager.tick(); assert.equal(f.sent.length, 0);
-  f.session.hasRunningProcess = false; f.session.agent.question = { id: 'permission' };
+test('setup sends immediately while foreground or background work runs, without interrupting it', async () => {
+  for (const busy of ['foreground', 'background']) {
+    const f = fixture(); const policies = [];
+    const send = f.manager.send;
+    f.manager.send = (...args) => { policies.push(args[3]); return send(...args); };
+    f.session.hasRunningProcess = busy === 'foreground';
+    f.session.agent.hasBackgroundProcess = busy === 'background';
+    await f.manager.start(target); await f.manager.tick();
+    assert.equal(f.sent.length, 1, busy); assert.equal(f.state().round, 0);
+    assert.deepEqual(policies, [{ requireIdle: false, nonInterrupting: true }]);
+    assert.equal(autonomyPresentation(f.state()).detail, '配置中');
+    await f.manager.tick(); assert.equal(f.sent.length, 1, 'busy setup must not be resent');
+    f.session.hasRunningProcess = false;
+    f.reply({ status: 'ready', plan }); await f.manager.tick();
+    assert.equal(f.state().status, 'confirming', 'background work must not block setup results');
+  }
+});
+
+test('native questions block setup without automatic approval', async () => {
+  const f = fixture(); f.session.agent.question = { id: 'permission' };
+  await f.manager.start(target); await f.manager.tick();
   await f.manager.tick(); assert.equal(f.sent.length, 0);
   f.session.agent.question = null; await f.manager.tick(); assert.equal(f.sent.length, 1);
 });
 
-test('Qoder configuration distinguishes queued, preparing, questions and approval without starting work', async () => {
+test('new-goal approval stops old work before dispatch and never cancels during configuration', async () => {
+  const f = fixture(); const events = [];
+  f.manager.stop = async (actualTarget, guard) => {
+    assert.equal(actualTarget.paneId, '%7'); assert.equal(guard(), true);
+    assert.equal(f.state().round, 0); events.push('stop');
+    f.session.hasRunningProcess = false;
+  };
+  await f.ready(); assert.deepEqual(events, []);
+  f.session.hasRunningProcess = true;
+  const send = f.manager.send;
+  f.manager.send = (...args) => { events.push('round'); return send(...args); };
+  await f.manager.respond(target, { requestId: f.state().requestId, answers: { decision: ['按此目标开始'] } });
+  await f.manager.tick();
+  assert.deepEqual(events, ['stop', 'round']); assert.equal(f.state().round, 1);
+  f.reply({ status: 'continue', summary: 'One done', next: 'Next', progress: true });
+  await f.manager.tick(); await f.manager.tick();
+  assert.deepEqual(events, ['stop', 'round', 'round'], 'automatic continuation must not cancel its own work');
+});
+
+test('failed or unverified cancellation pauses new-goal execution without spending a round', async () => {
+  for (const scenario of ['failure', 'still-running', 'background', 'question', 'changed-pane']) {
+    const f = fixture(); await f.ready(); f.session.hasRunningProcess = true;
+    f.manager.stop = async () => {
+      if (scenario === 'failure') throw new Error('停止失败');
+      f.session.hasRunningProcess = scenario === 'still-running';
+      f.session.agent.hasBackgroundProcess = scenario === 'background';
+      if (scenario === 'question') f.session.agent.question = { id: 'old-permission' };
+      if (scenario === 'changed-pane') f.session.agent.paneId = '%8';
+    };
+    await f.manager.message(target, '开始'); await f.manager.tick();
+    assert.equal(f.state().status, 'paused', scenario); assert.equal(f.state().round, 0, scenario);
+    assert.equal(f.sent.length, 1, scenario);
+    await f.manager.tick(); assert.equal(f.sent.length, 1, 'failed cancellation is never retried automatically');
+  }
+});
+
+test('pause or direction change while stopping invalidates the new-goal dispatch', async () => {
+  for (const action of ['pause', 'redirect']) {
+    const f = fixture(); await f.ready(); let finish;
+    f.manager.stop = () => new Promise(resolve => { finish = resolve; });
+    await f.manager.message(target, '开始'); const tick = f.manager.tick();
+    for (let step = 0; !finish && step < 10; step++) await Promise.resolve();
+    assert.ok(finish);
+    if (action === 'pause') f.manager.pause(target);
+    else await f.manager.message(target, '换个目标，不要执行');
+    finish(); await tick;
+    assert.equal(f.state().round, 0); assert.equal(f.sent.length, 1);
+    assert.equal(f.state().status, action === 'pause' ? 'paused' : 'configuring');
+  }
+});
+
+test('Qoder configuration sends while busy and distinguishes preparing, questions and approval', async () => {
   const qoderTarget = { ...target, provider: 'qodercli' };
   const f = fixture(); f.session.agent.kind = 'qodercli'; f.session.hasRunningProcess = true;
   const state = () => f.manager.snapshot(qoderTarget);
   await f.manager.start(qoderTarget); await f.manager.tick();
-  assert.equal(state().configurationQueued, true);
-  assert.equal(autonomyPresentation(state()).detail, '等空闲');
-  assert.equal(autonomyPresentation(state()).label, '取消等待自主配置');
-  assert.equal(f.sent.length, 0); assert.equal(state().round, 0);
+  assert.equal(autonomyPresentation(state()).detail, '配置中');
+  assert.equal(autonomyPresentation(state()).label, '暂停自主配置');
+  assert.equal(f.sent.length, 1); assert.equal(state().round, 0);
   assert.equal('pending' in state(), false); assert.equal('exchange' in state(), false);
   f.manager.pause(qoderTarget); f.session.hasRunningProcess = false;
-  await f.manager.tick(); assert.equal(f.sent.length, 0, 'cancelling queued setup cannot send it later');
-  assert.equal(state().configurationQueued, false);
+  await f.manager.tick(); assert.equal(f.sent.length, 1, 'pausing setup cannot send it again');
   await f.manager.start(qoderTarget); await f.manager.tick();
-  assert.equal(state().configurationQueued, false);
   assert.equal(autonomyPresentation(state()).detail, '配置中');
   assert.equal(autonomyPresentation(state()).label, '暂停自主配置');
   f.reply({ status: 'ask', questions: [{ id: 'goal', header: '目标', question: '推进哪项？', options: ['修复选择器', '只定位'] }] });
@@ -176,13 +241,17 @@ test('Qoder configuration distinguishes queued, preparing, questions and approva
   await f.manager.respond(qoderTarget, { requestId: state().requestId, answers: { goal: ['修复选择器'] } });
   await f.manager.tick(); f.reply({ status: 'ready', plan }); await f.manager.tick();
   assert.equal(autonomyPresentation(state()).detail, '0/3 待确认');
-  await f.manager.tick(); assert.equal(state().round, 0); assert.equal(f.sent.length, 2);
+  await f.manager.tick(); assert.equal(state().round, 0); assert.equal(f.sent.length, 3);
 });
 
 test('native question dismissal restores the queued or in-flight phase even while the Agent is busy', async () => {
   for (const phase of ['config-queued', 'config-sent', 'round-queued', 'round-sent']) {
     const f = fixture();
-    if (phase.startsWith('round')) { await f.ready(); await f.manager.message(target, '开始'); }
+    if (phase.startsWith('round')) {
+      await f.run();
+      f.reply({ status: 'continue', summary: 'Next', next: 'Continue', progress: true });
+      await f.manager.tick();
+    }
     else await f.manager.start(target);
     if (phase.endsWith('sent')) await f.manager.tick();
     const sends = f.sent.length;
@@ -193,7 +262,8 @@ test('native question dismissal restores the queued or in-flight phase even whil
     await f.manager.tick();
     assert.equal(f.state().status, phase.startsWith('config') ? 'configuring'
       : phase.endsWith('queued') ? 'queued' : 'running', phase);
-    assert.equal(f.sent.length, sends, 'clearing a native question cannot dispatch into a busy Agent');
+    assert.equal(f.sent.length, sends + (phase === 'config-queued' ? 1 : 0),
+      'clearing a question can send setup into a busy Agent, never an execution round');
   }
 });
 
@@ -327,9 +397,30 @@ test('restart restores paused state without replaying uncertain side effects', a
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('restart during cancellation never repeats the stop or starts the new goal', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-autonomy-switch-test-'));
+  try {
+    const file = path.join(dir, 'runs.json'); const f = fixture({ file }); await f.ready();
+    let finish;
+    f.manager.stop = () => new Promise(resolve => { finish = resolve; });
+    await f.manager.message(target, '开始'); const tick = f.manager.tick();
+    for (let step = 0; !finish && step < 10; step++) await Promise.resolve();
+    assert.ok(finish); assert.equal(f.state().status, 'switching');
+    f.manager.close();
+    const restored = fixture({ file, stop: async () => assert.fail('must not replay cancellation') });
+    await restored.manager.tick();
+    assert.equal(restored.state().status, 'paused'); assert.equal(restored.state().round, 0);
+    assert.deepEqual(restored.sent, []);
+    finish(); await tick; assert.equal(f.sent.length, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('compact autonomy presentation and hidden protocol retain human-facing conversation', () => {
   assert.equal(autonomyPresentation(null).text, 'Ⓐ');
   assert.equal(autonomyPresentation({ status: 'configuring' }).text, 'Ⓐ 配置中');
+  assert.equal(autonomyPresentation({ status: 'configuring', configurationQueued: true }).text, 'Ⓐ 配置中');
+  assert.equal(autonomyPresentation({ status: 'switching', round: 0, plan }).text, 'Ⓐ 0/3 切换中');
+  assert.equal(autonomyPresentation({ status: 'switching' }).active, true);
   assert.equal(autonomyPresentation({ status: 'running', round: 2, plan }).text, 'Ⓐ 2/3');
   assert.match(autonomyPresentation({ status: 'paused', round: 2, plan }).text, /2\/3 已暂停/);
   assert.notEqual(autonomyKey(target), autonomyKey({ ...target, threadId: 'another' }));

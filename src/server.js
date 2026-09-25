@@ -355,12 +355,16 @@ const autonomy = new AutonomyController({
   readThread: target => agentRegistry.openThread(target.provider, target.threadId, {
     readOnly: true, turnLimit: 20, deferCompactionRestore: target.provider === 'qodercli',
   }),
-  send: async (target, text, isCurrent) => {
+  stop: (target, isCurrent) => agentRegistry.interruptSession(target.provider, {
+    sessionName: target.tmuxSession, threadId: target.threadId,
+    expectedPaneId: target.paneId, isCurrent, waitForIdle: true,
+  }),
+  send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true } = {}) => {
     const commandId = crypto.randomUUID();
     const deliveryBaseline = await agentRegistry.prepareSessionMessage(target.provider, { threadId: target.threadId, text, commandId });
     const result = await agentRegistry.sendSessionMessage(target.provider, {
       sessionName: target.tmuxSession, threadId: target.threadId, text, isCurrent,
-      expectedPaneId: target.paneId, requireIdle: true,
+      expectedPaneId: target.paneId, requireIdle, nonInterrupting,
     });
     agentRegistry.recordSessionMessage(target.provider, { threadId: target.threadId, text, commandId, deliveryBaseline,
       submissionStatus: result?.submissionStatus === 'unconfirmed' ? 'unconfirmed' : 'submitted' });

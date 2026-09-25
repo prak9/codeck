@@ -32,7 +32,7 @@ import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsComm
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=4';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=5';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -704,6 +704,9 @@ function handleSocketMessage(message) {
   if (message.type === 'autonomyState' && message.run?.target) {
     state.autonomyRuns.set(autonomyKey(message.run.target), message.run);
     renderComposerState();
+    if (currentAutonomy() === message.run && message.run.status === 'paused' && message.run.reason) {
+      setLiveMessage(message.run.reason);
+    }
     return;
   }
   if (message.type === 'ready') {
@@ -2861,7 +2864,7 @@ function autonomyQuestionEntry() {
   const run = currentAutonomy();
   if (!run?.requestId || !['configuring', 'confirming'].includes(run.status)) return null;
   const questions = run.status === 'confirming' && run.proposal ? [{ id: 'decision', header: '下一步',
-    question: '是否按这个目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
+    question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
   if (!questions?.length) return null;
   return { autonomy: true, provider: run.target.provider, tmuxSession: run.target.tmuxSession,
     plan: run.status === 'confirming' ? run.proposal : null, round: run.round,
@@ -2903,7 +2906,7 @@ async function toggleAutonomy() {
     });
     if (result.autonomy) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
     if (state.provider === target.provider && state.thread?.id === target.threadId && state.thread?.tmux?.name === target.tmuxSession) {
-      setLiveMessage('');
+      setLiveMessage(result.autonomy?.status === 'paused' ? result.autonomy.reason : '');
       if (!active) $('#composerInput').focus({ preventScroll: true });
     }
   } catch (error) { setLiveMessage(error.message); }

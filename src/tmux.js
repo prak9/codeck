@@ -1722,16 +1722,36 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   });
 }
 
-export async function interruptSession({ provider, sessionName, threadId }, overrides = {}) {
+export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false }, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
+    if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未取消旧任务');
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
-    const { paneId } = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+    const { paneId, session } = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+    const check = (currentPane, currentSession) => {
+      if ((isCurrent && !isCurrent()) || currentPane !== paneId || (expectedPaneId && currentPane !== expectedPaneId)) {
+        throw new Error('自主任务或会话已变化，已停止切换');
+      }
+      if (waitForIdle && currentSession.agent?.hasBackgroundProcess) {
+        throw new Error('旧任务仍有后台执行，新目标未启动；请先停止后台任务后再次确认');
+      }
+      return !currentSession.hasRunningProcess && !currentSession.agent?.question;
+    };
+    const idle = check(paneId, session);
+    if (waitForIdle && idle) return;
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
+    if (!waitForIdle) return;
+    const waitForStop = overrides.waitForStop || (() => new Promise(resolve => setTimeout(resolve, 250)));
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await waitForStop();
+      const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+      if (check(current.paneId, current.session)) return;
+    }
+    throw new Error('无法确认旧任务已停止，新目标未启动；请检查终端后重试');
   });
 }
 

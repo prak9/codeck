@@ -4,7 +4,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { autonomyKey, isProgressPrompt, AUTONOMY_DECISIONS } from '../public/remote-autonomy.js';
 
-const ACTIVE = new Set(['configuring', 'confirming', 'queued', 'running', 'waiting', 'blocked']);
+const ACTIVE = new Set(['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked']);
 const TERMINAL = new Set(['completed', 'limit']);
 const CONFIRM = /^(?:开始|开始执行|确认|确认开始|确认执行|继续|继续执行|按你建议的来|按你的建议来|就按这个来)[。！!\s]*$/u;
 const PAUSE = /^(?:暂停|停止|先暂停|先停止)[。！!\s]*$/u;
@@ -83,7 +83,7 @@ function exchangePrompt(run, kind, text, nonce) {
 预算中的费用/token仅是参考，无法精确计量时必须明确说明。轮数和截止时间由 Codeck 控制。
 上下文：${JSON.stringify(context)}`;
   const instruction = kind === 'config'
-    ? `当前是配置，不要开始实际工作。主动询问用户目标、完成标准、预算（轮数/时间/费用）及偏好（质量/速度、汇报频率、必须询问的边界）。将理解的目标拆成具体子目标及各自完成标准，不用笼统概括替代。只补问缺失信息，给出建议默认值（5轮），不要反复填问卷。
+    ? `当前是配置，不要开始新目标的实际工作，也不要取消旧任务；只有用户确认执行新目标后才切换。主动询问用户目标、完成标准、预算（轮数/时间/费用）及偏好（质量/速度、汇报频率、必须询问的边界）。将理解的目标拆成具体子目标及各自完成标准，不用笼统概括替代。只补问缺失信息，给出建议默认值（5轮），不要反复填问卷。
 信息不足时用弹窗选择题询问，基于已有对话提供具体目标/预算/偏好选项，不要求用户重写上下文。每次1–3题，每题2–4项，最推荐的放第一项；Codeck自动提供自定义回答。输出 {"nonce":"${nonce}","status":"ask","questions":[{"id":"goal","header":"目标","question":"这次推进哪项具体目标？","options":[{"label":"具体目标一","description":"完成标准"},{"label":"具体目标二","description":"完成标准"}]}]}。id用字母数字或短横线，勿调用原生提问工具替代此协议。
 信息齐全时简短总结约定，Codeck会弹窗让用户确认；输出 {"nonce":"${nonce}","status":"ready","plan":{"goal":"具体拆解的目标","acceptance":"逐项完成标准","maxRounds":5,"minutes":null,"preferences":"偏好和权限边界","advisoryBudget":"参考费用/token预算或空字符串"}}。maxRounds 是总上限，包含已使用的 ${run.round} 轮，调整方向不能偷偷增加预算。`
     : `执行第 ${run.round}/${run.plan.maxRounds} 轮。只推进已确认目标，验证结果；完成就结束，不为凑轮次增加任务。
@@ -93,9 +93,9 @@ function exchangePrompt(run, kind, text, nonce) {
 }
 
 export class AutonomyController extends EventEmitter {
-  constructor({ readSession, readThread, send, file, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ readSession, readThread, send, stop, file, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
     super();
-    Object.assign(this, { readSession, readThread, send, file, now, schedule, cancel });
+    Object.assign(this, { readSession, readThread, send, stop, file, now, schedule, cancel });
     this.runs = new Map(); this.timer = null; this.polls = new Map(); this.closed = false;
     if (file && fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -115,7 +115,7 @@ export class AutonomyController extends EventEmitter {
     const run = this.runs.get(autonomyKey(target));
     if (!run) return null;
     const { exchange, pending, paneId, idleSince, ...view } = run;
-    return structuredClone({ ...view, configurationQueued: pending?.kind === 'config' });
+    return structuredClone(view);
   }
   snapshots() { return [...this.runs.values()].map(run => this.snapshot(run.target)); }
   restoreProposal(target, thread) {
@@ -212,7 +212,8 @@ export class AutonomyController extends EventEmitter {
       run.plan = run.proposal || run.plan; run.proposal = null;
       if (run.startedAt === null) run.startedAt = this.now();
       run.deadline = run.plan.minutes == null ? null : run.startedAt + run.plan.minutes * 60_000;
-      run.status = 'queued'; run.pending = { kind: 'round', text: '按已确认的目标和预算继续自主迭代。' };
+      run.status = 'queued'; run.pending = { kind: 'round', replaceTask: true,
+        text: '旧任务已取消，不再继续旧方向。只按本次确认的目标和预算执行自主迭代。' };
     } else {
       run.status = 'configuring'; run.proposal = null;
       run.confirmAfterConfig = /(?:，|,|。|\s)(?:继续|继续执行)[。！!\s]*$/u.test(text.trim())
@@ -272,7 +273,7 @@ export class AutonomyController extends EventEmitter {
   async poll(run) {
     const exchange = run.exchange; const pending = run.pending;
     const current = () => !this.closed && ACTIVE.has(run.status) && run.exchange === exchange && run.pending === pending;
-    const session = await this.readSession(run.target).catch(error => { if (current()) throw error; });
+    let session = await this.readSession(run.target).catch(error => { if (current()) throw error; });
     if (!current()) return;
     if (!this.sameSession(run, session)) { this.pause(run.target, '会话身份或 pane 已变化'); return; }
     if (run.deadline != null && this.now() >= run.deadline) { this.limit(run); return; }
@@ -285,9 +286,24 @@ export class AutonomyController extends EventEmitter {
         : pending ? 'queued' : exchange ? 'running' : 'waiting';
       this.changed(run);
     }
-    if (session.hasRunningProcess) { run.idleSince = null; return; }
+    if (pending?.replaceTask) {
+      if (this.limit(run)) return;
+      run.status = 'switching'; this.changed(run);
+      await this.stop?.({ ...run.target, paneId: run.paneId }, current)
+        .catch(error => { if (current()) throw error; });
+      if (!current()) return;
+      session = await this.readSession(run.target).catch(error => { if (current()) throw error; });
+      if (!current()) return;
+      if (!this.sameSession(run, session)) { this.pause(run.target, '会话身份或 pane 已变化'); return; }
+      if (session.hasRunningProcess || session.agent.hasBackgroundProcess || session.agent.question) {
+        this.pause(run.target, '旧任务尚未停止，新目标未启动；请先停止旧任务后再次确认'); return;
+      }
+      pending.replaceTask = false;
+      run.status = 'queued'; this.changed(run);
+    }
+    if (session.hasRunningProcess && pending?.kind !== 'config') { run.idleSince = null; return; }
     if (pending) {
-      if (session.agent.hasBackgroundProcess) return;
+      if (pending.kind === 'round' && session.agent.hasBackgroundProcess) return;
       if (pending.kind === 'round' && this.limit(run)) return;
       const nonce = crypto.randomUUID();
       if (pending.kind === 'round') run.round += 1;
@@ -296,7 +312,9 @@ export class AutonomyController extends EventEmitter {
       run.idleSince = null;
       this.changed(run); // Durable reservation precedes any terminal side effect.
       const guard = () => !this.closed && ACTIVE.has(run.status) && run.exchange === next;
-      const result = await this.send({ ...run.target, paneId: run.paneId }, next.text, guard)
+      const result = await this.send({ ...run.target, paneId: run.paneId }, next.text, guard, {
+        requireIdle: pending.kind === 'round', nonInterrupting: true,
+      })
         .catch(error => { if (guard()) throw error; });
       if (!guard()) return;
       if (result?.submissionStatus === 'unconfirmed') this.pause(run.target, '发送未确认，请检查终端；不会自动重发');

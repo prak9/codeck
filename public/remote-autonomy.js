@@ -14,10 +14,10 @@ export function autonomyKey({ provider, threadId, tmuxSession }) {
 
 export function autonomyPresentation(run) {
   const needsAnswer = Boolean(run?.requestId && run?.questions?.length);
-  const labels = { configuring: run?.configurationQueued ? '等空闲' : needsAnswer ? '待回答' : '配置中',
-    confirming: '待确认', queued: '待执行', waiting: '等待中',
+  const labels = { configuring: needsAnswer ? '待回答' : '配置中',
+    confirming: '待确认', switching: '切换中', queued: '待执行', waiting: '等待中',
     blocked: '待处理', paused: '已暂停', completed: '已完成', limit: '已达上限' };
-  const active = ['configuring', 'confirming', 'queued', 'running', 'waiting', 'blocked'].includes(run?.status);
+  const active = ['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked'].includes(run?.status);
   const budget = run?.plan || run?.proposal;
   const count = budget ? `${run.round}/${budget.maxRounds}` : '';
   return {
@@ -25,7 +25,7 @@ export function autonomyPresentation(run) {
     detail: [count, labels[run?.status]].filter(Boolean).join(' '),
     active,
     label: run?.status === 'configuring'
-      ? run.configurationQueued ? '取消等待自主配置' : needsAnswer ? '回答自主配置问题' : '暂停自主配置'
+      ? needsAnswer ? '回答自主配置问题' : '暂停自主配置'
       : active ? '暂停自主迭代' : run?.status === 'paused' ? '继续自主迭代' : '配置自主迭代',
   };
 }
