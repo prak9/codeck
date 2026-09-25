@@ -9,7 +9,7 @@ const TERMINAL = new Set(['completed', 'limit']);
 const CONFIRM = /^(?:开始|开始执行|确认|确认开始|确认执行|继续|继续执行|按你建议的来|按你的建议来|就按这个来)[。！!\s]*$/u;
 const PAUSE = /^(?:暂停|停止|先暂停|先停止)[。！!\s]*$/u;
 const needsPoll = run => ACTIVE.has(run.status) && Boolean(run.paneId)
-  && Boolean(run.pending || run.exchange || run.status === 'waiting');
+  && Boolean(run.pending || run.exchange || run.status === 'waiting' || run.status === 'blocked');
 
 function targetIsValid(target) {
   return ['codex', 'claude', 'qodercli'].includes(target?.provider)
@@ -115,7 +115,7 @@ export class AutonomyController extends EventEmitter {
     const run = this.runs.get(autonomyKey(target));
     if (!run) return null;
     const { exchange, pending, paneId, idleSince, ...view } = run;
-    return structuredClone(view);
+    return structuredClone({ ...view, configurationQueued: pending?.kind === 'config' });
   }
   snapshots() { return [...this.runs.values()].map(run => this.snapshot(run.target)); }
   restoreProposal(target, thread) {
@@ -279,6 +279,11 @@ export class AutonomyController extends EventEmitter {
     if (session.agent.question) {
       if (run.status !== 'blocked') { run.status = 'blocked'; this.changed(run); }
       return;
+    }
+    if (run.status === 'blocked') {
+      run.status = (pending || exchange)?.kind === 'config' ? 'configuring'
+        : pending ? 'queued' : exchange ? 'running' : 'waiting';
+      this.changed(run);
     }
     if (session.hasRunningProcess) { run.idleSince = null; return; }
     if (pending) {

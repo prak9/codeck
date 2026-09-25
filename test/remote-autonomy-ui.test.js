@@ -11,6 +11,8 @@ function fixture(status, question) {
   const context = vm.createContext({ state, autonomyKey, autonomyPresentation, AUTONOMY_DECISIONS,
     crypto: { randomUUID: () => 'confirm-command' },
     $: () => button, currentAutonomy: () => ({ status }), autonomyQuestionEntry: () => question,
+    currentThreadWaitingForInput: () => false,
+    focusPendingAgentRequest: () => calls.push({ type: 'native-dialog' }),
     renderComposerState: () => { button.disabled = state.autonomyPending; },
     setLiveMessage() {}, syncAutonomyDialog: () => calls.push({ type: 'dialog' }),
     agentRequest: async (type, payload) => { calls.push({ type, payload }); return {}; },
@@ -35,4 +37,16 @@ test('A still opens missing-information choices and pauses an executing run', as
   await ask.context.toggleAutonomy(); assert.deepEqual(ask.calls, [{ type: 'dialog' }]);
   const running = fixture('running', null); await running.context.toggleAutonomy();
   assert.equal(running.calls[0].type, 'pauseAutonomy');
+});
+
+test('A cancels queued configuration without approving or starting work', async () => {
+  const f = fixture('configuring', null); await f.context.toggleAutonomy();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].type, 'pauseAutonomy');
+});
+
+test('A opens a pending native question without automatically answering or pausing it', async () => {
+  const f = fixture('blocked', null);
+  f.context.currentThreadWaitingForInput = () => true;
+  await f.context.toggleAutonomy();
+  assert.deepEqual(f.calls, [{ type: 'native-dialog' }]);
 });

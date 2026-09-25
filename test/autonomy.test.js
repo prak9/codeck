@@ -154,6 +154,62 @@ test('busy startup waits and native questions never trigger automatic approval',
   f.session.agent.question = null; await f.manager.tick(); assert.equal(f.sent.length, 1);
 });
 
+test('Qoder configuration distinguishes queued, preparing, questions and approval without starting work', async () => {
+  const qoderTarget = { ...target, provider: 'qodercli' };
+  const f = fixture(); f.session.agent.kind = 'qodercli'; f.session.hasRunningProcess = true;
+  const state = () => f.manager.snapshot(qoderTarget);
+  await f.manager.start(qoderTarget); await f.manager.tick();
+  assert.equal(state().configurationQueued, true);
+  assert.equal(autonomyPresentation(state()).detail, '等空闲');
+  assert.equal(autonomyPresentation(state()).label, '取消等待自主配置');
+  assert.equal(f.sent.length, 0); assert.equal(state().round, 0);
+  assert.equal('pending' in state(), false); assert.equal('exchange' in state(), false);
+  f.manager.pause(qoderTarget); f.session.hasRunningProcess = false;
+  await f.manager.tick(); assert.equal(f.sent.length, 0, 'cancelling queued setup cannot send it later');
+  assert.equal(state().configurationQueued, false);
+  await f.manager.start(qoderTarget); await f.manager.tick();
+  assert.equal(state().configurationQueued, false);
+  assert.equal(autonomyPresentation(state()).detail, '配置中');
+  assert.equal(autonomyPresentation(state()).label, '暂停自主配置');
+  f.reply({ status: 'ask', questions: [{ id: 'goal', header: '目标', question: '推进哪项？', options: ['修复选择器', '只定位'] }] });
+  await f.manager.tick();
+  assert.equal(autonomyPresentation(state()).detail, '待回答');
+  await f.manager.respond(qoderTarget, { requestId: state().requestId, answers: { goal: ['修复选择器'] } });
+  await f.manager.tick(); f.reply({ status: 'ready', plan }); await f.manager.tick();
+  assert.equal(autonomyPresentation(state()).detail, '0/3 待确认');
+  await f.manager.tick(); assert.equal(state().round, 0); assert.equal(f.sent.length, 2);
+});
+
+test('native question dismissal restores the queued or in-flight phase even while the Agent is busy', async () => {
+  for (const phase of ['config-queued', 'config-sent', 'round-queued', 'round-sent']) {
+    const f = fixture();
+    if (phase.startsWith('round')) { await f.ready(); await f.manager.message(target, '开始'); }
+    else await f.manager.start(target);
+    if (phase.endsWith('sent')) await f.manager.tick();
+    const sends = f.sent.length;
+    f.session.agent.question = { id: 'permission' };
+    await f.manager.tick(); assert.equal(f.state().status, 'blocked', phase);
+    assert.match(autonomyPresentation(f.state()).detail, /待处理/);
+    f.session.agent.question = null; f.session.hasRunningProcess = true;
+    await f.manager.tick();
+    assert.equal(f.state().status, phase.startsWith('config') ? 'configuring'
+      : phase.endsWith('queued') ? 'queued' : 'running', phase);
+    assert.equal(f.sent.length, sends, 'clearing a native question cannot dispatch into a busy Agent');
+  }
+});
+
+test('a native question during background wait does not permanently stop autonomy polling', async () => {
+  const f = fixture(); await f.run(); f.session.agent.hasBackgroundProcess = true;
+  f.reply({ status: 'wait', summary: 'Training', next: 'Check result', progress: true });
+  await f.manager.tick();
+  f.session.agent.question = { id: 'permission' }; await f.manager.tick();
+  assert.equal(f.state().status, 'blocked');
+  f.session.agent.question = null; await f.manager.tick();
+  assert.equal(f.state().status, 'waiting'); assert.equal(f.sent.length, 2);
+  f.session.agent.hasBackgroundProcess = false; await f.manager.tick(); await f.manager.tick();
+  assert.equal(f.state().round, 2); assert.equal(f.sent.length, 3);
+});
+
 test('pause cancels a continuation already waiting on a read and keeps spent rounds', async () => {
   const f = fixture(); await f.run();
   f.reply({ status: 'continue', summary: 'Tested', next: 'Fix remaining', progress: true });
@@ -274,6 +330,7 @@ test('restart restores paused state without replaying uncertain side effects', a
 
 test('compact autonomy presentation and hidden protocol retain human-facing conversation', () => {
   assert.equal(autonomyPresentation(null).text, 'Ⓐ');
+  assert.equal(autonomyPresentation({ status: 'configuring' }).text, 'Ⓐ 配置中');
   assert.equal(autonomyPresentation({ status: 'running', round: 2, plan }).text, 'Ⓐ 2/3');
   assert.match(autonomyPresentation({ status: 'paused', round: 2, plan }).text, /2\/3 已暂停/);
   assert.notEqual(autonomyKey(target), autonomyKey({ ...target, threadId: 'another' }));

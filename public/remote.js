@@ -32,7 +32,7 @@ import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsComm
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=2';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -2443,7 +2443,8 @@ function renderComposerState() {
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
   $('#autonomyStatus').textContent = presentation.detail;
   const autonomyQuestion = autonomyQuestionEntry();
-  if (autonomyQuestion) autonomyButton.setAttribute('aria-label', autonomyQuestion.plan ? '确认并执行自主任务' : '设置自主目标');
+  if (autonomyQuestion) autonomyButton.setAttribute('aria-label', autonomyQuestion.plan ? '确认并执行自主任务' : '回答自主配置问题');
+  if (waitingForInput) autonomyButton.setAttribute('aria-label', '处理 Agent 等待的问题');
   autonomyButton.title = autonomyButton.getAttribute('aria-label');
   syncAutonomyDialog();
   const voiceButton = $('#voiceInputButton');
@@ -2889,6 +2890,7 @@ function dismissAutonomyDialog() {
 async function toggleAutonomy() {
   const button = $('#autonomyButton');
   if (button.hidden || button.disabled) return;
+  if (currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
   const question = autonomyQuestionEntry();
   if (question && !question.plan) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
