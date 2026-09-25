@@ -346,6 +346,34 @@ try {
         await dialog.getByRole('button', { name: '回答并继续' }).click();
         await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
         assert.equal(fixture.answer, 'Reject plan');
+        for (const [filename, answer, count] of [
+          ['qoder-permission-command.txt', 'No', 3],
+          ['qoder-empty-plan.txt', 'No, stay in plan mode', 2],
+        ]) {
+          const screen = await fs.readFile(path.join(root, 'test/fixtures', filename), 'utf8');
+          fixture.question = new QoderQuestionTracker().observe('fixture',
+            { kind: provider, id: 'fixture-thread', paneId: '%42' }, screen);
+          assert.ok(fixture.question);
+          publishSessions();
+          await page.waitForSelector('#nativeQuestionDialog[open]');
+          assert.equal(await dialog.getByRole('radio').count(), count);
+          assert.equal(await dialog.locator('input:checked').count(), 0, 'never preselect an authorization');
+          if (count === 3) {
+            assert.match(await dialog.textContent(), /后续会话也生效/);
+            const details = dialog.locator('.question-field > p');
+            assert.equal(await details.evaluate(node => getComputedStyle(node).whiteSpace), 'pre-wrap');
+            assert.match(await details.textContent(), /Command: printf 'hello\\n'\n  printf 'done\\n'/);
+          }
+          await dialog.getByRole('button', { name: '回答并继续' }).click();
+          assert.match(await dialog.locator('.question-error').textContent(), /请回答/);
+          await dialog.getByRole('radio', { name: new RegExp(`^${answer}(?: |$)`) }).check();
+          const box = await dialog.boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= viewport.width + 1);
+          await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-${filename}.png`) });
+          await dialog.getByRole('button', { name: '回答并继续' }).click();
+          await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
+          assert.equal(fixture.answer, answer);
+        }
         // Reload discarded the earlier pages used by the reconnect-gap journey below.
         for (let pageIndex = 0; pageIndex < 3 && !await page.locator('[data-turn-id="turn-41"]').count(); pageIndex += 1) {
           await page.getByRole('button', { name: '加载更早的对话' }).click();

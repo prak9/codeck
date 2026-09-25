@@ -1,0 +1,5 @@
+Exit plan mode? (no plan content
+generated yet)
+
+❯ 1. Yes, exit plan mode
+  2. No, stay in plan mode

@@ -11,6 +11,10 @@ const appCss = fs.readFileSync(new URL('../public/styles.css', import.meta.url),
 const appHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const rootCss = css.match(/^:root\s*\{([\s\S]*?)^\}/m)?.[1] || '';
 
+test('native approval text preserves command line breaks and indentation', () => {
+  assert.match(css, /#nativeQuestionDialog \.question-field > p\s*\{[^}]*white-space:\s*pre-wrap/s);
+});
+
 function rootBreakpoint(cssText, width) {
   const match = cssText.match(new RegExp(`@media \\(min-width: ${width}px\\) \\{\\s*:root \\{([^}]*)\\}`));
   return match?.[1] || '';
@@ -94,7 +98,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=43/);
+  assert.match(html, /\/remote\.css\?v=44/);
   assert.match(html, /\/remote\.js\?v=99/);
 });
 
@@ -307,7 +311,7 @@ test('an open Agent session has a labelled touch-sized progress shortcut above t
   assert.doesNotMatch(css, /progress-enabled/);
   assert.match(remoteJs, /现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。/);
   assert.match(remoteJs, /progressButton'\)\.addEventListener\('click', askProgress\)/);
-  assert.match(html, /remote\.css\?v=43/);
+  assert.match(html, /remote\.css\?v=44/);
   assert.match(html, /remote\.js\?v=99/);
 });
 

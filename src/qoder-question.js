@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { parseQoderEmptyPlan, parseQoderPermission } from './qoder-permission.js';
 
 // ExitPlanMode has its own layout, not the Asking User footer. Keep the exact
 // native option order: the feedback editor occupies index 2 but cannot be
@@ -45,6 +46,8 @@ function parseQoderPlan(lines) {
 // multi-select/review tabs and partially visible menus are not input evidence.
 export function parseQoderQuestion(screen) {
   const lines = String(screen || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n');
+  const approval = parseQoderPermission(lines) || parseQoderEmptyPlan(lines);
+  if (approval) return approval;
   const plan = parseQoderPlan(lines);
   if (plan) return plan;
   const start = lines.findLastIndex(line => line.trim() === 'Asking User');

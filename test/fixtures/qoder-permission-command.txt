@@ -1,0 +1,14 @@
+Permission Required
+─────────────────────────────────────
+Tool: Bash
+Command: printf 'hello\n'
+  printf 'done\n'
+
+Allow this command to run?
+❯ 1. Allow once
+  2. Always allow "printf" for future
+     sessions [local]
+  3. Reject and type something
+  4. No
+
+↑↓ navigate · Enter select · Esc close

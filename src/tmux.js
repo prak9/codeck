@@ -1578,7 +1578,7 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
     const selectedOption = picker.options.findIndex(option => option.label === answer);
     if (selectedOption < 0) throw new Error('回答选项已变化，回答未发送');
     const selected = picker.options[selectedOption].index ?? selectedOption;
-    // Qoder Plan's numeric keys select immediately. Do not traverse its feedback
+    // Qoder approval numeric keys select immediately. Do not traverse its feedback
     // editor: highlighting that row changes the visible plan and captures input.
     const selectionKey = picker.selectByNumber ? String(selected + 1) : 'Enter';
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
@@ -1617,7 +1617,7 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
       const after = await capture(latest.paneId);
       const next = parseQoderQuestion(after);
       if (after.trim() && (next ? next.fingerprint !== picker.fingerprint
-        : !/^\s*Asking User\s*$|Would\s+you\s+like\s+to\s+proceed\?/mu.test(after))) {
+        : !/^\s*(?:Asking User|Permission Required(?: \(\d+ of \d+\))?)\s*$|Would\s+you\s+like\s+to\s+proceed\?|Exit\s+plan\s+mode\?/mu.test(after))) {
         return { submitted: true };
       }
     }
