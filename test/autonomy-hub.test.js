@@ -86,9 +86,12 @@ test('cached progress buttons remain non-interrupting after the prompt changes',
   await f.request('startAutonomy', { commandId: 'start-work' }); await f.autonomy.tick();
   const before = f.autonomy.snapshot(target);
   const text = '现在进展怎么样？这是一次进度问询，请在不打断当前工作的自然汇报节点简要回答，不改变当前节奏，不催促续跑，也不进入自主模式。请复述你理解的当前目标，必须是具体、拆解过的子目标，不能只给笼统概括。沿用已确认的任务拆解，逐项简要列出：子目标、完成标准、当前状态及证据、距完成的差距（gap）；再说明下一步优先推进哪项、有什么阻塞或需要我决策。目标或边界不明确时标出待确认部分，不把推测当成已确认要求，不扩大范围或重置已有预算。若处于 Codeck 自主轮次中，保持原有轮次和结果协议；本次问询不构成新一轮执行授权。';
-  assert.equal((await f.request('sendSessionMessage', { commandId: 'cached-progress', text })).ok, true);
-  assert.deepEqual(f.autonomy.snapshot(target), before);
-  assert.equal(f.submissions.at(-1).nonInterrupting, true);
+  const prompts = [text, '请在方便时简报：你理解的目标及具体子目标、逐项完成标准、进展/证据、剩余gap、下一步和阻塞。不确定处标出；不打断、不续跑、不改方向、模式或预算。'];
+  for (const [index, cached] of prompts.entries()) {
+    assert.equal((await f.request('sendSessionMessage', { commandId: `cached-progress-${index}`, text: cached })).ok, true);
+    assert.deepEqual(f.autonomy.snapshot(target), before);
+    assert.equal(f.submissions.at(-1).nonInterrupting, true);
+  }
 });
 
 test('choice answers bind to the subscribed session and deduplicate before starting work', async () => {

@@ -10,11 +10,10 @@ const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'work' };
 const plan = { goal: 'Fix the picker', acceptance: 'Regression passes', maxRounds: 3,
   minutes: 30, preferences: 'Minimal changes; do not commit or deploy', advisoryBudget: '' };
 
-test('progress asks concisely for concrete goals, evidence and gaps without changing pace or mode', () => {
-  assert.ok(AUTONOMY_PROGRESS_PROMPT.length <= 120);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /目标.*子目标/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /完成标准/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /进展.*证据.*gap/);
+test('progress briefly asks about the goal and progress without detailed decomposition or changing pace', () => {
+  assert.ok(AUTONOMY_PROGRESS_PROMPT.length <= 80);
+  assert.match(AUTONOMY_PROGRESS_PROMPT, /目标.*进展.*剩余.*阻塞/);
+  assert.doesNotMatch(AUTONOMY_PROGRESS_PROMPT, /子目标|逐项|完成标准|证据|gap/);
   assert.match(AUTONOMY_PROGRESS_PROMPT, /不打断/);
   assert.match(AUTONOMY_PROGRESS_PROMPT, /不续跑.*不改.*预算/);
   assert.doesNotMatch(AUTONOMY_PROGRESS_PROMPT, /汇报后继续/);
