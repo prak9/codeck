@@ -100,6 +100,7 @@ export class AutonomyController extends EventEmitter {
     super();
     Object.assign(this, { readSession, readThread, prepare, send, stop, file, now, schedule, cancel });
     this.runs = new Map(); this.timer = null; this.polls = new Map(); this.closed = false;
+    this.legacyConfigurations = new Map();
     if (file && fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (saved.version !== 1 || !Array.isArray(saved.runs)) throw new Error('自主任务存档格式无效');
@@ -181,6 +182,17 @@ export class AutonomyController extends EventEmitter {
     if (old?.status === 'stopping') throw new Error('正在停止任务，请等待结果后再继续');
     if (old && ACTIVE.has(old.status)) return this.snapshot(target);
     if (old?.status === 'paused') {
+      const legacy = old.suspended?.exchange;
+      if (target.provider === 'qodercli' && legacy?.kind === 'config' && !legacy.commandId && !legacy.receivedAt
+        && !old.proposal && !old.suspended?.questions?.length) {
+        const key = autonomyKey(target);
+        if (!this.legacyConfigurations.has(key)) {
+          const recovery = this.restartLegacyConfiguration(old, legacy)
+            .finally(() => { if (this.legacyConfigurations.get(key) === recovery) this.legacyConfigurations.delete(key); });
+          this.legacyConfigurations.set(key, recovery);
+        }
+        return this.legacyConfigurations.get(key);
+      }
       if (old.proposal) {
         old.status = 'confirming'; old.requestId = crypto.randomUUID(); this.changed(old); return this.snapshot(target);
       }
@@ -199,6 +211,35 @@ export class AutonomyController extends EventEmitter {
       this.changed(run);
     } catch (error) { this.pause(target, error.message); throw error; }
     return this.snapshot(target);
+  }
+  async restartLegacyConfiguration(run, exchange) {
+    const generation = run.generation;
+    const result = await this.readThread(run.target);
+    if (this.closed || run.status !== 'paused' || run.generation !== generation
+      || run.suspended?.exchange !== exchange) return this.snapshot(run.target);
+    const thread = result?.thread;
+    if (!thread || thread.historyLoading || thread.historyError || (thread.id && thread.id !== run.target.threadId)) {
+      throw new Error('旧配置历史尚未读全，请稍后再点击 A；未重新发送');
+    }
+    const found = resultFor(thread, exchange);
+    if (found.takeover) throw new Error('旧配置后已有新的人工指令，请明确新的配置要求');
+    const proposal = found.record?.status === 'ready' && validPlan(found.record.plan);
+    const questions = found.record?.status === 'ask' && validQuestions(found.record.questions);
+    const alreadyReceived = (thread.turns || []).some(turn => (turn.items || []).some(item =>
+      item.type === 'userMessage' && !item.delivery && userText(item).trim() === exchange.text.trim()));
+    if (!proposal && !questions && (alreadyReceived || found.record)) {
+      throw new Error('无法确认旧配置未送达，请检查对话后明确新的配置要求；未重新发送');
+    }
+    // This migration is authorized only by start/A, never startup, polling or round resume.
+    run.generation = (run.generation || 0) + 1;
+    run.suspended = null; run.exchange = null; run.reason = ''; run.idleSince = null;
+    run.confirmAfterConfig = false;
+    run.proposal = proposal || null; run.questions = questions || null;
+    run.requestId = proposal || questions ? crypto.randomUUID() : null;
+    run.status = proposal ? 'confirming' : 'configuring';
+    run.pending = proposal || questions ? null : { kind: 'config', text: exchange.text.split('\n\n<codeck-autonomy-context>')[0] };
+    this.changed(run);
+    return this.snapshot(run.target);
   }
   pause(target, reason = '已暂停自动续跑，当前执行可继续收尾') {
     const run = this.runs.get(autonomyKey(target));

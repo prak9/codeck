@@ -67,6 +67,23 @@ test('real Qoder adapter: composer clears but no input or transcript receipt mea
   assert.equal(f.state().status, 'paused'); assert.equal(f.writes.length, 1, 'resume never replays a possibly delivered message');
 });
 
+test('legacy paused Qoder config migrates through normal server preparation only on explicit A', async t => {
+  const f = await fixture(t); await f.manager.start(target); await f.manager.tick();
+  const old = f.manager.runs.values().next().value.exchange;
+  delete old.commandId; delete old.deliveryBaseline; delete old.receivedAt;
+  f.manager.pause(target); f.manager.close(); f.now += 60000;
+  f.manager = new AutonomyController(f.options);
+  await f.manager.tick(); assert.equal(f.writes.length, 1);
+  // Finish the read-only worker warmup before the explicit click.
+  await f.backend.openThread(threadId); await Promise.all([...f.backend.openReads.values()]);
+  await Promise.all([f.manager.start(target), f.manager.start(target)]);
+  await f.manager.tick();
+  const current = f.stored().exchange;
+  assert.notEqual(current.nonce, old.nonce); assert.equal(current.commandId, current.nonce);
+  assert.ok(current.deliveryBaseline.inputLog); assert.equal(current.sentAt, f.now);
+  assert.equal(f.writes.length, 2); assert.equal(f.state().round, 0);
+});
+
 test('restart rehydrates Qoder input receipt without replay and still bounds missing configuration replies', async t => {
   const f = await fixture(t); await f.manager.start(target); await f.manager.tick();
   const saved = f.stored().exchange;

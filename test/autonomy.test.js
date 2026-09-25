@@ -416,6 +416,70 @@ test('native questions block setup without automatic approval', async () => {
   f.session.agent.question = null; await f.manager.tick(); assert.equal(f.sent.length, 1);
 });
 
+test('explicit A migrates legacy Qoder setup once, preferring existing results', async () => {
+  for (const reply of ['missing', 'ask', 'ready']) {
+    const qoder = { ...target, provider: 'qodercli' };
+    const f = fixture(); f.session.agent.kind = 'qodercli';
+    await f.manager.start(qoder); await f.manager.tick();
+    const old = f.manager.runs.get(autonomyKey(qoder)).exchange;
+    delete old.commandId; delete old.deliveryBaseline; delete old.receivedAt;
+    if (reply === 'ready') f.reply({ status: 'ready', plan });
+    if (reply === 'ask') f.reply({ status: 'ask', questions: [{ id: 'goal', header: '目标', question: '做什么？', options: ['修复', '研究'] }] });
+    f.manager.pause(qoder); f.now += 60000;
+    await Promise.all([f.manager.start(qoder), f.manager.start(qoder)]);
+    await f.manager.tick(); await f.manager.tick();
+    const state = f.manager.snapshot(qoder);
+    assert.notEqual(state.status, 'paused', reply);
+    assert.equal(f.sent.length, reply === 'missing' ? 2 : 1, reply);
+    if (reply === 'missing') {
+      const current = f.manager.runs.get(autonomyKey(qoder)).exchange;
+      assert.ok(current.commandId); assert.notEqual(current.nonce, old.nonce);
+    } else assert.ok(state.requestId, reply);
+    assert.equal(state.round, 0);
+  }
+});
+
+test('restart never sends legacy Qoder exchanges and explicit A never replays legacy work', async () => {
+  for (const kind of ['config', 'round']) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-legacy-autonomy-'));
+    try {
+      const file = path.join(dir, 'runs.json'); const qoder = { ...target, provider: 'qodercli' };
+      const f = fixture({ file }); f.session.agent.kind = 'qodercli';
+      await f.manager.start(qoder); await f.manager.tick();
+      const run = f.manager.runs.get(autonomyKey(qoder));
+      run.exchange.kind = kind; delete run.exchange.commandId; delete run.exchange.deliveryBaseline;
+      if (kind === 'round') { run.round = 1; run.plan = plan; run.status = 'running'; }
+      f.manager.changed(run); f.manager.close();
+      const restored = fixture({ file }); restored.session.agent.kind = 'qodercli'; restored.now += 60000;
+      await restored.manager.tick(); assert.equal(restored.sent.length, 0);
+      assert.equal(restored.manager.snapshot(qoder).status, 'paused');
+      await restored.manager.start(qoder); await restored.manager.tick();
+      assert.equal(restored.sent.length, kind === 'config' ? 1 : 0);
+      restored.manager.close();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('legacy setup recovery never sends while history is unavailable or after a newer direction', async () => {
+  for (const scenario of ['loading', 'error', 'redirect']) {
+    const qoder = { ...target, provider: 'qodercli' }; const f = fixture(); f.session.agent.kind = 'qodercli';
+    await f.manager.start(qoder); await f.manager.tick();
+    delete f.manager.runs.get(autonomyKey(qoder)).exchange.commandId;
+    f.manager.pause(qoder);
+    if (scenario !== 'redirect') {
+      f.thread[scenario === 'loading' ? 'historyLoading' : 'historyError'] = true;
+      await assert.rejects(f.manager.start(qoder), /历史/);
+    } else {
+      let finish;
+      f.manager.readThread = () => new Promise(resolve => { finish = resolve; });
+      const recovery = f.manager.start(qoder);
+      await f.manager.message(qoder, '新的目标'); finish({ thread: { turns: [] } }); await recovery;
+      assert.equal(f.manager.runs.get(autonomyKey(qoder)).pending.text, '新的目标');
+    }
+    assert.equal(f.sent.length, 1);
+  }
+});
+
 test('late send preparation cannot send or pause a replacement configuration', async () => {
   for (const fail of [false, true]) {
     let settle;

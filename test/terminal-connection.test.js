@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { submitTerminalInput } from '../src/tmux.js';
 import {
   createTerminalOutputBatcher,
   handleTerminalConnection,
@@ -64,6 +65,7 @@ test('human terminal input pauses autonomy before writing; resize and scroll do 
   sendFrame(ws, { type: 'input', data: '\x1b[>0;276;0c' });
   assert.deepEqual(events, [['write', '\x1b[>0;276;0c']]); events.length = 0;
   sendFrame(ws, { type: 'input', data: 'x' });
+  await nextTurn();
   assert.deepEqual(events, [['pause', 'work'], ['write', 'x']]); ws.close();
 });
 
@@ -92,6 +94,96 @@ test('whole terminal submissions leave copy mode without changing raw key semant
   await nextTurn();
   assert.deepEqual(terminal.writes, ['\r'], 'raw keys retain their exact bytes');
   assert.deepEqual(inputResults(ws), [{ type: 'inputResult', inputId: '1:1', ok: true }]);
+});
+
+test('explicit CLI handoff waits for scroll, exits copy mode via exact-byte submission, then drains raw keys', async () => {
+  const ws = new FakeSocket(), terminal = fakeTerminal(), events = [];
+  let finishScroll;
+  terminal.write = data => events.push(['raw', data]);
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    scrollSession: async () => { events.push(['scroll']); await new Promise(resolve => { finishScroll = resolve; }); },
+    submitTerminalInput: async (_session, data) => events.push(['exit-copy-and-input', data]),
+  }));
+  sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: '@', resume: true });
+  sendFrame(ws, { type: 'input', data: 'path' });
+  await nextTurn(); assert.deepEqual(events, [['scroll']]);
+  finishScroll(); await nextTurn();
+  assert.deepEqual(events, [['scroll'], ['exit-copy-and-input', '@'], ['raw', 'path']]);
+  ws.close();
+});
+
+test('ordinary copy-mode keys and terminal replies never request CLI handoff', async () => {
+  const ws = new FakeSocket(), terminal = fakeTerminal(), human = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal, onHumanInput: name => human.push(name),
+    submitTerminalInput: async () => assert.fail('must not exit copy mode'),
+  }));
+  sendFrame(ws, { type: 'input', data: '\x1b[>0;276;0c', resume: true });
+  assert.deepEqual(human, []);
+  sendFrame(ws, { type: 'input', data: '\x1b[A' });
+  await nextTurn();
+  assert.deepEqual(terminal.writes, ['\x1b[>0;276;0c', '\x1b[A']);
+  assert.deepEqual(human, ['work']); ws.close();
+});
+
+test('handoff first byte reaches the CLI through the real submission adapter, without adding Enter', async () => {
+  const ws = new FakeSocket(), terminal = fakeTerminal(), received = [];
+  let copyMode = true, buffer = '';
+  terminal.write = data => { if (!copyMode) received.push(data); };
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: (session, data, options) => submitTerminalInput(session, data, {
+      ...options, loadBuffer: async (_name, text) => { buffer = text; },
+      execTmux: async args => {
+        if (args[0] === 'display-message') return { stdout: 'work\t%17\n' };
+        if (args[0] === 'copy-mode' && args[1] === '-q') copyMode = false;
+        if (args.includes('paste-buffer')) { assert.equal(copyMode, false); received.push(buffer); }
+        return { stdout: '' };
+      },
+    }),
+  }));
+  sendFrame(ws, { type: 'input', data: '@', resume: true });
+  sendFrame(ws, { type: 'input', data: 'file' });
+  await nextTurn(); assert.deepEqual(received, ['@', 'file']); ws.close();
+});
+
+test('later scroll and raw keys stay ordered after a handoff; protocol responses remain live', async () => {
+  const ws = new FakeSocket(), terminal = fakeTerminal(), events = [];
+  let finish;
+  terminal.write = data => events.push(data);
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: async () => { events.push('handoff'); },
+    scrollSession: async () => { events.push('scroll'); await new Promise(resolve => { finish = resolve; }); },
+  }));
+  sendFrame(ws, { type: 'input', data: '@', resume: true });
+  sendFrame(ws, { type: 'scroll', lines: 3 });
+  sendFrame(ws, { type: 'input', data: 'x' });
+  await nextTurn(); assert.deepEqual(events, ['handoff', 'scroll']);
+  sendFrame(ws, { type: 'input', data: '\x1b[1;1R' });
+  assert.equal(events.at(-1), '\x1b[1;1R');
+  finish(); await nextTurn(); assert.equal(events.at(-1), 'x'); ws.close();
+});
+
+test('a cancelled handoff cannot write to or close the newly switched session', async () => {
+  const ws = new FakeSocket(), terminals = [];
+  let finish;
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    canSwitchSession: true,
+    createTerminal: () => { const terminal = fakeTerminal(); terminals.push(terminal); return terminal; },
+    submitTerminalInput: async (_session, _data, { isCurrent }) => {
+      await new Promise(resolve => { finish = resolve; });
+      assert.equal(isCurrent(), false); throw new Error('stale handoff');
+    },
+  }));
+  sendFrame(ws, { type: 'input', data: '@', resume: true }); await nextTurn();
+  sendFrame(ws, { type: 'switch', session: 'other', cols: 80, rows: 24 }); await nextTurn();
+  finish(); await nextTurn();
+  assert.deepEqual(ws.closes, []);
+  sendFrame(ws, { type: 'input', data: 'new' });
+  assert.deepEqual(terminals[0].writes, []); assert.deepEqual(terminals[1].writes, ['new']); ws.close();
 });
 
 test('submission failure is acknowledged and does not block later raw input', async () => {

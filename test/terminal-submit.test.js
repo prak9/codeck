@@ -91,6 +91,13 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.timers.size, 0);
 });
 
+test('explicit composer handoff preserves bytes and asks the server to leave copy mode', () => {
+  const f = fixture({ draftValue: '看下 ' });
+  f.context.handOffTerminalInput('@');
+  assert.deepEqual(f.sent, [{ type: 'input', data: '看下 @', resume: true }]);
+  assert.equal(f.draft.value, ''); assert.equal(f.state.handoffTerminalInput, true);
+});
+
 test('autonomous direction uses the shared control path, not raw terminal input', async () => {
   const f = fixture({ draftValue: '只修改后端，继续' });
   const routed = []; let finish;

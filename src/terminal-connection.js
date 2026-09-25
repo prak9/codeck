@@ -130,7 +130,6 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   let awaitingSessionActivity = false;
   let inputGeneration = 0;
   let inputOperation = null;
-  let pendingScroll = Promise.resolve();
   const pending = [];
   const isOpen = () => !closed && ws.readyState === ws.OPEN;
   const sendInputResult = (message, error) => {
@@ -149,20 +148,25 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const drainPending = () => {
     while (pending.length && terminal && !inputOperation && isOpen()) handleMessage(pending.shift());
   };
-  const submitInput = (message) => {
+  const queueTerminalOperation = (message) => {
     const generation = inputGeneration;
     const targetSession = activeSession;
     const operation = {};
     inputOperation = operation;
     const isCurrent = () => isOpen() && generation === inputGeneration;
-    pendingScroll.then(async () => {
+    Promise.resolve().then(async () => {
       if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
+      if (message.type === 'scroll') return dependencies.scrollSession(targetSession, message.lines);
       if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
       await dependencies.submitTerminalInput(targetSession, message.data, {
         isCurrent,
         separateFinalEnter: message.separateFinalEnter === true,
       });
-    }).then(() => sendInputResult(message), (error) => sendInputResult(message, error)).finally(() => {
+    }).then(() => { if (message.type === 'input') sendInputResult(message); }, (error) => {
+      // A legacy/raw handoff has no receipt ID. Its stale failure must not close
+      // the socket after that same connection has switched to a different session.
+      if (message.type === 'input' && (isCurrent() || typeof message.inputId === 'string')) sendInputResult(message, error);
+    }).finally(() => {
       if (inputOperation !== operation) return;
       inputOperation = null;
       drainPending();
@@ -237,7 +241,6 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         }
         inputGeneration += 1;
         inputOperation = null;
-        pendingScroll = Promise.resolve();
         for (const queued of pending) {
           if (queued.type === 'input' && queued.submit === true) {
             sendInputResult(queued, new Error('终端会话已切换，排队输入未发送'));
@@ -254,7 +257,9 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         });
         return;
       }
-      if (message.type === 'input' && message.submit === true) {
+      const protocolReply = message.type === 'input' && typeof message.data === 'string' && TERMINAL_REPLY.test(message.data);
+      const explicitInput = !protocolReply && (message.submit === true || message.resume === true);
+      if (message.type === 'input' && explicitInput) {
         if (message.inputId !== undefined && (typeof message.inputId !== 'string'
           || !message.inputId.length || message.inputId.length > 128)) {
           ws.close(1008, '无效的终端输入标识');
@@ -265,13 +270,18 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
           return;
         }
       }
-      if (!terminal || (inputOperation && (message.type === 'input' || message.type === 'scroll'))) {
+      if (!terminal || (inputOperation && ((message.type === 'input' && !protocolReply) || message.type === 'scroll'))) {
+        // Retain touch-scroll coalescing without moving a scroll across an input.
+        if (message.type === 'scroll' && Number.isInteger(message.lines) && pending.at(-1)?.type === 'scroll') {
+          pending.at(-1).lines += message.lines;
+          return;
+        }
         pending.push(message);
         return;
       }
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
         if (message.data && !TERMINAL_REPLY.test(message.data)) dependencies.onHumanInput?.(activeSession);
-        if (message.submit === true) submitInput(message);
+        if (explicitInput) queueTerminalOperation(message);
         else {
           terminal.write(message.data);
           if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
@@ -287,7 +297,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         }
       }
       if (message.type === 'scroll' && Number.isInteger(message.lines)) {
-        pendingScroll = dependencies.scrollSession(activeSession, message.lines).catch(() => {});
+        queueTerminalOperation(message);
       }
     } catch { /* Ignore malformed terminal frames. */ }
   };

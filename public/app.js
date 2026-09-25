@@ -254,7 +254,7 @@ function insertDraftNewline(stripBackslash = false) {
 function sendTerminalInput(data) {
   if (!state.canWrite || state.socket?.readyState !== WebSocket.OPEN) return false;
   try {
-    state.socket.send(JSON.stringify({ type: 'input', data }));
+    state.socket.send(JSON.stringify({ type: 'input', data, resume: true }));
   } catch { return false; }
   return true;
 }
