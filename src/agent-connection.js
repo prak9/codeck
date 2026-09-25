@@ -449,7 +449,7 @@ export class AgentHub {
       },
       providers: this.registry.providerInfo(),
       scopedSessionStop: true,
-      ...(this.autonomy ? { autonomy: this.autonomy.snapshots(), autonomySessionBinding: true, simpleAutonomy: true } : {}),
+      ...(this.autonomy ? { autonomy: this.autonomy.snapshots(), autonomySessionBinding: true } : {}),
     });
     if (this.sessionFeed && negotiatedStreamVersion === 1) this.#subscribeSessions(socket, null);
     socket.on('message', (data) => this.#handleMessage(socket, data));
@@ -542,7 +542,7 @@ export class AgentHub {
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
     const stopKey = JSON.stringify([provider, message.threadId, message.tmuxSession]);
-    if (this.sessionStops.has(stopKey) && ['startAutonomy', 'answerAutonomy', 'sendSessionMessage'].includes(message.type)) {
+    if (this.sessionStops.has(stopKey) && ['answerAutonomy', 'sendSessionMessage'].includes(message.type)) {
       throw new Error('正在停止任务，请等待结果后操作');
     }
     if (message.type === 'dismissSessionDelivery') {
@@ -566,17 +566,9 @@ export class AgentHub {
       // Terminal mode binds controls without retaining an expensive history stream.
       // Every write still verifies live Agent/thread/pane identity in the controller.
       client.autonomyTarget = target;
-      const run = this.autonomy.snapshot(target);
-      if (run?.status === 'paused' && run.round === 0 && !run.plan && !run.proposal) {
-        // One read can recover a lost setup dialog; never retain a history stream
-        // or block control binding on a slow transcript. A later start wins.
-        this.registry.openThread(provider, target.threadId, { readOnly: true }).then(result => {
-          if (client.autonomyTarget === target) this.autonomy.restoreProposal(target, result?.thread);
-        }).catch(() => {});
-      }
       return { autonomy: this.autonomy.snapshot(target) };
     }
-    if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(message.type)) {
+    if (['startAutonomy', 'finishAutonomy', 'answerAutonomy'].includes(message.type)) {
       if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
       const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
       const client = this.clients.get(socket);
@@ -585,10 +577,9 @@ export class AgentHub {
         || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
       cleanCommandId(message.commandId);
       const answer = message.type === 'answerAutonomy' ? { requestId: cleanCommandId(message.requestId), answers: message.answers } : {};
-      const simple = message.simple === true;
-      return this.#runCommand(message, provider, { ...target, ...answer, ...(simple ? { simple } : {}) }, async () => ({ autonomy: message.type === 'startAutonomy'
-        ? await this.autonomy.start(target, { simple }) : message.type === 'answerAutonomy'
-          ? await this.autonomy.respond(target, answer) : simple ? await this.autonomy.finish(target) : this.autonomy.pause(target) }));
+      return this.#runCommand(message, provider, { ...target, ...answer }, async () => ({ autonomy: message.type === 'startAutonomy'
+        ? await this.autonomy.start(target) : message.type === 'answerAutonomy'
+          ? await this.autonomy.respond(target, answer) : await this.autonomy.finish(target) }));
     }
     if (message.type === 'subscribeSessions') {
       const client = this.clients.get(socket);
@@ -689,7 +680,6 @@ export class AgentHub {
         const result = this.#windowThread(this.#withPaneExcerpt(
           await this.registry.openThread(provider, threadId, options), target.tmuxSession,
         ));
-        this.autonomy?.restoreProposal(target, result?.thread);
         const restored = this.#restoreSessionMessageReceipts(provider, threadId, result);
         return afterReply(restored, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {
@@ -717,17 +707,9 @@ export class AgentHub {
       };
       return this.#runCommand(message, provider, payload, async () => {
         const target = { provider, threadId, tmuxSession: sessionName };
-        const autonomous = this.autonomy?.snapshot(target);
-        if (autonomous && !['completed', 'limit', 'off'].includes(autonomous.status) && !isAutonomyObservation(text)) {
-          if (autonomous.mode === 'simple') this.autonomy.pause(target, '用户已接管，自主续跑关闭');
-          else {
-            if (!text.startsWith('/')) return { autonomyHandled: true, autonomy: await this.autonomy.message(target, text) };
-            this.autonomy.pause(target, '用户正在操作原生命令菜单');
-          }
-        }
         const deliveryBaseline = provider === 'qodercli'
           ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;
-        const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text,
+        const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text, replaceDraft: true,
           ...(isAutonomyObservation(text) ? { nonInterrupting: true } : {}),
         });
         if (result?.submissionStatus === 'not-sent') throw new Error('输入框未就绪，消息未注入；请先处理草稿或弹窗');
@@ -1020,7 +1002,6 @@ export class AgentHub {
   }
 
   #deliverV2ThreadFrame(socket, subscription, frame) {
-    this.autonomy?.restoreProposal(subscription.target, frame.snapshot?.thread);
     const restored = frame.snapshot
       ? this.#restoreSessionMessageReceipts(
         subscription.target.provider,
@@ -1086,7 +1067,6 @@ export class AgentHub {
       const onSnapshot = client.streamVersion === 2
         ? (frame) => this.#deliverV2ThreadFrame(socket, subscription, frame)
         : ({ epoch, sequence, snapshot }) => {
-          this.autonomy?.restoreProposal(subscription.target, snapshot?.thread);
           const restored = this.#restoreSessionMessageReceipts(
             subscription.target.provider,
             subscription.target.threadId,
@@ -1177,11 +1157,6 @@ export class AgentHub {
 
   #broadcastServerRequest(message) {
     const { provider, ...request } = message;
-    for (const run of this.autonomy?.snapshots() || []) {
-      if (run.target.provider === provider && run.target.threadId === request.params?.threadId) {
-        this.autonomy.pause(run.target, 'Agent 需要用户授权或回答');
-      }
-    }
     const requestKey = approvalKey(provider, request.id);
     this.resolvedRequests.delete(requestKey);
     for (const client of this.clients.values()) client.deliveredRequests.delete(requestKey);

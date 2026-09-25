@@ -80,6 +80,7 @@ test('whole draft submission waits for server receipt and does not send twice wh
   const pending = f.context.submitTerminalVoiceDraft();
   assert.equal(f.draft.value, 'echo intact');
   assert.equal(f.sent[0].submit, true);
+  assert.equal(f.sent[0].replaceDraft, true);
   assert.equal(f.sent[0].separateFinalEnter, undefined, 'ordinary Qoder prompts keep one atomic write');
   assert.equal(typeof f.sent[0].inputId, 'string');
   await f.context.submitTerminalVoiceDraft();
@@ -195,7 +196,7 @@ for (const cause of ['server failure', 'timeout', 'disconnect', 'switch']) {
 test('legacy server receives a backwards-compatible input without waiting for an unsupported receipt', async () => {
   const f = fixture({ legacy: true });
   await f.context.submitTerminalVoiceDraft();
-  assert.deepEqual(f.sent, [{ type: 'input', data: 'echo intact\r', submit: true }]);
+  assert.deepEqual(f.sent, [{ type: 'input', data: 'echo intact\r', submit: true, replaceDraft: true }]);
   assert.equal(f.draft.value, '');
   assert.equal(f.state.terminalSubmitPending, null);
   assert.equal(f.timers.size, 0);

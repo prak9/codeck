@@ -12,6 +12,7 @@ import { createAgentBackends } from './agent-backends.js';
 import { createAgentImages } from './agent-images.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
 import { AutonomyController } from './autonomy.js';
+import { extractDefinition } from './autonomy-definition.js';
 import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { createTerminalHistoryLinkReader } from './terminal-history-links.js';
@@ -349,6 +350,7 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
   interruptTmuxSession: interruptSession,
 });
 const autonomy = new AutonomyController({
+  suggestDefinition: extractDefinition,
   file: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'autonomy.json'),
   readSession: async target => (await listSessions({ refreshAgentIdentities: true, refreshPaneSession: target.tmuxSession }))
     .find(session => session.name === target.tmuxSession),
@@ -366,16 +368,16 @@ const autonomy = new AutonomyController({
   prepare: (target, text, commandId) => agentRegistry.prepareSessionMessage(target.provider, {
     threadId: target.threadId, text, commandId,
   }),
-  stop: (target, isCurrent, { stopBackground = true } = {}) => agentRegistry.interruptSession(target.provider, {
+  stop: (target, isCurrent, { stopBackground = true, replaceDraft = false } = {}) => agentRegistry.interruptSession(target.provider, {
     sessionName: target.tmuxSession, threadId: target.threadId,
-    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground,
+    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground, replaceDraft,
   }),
-  send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true, commandId, deliveryBaseline } = {}) => {
+  send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true, replaceDraft = false, deferDraft = false, commandId, deliveryBaseline } = {}) => {
     const result = await agentRegistry.sendSessionMessage(target.provider, {
       sessionName: target.tmuxSession, threadId: target.threadId, text, isCurrent,
-      expectedPaneId: target.paneId, requireIdle, nonInterrupting,
+      expectedPaneId: target.paneId, requireIdle, nonInterrupting, replaceDraft, deferDraft,
     });
-    if (result?.submissionStatus !== 'not-sent') agentRegistry.recordSessionMessage(target.provider, {
+    if (!['not-sent', 'deferred'].includes(result?.submissionStatus)) agentRegistry.recordSessionMessage(target.provider, {
       threadId: target.threadId, text, commandId, deliveryBaseline,
       submissionStatus: ['attempted', 'unconfirmed'].includes(result?.submissionStatus) ? 'unconfirmed' : 'submitted' });
     invalidateSessionSnapshots().catch(() => {});
@@ -489,7 +491,6 @@ server.on('upgrade', (req, socket, head) => {
     outputFlowControl,
     outputFlowId: outputFlowControl ? outputFlowId : null,
     onSessionActivity: () => invalidateSessionSnapshots().catch(() => {}),
-    onHumanInput: sessionName => autonomy.pauseSession(sessionName),
   };
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, session, viewport, terminalAccess));
 });

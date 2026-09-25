@@ -5,7 +5,7 @@
 - Overall status: `完成`
 - Profile: `Lite`
 - Active plan node: None
-- Latest evidence: `/tmp/codeck-receipts-all.log` — 1178/1178 pass; `/tmp/codeck-receipts-normal.log` and `/tmp/codeck-receipts-remote.log` — 12 browser journeys pass; /tmp/codeck-receipt-red.log reproduces missing independent receipt
+- Latest evidence: `/tmp/codeck-final-all2.log` — 1152 tests pass; `/tmp/codeck-final-normal.log` and `/tmp/codeck-final-remote.log` — 12 provider/viewport journeys pass, including ordinary input and ? during A; `/tmp/codeck-new-core.log` — 6 Remote core journeys pass.
 - Current blocker: None
 - Next step: None
 - Next checkpoint: None
@@ -13,11 +13,15 @@
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / NODE-024/025 README aligned with silent receipts and separate summary; legacy protocol remains read-compatible; no deployment or live input`
+- Last clean: `2026-09-25 / NODE-027: README and current acceptance aligned; prior API/resume contracts explicitly retired below; no live input or release`
 
 ## Outcome
 
 ### Current revision (2026-09-25)
+
+- NODE-026/027 supersedes legacy behavior below: all five setup fields are model-derived from the latest three dialogue rounds; empty budget explicitly means unlimited after confirmation. User requests no pause/resume/legacy compatibility. Runtime states become configuring, running, exiting, completed, error, off; queued/background/native-question work remains part of running. A configures/approves or stops/summarizes/exits, never restores an exchange. Old persistence retains goal/progress/evidence/handoff but any unfinished runtime becomes off without replay. Remove legacy configuration JSON, recovery dialogs, continuation checkbox and protocol branches. Preserve exact delivery and nonce guards, active-turn wait, interruption identity checks and separate human summary. A accepts the latest intent without stale-state locks. Explicit submission/goal approval replaces the terminal draft; opening setup does not. Ordinary input and ? remain ordinary conversation during A, preserving goal/budget and waiting for the live interaction before continuing. Draft editing defers automatic dispatch without error or round spending. No deployment or real session input authorized.
+
+### Superseded revisions (historical, not current acceptance)
 
 - NODE-024/025: User chose retained raw terminal with separate summary, then requested removing Agent JSON replies entirely. New round/summary exchanges provide a silent receipt command with an exclusive nonce-specific result file; plain final prose remains visible in both views. Old fenced results remain readable for compatibility. CLI result files are Codeck-owned metadata, not arbitrary project writes. A receipt arriving during an active turn must not dispatch the next round or interrupt final prose. No live session replay or deployment.
 
@@ -43,17 +47,20 @@
 ## Constraints
 
 - Strategic defaults: User AGENTS: read before edits, minimal scoped diffs, failing regression tests, preserve unrelated changes.
-- Tactical objective: Lightweight session UI with reliable bounded execution and human takeover.
-- Imperative bounds: No implicit authority expansion; no replay of uncertain sends; no continuation after pause or identity change; agent-reported completion is not independent verification.
+- Tactical objective: Lightweight session UI with optional bounded execution and ordinary conversation throughout.
+- Imperative bounds: No implicit authority expansion; no replay of uncertain sends; no continuation after explicit exit or identity change; agent-reported completion is not independent verification.
 - Negotiable space: Protocol, module boundaries, persistent state shape, conservative recovery behavior.
 - Material assumptions: User explicitly authorized foreground interruption on both A entry and exit. Previously authorized current-session background replacement remains tied to goal approval, not exit. Other sessions, arbitrary detached processes and implicit replay remain out of scope; unsupported cancellation fails closed.
-- Active unknowns: Native CLIs lack a shared task-result tool. Use nonce-bound final assistant records with a confirmed outbound message anchor; malformed/missing records pause rather than guess. Fee/token budgets are advisory without metering; round/deadline limits are controller-enforced.
+- Active unknowns: Native CLIs lack a shared task-result tool. Use nonce-bound independent receipts and confirmed outbound anchors; incomplete closed work errors rather than claiming success. An explicitly interrupted work turn followed by completed human interaction continues from that interaction without replay. Fee/token budgets are advisory without metering; round/deadline limits are controller-enforced.
 - Escalate when: A preference conflicts or evidence reveals a better option that requires changing a bound.
 
 ## Acceptance
 
+A-017 supersedes the legacy pause/resume/configuration criteria in A-001–A-016; those IDs remain historical references. Current acceptance includes no automatic setup dialog, explicit approval, exact pane/delivery guards, silent receipts, normal/Remote parity and no real session mutation.
+
 | ID | Condition | Verification | Pass condition |
 |---|---|---|---|
+| A-017 | Model-derived editable five-field setup; optional budget; single A flow; normal chat within autonomous loop | New-state, receipt, draft, provider/Hub tests and 12 browser journeys | All fields extracted from recent 3 rounds; new intent supersedes stale work; no runtime legacy replay; explicit send replaces drafts, draft editing defers auto dispatch; ?/input retain A and budget; exit summarizes |
 | A-001 | Configuration asks for goal, acceptance, budget and preferences; cannot self-authorize | Controller/protocol unit tests | Explicit human confirmation required, malformed/stale/tool records rejected |
 | A-002 | Bounded server-side continuation independent of browser | Controller fake-clock + backend integration tests | Each round dispatched at most once; completion/limit/wait/block tested |
 | A-003 | Human takeover and restart safety | Race, cancellation, persisted-state tests | Pause invalidates queued writes; no restart replay; spent budget retained |
@@ -75,6 +82,8 @@
 
 | Node | Status | Action | Verification | Evidence | Reflection |
 |---|---|---|---|---|---|
+| NODE-027 | `完成` | One workflow without legacy resume; latest A intent, explicit draft replacement and ordinary conversation inside the loop | New-state, no-replay, provider receipt/delivery, draft/Hub tests and browser journeys | /tmp/codeck-final-all2.log (1152 pass); /tmp/codeck-final-normal.log; /tmp/codeck-final-remote.log (12 journeys); /tmp/codeck-new-core.log (6 core journeys) | R-017 |
+| NODE-026 | `完成` | Model-derived five-field setup from three turns, optional budget, provider isolation and credential settings | Codex synthetic real request; provider adapter/controller tests; 12 fixture browser journeys | /tmp/codeck-model-extraction-all-final.log (1185 pass before latest state cleanup); /tmp/codeck-model-extraction-normal.log; /tmp/codeck-model-extraction-remote.log; local Claude/Qoder credentials expired, no login changes | None: adapter support verified; live Claude/Qoder success requires valid credentials |
 | NODE-025 | `完成` | Silent per-exchange receipts instead of Agent JSON replies | Real receipt CLI tests across providers, restart/idempotency/error guards and prose-only browser journeys | /tmp/codeck-receipt-red.log; /tmp/codeck-receipt-green.log; /tmp/codeck-receipts-all.log (1178 pass); /tmp/codeck-receipts-normal.log; /tmp/codeck-receipts-remote.log (12 journeys) | R-016 |
 | NODE-024 | `完成` | Retain raw terminal and show separate collapsible human summary | Browser exit and retained-collapse checks in normal-mode provider/viewport journeys | /tmp/codeck-handoff-red.log; /tmp/codeck-receipts-normal.log; /data/tmp/codeck-terminal-autonomy-7ifqxo | None: user choice implemented; original terminal remains visible, plain summary uses textContent |
 | NODE-023 | `完成` | Latest-dialogue five-field setup, status borders, skill-aware prompt, human handoff, protocol filtering in Remote/copy and live-turn result waiting | Controller regressions, full suite, normal/Remote browser journeys | research paused 21:05:46.422; valid final 21:05:49.159; /tmp/codeck-autonomy-final-all.log (1174 pass); /tmp/codeck-autonomy-final-normal.log; /tmp/codeck-autonomy-final-remote.log (12 journeys); no live inputs/restart | R-015 |
@@ -107,6 +116,7 @@ Record consequential findings here; routine verification stays in the Plan table
 
 | ID | Scope | Evidence | Wrong / changed | Right / preserve | Next rule |
 |---|---|---|---|---|---|
+| R-017 | NODE-027 simplified state and ordinary interaction | /tmp/codeck-replace-draft-red.log; /tmp/codeck-chat-during-auto-red.log; /tmp/codeck-auto-draft-red.log; /tmp/codeck-adapters3.log; final test/browser logs above | Old manual-input takeover contradicted ordinary-chat semantics; pre-receipt display cache could falsely fail Qoder delivery at deadline; blindly marking an unknown composer as a draft risks native dialogs | Keep pane identity, one-time delivery, nonce and lifecycle checks; preserve budgets and verified checkpoints; model extraction stays isolated | Separate user input from mode changes. Explicit submits own drafts; automatic dispatch yields to drafts and ongoing conversation. Only receipt-aware completed reads can decide delivery failure. Legacy runtime/API tests retired with their removed contract; retained safety cases rewritten for the new workflow. |
 | R-013 | NODE-021 setup visibility and verifiable progress | research user report; browser reload tests; test/autonomy-definition.test.js | Persisted unanswered setup was treated as permission to open a modal on every entry; completion evidence lacked a version-bound checkpoint | Persist task data and receipts, but keep dialog intent local to the current visit; suggestions only add options; require version/verification reports without claiming independent validation | Reconnect must not open setup or authorize work; only explicit A opens it. Preserve edited definitions and best evidence separately from new attempts. |
 | R-014 | NODE-022 live mode confusion, autofill and six-field contract | Read-only research pane %0 transcript/edit footer; codex-autonomy-stop.test.js fail-first; /tmp/codeck-a-refine-normal.log; test/autonomy-definition.test.js | Cached busy activity did not prove a foreground turn; raw user-only suggestions lost the following plan. Normal browser verifier also caught autofill skipped while form retained the previous pending flag | Keep live sessions untouched; use fresh screen evidence for interrupt, per-field edit ownership for asynchronous extraction, and the existing task contract for execution | Never send Escape solely on repaint activity. Unlock before applying async definitions; browser tests must check all six fields and manual overrides. Missing context is a blank field, not invented authority or budget. |
 | R-015 | NODE-023 result timeout versus true turn completion | research rollout final_answer/task_complete three seconds after persisted pause; valid matching nonce and fenced JSON | Thirty seconds of screen-idle was incorrectly treated as a missing terminal result even though the CLI had not finished the turn | Preserve exact nonce, final-result validation, budgets and manual stop authority; inspect durable lifecycle before declaring failure | Wait for active turns independently of screen repaint; test delayed finals and genuinely malformed closed turns. Skill usage is an execution instruction, not a substitute for scheduler correctness. |
@@ -125,6 +135,8 @@ Record consequential findings here; routine verification stays in the Plan table
 | R-009 | NODE-012 normal-mode parity | /tmp/codeck-normal-labels-red.log; /tmp/codeck-normal-history-red.log; /tmp/codeck-normal-retry-red.log; /tmp/codeck-normal-switch-red.log; /tmp/codeck-normal-notice-red.log | Clicking through a fixture missed object-valued option labels; old binding fallback/history subscriptions and retained failed receipts caused unsafe or stuck controls; paused reason hid action errors | Shared controller/presentation, explicit approval, session generation guards, no raw-input fallback | Test actual option labels and sent answers, binding cleanup, definite-error retry, local wait cancellation, and visible failure feedback; ordinary controls do not retain a history stream |
 
 ## Verification boundary
+
+- NODE-026/027 completed 2026-09-25. Current evidence is at the top. All three providers pass adapter/controller tests and ordinary/Remote desktop/mobile journeys, including ? and manual input while A runs. Screenshots inspected: `/data/tmp/codeck-terminal-autonomy-UqLStI/codex-1365-simple-active.png`, `/data/tmp/codeck-remote-smoke-PfOPgz/qodercli-390-simple-setup.png`. Codex extraction also passed an isolated synthetic real request. Local Claude/Qoder authentication is expired, so real successful extraction for those providers remains unverified; no credentials were changed, and failure leaves editable fields available. No live session input, restart, commit, push or deployment. Old protocol/API/replay tests were removed intentionally, not retained as compatibility. Historical results below do not describe the new runtime.
 
 - NODE-021 completed 2026-09-25. 1158 tests and 12 browser journeys pass. Isolated persistence tests retain best/checkpoint and do not replay after restart; both actual pages preserve edits under late suggestions and require explicit A after reload. Task suggestions extract recent user requirements locally; previews are editable templates, not a separate model inference. CLI evidence and saved best-artifact locations are Agent-reported, not independently verified or automatically backed up. Physical Safari and live Agent compliance remain untested. Deployment verification only authenticated health/assets and compared panes; no live Agent input or goal activation was sent. README current flow supersedes historical verification below.
 

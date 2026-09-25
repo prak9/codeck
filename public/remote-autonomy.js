@@ -9,41 +9,24 @@ export function isProgressPrompt(text) {
 export function isAutonomyObservation(text) {
   return isProgressPrompt(text) || /^\/(?:status|usage)$/u.test(text.trim());
 }
-export const AUTONOMY_DECISIONS = ['按此目标开始', '调整目标或预算', '暂不开始'];
 
 export function autonomyKey({ provider, threadId, tmuxSession }) {
   return JSON.stringify([provider, threadId, tmuxSession]);
 }
 
-export function autonomyBudgetText(plan, round) {
-  const rounds = plan.maxRounds === null ? plan.minutes == null ? '不设预算上限' : '不限轮数' : `${plan.maxRounds} 轮`;
-  return `${rounds}${plan.minutes == null ? '' : ` · ${plan.minutes} 分钟`}（已用 ${round} 轮）`;
-}
-
-export function autonomyPresentation(run, session) {
-  const needsAnswer = Boolean(run?.requestId && run?.questions?.length);
-  const labels = { configuring: run?.setup ? '待设置' : needsAnswer ? '待回答' : '配置中',
-    confirming: '待确认', switching: '切换中', stopping: '停止中', queued: '待执行', waiting: '等待中',
-    blocked: '待处理', paused: run?.mode === 'simple' ? '已退出' : '已暂停',
-    running: run?.mode === 'simple' ? '执行中' : undefined,
-    completed: '已完成', limit: '已达上限', exiting: '总结退出中', off: '已退出' };
-  const active = !run?.setup && ['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked', 'exiting'].includes(run?.status);
-  const budget = run?.plan || run?.proposal;
+export function autonomyPresentation(run) {
+  const active = ['running', 'exiting'].includes(run?.status);
+  const budget = run?.plan;
   const count = budget ? `${run.round}/${budget.maxRounds ?? '∞'}` : '';
-  const activity = session?.agent?.question ? '待处理' : session?.hasRunningProcess ? '执行中'
-    : session?.agent?.hasBackgroundProcess ? '后台执行中' : '';
-  const phase = run?.status === 'off' ? ['已退出', activity].filter(Boolean).join(' · ')
-    : run && activity && !['configuring', 'confirming', 'switching', 'stopping', 'exiting'].includes(run.status)
-    ? [activity, !active && '续跑关闭'].filter(Boolean).join(' · ') : labels[run?.status];
+  const phase = ({ configuring: '设置目标', running: '执行中', exiting: '总结退出中',
+    completed: '目标完成', error: '执行出错', off: '已退出' })[run?.status] || '';
   return {
     text: ['Ⓐ', count, phase].filter(Boolean).join(' '),
     detail: [count, phase].filter(Boolean).join(' '),
     progress: budget ? budget.maxRounds == null ? String(run.round) : count : '',
     active,
-    tone: run?.status === 'completed' ? 'completed' : run?.status === 'paused' && run.failed ? 'error' : active ? 'running' : 'idle',
-    label: run?.mode === 'simple' ? active ? '中断并退出自主模式' : '设置自主目标' : run?.status === 'configuring'
-      ? needsAnswer ? '回答自主配置问题' : '暂停自主配置'
-      : active ? '暂停自主迭代' : run?.status === 'paused' ? '继续自主迭代' : '配置自主迭代',
+    tone: run?.status === 'completed' ? 'completed' : run?.status === 'error' ? 'error' : active ? 'running' : 'idle',
+    label: active ? '中断并退出自主模式' : '设置自主目标',
   };
 }
 

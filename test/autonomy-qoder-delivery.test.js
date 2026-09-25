@@ -12,7 +12,7 @@ import { sendSessionMessage } from '../src/tmux.js';
 const threadId = '11111111-1111-4111-8111-111111111111';
 const target = { provider: 'qodercli', threadId, tmuxSession: 'qoder' };
 const screen = ['────────────────────────────────────────',
-  ' YOLO Shift+Tab to Auto Mode · 2 Background tasks',
+  ' YOLO Shift+Tab to Auto Mode',
   '────────────────────────────────────────', ' > \x1b[7m \x1b[0m Type your message or @path/to/file',
   '────────────────────────────────────────', ' Ultimate Model · /fixture'].join('\n');
 
@@ -31,6 +31,7 @@ async function fixture(t) {
   let composer = screen;
   f.setComposer = value => { composer = value; };
   const agentRegistry = new AgentRegistry({ qodercli: backend }, {
+    interruptTmuxSession: async params => { session.hasRunningProcess = false; if (params.stopBackground) session.agent.hasBackgroundProcess = false; },
     sendTmuxMessage: params => sendSessionMessage(params, {
       listTmuxSessions: async () => [session], capturePane: async () => composer,
       loadBuffer: async (_name, text) => {
@@ -50,6 +51,7 @@ async function fixture(t) {
   const code = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   vm.runInNewContext(code.slice(code.indexOf('const autonomy = new AutonomyController('), code.indexOf('const sessionFeed =')), {
     AutonomyController: function (value) { options = value; }, path, os,
+    extractDefinition: async () => ({ fieldsVersion: 5 }),
     process: { env: { CODECK_DATA_DIR: root } }, agentRegistry,
     listSessions: async () => [session], invalidateSessionSnapshots: async () => {},
   });
@@ -61,212 +63,53 @@ async function fixture(t) {
   return f;
 }
 
-test('real Qoder adapter: composer clears but no input or transcript receipt means timeout, not success', async t => {
-  const f = await fixture(t);
-  await f.manager.start(target); await f.manager.tick();
-  assert.equal(f.writes.length, 1); assert.match(f.writes[0], /\n.*codeck-autonomy-context/);
+
+const answers = { goal: ['修复输入'], strategy: ['复现修复'], acceptance: ['测试通过'], budget: [''], constraints: [''] };
+async function startWork(f) {
+  await f.manager.start(target);
+  await f.manager.respond(target, { requestId: f.state().requestId, answers });
+  await f.manager.tick();
+  assert.equal(f.state().status, 'running', JSON.stringify(f.state()));
+}
+async function poll(f) {
+  await f.manager.tick();
+  await Promise.all([...f.backend.openReads.values()]);
+  await f.manager.tick();
+}
+
+test('real Qoder adapter requires receipt, not an empty composer; A creates fresh setup after failure', async t => {
+  const f = await fixture(t); await startWork(f);
+  assert.equal(f.writes.length, 1);
   const saved = f.stored().exchange;
   assert.equal(saved.commandId, saved.nonce); assert.ok(saved.deliveryBaseline.inputLog);
-  await f.manager.tick(); f.now += 30001; await f.manager.tick();
-  assert.equal(f.state().status, 'paused'); assert.match(f.state().reason, /未确认送达/);
-  await f.manager.start(target); await f.manager.tick();
-  assert.equal(f.state().status, 'paused'); assert.equal(f.writes.length, 1, 'resume never replays a possibly delivered message');
-  assert.ok(f.state().recovery); assert.ok(f.state().requestId);
-});
-
-test('uncertain legacy config requires explicit replacement, deduplicates A and ignores stale choices', async t => {
-  const f = await fixture(t);
-  await f.manager.start(target); await f.manager.tick();
-  const run = f.manager.runs.values().next().value;
-  const old = structuredClone(run.exchange);
-  delete run.exchange.deliveryState;
-  f.manager.pause(target); f.now += 30001;
-  await Promise.all([f.manager.start(target), f.manager.start(target)]);
+  f.now += 30001; await poll(f);
+  assert.equal(f.state().status, 'error'); assert.match(f.state().reason, /未确认送达/);
+  await Promise.all([f.manager.start(target), f.manager.start(target)]); await poll(f);
+  assert.equal(f.state().status, 'configuring'); assert.equal(f.state().setup, true);
+  assert.equal(f.writes.length, 1, 'opening fresh setup never replays old work');
   const requestId = f.state().requestId;
-  assert.ok(requestId); assert.equal(f.writes.length, 1);
-  await f.manager.start(target); assert.equal(f.state().requestId, requestId);
-  const answer = { requestId, answers: { recovery: ['放弃旧配置并重新配置'] } };
-  await f.manager.respond(target, answer);
-  await assert.rejects(f.manager.respond(target, answer), /已变化/);
-  await Promise.all([f.manager.tick(), f.manager.tick()]);
-  assert.equal(f.writes.length, 2);
-  assert.notEqual(f.stored().exchange.nonce, old.nonce);
-  assert.equal(f.state().round, 0);
-  assert.match(f.writes[1], /确认前不要开始执行/);
-  f.manager.pause(target);
-  f.manager.restoreProposal(target, { id: threadId, turns: [{ status: 'completed', items: [
-    { type: 'userMessage', content: old.text },
-    { type: 'agentMessage', text: '```codeck-autonomy\n' + JSON.stringify({ nonce: old.nonce, status: 'ask',
-      questions: [{ id: 'old', header: '旧目标', question: '旧目标？', options: ['一', '二'] }] }) + '\n```' },
-  ] }] });
-  assert.equal(f.state().status, 'paused', 'abandoned response cannot restore an obsolete dialog');
+  await f.manager.respond(target, { requestId, answers });
+  await assert.rejects(f.manager.respond(target, { requestId, answers }));
+  await poll(f); assert.equal(f.writes.length, 2); assert.notEqual(f.stored().exchange.nonce, saved.nonce);
 });
 
-test('replacement confirmation cancels safely and restart never sends or accepts an old choice', async t => {
-  const f = await fixture(t);
-  await f.manager.start(target); await f.manager.tick(); f.now += 30001; await f.manager.tick();
-  await f.manager.start(target);
-  const first = f.state().requestId;
-  await f.manager.respond(target, { requestId: first, answers: { recovery: ['保持暂停'] } });
-  assert.equal(f.state().requestId, null); assert.equal(f.state().status, 'paused');
-  await f.manager.start(target); const second = f.state().requestId;
-  assert.notEqual(second, first);
-  f.manager.close(); f.manager = new AutonomyController(f.options);
-  await f.manager.tick(); assert.equal(f.writes.length, 1);
-  assert.equal(f.state().requestId, null);
-  await assert.rejects(f.manager.respond(target, { requestId: second, answers: { recovery: ['放弃旧配置并重新配置'] } }));
-  await f.manager.start(target); assert.ok(f.state().requestId);
-  f.manager.pauseSession(target.tmuxSession);
-  assert.equal(f.state().requestId, null, 'manual takeover invalidates confirmation');
-  assert.equal(f.writes.length, 1);
-});
-
-test('a late original reply replaces the recovery choice before replacement is authorized', async t => {
-  const f = await fixture(t);
-  await f.manager.start(target); await f.manager.tick();
-  const old = f.stored().exchange;
-  f.now += 30001; await f.manager.tick(); await f.manager.start(target);
-  const recoveryId = f.state().requestId;
-  f.manager.restoreProposal(target, { id: threadId, turns: [{ status: 'completed', items: [
-    { type: 'userMessage', content: old.text },
-    { type: 'agentMessage', text: '```codeck-autonomy\n' + JSON.stringify({ nonce: old.nonce, status: 'ask',
-      questions: [{ id: 'goal', header: '目标', question: '目标？', options: ['修复', '诊断'] }] }) + '\n```' },
-  ] }] });
-  assert.equal(f.state().status, 'configuring');
-  assert.equal(f.state().recovery, null);
-  await assert.rejects(f.manager.respond(target, { requestId: recoveryId, answers: { recovery: ['放弃旧配置并重新配置'] } }));
-  assert.equal(f.writes.length, 1);
-  await f.manager.respond(target, { requestId: f.state().requestId, answers: { goal: ['诊断'] } });
-  await f.manager.tick(); assert.equal(f.writes.length, 2);
-  assert.match(f.writes[1], /目标：诊断/);
-});
-
-test('legacy paused Qoder config migrates through normal server preparation only on explicit A', async t => {
-  const f = await fixture(t); await f.manager.start(target); await f.manager.tick();
-  const old = f.manager.runs.values().next().value.exchange;
-  delete old.commandId; delete old.deliveryBaseline; delete old.receivedAt;
-  f.manager.pause(target); f.manager.close(); f.now += 60000;
-  f.manager = new AutonomyController(f.options);
-  await f.manager.tick(); assert.equal(f.writes.length, 1);
-  // Force a genuinely slow cold display read; migration must wait through the
-  // production server callback instead of rejecting its first loading snapshot.
-  const read = f.backend.read.bind(f.backend);
-  f.backend.read = async (...args) => {
-    if (args[0] === 'open') await new Promise(resolve => setTimeout(resolve, 150));
-    return read(...args);
-  };
-  await Promise.all([f.manager.start(target), f.manager.start(target)]);
-  await f.manager.tick();
-  const current = f.stored().exchange;
-  assert.notEqual(current.nonce, old.nonce); assert.equal(current.commandId, current.nonce);
-  assert.ok(current.deliveryBaseline.inputLog); assert.equal(current.sentAt, f.now);
-  assert.equal(f.writes.length, 2); assert.equal(f.state().round, 0);
-});
-
-test('explicit A retries a provably un-injected config once, but startup never retries', async t => {
-  const f = await fixture(t);
-  f.setComposer('permission menu');
-  await f.manager.start(target); await f.manager.tick();
-  const old = f.stored().suspended.exchange;
-  assert.equal(old.deliveryState, 'not-sent'); assert.equal(f.writes.length, 0);
-  f.manager.close(); f.manager = new AutonomyController(f.options);
-  await f.manager.tick(); assert.equal(f.writes.length, 0);
-  f.setComposer(screen);
-  await Promise.all([f.manager.start(target), f.manager.start(target)]);
-  await f.manager.tick();
-  assert.equal(f.writes.length, 1); assert.notEqual(f.stored().exchange.nonce, old.nonce);
-  assert.equal(f.state().status, 'configuring');
-});
-
-test('explicit A observes a late input-log receipt on the same timed-out config without resending', async t => {
-  const f = await fixture(t);
-  await f.manager.start(target); await f.manager.tick();
-  const old = f.stored().exchange;
-  f.now += 30001; await f.manager.tick(); assert.equal(f.state().status, 'paused');
-  fs.mkdirSync(path.dirname(old.deliveryBaseline.inputLog.file), { recursive: true });
-  fs.writeFileSync(old.deliveryBaseline.inputLog.file, JSON.stringify([
-    { sessionId: threadId, type: 'user', messageId: 1, timestamp: new Date().toISOString(), message: old.text },
-  ]));
-  await f.manager.start(target); await f.manager.tick();
-  assert.equal(f.state().status, 'configuring'); assert.equal(f.stored().exchange.nonce, old.nonce);
-  assert.equal(f.writes.length, 1); assert.equal(f.stored().exchange.receivedAt, f.now);
-});
-
-test('restart rehydrates Qoder input receipt without replay and still bounds missing configuration replies', async t => {
-  const f = await fixture(t); await f.manager.start(target); await f.manager.tick();
+test('Qoder input-log receipt acknowledges delivery while foreground work remains busy', async t => {
+  const f = await fixture(t); await startWork(f);
   const saved = f.stored().exchange;
-  f.manager.close();
-  // Simulate loss of in-memory backend receipts during a service restart.
-  f.backend.close();
-  f.backend = new QoderAgentBackend({ configDir: f.root });
-  f.registry.backends.set('qodercli', f.backend);
-  t.after(() => f.backend.close());
   fs.mkdirSync(path.dirname(saved.deliveryBaseline.inputLog.file), { recursive: true });
   fs.writeFileSync(saved.deliveryBaseline.inputLog.file, JSON.stringify([
     { sessionId: threadId, type: 'user', messageId: 1, timestamp: new Date().toISOString(), message: saved.text },
   ]));
-  f.manager = new AutonomyController(f.options);
-  assert.equal(f.state().status, 'paused');
-  await f.manager.start(target); await f.manager.tick();
-  // Cold worker reads may publish one historyLoading frame before their result.
-  if (!f.stored().exchange.receivedAt) {
-    await Promise.all([...f.backend.openReads.values()]); await f.manager.tick();
-  }
-  assert.equal(f.stored().exchange.receivedAt, f.now);
-  assert.equal(f.writes.length, 1);
-  f.now += 120001; await f.manager.tick();
-  assert.equal(f.state().status, 'paused'); assert.match(f.state().reason, /配置回复/);
+  f.session.hasRunningProcess = true; f.now += 30001; await poll(f);
+  assert.equal(f.state().status, 'running'); assert.ok(f.stored().exchange.receivedAt);
   assert.equal(f.writes.length, 1);
 });
 
-test('A refreshes a shared pre-registration read before deciding a persisted receipt is missing', async t => {
-  const f = await fixture(t);
-  await f.manager.start(target); await f.manager.tick();
-  const old = f.stored().exchange;
-  f.manager.pause(target); f.now += 30001;
-  f.backend.close();
-  f.backend = new QoderAgentBackend({ configDir: f.root });
-  f.registry.backends.set('qodercli', f.backend);
-  t.after(() => f.backend.close());
-  fs.mkdirSync(path.dirname(old.deliveryBaseline.inputLog.file), { recursive: true });
-  fs.writeFileSync(old.deliveryBaseline.inputLog.file, JSON.stringify([
-    { sessionId: threadId, type: 'user', messageId: 1, timestamp: new Date().toISOString(), message: old.text },
-  ]));
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
-  const read = f.backend.read.bind(f.backend), receiptSets = [];
-  f.backend.read = async (method, params) => {
-    if (method === 'open') { receiptSets.push(params.receipts.map(item => item.commandId)); await gate; }
-    return read(method, params);
-  };
-  assert.equal((await f.backend.openThread(threadId)).thread.historyLoading, true);
-  const recoveries = Promise.all([f.manager.start(target), f.manager.start(target)]);
-  release(); await recoveries;
-  assert.equal(f.state().status, 'configuring');
-  assert.equal(f.stored().exchange.nonce, old.nonce);
-  assert.equal(f.stored().exchange.receivedAt, f.now);
-  assert.deepEqual(receiptSets, [[], [old.commandId]], 'one new read covers the newly registered receipt');
-  assert.equal(f.writes.length, 1, 'receipt recovery never resends');
-});
-
-test('real Qoder transcript restores late configuration choices while old work stays busy, without new sends', async t => {
-  const f = await fixture(t); await f.manager.start(target); await f.manager.tick();
-  const saved = f.stored().exchange;
-  f.now += 30001; await f.manager.tick(); assert.equal(f.state().status, 'paused');
-  const records = [
-    { type: 'user', uuid: 'config-user', parentUuid: 'old', sessionId: threadId, cwd: '/fixture',
-      message: { role: 'user', content: saved.text } },
-    { type: 'assistant', uuid: 'config-answer', parentUuid: 'config-user', sessionId: threadId,
-      message: { id: 'answer', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text',
-        text: '请选择\n\n```codeck-autonomy\n' + JSON.stringify({ nonce: saved.nonce, status: 'ask', questions: [
-          { id: 'goal', header: '目标', question: '推进哪项？', options: ['修复', '研究'] },
-        ] }) + '\n```' }] } },
-  ];
-  fs.appendFileSync(f.file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
-  // The session's refreshed thread stream recovers a late reply after timeout.
-  const fresh = await f.backend.read('open', { threadId });
-  f.manager.restoreProposal(target, fresh.thread);
-  assert.equal(f.state().status, 'configuring');
-  assert.equal(f.state().questions[0].id, 'goal'); assert.ok(f.state().requestId);
-  assert.equal(f.state().round, 0); assert.equal(f.writes.length, 1);
+test('Qoder restart discards active exchange and requires a new explicit setup and approval', async t => {
+  const f = await fixture(t); await startWork(f); const saved = f.stored().exchange;
+  f.manager.close(); f.manager = new AutonomyController(f.options);
+  await poll(f); assert.equal(f.state().status, 'off'); assert.equal(f.writes.length, 1);
+  assert.equal(f.stored().exchange, null);
+  await f.manager.start(target); await poll(f); assert.equal(f.writes.length, 1);
+  assert.equal(f.state().setup, true); assert.notEqual(f.state().requestId, saved.nonce);
 });

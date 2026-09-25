@@ -1,4 +1,4 @@
-import { autonomyDisplayText } from './remote-autonomy.js?v=10';
+import { autonomyDisplayText } from './remote-autonomy.js?v=11';
 
 const visibleOutput = text => /codeck-autonomy/u.test(text) ? autonomyDisplayText(text) : text;
 

@@ -1,6 +1,6 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=10';
-import { createTerminalAutonomy } from './terminal-autonomy.js?v=9';
+import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=11';
+import { createTerminalAutonomy } from './terminal-autonomy.js?v=10';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -20,7 +20,7 @@ import {
   resetTerminalInput,
 } from './terminal-utils.js?v=17';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
-import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=3';
+import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
@@ -289,10 +289,11 @@ function rejectTerminalSubmit(message) {
   state.terminalSubmitPending?.reject(new Error(message));
 }
 
-function requestTerminalSubmit(target, data, { separateFinalEnter = false } = {}) {
+function requestTerminalSubmit(target, data, { separateFinalEnter = false, replaceDraft = false } = {}) {
   if (state.terminalSubmitPending) throw new Error('上一笔输入仍在发送，请稍后重试');
   const message = {
     type: 'input', data, submit: true,
+    ...(replaceDraft ? { replaceDraft: true } : {}),
     ...(separateFinalEnter ? { separateFinalEnter: true } : {}),
   };
   // New static assets can reach an old running server. Its raw-input contract still
@@ -332,6 +333,7 @@ async function submitTerminalVoiceDraft() {
     })]).finally(() => {
       if (state.terminalSubmitPending === directionPending) state.terminalSubmitPending = null;
     }) : requestTerminalSubmit(target, `${text}\r`, {
+      replaceDraft: true,
       // Agent identity can still be unresolved on an SSH-backed or newly opened session.
       // Slash commands share the same TUI race regardless of provider: let the text settle
       // before Enter so the key acts on the command, not the previous composer state.

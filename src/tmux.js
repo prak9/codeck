@@ -1283,6 +1283,21 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
       return paneId;
     };
     const paneId = await currentPane();
+    if (overrides.replaceDraft === true) {
+      const sessions = await (overrides.listTmuxSessions || listSessions)();
+      const session = sessions.find(item => item.name === sessionName);
+      const provider = session?.agent?.kind;
+      if (['codex', 'claude', 'qodercli'].includes(provider) && !session.agent.question) {
+        const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
+        const screen = await capture(paneId);
+        const state = provider === 'qodercli' ? qoderComposerState(screen, '') : agentComposerState(screen, '', provider);
+        // This raw-input path also handles answers to native dialogs. Only replace
+        // positively identified text drafts; ordinary keys/answers stay raw.
+        if (state === 'other' && !hasCodexInputModal(screen)) await replaceComposerDraft({ provider, paneId,
+          read: () => capture(paneId), verify: async () => await currentPane() === paneId, execTmux,
+          wait: overrides.waitForInputSettle || (() => new Promise(resolve => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS))) });
+      }
+    }
     const separateFinalEnter = overrides.separateFinalEnter === true && data.length > 1
       && !/[\r\n]/u.test(data.slice(0, -1)) && data.endsWith('\r');
     const bufferData = separateFinalEnter ? data.slice(0, -1) : data;
@@ -1309,7 +1324,24 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
   });
 }
 
-export async function sendSessionMessage({ provider, sessionName, threadId, text, isCurrent, expectedPaneId, requireIdle = false, nonInterrupting = false }, overrides = {}) {
+async function replaceComposerDraft({ provider, paneId, read, verify, execTmux, wait, question }) {
+  const state = screen => provider === 'qodercli'
+    ? qoderComposerState(screen, '') : agentComposerState(screen, '', provider);
+  let screen = await read();
+  for (let attempt = 0; state(screen) !== 'empty'; attempt++) {
+    if (question || hasCodexInputModal(screen) || state(screen) !== 'other') {
+      throw new Error('终端当前不是文本输入框，消息未发送；请先关闭或处理弹窗');
+    }
+    if (attempt >= 16) throw new Error('终端未响应草稿替换，消息未发送');
+    if (!await verify()) throw new Error('终端会话已变化，消息未发送');
+    await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId,
+      ...Array.from({ length: 32 }, () => ['C-u', 'C-k']).flat()]));
+    await wait();
+    screen = await read();
+  }
+}
+
+export async function sendSessionMessage({ provider, sessionName, threadId, text, isCurrent, expectedPaneId, requireIdle = false, nonInterrupting = false, replaceDraft = false, deferDraft = false }, overrides = {}) {
   if (typeof text !== 'string' || !text.trim() || text.length > 100_000) throw new Error('消息内容无效');
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
@@ -1342,11 +1374,21 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
+    // An explicit submission owns the composer: replace its old draft, never append
+    // to it. Keep this in the same pane queue as paste/Enter and scrolling. Automated
+    // follow-up rounds do not inherit permission to erase later human input.
+    if (replaceDraft && provider !== 'shell' && (provider !== 'codex' || requireIdle || nonInterrupting)) {
+      await replaceComposerDraft({ provider, paneId, execTmux, question: session.agent?.question,
+        read: () => captureInputPane(paneId, { joinWrapped: true }), verify: verifyPane, wait: () => waitForPaste(pasteDelay) });
+    }
     if (requireIdle || nonInterrupting) {
       const screen = await captureInputPane(paneId, { joinWrapped: true });
       const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
-      const empty = provider === 'qodercli' ? qoderComposerState(screen, '') === 'empty'
-        : agentComposerState(screen, '', provider) === 'empty';
+      const composer = provider === 'qodercli' ? qoderComposerState(screen, '') : agentComposerState(screen, '', provider);
+      const empty = composer === 'empty';
+      if (deferDraft && !replaceDraft && composer === 'other' && !session.agent?.question && !hasCodexInputModal(screen)) {
+        return { submissionStatus: 'deferred' };
+      }
       if (!empty || (requireIdle && (signals.busy || signals.background)) || session.agent?.question
         || hasCodexInputModal(screen) || !await verifyPane()) {
         if (provider === 'qodercli') return { submissionStatus: 'not-sent' };
@@ -1765,7 +1807,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   });
 }
 
-export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, allowBackground = false }, overrides = {}) {
+export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, allowBackground = false, replaceDraft = false }, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未取消旧任务');
@@ -1781,6 +1823,16 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       return !currentSession.hasRunningProcess && !currentSession.agent?.question;
     };
     const idle = check(paneId, session);
+    if (replaceDraft && provider !== 'shell') {
+      const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
+      await replaceComposerDraft({ provider, paneId, question: session.agent?.question,
+        read: () => capture(paneId), execTmux: overrides.execTmux || (args => exec('tmux', args)),
+        wait: overrides.waitForStop || (() => new Promise(resolve => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS))),
+        verify: async () => {
+          const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+          check(current.paneId, current.session); return true;
+        } });
+    }
     let interruptForeground = !waitForIdle || !idle;
     if (waitForIdle && provider === 'codex') {
       const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
@@ -1795,7 +1847,7 @@ export async function interruptSession({ provider, sessionName, threadId, expect
         throw new Error('终端处于历史浏览或弹窗，请先返回正常输入框；未发送中断键');
       }
       interruptForeground = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex).busy || hasCodexQueuedInput(screen);
-      if (!interruptForeground && agentComposerState(screen, '') !== 'empty') {
+      if (!interruptForeground && !['empty', 'other'].includes(agentComposerState(screen, ''))) {
         throw new Error('终端输入框未就绪，请先处理草稿或弹窗；未发送中断键');
       }
     }

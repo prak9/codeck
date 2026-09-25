@@ -20,6 +20,7 @@ test('server forwards phase-specific send guards and verified task cancellation 
   };
   vm.runInNewContext(source.slice(source.indexOf('const autonomy = new AutonomyController('), source.indexOf('const sessionFeed =')), {
     AutonomyController: function (value) { options = value; },
+    extractDefinition: async () => ({ fieldsVersion: 5 }),
     path, os, process: { env: {} }, crypto: { randomUUID: () => 'fixture-command' },
     agentRegistry, invalidateSessionSnapshots: async () => {},
   });
@@ -39,7 +40,7 @@ test('server forwards phase-specific send guards and verified task cancellation 
   assert.equal(stops[0].stopBackground, true);
 });
 
-test('isolated server restores autonomy paused and exposes it only to the owner API', { timeout: 15_000 }, async t => {
+test('isolated server restores autonomy off and exposes it only to the owner API', { timeout: 15_000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-autonomy-server-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const target = { provider: 'codex', threadId: 'fixture-thread', tmuxSession: 'fixture-missing' };
@@ -72,7 +73,7 @@ test('isolated server restores autonomy paused and exposes it only to the owner 
     [`codeck.${Buffer.from('isolated-autonomy-test').toString('base64url')}`], { rejectUnauthorized: false });
   t.after(() => socket.terminate());
   const [raw] = await once(socket, 'message'); const ready = JSON.parse(raw);
-  assert.equal(ready.type, 'ready'); assert.equal(ready.autonomy[0].status, 'paused');
+  assert.equal(ready.type, 'ready'); assert.equal(ready.autonomy[0].status, 'off');
   assert.equal(ready.autonomy[0].round, 2); assert.equal(ready.autonomy[0].exchange, undefined);
   const stored = JSON.parse(fs.readFileSync(path.join(dir, 'autonomy.json'))).runs[0];
   assert.equal(stored.exchange, null); assert.equal(stored.pending, null);

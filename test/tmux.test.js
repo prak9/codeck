@@ -6,6 +6,58 @@ import { AGENT_SCREEN_MARKERS, dismissSessionCommand, ensureAgentInputSubmitted,
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
 
+test('an automatic loop yields to a human draft without clearing or submitting it', async () => {
+  const commands = [];
+  const result = await sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+    text: 'next round', requireIdle: true, nonInterrupting: true, deferDraft: true }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => '» 尚未写完\n\n  gpt-6-astra · /project', execTmux: async args => commands.push(args),
+  });
+  assert.equal(result.submissionStatus, 'deferred'); assert.deepEqual(commands, []);
+});
+
+for (const provider of ['codex', 'qodercli', 'claude']) {
+  test(`${provider}: explicit submission replaces the old multiline draft before pasting`, async () => {
+    let draft = '旧草稿\n第二行'; const commands = [];
+    const screen = () => provider === 'qodercli'
+      ? `────────────────────\n > ${draft.replaceAll('\n', '\n   ')}\n────────────────────\n Ultimate Model`
+      : provider === 'claude' ? `❯ ${draft.replaceAll('\n', '\n  ')}\n────────────────────\n  ⏵⏵ bypass permissions on`
+        : `» ${draft.replaceAll('\n', '\n  ')}\n\n  gpt-6-astra · /project`;
+    await sendSessionMessage({ provider, sessionName: 'replace', threadId: 'thread-1',
+      text: '新的内容', replaceDraft: true, nonInterrupting: true }, {
+      listTmuxSessions: async () => [{ name: 'replace', agent: { kind: provider, id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => screen(), loadBuffer: async () => {},
+      execTmux: async args => { commands.push(args); if (args.includes('C-u')) draft = ''; },
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+    });
+    const clear = commands.findIndex(args => args.includes('C-u'));
+    const paste = commands.findIndex(args => args.includes('paste-buffer'));
+    assert.ok(clear >= 0 && paste > clear);
+    assert.equal(commands.some(args => args.includes('C-c') || args.includes('Escape')), false);
+  });
+}
+
+test('opening A preserves an idle Codex draft without blocking setup', async () => {
+  const commands = [];
+  await interruptSession({ provider: 'codex', sessionName: 'draft', threadId: 'thread-1', waitForIdle: true }, {
+    listTmuxSessions: async () => [{ name: 'draft', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => '» 旧草稿\n\n  gpt-6-astra · /project',
+    execTmux: async args => commands.push(args),
+  });
+  assert.deepEqual(commands, []);
+});
+
+test('explicit replacement never clears or confirms a native approval modal', async () => {
+  const commands = [];
+  await assert.rejects(sendSessionMessage({ provider: 'codex', sessionName: 'draft', threadId: 'thread-1',
+    text: '新任务', replaceDraft: true, nonInterrupting: true }, {
+    listTmuxSessions: async () => [{ name: 'draft', agent: { kind: 'codex', id: 'thread-1', paneId: '%7', question: { id: 'approval' } } }],
+    capturePane: async () => 'Would you like to proceed?\n› 1. Yes\n  2. No',
+    execTmux: async args => commands.push(args),
+  }));
+  assert.deepEqual(commands, []);
+});
+
 test('progress input preserves Codex native queue without forcing Escape or clearing a draft', async () => {
   const commands = []; let pasted = false;
   const queued = 'Messages to be submitted after next tool call\npress esc to interrupt and send immediately';

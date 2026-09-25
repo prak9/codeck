@@ -19,7 +19,7 @@ import { interruptSession } from '../src/tmux.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
-const simpleMode = process.env.CODECK_SIMPLE_AUTONOMY === '1';
+const simpleMode = process.env.CODECK_BROWSER_CORE !== '1';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-remote-smoke-'));
 console.log(`Browser artifacts: ${artifacts}`);
@@ -58,6 +58,7 @@ function reset(provider) {
     fixture.background = background; fixture.status = background ? 'background' : 'done';
   };
   fixture.autonomy = new AutonomyController({
+    suggestDefinition: async () => ({ fieldsVersion: 5, suggestions: [] }),
     schedule: () => 1, cancel() {},
     readSession: async () => ({ name: 'fixture', hasRunningProcess: fixture.status === 'working',
       agent: { kind: provider, id: 'fixture-thread', paneId: '%7', question: fixture.question,
@@ -103,22 +104,13 @@ function reset(provider) {
       const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
       fixture.finishAutonomy = (record, prose = '本轮检查已完成。') => {
         entry.status = 'completed';
-        if (simpleMode && record.status === 'summary') writeReceipt(['--receipt', [...fixture.autonomy.runs.values()][0].exchange.receiptFile,
+        if (record.status === 'summary') writeReceipt(['--receipt', [...fixture.autonomy.runs.values()][0].exchange.receiptFile,
           '--status', 'summary', '--summary', record.summary, '--next', record.next]);
         entry.items.push({ id: `${turnId}-answer`, type: 'agentMessage',
-          text: simpleMode && record.status === 'summary' ? `${record.summary}\n\n下一步：${record.next}`
-            : `${prose}\n\n\`\`\`codeck-autonomy\n${JSON.stringify({ nonce, ...record })}\n\`\`\`` });
+          text: `${record.summary || prose}\n\n下一步：${record.next || ''}` });
         fixture.status = 'done'; publishThread(); publishSessions();
       };
       fixture.status = 'working'; publishThread(); publishSessions();
-      if (text.includes('"phase":"config"')) {
-        fixture.finishConfig = () => fixture.finishAutonomy(fixture.autonomyPlan ? { status: 'ready', plan: fixture.autonomyPlan } : { status: 'ask', questions: [
-          { id: 'goal', header: '目标', question: '这次推进哪个目标？', options: ['修复选择器并补回归', '只定位原因'] },
-          { id: 'budget', header: '预算', question: '本次最多执行多少轮？', options: ['3 轮 / 30 分钟', '5 轮 / 60 分钟'] },
-          { id: 'preferences', header: '偏好', question: '采用哪种执行边界？', options: ['最小修改，不提交部署', '先给设计再实施'] },
-        ] }, fixture.autonomyPlan ? '目标与预算已整理，请在弹窗确认。' : '请在弹窗选择目标、预算和偏好。');
-        if (!fixture.holdAutonomyConfig) fixture.finishConfig();
-      }
       return { submissionStatus: 'submitted' };
     },
   });
@@ -196,7 +188,7 @@ function publishEvent(method, params) {
 }
 sockets.on('connection', socket => {
   send(socket, { type: 'ready', hostname: 'isolated-fixture', defaultCwd: '/fixture',
-    scopedSessionStop: true, simpleAutonomy: simpleMode,
+    scopedSessionStop: true,
     autonomy: fixture.autonomy.snapshots(),
     protocol: { version: 1, epoch: fixture.epoch, commandReceiptTtlMs: 600_000 },
     providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
@@ -215,16 +207,14 @@ sockets.on('connection', socket => {
       });
       publishThread(); publishSessions(); return reply({});
     }
-    if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(request.type)) {
-      if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget, { simple: request.simple === true });
+    if (['startAutonomy', 'finishAutonomy', 'answerAutonomy'].includes(request.type)) {
+      if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget);
       else if (request.type === 'answerAutonomy') await fixture.autonomy.respond(autonomyTarget, request);
-      else if (request.simple) await fixture.autonomy.finish(autonomyTarget);
-      else fixture.autonomy.pause(autonomyTarget);
+      else await fixture.autonomy.finish(autonomyTarget);
       await fixture.autonomy.tick(); await fixture.autonomy.tick();
       return reply({ autonomy: fixture.autonomy.snapshot(autonomyTarget) });
     }
     if (request.type === 'openThread') {
-      fixture.autonomy.restoreProposal(autonomyTarget, thread());
       for (const id of request.dismissedDeliveryIds || []) { fixture.dismissed.add(id); fixture.recovery?.dismiss('fixture-thread', id); }
       for (const receipt of request.deliveryReceipts || []) {
         if (!fixture.dismissed.has(receipt.commandId)) fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
@@ -269,12 +259,6 @@ sockets.on('connection', socket => {
     }
     if (request.type === 'dismissSessionCommand') return reply({ dismissed: true });
     if (request.type === 'sendSessionMessage') {
-      const autonomous = fixture.autonomy.snapshot(autonomyTarget);
-      if (autonomous && !['completed', 'limit'].includes(autonomous.status) && request.text !== progressPrompt) {
-        await fixture.autonomy.message(autonomyTarget, request.text);
-        await fixture.autonomy.tick(); await fixture.autonomy.tick();
-        return reply({ autonomyHandled: true, autonomy: fixture.autonomy.snapshot(autonomyTarget) });
-      }
       fixture.sent.push(request);
       if (request.text.startsWith('/')) {
         const terminalOutput = request.text === '/model'
@@ -350,6 +334,8 @@ try {
         await dialog.getByRole('button', { name: '修复会话切换后输入丢失的问题', exact: true }).waitFor();
         assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '37列到140列恢复，验证通过');
         await dialog.getByRole('textbox', { name: '策略', exact: true }).fill('复现后最小修复');
+        await dialog.getByRole('textbox', { name: '预算轮次' }).fill('');
+        assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'blank budget is valid');
         await dialog.getByRole('textbox', { name: '预算轮次' }).fill('5轮 / 30分钟');
         assert.equal(await dialog.getByRole('button', { name: '开始', exact: true }).evaluate(el => {
           const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; el.append(probe);
@@ -367,12 +353,14 @@ try {
         assert.deepEqual(await auto.locator('.autonomy-icon').evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).boxShadow]), ['rgba(0, 0, 0, 0)', 'none']);
         assert.equal(await page.locator('#sendButton').evaluate(el => el.classList.contains('stop-mode')), false);
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-active.png`) });
+        await page.locator('#progressButton').click();
+        await page.waitForFunction(() => document.querySelector('#progressButton').disabled === false);
+        await page.locator('#composerInput').fill('请补充说明当前缓存证据');
+        await page.locator('#sendButton').click();
+        await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
+        assert.equal(fixture.autonomy.snapshot({ provider, threadId: 'fixture-thread', tmuxSession: 'fixture' }).status, 'running');
+        assert.equal(fixture.autonomySent.length, 1, 'ordinary conversation does not reset or exit A');
         const run = fixture.autonomy.runs.values().next().value, id = run.id;
-        Object.assign(run, { status: 'configuring', setup: false, requestId: 'old-question',
-          questions: [{ id: 'old', header: '旧配置', question: '旧配置选择', options: ['继续'] }] });
-        fixture.autonomy.changed(run);
-        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'configuring');
-        assert.equal(await dialog.isVisible(), false, 'legacy questions cannot replace the simple toggle');
         await auto.click();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'exiting');
         assert.equal(await dialog.isVisible(), false, 'exit must not open another choice dialog');
@@ -676,197 +664,6 @@ try {
       await page.getByText('问号不打断，A 进入自主模式', { exact: true }).waitFor();
       assert.equal(await page.getByRole('button', { name: '清除此提示' }).count(), 0);
       assert.equal(fixture.sent.length, sentBeforeDismiss, 'clearing a receipt never resends input');
-      // Actual controller + real UI; only the Agent's reasoning/results are fixtures.
-      const auto = page.locator('#autonomyButton');
-      assert.equal(await auto.locator('.autonomy-icon').textContent(), 'A');
-      assert.equal(await auto.locator('#autonomyStatus').textContent(), '');
-      await page.locator('#composerInput').fill('保留自主配置前的草稿');
-      fixture.holdAutonomyConfig = true;
-      fixture.status = viewport.width < 500 ? 'background' : 'working'; publishSessions();
-      await auto.click();
-      const dialog = page.locator('#autonomyDialog');
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '配置中');
-      assert.match(await auto.getAttribute('aria-label'), /暂停自主配置/);
-      assert.equal(fixture.autonomySent.length, 1, 'A sends configuration even while foreground/background work runs');
-      assert.equal(fixture.autonomyStops, 0, 'configuration must not cancel the old task');
-      assert.equal(await dialog.evaluate(node => node.open), false);
-      if (provider === 'qodercli') {
-        fixture.question = { id: 'autonomy-native-question', question: '是否执行终端操作？', options: [{ label: 'No' }, { label: 'Yes' }] };
-        publishSessions(); await fixture.autonomy.tick();
-        await page.waitForSelector('#nativeQuestionDialog[open]');
-        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '待处理');
-        await page.getByRole('button', { name: '稍后回答' }).click();
-        assert.equal(await auto.getAttribute('aria-label'), '处理 Agent 等待的问题');
-        await auto.click(); await page.waitForSelector('#nativeQuestionDialog[open]');
-        assert.equal(fixture.question.id, 'autonomy-native-question', 'A only opens the native question');
-        const native = page.locator('#nativeQuestionDialog');
-        await native.getByRole('radio', { name: 'No', exact: true }).check();
-        await native.getByRole('button', { name: '回答并继续' }).click();
-        await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
-        await fixture.autonomy.tick();
-        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '配置中');
-        assert.equal(fixture.autonomySent.length, 1);
-      }
-      await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '配置中');
-      assert.match(await auto.getAttribute('aria-label'), /暂停自主配置/);
-      assert.equal(fixture.autonomySent.length, 1);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-configuring.png`) });
-      fixture.holdAutonomyConfig = false; fixture.finishConfig(); await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '待回答');
-      await dialog.getByText('这次推进哪个目标？', { exact: true }).waitFor();
-      assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
-      // research regression: a received ask reply outlives lost controller state.
-      const setupRun = [...fixture.autonomy.runs.values()][0];
-      fixture.autonomy.pause(setupRun.target, '发送状态未确认');
-      await page.reload();
-      await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
-      assert.equal(fixture.autonomySent.length, 1, 'choice recovery must not queue another continue');
-      assert.equal(fixture.autonomyStops, 0);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-recovered-choices.png`) });
-      await dialog.getByRole('button', { name: '确认选择' }).click();
-      await dialog.getByRole('alert').filter({ hasText: '请回答“目标”' }).waitFor();
-      assert.equal(fixture.autonomySent.length, 1, 'an incomplete form cannot advance configuration');
-      await dialog.getByRole('radio', { name: '修复选择器并补回归' }).check();
-      await dialog.getByRole('radio', { name: '3 轮 / 30 分钟' }).check();
-      await dialog.getByRole('textbox', { name: '偏好：自定义回答' }).fill('最小修改，不提交部署');
-      await page.keyboard.press('Escape');
-      assert.equal(await dialog.evaluate(node => node.open), false);
-      assert.equal(fixture.autonomySent.length, 1, 'closing the modal does not approve execution');
-      await auto.click();
-      assert.equal(await dialog.getByRole('radio', { name: '修复选择器并补回归' }).isChecked(), true);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-choices.png`) });
-      fixture.autonomyPlan = { goal: '修复选择器', acceptance: '回归测试通过', maxRounds: 3,
-        minutes: 30, preferences: '最小修改，不提交部署', advisoryBudget: '' };
-      await dialog.getByRole('button', { name: '确认选择' }).click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 待确认');
-      await dialog.getByRole('heading', { name: '确认自主目标' }).waitFor();
-      assert.match(await dialog.locator('.autonomy-plan').textContent(), /修复选择器.*回归测试通过.*3 轮.*30 分钟.*不提交部署/);
-      assert.equal(fixture.autonomySent.length, 2, 'a proposed plan is not yet authorized work');
-      const setup = fixture.autonomy.runs.values().next().value;
-      const finite = setup.proposal;
-      setup.proposal = { ...finite, maxRounds: null, minutes: null };
-      setup.requestId += '-unlimited'; fixture.autonomy.changed(setup);
-      await dialog.getByText('不设预算上限（已用 0 轮）', { exact: true }).waitFor();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/∞ 待确认');
-      assert.equal(fixture.autonomyStops, 0, 'unlimited configuration cannot authorize work');
-      setup.proposal = finite; setup.requestId += '-finite'; fixture.autonomy.changed(setup);
-      await dialog.getByText('3 轮 · 30 分钟（已用 0 轮）', { exact: true }).waitFor();
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-confirm.png`) });
-      assert.equal(await page.inputValue('#composerInput'), '');
-      // report regression: the final ready reply exists, but a failed send check
-      // lost the controller's proposal. Reopening recovers it without another prompt.
-      const run = [...fixture.autonomy.runs.values()][0];
-      run.proposal = null; fixture.autonomy.pause(run.target, '终端输入框未就绪');
-      await page.reload();
-      await dialog.getByRole('heading', { name: '确认自主目标' }).waitFor();
-      assert.equal(fixture.autonomySent.length, 2, 'recovering a proposal must not resend setup');
-      assert.equal(fixture.autonomyStops, 0);
-      await dialog.getByText('确认停止旧任务，按此目标和预算执行？', { exact: true }).waitFor();
-      fixture.holdAutonomyStop = true; fixture.failAutonomyStop = true; fixture.status = 'working'; publishSessions();
-      // Keep explicit choice confirmation covered on desktop; mobile uses A itself.
-      if (viewport.width < 500) {
-        await page.keyboard.press('Escape');
-        await page.locator('#composerInput').fill('保留确认前草稿');
-        assert.match(await auto.getAttribute('aria-label'), /确认并执行/);
-        await auto.focus(); await page.keyboard.press('Space');
-      } else {
-        await dialog.getByRole('radio', { name: '按此目标开始', exact: true }).check();
-        await dialog.getByRole('button', { name: '确认选择' }).click();
-      }
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 切换中');
-      assert.equal(fixture.autonomySent.length, 2, 'new goal cannot start until old work is stopped');
-      assert.equal(fixture.autonomyStops, 1);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-switching.png`) });
-      fixture.holdAutonomyStop = false; fixture.finishStop();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 执行中 · 续跑关闭');
-      await page.locator('#liveStatus').getByText('自主任务已暂停：旧任务未停止，新目标未启动', { exact: true }).waitFor();
-      assert.equal(fixture.autonomySent.length, 2, 'failed cancellation spends no round and dispatches no work');
-      if (provider === 'codex' || provider === 'qodercli') { fixture.status = 'background'; publishSessions(); }
-      await auto.click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 执行中');
-      assert.equal(fixture.autonomyStops, 2, 'only explicit retry can attempt cancellation again');
-      if (provider === 'codex') assert.deepEqual(fixture.stopCommands, ['/goal clear', '/stop']);
-      assert.equal(await page.inputValue('#composerInput'), viewport.width < 500 ? '保留确认前草稿' : '');
-      assert.equal(await auto.getAttribute('aria-pressed'), 'true');
-      const box = await auto.boundingBox(); assert.ok(box.width >= 44 && box.height >= 44);
-      const groupedProgressBox = await page.locator('#progressButton').boundingBox();
-      assert.ok(groupedProgressBox.width >= 44 && groupedProgressBox.height >= 44);
-      assert.ok(box.x - (groupedProgressBox.x + groupedProgressBox.width) <= 1, 'session controls are adjacent');
-      assert.equal(await auto.locator('.autonomy-icon').evaluate(node => getComputedStyle(node).borderRadius), '50%');
-      assert.doesNotMatch(await page.locator('#turns').textContent(), /codeck-autonomy|"nonce"/);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-running.png`) });
-      const beforeReload = fixture.autonomySent.length;
-      await page.reload();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 执行中');
-      assert.equal(fixture.autonomySent.length, beforeReload, 'reconnect cannot start another round');
-      await auto.focus(); await page.keyboard.press('Space');
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 执行中 · 续跑关闭');
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-paused.png`) });
-      fixture.finishAutonomy({ status: 'continue', summary: '旧方向完成一项', next: '旧方向', progress: true });
-      await fixture.autonomy.tick(); assert.equal(fixture.autonomySent.length, beforeReload);
-      fixture.status = 'background'; fixture.background = true; publishSessions();
-      await page.locator('#composerInput').fill('');
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('后台执行中 · 续跑关闭'));
-      await page.click('#sendButton');
-      await page.getByRole('button', { name: '取消', exact: true }).click();
-      assert.equal(fixture.scopedStops.length, 0);
-      await page.click('#sendButton');
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-stop-scope.png`) });
-      fixture.holdManualStop = true;
-      await page.getByRole('button', { name: '仅停止当前执行', exact: true }).click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('停止中'));
-      assert.equal(await auto.isDisabled(), true);
-      fixture.holdManualStop = false; fixture.finishManualStop();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('后台执行中 · 续跑关闭'));
-      assert.equal(fixture.scopedStops.at(-1).scope, 'foreground');
-      assert.equal(fixture.background, true);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-background-paused.png`) });
-      if (provider === 'qodercli') {
-        await page.click('#sendButton');
-        await page.getByRole('button', { name: '全部停止', exact: true }).click();
-        await page.waitForFunction(() => document.querySelector('#liveStatus').textContent.includes('已停止本会话任务'));
-        assert.equal(fixture.background, false);
-        assert.ok(fixture.stopCommands.includes('k'));
-      }
-      fixture.status = 'done'; fixture.background = false; publishSessions();
-      fixture.autonomyPlan.goal = '只修后端';
-      await page.locator('#composerInput').fill('只修改后端，继续'); await page.locator('#sendButton').click();
-      await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
-      await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3 执行中');
-      assert.match(fixture.autonomySent.at(-1), /只修后端/);
-      fixture.finishAutonomy({ status: 'complete', summary: '后端完成', evidence: '回归测试通过', progress: true });
-      await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3 已完成');
-      assert.equal(await auto.getAttribute('aria-pressed'), 'false');
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-completed.png`) });
-      if (provider === 'qodercli') {
-        const run = fixture.autonomy.runs.values().next().value;
-        const text = fixture.autonomySent[0], nonce = /"nonce":"([^"]+)"/.exec(text)[1];
-        fixture.turns = []; fixture.autonomyPlan = null;
-        Object.assign(run, { status: 'paused', plan: null, proposal: null, questions: null, requestId: null,
-          pending: null, exchange: null, round: 0,
-          suspended: { status: 'configuring', exchange: { kind: 'config', nonce, commandId: nonce, text, sentAt: 0 } } });
-        fixture.autonomy.changed(run);
-        const sent = fixture.autonomySent.length;
-        await auto.click();
-        await dialog.getByRole('heading', { name: '重新配置自主目标' }).waitFor();
-        assert.equal(await dialog.locator('input[type=text]').count(), 0);
-        assert.equal(fixture.autonomySent.length, sent);
-        await dialog.getByRole('radio', { name: '保持暂停', exact: true }).check();
-        await dialog.getByRole('button', { name: '确认选择' }).click();
-        await page.locator('#autonomyDialog:not([open])').waitFor({ state: 'attached' });
-        await auto.click();
-        await dialog.getByRole('radio', { name: '放弃旧配置并重新配置', exact: true }).check();
-        await dialog.getByRole('button', { name: '确认选择' }).click();
-        await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
-        assert.equal(fixture.autonomySent.length, sent + 1);
-        assert.notEqual(/"nonce":"([^"]+)"/.exec(fixture.autonomySent.at(-1))[1], nonce);
-        assert.equal(run.round, 0);
-        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-replacement.png`) });
-        await page.keyboard.press('Escape');
-      }
       if (viewport.width < 500) {
         await page.setViewportSize({ width: viewport.width, height: 420 });
         await page.locator('#composerInput').focus();

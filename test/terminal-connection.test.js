@@ -2,6 +2,23 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { submitTerminalInput } from '../src/tmux.js';
+
+test('normal composer submission replaces an old CLI draft inside the pane transaction', async () => {
+  let draft = 'old draft', buffer = ''; const events = [];
+  await submitTerminalInput('work', 'new message\r', {
+    replaceDraft: true, isCurrent: () => true,
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'qodercli', paneId: '%7' } }],
+    capturePane: async () => `────────\n > ${draft}\n────────\n Ultimate Model`,
+    loadBuffer: async (_name, text) => { buffer = text; }, waitForInputSettle: async () => {},
+    execTmux: async args => {
+      if (args[0] === 'display-message') return { stdout: 'work\t%7\n' };
+      if (args.includes('C-u')) { events.push('clear'); draft = ''; }
+      if (args.includes('paste-buffer')) { events.push('paste'); assert.equal(draft, ''); assert.equal(buffer, 'new message\r'); }
+      return { stdout: '' };
+    },
+  });
+  assert.deepEqual(events, ['clear', 'paste']);
+});
 import {
   createTerminalOutputBatcher,
   handleTerminalConnection,

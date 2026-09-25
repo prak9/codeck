@@ -181,6 +181,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       await dependencies.submitTerminalInput(targetSession, message.data, {
         isCurrent,
         separateFinalEnter: message.separateFinalEnter === true,
+        replaceDraft: message.replaceDraft === true,
       });
       if (isCurrent() && attachment === attachSequence) inputMode = 'live';
     }).then(() => { if (message.type === 'input') sendInputResult(message); }, (error) => {

@@ -20,7 +20,7 @@ for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: silen
   const controller = new AutonomyController(options);
   await controller.start(target, { simple: true });
   await controller.respond(target, { requestId: controller.snapshot(target).requestId, answers: {
-    goal: ['修复输入'], strategy: ['先复现后修复'], acceptance: ['回归通过'], budget: ['不限'], constraints: [''], continuation: ['false'],
+    goal: ['修复输入'], strategy: ['先复现后修复'], acceptance: ['回归通过'], budget: ['不限'], constraints: [''],
   } });
   await controller.tick();
   const exchange = [...controller.runs.values()][0].exchange;
@@ -34,10 +34,10 @@ for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: silen
   assert.equal(readReceipt(exchange.receiptFile, exchange.nonce).summary, '8项测试通过');
   await controller.tick(); assert.equal(controller.snapshot(target).status, 'running', 'receipt alone cannot cut off final prose');
   turns[0].status = 'completed'; turns[0].items.push({ type: 'agentMessage', text: '8项测试通过，下一步扩大回归。' });
-  await controller.tick(); assert.equal(controller.snapshot(target).status, 'queued'); assert.equal(sent.length, 1);
+  await controller.tick(); assert.equal(controller.snapshot(target).status, 'running'); assert.equal(sent.length, 1);
   controller.close();
   const restored = new AutonomyController(options); await restored.tick();
-  assert.equal(restored.snapshot(target).status, 'paused'); assert.equal(sent.length, 1); restored.close();
+  assert.equal(restored.snapshot(target).status, 'off'); assert.equal(sent.length, 1); restored.close();
 });
 
 test('invalid receipt parameters can be corrected, but an accepted receipt cannot be changed', t => {

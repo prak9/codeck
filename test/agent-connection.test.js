@@ -1456,7 +1456,7 @@ test('routes direct participation to the selected tmux session without trusting 
   await waitFor(() => socket.sent.some((message) => message.id === 7));
 
   assert.deepEqual(messages, [{
-    provider: 'claude', threadId: 'thread-1', sessionName: 'work', text: 'Review mobile',
+    provider: 'claude', threadId: 'thread-1', sessionName: 'work', text: 'Review mobile', replaceDraft: true,
   }]);
   assert.deepEqual(backends.claude.calls, [{
     method: 'recordSessionMessage',
@@ -1555,7 +1555,7 @@ test('routes shell participation without advertising or requiring an Agent backe
     && socket.sent.some((message) => message.id === 10));
 
   assert.deepEqual(messages, [{
-    provider: 'shell', threadId: 'tmux:shell:work', sessionName: 'work', text: 'pwd',
+    provider: 'shell', threadId: 'tmux:shell:work', sessionName: 'work', text: 'pwd', replaceDraft: true,
   }]);
   assert.deepEqual(interruptions, [{
     provider: 'shell', threadId: 'tmux:shell:work', sessionName: 'work',
