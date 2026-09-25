@@ -368,7 +368,9 @@ test('setup sends immediately while foreground or background work runs, without 
     f.session.agent.hasBackgroundProcess = busy === 'background';
     await f.manager.start(target); await f.manager.tick();
     assert.equal(f.sent.length, 1, busy); assert.equal(f.state().round, 0);
-    assert.deepEqual(policies, [{ requireIdle: false, nonInterrupting: true }]);
+    assert.equal(policies.length, 1);
+    assert.equal(policies[0].requireIdle, false); assert.equal(policies[0].nonInterrupting, true);
+    assert.equal(policies[0].commandId, f.manager.runs.get(autonomyKey(target)).exchange.commandId);
     assert.equal(autonomyPresentation(f.state()).detail, '配置中');
     await f.manager.tick(); assert.equal(f.sent.length, 1, 'busy setup must not be resent');
     f.session.hasRunningProcess = false;
@@ -377,11 +379,54 @@ test('setup sends immediately while foreground or background work runs, without 
   }
 });
 
+test('Qoder empty composer without input receipt times out even while foreground and background stay busy', async () => {
+  const qoder = { ...target, provider: 'qodercli' };
+  const f = fixture(); f.session.agent.kind = 'qodercli';
+  f.session.hasRunningProcess = true; f.session.agent.hasBackgroundProcess = true;
+  await f.manager.start(qoder); await f.manager.tick();
+  await f.manager.tick(); f.now += 30_001; await f.manager.tick();
+  assert.equal(f.manager.snapshot(qoder).status, 'paused');
+  assert.match(f.manager.snapshot(qoder).reason, /送达.*未确认|未确认送达/);
+  await f.manager.tick(); assert.equal(f.sent.length, 1);
+});
+
+test('configuration replies are parsed while old foreground work is still busy', async () => {
+  const f = fixture(); f.session.hasRunningProcess = true;
+  await f.manager.start(target); await f.manager.tick();
+  f.reply({ status: 'ready', plan }); await f.manager.tick();
+  assert.equal(f.state().status, 'confirming'); assert.equal(f.state().round, 0);
+});
+
+test('received configuration has a bounded response wait independent of background work', async () => {
+  const qoder = { ...target, provider: 'qodercli' };
+  const f = fixture(); f.session.agent.kind = 'qodercli'; f.session.agent.hasBackgroundProcess = true;
+  await f.manager.start(qoder); await f.manager.tick();
+  const exchange = f.manager.runs.get(autonomyKey(qoder)).exchange;
+  f.thread.receivedDeliveryIds = [exchange.commandId]; await f.manager.tick();
+  f.now += 120_001; await f.manager.tick();
+  assert.equal(f.manager.snapshot(qoder).status, 'paused');
+  assert.match(f.manager.snapshot(qoder).reason, /配置回复/);
+  assert.equal(f.sent.length, 1);
+});
+
 test('native questions block setup without automatic approval', async () => {
   const f = fixture(); f.session.agent.question = { id: 'permission' };
   await f.manager.start(target); await f.manager.tick();
   await f.manager.tick(); assert.equal(f.sent.length, 0);
   f.session.agent.question = null; await f.manager.tick(); assert.equal(f.sent.length, 1);
+});
+
+test('late send preparation cannot send or pause a replacement configuration', async () => {
+  for (const fail of [false, true]) {
+    let settle;
+    const f = fixture({ prepare: () => new Promise((resolve, reject) => { settle = () => fail ? reject(new Error('old read failed')) : resolve({}); }) });
+    await f.manager.start(target); const pending = f.manager.tick();
+    for (let i = 0; !settle && i < 10; i++) await Promise.resolve();
+    assert.ok(settle);
+    await f.manager.message(target, '改为只定位原因'); settle(); await pending;
+    assert.equal(f.state().status, 'configuring'); assert.equal(f.sent.length, 0);
+    assert.equal(f.manager.runs.get(autonomyKey(target)).pending.text, '改为只定位原因');
+  }
 });
 
 test('new-goal approval stops old work before dispatch and never cancels during configuration', async () => {

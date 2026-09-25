@@ -352,16 +352,24 @@ const autonomy = new AutonomyController({
   file: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'autonomy.json'),
   readSession: async target => (await listSessions({ refreshAgentIdentities: true, refreshPaneSession: target.tmuxSession }))
     .find(session => session.name === target.tmuxSession),
-  readThread: target => agentRegistry.openThread(target.provider, target.threadId, {
-    readOnly: true, turnLimit: 20, deferCompactionRestore: target.provider === 'qodercli',
+  readThread: (target, exchange) => {
+    // Rehydrate the same receipt after a service/worker restart, never resend text.
+    if (exchange?.commandId) agentRegistry.recordSessionMessage(target.provider, {
+      threadId: target.threadId, text: exchange.text, commandId: exchange.commandId,
+      deliveryBaseline: exchange.deliveryBaseline,
+    });
+    return agentRegistry.openThread(target.provider, target.threadId, {
+      readOnly: true, turnLimit: 20, deferCompactionRestore: target.provider === 'qodercli',
+    });
+  },
+  prepare: (target, text, commandId) => agentRegistry.prepareSessionMessage(target.provider, {
+    threadId: target.threadId, text, commandId,
   }),
   stop: (target, isCurrent) => agentRegistry.interruptSession(target.provider, {
     sessionName: target.tmuxSession, threadId: target.threadId,
     expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: true,
   }),
-  send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true } = {}) => {
-    const commandId = crypto.randomUUID();
-    const deliveryBaseline = await agentRegistry.prepareSessionMessage(target.provider, { threadId: target.threadId, text, commandId });
+  send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true, commandId, deliveryBaseline } = {}) => {
     const result = await agentRegistry.sendSessionMessage(target.provider, {
       sessionName: target.tmuxSession, threadId: target.threadId, text, isCurrent,
       expectedPaneId: target.paneId, requireIdle, nonInterrupting,

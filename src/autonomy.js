@@ -96,9 +96,9 @@ function exchangePrompt(run, kind, text, nonce) {
 }
 
 export class AutonomyController extends EventEmitter {
-  constructor({ readSession, readThread, send, stop, file, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ readSession, readThread, prepare, send, stop, file, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
     super();
-    Object.assign(this, { readSession, readThread, send, stop, file, now, schedule, cancel });
+    Object.assign(this, { readSession, readThread, prepare, send, stop, file, now, schedule, cancel });
     this.runs = new Map(); this.timer = null; this.polls = new Map(); this.closed = false;
     if (file && fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -368,19 +368,28 @@ export class AutonomyController extends EventEmitter {
       pending.replaceTask = false;
       run.status = 'queued'; this.changed(run);
     }
-    if (session.hasRunningProcess && pending?.kind !== 'config') { run.idleSince = null; return; }
+    const needsDelivery = run.target.provider === 'qodercli' && exchange && !exchange.receivedAt;
+    if (session.hasRunningProcess && pending?.kind !== 'config' && exchange?.kind !== 'config' && !needsDelivery) {
+      run.idleSince = null; return;
+    }
     if (pending) {
       if (pending.kind === 'round' && session.agent.hasBackgroundProcess) return;
       if (pending.kind === 'round' && this.limit(run)) return;
       const nonce = crypto.randomUUID();
       if (pending.kind === 'round') run.round += 1;
-      const next = { kind: pending.kind, nonce, sentAt: this.now(), text: exchangePrompt(run, pending.kind, pending.text, nonce) };
+      const next = { kind: pending.kind, nonce, commandId: nonce, sentAt: this.now(), text: exchangePrompt(run, pending.kind, pending.text, nonce) };
       run.pending = null; run.exchange = next; run.status = pending.kind === 'round' ? 'running' : 'configuring';
       run.idleSince = null;
       this.changed(run); // Durable reservation precedes any terminal side effect.
       const guard = () => !this.closed && ACTIVE.has(run.status) && run.generation === generation && run.exchange === next;
+      next.deliveryBaseline = await Promise.resolve().then(() => this.prepare?.(run.target, next.text, next.commandId))
+        .catch(error => { if (guard()) throw error; });
+      if (!guard()) return;
+      next.sentAt = this.now();
+      this.changed(run); // Persist the input boundary before any terminal write.
       const result = await this.send({ ...run.target, paneId: run.paneId }, next.text, guard, {
         requireIdle: pending.kind === 'round', nonInterrupting: true,
+        commandId: next.commandId, deliveryBaseline: next.deliveryBaseline,
       })
         .catch(error => { if (guard()) throw error; });
       if (!guard()) return;
@@ -393,8 +402,19 @@ export class AutonomyController extends EventEmitter {
       }
       return;
     }
-    const result = await this.readThread(run.target).catch(error => { if (current()) throw error; });
+    const result = await this.readThread(run.target, exchange).catch(error => { if (current()) throw error; });
     if (!current()) return;
+    const thread = result?.thread;
+    // Empty composer / submitted only acknowledges the terminal write, not CLI receipt.
+    // The nonce makes an exact persisted user message unique even on legacy records.
+    const received = (thread?.turns || []).some(turn => (turn.items || []).some(item =>
+      item.type === 'userMessage' && !item.delivery && userText(item).trim() === exchange.text.trim()))
+      || (exchange.commandId && (thread?.receivedDeliveryIds?.includes(exchange.commandId)
+        || thread?.deliveryConfirmations?.some(item => item.commandId === exchange.commandId)));
+    if (received && !exchange.receivedAt) { exchange.receivedAt = this.now(); this.changed(run); }
+    if (run.target.provider === 'qodercli' && !exchange.receivedAt && this.now() - exchange.sentAt >= 30_000) {
+      this.pause(run.target, '自主消息未确认送达，请检查终端；不会自动重发'); return;
+    }
     if (result?.thread?.historyLoading || result?.thread?.historyError) {
       run.idleSince ??= this.now();
       const timeout = result.thread.historyError ? 30_000 : 120_000;
@@ -404,6 +424,13 @@ export class AutonomyController extends EventEmitter {
     const found = resultFor(result?.thread, exchange);
     if (found.takeover) { this.pause(run.target, '检测到新的人工指令，请调整目标后继续'); return; }
     if (!found.record) {
+      if (exchange.kind === 'config') {
+        if (this.now() - (exchange.receivedAt ?? exchange.sentAt) >= 120_000) {
+          this.pause(run.target, '未收到可确认的配置回复，请检查对话；不会自动重发');
+        }
+        return;
+      }
+      if (session.hasRunningProcess) { run.idleSince = null; return; }
       if (session.agent.hasBackgroundProcess) { run.idleSince = null; return; }
       run.idleSince ??= this.now();
       if (this.now() - run.idleSince >= 30_000) this.pause(run.target, '未收到可确认的本轮结果，请检查对话后继续');
