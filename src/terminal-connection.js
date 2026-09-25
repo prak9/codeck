@@ -6,6 +6,7 @@ import {
   preferLatestClientSize,
   scrollSession,
   submitTerminalInput,
+  writeTerminalInput,
   validateSessionName,
   withoutTmuxEnvironment,
 } from './tmux.js';
@@ -33,6 +34,7 @@ const defaultDependencies = {
   preferLatestClientSize,
   scrollSession,
   submitTerminalInput,
+  writeTerminalInput,
   validateSessionName,
 };
 
@@ -151,7 +153,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const drainPending = () => {
     while (pending.length && terminal && !inputOperation && isOpen()) handleMessage(pending.shift());
   };
-  const queueTerminalOperation = (message) => {
+  const queueTerminalOperation = (message, raw = false) => {
     const generation = inputGeneration;
     const targetSession = activeSession;
     const attachment = attachSequence;
@@ -163,6 +165,16 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       if (message.type === 'scroll') {
         inputMode = 'history';
         return dependencies.scrollSession(targetSession, message.lines);
+      }
+      if (raw) {
+        await dependencies.writeTerminalInput(targetSession, message.data, {
+          isCurrent, write: data => {
+            if (!terminal) throw new Error('终端正在重新连接，输入未发送');
+            terminal.write(data);
+          },
+        });
+        if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
+        return;
       }
       inputMode = 'unknown';
       if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
@@ -291,6 +303,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
         if (message.data && !TERMINAL_REPLY.test(message.data)) dependencies.onHumanInput?.(activeSession);
         if (explicitInput || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
+        else if (message.data && !protocolReply) queueTerminalOperation(message, true);
         else {
           terminal.write(message.data);
           if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;

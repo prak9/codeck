@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ensureAgentInputSubmitted, sendSessionMessage } from '../src/tmux.js';
+import { ensureAgentInputSubmitted, sendSessionMessage, scrollSession, writeTerminalInput } from '../src/tmux.js';
 
 // QoderCLI 1.1.28: the reverse-video space is the cursor before its placeholder.
 const placeholder = ' > \x1b[7m \x1b[0m Type your message or @path/to/file';
@@ -11,6 +11,57 @@ const pane = (composer = placeholder) => [
   '────────────────────────────────────────',
   ' Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project',
 ].join('\n');
+
+test('Qoder waits for its delayed paste summary while cross-connection scrolling stays queued', async () => {
+  const events = [];
+  const text = '目标\n' + 'x'.repeat(5147);
+  let reads = 0, pasted = false, entered = false, scroll;
+  const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder-race', threadId: 'thread-1', text }, {
+    listTmuxSessions: async () => [{ name: 'qoder-race', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    loadBuffer: async () => {}, waitForPaste: async () => {}, waitForSubmit: async () => {},
+    capturePane: async () => !pasted || entered || ++reads < 4 ? pane() : pane(` > [Pasted Text: ${text.length} chars #2]`),
+    execTmux: async args => {
+      if (args.includes('paste-buffer')) {
+        pasted = true; events.push('paste');
+        scroll = scrollSession('qoder-race', 2, { execTmux: async () => { events.push('scroll'); } });
+      }
+      if (args.includes('Enter')) { assert.ok(reads >= 4, 'Enter waits for paste evidence'); entered = true; events.push('enter'); }
+    },
+  });
+  await scroll;
+  assert.deepEqual(events, ['paste', 'enter', 'scroll']);
+  assert.equal(result.submissionStatus, 'attempted', 'empty composer is not a durable receipt');
+});
+
+test('raw input cancelled while waiting for an autonomous paste never reaches the terminal', async () => {
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const send = sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder-cancel', threadId: 'thread-1', text: 'Continue' }, {
+    listTmuxSessions: async () => [{ name: 'qoder-cancel', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    loadBuffer: async () => { started(); await new Promise(resolve => { release = resolve; }); },
+    capturePane: async () => pane(), execTmux: async () => {}, waitForSubmit: async () => {},
+  });
+  await ready;
+  let current = true;
+  const raw = writeTerminalInput('qoder-cancel', 'x', {
+    isCurrent: () => current, write: () => assert.fail('cancelled raw input'),
+    execTmux: async () => assert.fail('cancelled copy-mode exit'),
+  });
+  const rejected = assert.rejects(raw, /连接或会话已切换/);
+  current = false; release(); await Promise.all([send, rejected]);
+});
+
+test('Qoder never presses initial Enter if an asynchronous multiline paste never appears', async () => {
+  let enters = 0;
+  const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder-lost', threadId: 'thread-1', text: 'First\nSecond' }, {
+    listTmuxSessions: async () => [{ name: 'qoder-lost', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => pane(), loadBuffer: async () => {},
+    waitForPaste: async () => {}, waitForSubmit: async () => {},
+    execTmux: async args => { if (args.includes('Enter')) enters++; },
+  });
+  assert.equal(enters, 0);
+  assert.equal(result.submissionStatus, 'unconfirmed');
+});
 
 test('Qoder ordinary text and its submit travel as one raw terminal input, even when read together', async () => {
   const inputs = [];
@@ -67,7 +118,7 @@ test('Qoder confirms empty normal and YOLO chat composers across cursor themes a
         capturePane: async () => screen, loadBuffer: async () => {},
         execTmux: async args => calls.push(args), waitForSubmit: async () => {}, waitForPaste: async () => {},
       });
-      assert.equal(result.submissionStatus, 'submitted', JSON.stringify(composer));
+      assert.equal(result.submissionStatus, 'attempted', JSON.stringify(composer));
       assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
       assert.equal(calls.filter(args => args.includes('Enter')).length, 0, 'the raw buffer already contains Enter');
     }
@@ -82,7 +133,7 @@ test('Qoder YOLO retries only its complete matching draft', async () => {
       paneId: '%7', provider: 'qodercli', text,
       capturePane: async () => screen, verifyPane: async () => true, waitForSubmit: async () => {},
       execTmux: async args => { assert.ok(args.includes('Enter')); enters += 1; screen = pane(chatPlaceholders[4]); },
-    }), 'submitted');
+    }), 'attempted');
     assert.equal(enters, 1);
   }
 });
@@ -120,7 +171,7 @@ test('Qoder recognizes its empty composer even while a previous task is busy', a
       paneId: '%7', provider: 'qodercli', text: 'Continue', allowBusy: false,
       capturePane: async () => screen, verifyPane: async () => true,
       waitForSubmit: async () => {}, execTmux: async () => assert.fail('no extra Enter'),
-    }), 'submitted');
+    }), 'attempted');
   }
 });
 
@@ -133,7 +184,7 @@ test('Qoder retries only the matching complete draft, including literal placehol
       capturePane: async () => pane(draft), verifyPane: async () => true,
       waitForSubmit: async () => {},
       execTmux: async (args) => { assert.ok(args.includes('Enter')); enters += 1; draft = placeholder; },
-    }), 'submitted');
+    }), 'attempted');
     assert.equal(enters, 1);
   }
 });
@@ -164,10 +215,8 @@ test('Qoder multiline input still uses delayed bracketed paste and returns its a
     waitForPaste: async () => calls.push('wait'), waitForSubmit: async () => {},
   });
   assert.equal(result.submissionStatus, 'unconfirmed');
-  assert.deepEqual(calls, [
-    ['copy-mode', '-q', '-t', '%7', ';', 'paste-buffer', '-p', '-d', '-b', 'qoder-test', '-t', '%7'],
-    'wait', ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
-  ]);
+  assert.equal(calls.filter(Array.isArray).length, 1, 'no Enter without a visible draft');
+  assert.ok(calls[0].includes('paste-buffer'));
 });
 
 test('Qoder sends once without a recognizable or empty composer and reports confirmation separately', async () => {
@@ -225,7 +274,7 @@ test('Qoder does not send a delayed Enter into a changed pane after text was del
     const calls = [];
     const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder', threadId: 'thread-1', text }, {
       listTmuxSessions: async () => [{ name: 'qoder', agent: { kind: 'qodercli', id: 'thread-1', paneId: wrote ? '%8' : '%7' } }],
-      loadBuffer: async () => {}, capturePane: async () => '',
+      loadBuffer: async () => {}, capturePane: async () => wrote ? '' : pane(),
       execTmux: async args => { calls.push(args); wrote = true; },
       waitForPaste: async () => {}, waitForSubmit: async () => {}, waitForSlashOutput: async () => {},
     });
@@ -247,6 +296,6 @@ test('Qoder tolerates a transient redraw while confirming its single injection',
     execTmux: async args => { if (args.includes('paste-buffer')) pastes += 1; },
     waitForSubmit: async () => {}, waitForPaste: async () => {},
   });
-  assert.equal(result.submissionStatus, 'submitted');
+  assert.equal(result.submissionStatus, 'attempted');
   assert.equal(pastes, 1);
 });

@@ -726,6 +726,7 @@ export class AgentHub {
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text,
           ...(isAutonomyObservation(text) ? { nonInterrupting: true } : {}),
         });
+        if (result?.submissionStatus === 'not-sent') throw new Error('输入框未就绪，消息未注入；请先处理草稿或弹窗');
         const submission = provider === 'codex' || result?.submissionStatus != null
           ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
           : {};

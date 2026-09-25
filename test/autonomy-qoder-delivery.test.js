@@ -28,14 +28,20 @@ async function fixture(t) {
   const session = { name: 'qoder', hasRunningProcess: true,
     agent: { kind: 'qodercli', id: threadId, paneId: '%7', hasBackgroundProcess: true } };
   const f = { root, file, backend, session, now: 100000, writes: [] };
+  let composer = screen;
+  f.setComposer = value => { composer = value; };
   const agentRegistry = new AgentRegistry({ qodercli: backend }, {
     sendTmuxMessage: params => sendSessionMessage(params, {
-      listTmuxSessions: async () => [session], capturePane: async () => screen,
+      listTmuxSessions: async () => [session], capturePane: async () => composer,
       loadBuffer: async (_name, text) => {
         const reserved = f.stored().exchange;
         assert.ok(reserved.commandId); assert.ok(reserved.deliveryBaseline.inputLog);
         f.writes.push(text);
-      }, execTmux: async () => {},
+      }, execTmux: async args => {
+        if (args.includes('paste-buffer')) composer = screen.replace(' > \x1b[7m \x1b[0m Type your message or @path/to/file',
+          ` > [Pasted Text: ${f.writes.at(-1).split('\n').length} lines]`);
+        if (args.includes('Enter')) composer = screen;
+      },
       waitForPaste: async () => {}, waitForSubmit: async () => {},
     }),
   });
@@ -63,7 +69,7 @@ test('real Qoder adapter: composer clears but no input or transcript receipt mea
   assert.equal(saved.commandId, saved.nonce); assert.ok(saved.deliveryBaseline.inputLog);
   await f.manager.tick(); f.now += 30001; await f.manager.tick();
   assert.equal(f.state().status, 'paused'); assert.match(f.state().reason, /未确认送达/);
-  await f.manager.start(target); await f.manager.tick();
+  await assert.rejects(f.manager.start(target), /投递结果仍不确定/); await f.manager.tick();
   assert.equal(f.state().status, 'paused'); assert.equal(f.writes.length, 1, 'resume never replays a possibly delivered message');
 });
 
@@ -87,6 +93,35 @@ test('legacy paused Qoder config migrates through normal server preparation only
   assert.notEqual(current.nonce, old.nonce); assert.equal(current.commandId, current.nonce);
   assert.ok(current.deliveryBaseline.inputLog); assert.equal(current.sentAt, f.now);
   assert.equal(f.writes.length, 2); assert.equal(f.state().round, 0);
+});
+
+test('explicit A retries a provably un-injected config once, but startup never retries', async t => {
+  const f = await fixture(t);
+  f.setComposer('permission menu');
+  await f.manager.start(target); await f.manager.tick();
+  const old = f.stored().suspended.exchange;
+  assert.equal(old.deliveryState, 'not-sent'); assert.equal(f.writes.length, 0);
+  f.manager.close(); f.manager = new AutonomyController(f.options);
+  await f.manager.tick(); assert.equal(f.writes.length, 0);
+  f.setComposer(screen);
+  await Promise.all([f.manager.start(target), f.manager.start(target)]);
+  await f.manager.tick();
+  assert.equal(f.writes.length, 1); assert.notEqual(f.stored().exchange.nonce, old.nonce);
+  assert.equal(f.state().status, 'configuring');
+});
+
+test('explicit A observes a late input-log receipt on the same timed-out config without resending', async t => {
+  const f = await fixture(t);
+  await f.manager.start(target); await f.manager.tick();
+  const old = f.stored().exchange;
+  f.now += 30001; await f.manager.tick(); assert.equal(f.state().status, 'paused');
+  fs.mkdirSync(path.dirname(old.deliveryBaseline.inputLog.file), { recursive: true });
+  fs.writeFileSync(old.deliveryBaseline.inputLog.file, JSON.stringify([
+    { sessionId: threadId, type: 'user', messageId: 1, timestamp: new Date().toISOString(), message: old.text },
+  ]));
+  await f.manager.start(target); await f.manager.tick();
+  assert.equal(f.state().status, 'configuring'); assert.equal(f.stored().exchange.nonce, old.nonce);
+  assert.equal(f.writes.length, 1); assert.equal(f.stored().exchange.receivedAt, f.now);
 });
 
 test('restart rehydrates Qoder input receipt without replay and still bounds missing configuration replies', async t => {
@@ -114,6 +149,36 @@ test('restart rehydrates Qoder input receipt without replay and still bounds mis
   f.now += 120001; await f.manager.tick();
   assert.equal(f.state().status, 'paused'); assert.match(f.state().reason, /配置回复/);
   assert.equal(f.writes.length, 1);
+});
+
+test('A refreshes a shared pre-registration read before deciding a persisted receipt is missing', async t => {
+  const f = await fixture(t);
+  await f.manager.start(target); await f.manager.tick();
+  const old = f.stored().exchange;
+  f.manager.pause(target); f.now += 30001;
+  f.backend.close();
+  f.backend = new QoderAgentBackend({ configDir: f.root });
+  f.registry.backends.set('qodercli', f.backend);
+  t.after(() => f.backend.close());
+  fs.mkdirSync(path.dirname(old.deliveryBaseline.inputLog.file), { recursive: true });
+  fs.writeFileSync(old.deliveryBaseline.inputLog.file, JSON.stringify([
+    { sessionId: threadId, type: 'user', messageId: 1, timestamp: new Date().toISOString(), message: old.text },
+  ]));
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const read = f.backend.read.bind(f.backend), receiptSets = [];
+  f.backend.read = async (method, params) => {
+    if (method === 'open') { receiptSets.push(params.receipts.map(item => item.commandId)); await gate; }
+    return read(method, params);
+  };
+  assert.equal((await f.backend.openThread(threadId)).thread.historyLoading, true);
+  const recoveries = Promise.all([f.manager.start(target), f.manager.start(target)]);
+  release(); await recoveries;
+  assert.equal(f.state().status, 'configuring');
+  assert.equal(f.stored().exchange.nonce, old.nonce);
+  assert.equal(f.stored().exchange.receivedAt, f.now);
+  assert.deepEqual(receiptSets, [[], [old.commandId]], 'one new read covers the newly registered receipt');
+  assert.equal(f.writes.length, 1, 'receipt recovery never resends');
 });
 
 test('real Qoder transcript restores late configuration choices while old work stays busy, without new sends', async t => {

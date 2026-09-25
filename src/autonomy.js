@@ -183,7 +183,8 @@ export class AutonomyController extends EventEmitter {
     if (old && ACTIVE.has(old.status)) return this.snapshot(target);
     if (old?.status === 'paused') {
       const legacy = old.suspended?.exchange;
-      if (target.provider === 'qodercli' && legacy?.kind === 'config' && !legacy.commandId && !legacy.receivedAt
+      if (target.provider === 'qodercli' && legacy?.kind === 'config' && !legacy.receivedAt
+        && (!legacy.commandId || ['not-sent', 'unconfirmed'].includes(legacy.deliveryState) || this.now() - legacy.sentAt >= 30_000)
         && !old.proposal && !old.suspended?.questions?.length) {
         const key = autonomyKey(target);
         if (!this.legacyConfigurations.has(key)) {
@@ -214,9 +215,11 @@ export class AutonomyController extends EventEmitter {
   }
   async restartLegacyConfiguration(run, exchange) {
     const generation = run.generation;
-    const result = await this.readThread(run.target, undefined, { waitForReady: true });
-    if (this.closed || run.status !== 'paused' || run.generation !== generation
-      || run.suspended?.exchange !== exchange) return this.snapshot(run.target);
+    const current = () => !this.closed && run.status === 'paused' && run.generation === generation
+      && run.suspended?.exchange === exchange;
+    const result = await this.readThread(run.target, exchange, { waitForReady: true })
+      .catch(error => { if (current()) throw error; });
+    if (!current()) return this.snapshot(run.target);
     const thread = result?.thread;
     if (!thread || thread.historyLoading || thread.historyError || (thread.id && thread.id !== run.target.threadId)) {
       throw new Error('旧配置历史尚未读全，请稍后再点击 A；未重新发送');
@@ -226,7 +229,19 @@ export class AutonomyController extends EventEmitter {
     const proposal = found.record?.status === 'ready' && validPlan(found.record.plan);
     const questions = found.record?.status === 'ask' && validQuestions(found.record.questions);
     const alreadyReceived = (thread.turns || []).some(turn => (turn.items || []).some(item =>
-      item.type === 'userMessage' && !item.delivery && userText(item).trim() === exchange.text.trim()));
+      item.type === 'userMessage' && !item.delivery && userText(item).trim() === exchange.text.trim()))
+      || thread.receivedDeliveryIds?.includes(exchange.commandId)
+      || thread.deliveryConfirmations?.some(item => item.commandId === exchange.commandId);
+    if (!proposal && !questions && exchange.commandId) {
+      if (alreadyReceived) {
+        // A late durable receipt permits observing the same request, never replaying it.
+        run.suspended.exchange.receivedAt = this.now();
+        return this.message(run.target, '继续');
+      }
+      if (exchange.deliveryState !== 'not-sent') {
+        throw new Error('配置投递结果仍不确定，未重发；请先检查终端草稿和对话，再明确新的配置要求');
+      }
+    }
     if (!proposal && !questions && (alreadyReceived || found.record)) {
       throw new Error('无法确认旧配置未送达，请检查对话后明确新的配置要求；未重新发送');
     }
@@ -244,6 +259,7 @@ export class AutonomyController extends EventEmitter {
   pause(target, reason = '已暂停自动续跑，当前执行可继续收尾') {
     const run = this.runs.get(autonomyKey(target));
     if (!run || TERMINAL.has(run.status) || run.status === 'stopping') return this.snapshot(target);
+    this.legacyConfigurations.delete(autonomyKey(target));
     if (run.status !== 'paused') run.suspended = structuredClone({
       status: run.status, pending: run.pending, exchange: run.exchange, questions: run.questions,
     });
@@ -254,7 +270,8 @@ export class AutonomyController extends EventEmitter {
     return this.snapshot(target);
   }
   pauseSession(sessionName, reason = '用户已在终端接管，请确认方向后继续') {
-    for (const run of this.runs.values()) if (run.target.tmuxSession === sessionName && ACTIVE.has(run.status)) this.pause(run.target, reason);
+    for (const run of this.runs.values()) if (run.target.tmuxSession === sessionName
+      && (ACTIVE.has(run.status) || this.legacyConfigurations.has(autonomyKey(run.target)))) this.pause(run.target, reason);
   }
   async interrupt(target, operation, { verified = false } = {}) {
     const run = this.runs.get(autonomyKey(target));
@@ -434,6 +451,11 @@ export class AutonomyController extends EventEmitter {
       })
         .catch(error => { if (guard()) throw error; });
       if (!guard()) return;
+      next.deliveryState = result?.submissionStatus || 'attempted';
+      this.changed(run);
+      if (result?.submissionStatus === 'not-sent') {
+        this.pause(run.target, '输入框未就绪，自主消息未注入；请先处理草稿或弹窗'); return;
+      }
       if (result?.submissionStatus === 'unconfirmed') this.pause(run.target, '发送未确认，请检查终端；不会自动重发');
       return;
     }

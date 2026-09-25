@@ -750,9 +750,21 @@ test('restores accepted no-turn tmux messages after reconnect until the transcri
     .filter((item) => item.delivery).length, 0);
 });
 
+test('Qoder not-sent is an explicit error, never a delivery receipt', async () => {
+  const { backends, hub } = setup({ sendTmuxMessage: async () => ({ submissionStatus: 'not-sent' }) });
+  const socket = new FakeSocket(); hub.handleConnection(socket);
+  send(socket, { type: 'sendSessionMessage', id: 1, provider: 'qodercli', threadId: 'thread-1',
+    tmuxSession: 'work', text: 'First\nSecond', commandId: 'no-injection' });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  assert.match(socket.sent.find(message => message.id === 1).error || '', /未注入/);
+  assert.equal(backends.qodercli.calls.some(call => call.method === 'recordSessionMessage'), false);
+  socket.close();
+});
+
 for (const [provider, submissionStatus] of [
   ['codex', 'submitted'], ['codex', 'unconfirmed'], ['codex', undefined], ['codex', 'unknown'],
   ['claude', undefined], ['qodercli', undefined], ['qodercli', 'submitted'], ['qodercli', 'unconfirmed'],
+  ['qodercli', 'attempted'],
 ]) {
   test(`${provider} retains ${submissionStatus ?? 'missing'} submission status across cold reconnect without another tmux injection`, async () => {
     const threadFeed = new FakeSnapshotFeed();

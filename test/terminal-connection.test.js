@@ -45,6 +45,7 @@ function dependencies(overrides = {}) {
     clampViewport: (cols, rows) => [Math.max(20, cols), Math.max(6, rows)],
     scrollSession: async () => {},
     submitTerminalInput: async (_session, data) => attached.write(data),
+    writeTerminalInput: async (_session, data, { write }) => write(data),
     ...overrides,
     createTerminal: (...args) => (attached = (overrides.createTerminal || fakeTerminal)(...args)),
   };
@@ -129,6 +130,7 @@ test('first human key restores CLI input but terminal replies and scrolling do n
   await nextTurn();
   assert.deepEqual(resumed, ['\x1b[A']);
   sendFrame(ws, { type: 'input', data: 'x' });
+  await nextTurn();
   assert.deepEqual(terminal.writes, ['\x1b[>0;276;0c', 'x']);
   sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
   assert.deepEqual(resumed, ['\x1b[A']);
@@ -551,6 +553,7 @@ test('a submitted terminal prompt wakes session detection once when output begin
   assert.deepEqual(activity, ['shared']);
 
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'input', data: '再检查\r' })), false);
+  await nextTurn();
   terminal.dataCallback('next spinner');
   assert.deepEqual(activity, ['shared', 'shared']);
 });

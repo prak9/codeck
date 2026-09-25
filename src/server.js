@@ -375,8 +375,9 @@ const autonomy = new AutonomyController({
       sessionName: target.tmuxSession, threadId: target.threadId, text, isCurrent,
       expectedPaneId: target.paneId, requireIdle, nonInterrupting,
     });
-    agentRegistry.recordSessionMessage(target.provider, { threadId: target.threadId, text, commandId, deliveryBaseline,
-      submissionStatus: result?.submissionStatus === 'unconfirmed' ? 'unconfirmed' : 'submitted' });
+    if (result?.submissionStatus !== 'not-sent') agentRegistry.recordSessionMessage(target.provider, {
+      threadId: target.threadId, text, commandId, deliveryBaseline,
+      submissionStatus: ['attempted', 'unconfirmed'].includes(result?.submissionStatus) ? 'unconfirmed' : 'submitted' });
     invalidateSessionSnapshots().catch(() => {});
     return result;
   },

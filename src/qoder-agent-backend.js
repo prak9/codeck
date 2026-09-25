@@ -18,6 +18,7 @@ export class QoderAgentBackend extends SdkAgentBackend {
     this.readSequence = 0;
     this.pendingReads = new Map();
     this.openReads = new Map();
+    this.openReadReceipts = new WeakMap();
     this.latestReads = new Map();
     this.readyReads = new Set();
     this.readErrors = new Map();
@@ -111,6 +112,13 @@ export class QoderAgentBackend extends SdkAgentBackend {
       } });
     }
     let loading = this.openReads.get(key);
+    if (waitForReady && loading && this.#receipts(threadId).some(receipt =>
+      !this.openReadReceipts.get(loading)?.has(receipt.commandId))) {
+      // A display read started before recovery registered its receipt cannot
+      // prove delivery. Finish it, then share/start a read that includes it.
+      await loading;
+      return this.openThread(threadId, { turnLimit, waitForReady });
+    }
     if (!loading) {
       const receipts = this.#receipts(threadId);
       loading = this.read('open', { threadId, limit: turnLimit, receipts }).then(result => {
@@ -129,6 +137,7 @@ export class QoderAgentBackend extends SdkAgentBackend {
         throw error;
       }).finally(() => { if (this.openReads.get(key) === loading) this.openReads.delete(key); });
       this.openReads.set(key, loading);
+      this.openReadReceipts.set(loading, new Set(receipts.map(receipt => receipt.commandId)));
     }
     // Explicit configuration recovery needs the result of this read, not the
     // display feed's consumable ready flag. The worker retains its normal timeout.

@@ -51,7 +51,8 @@ test('pausing an autonomous write during paste prevents Enter for every provider
       text: 'Round\nInstructions', isCurrent: () => current,
     }, {
       listTmuxSessions: async () => [{ name: 'work', agent: { kind: provider, id: 'thread-1', paneId: '%7' } }],
-      capturePane: async () => EMPTY_CODEX_COMPOSER,
+      capturePane: async () => provider === 'qodercli'
+        ? '────────────────────\n > \n────────────────────\n Ultimate Model' : EMPTY_CODEX_COMPOSER,
       execTmux: async args => commands.push(args), loadBuffer: async () => {},
       waitForPaste: async () => { current = false; },
     });

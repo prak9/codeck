@@ -1035,7 +1035,7 @@ function hasQoderPlaceholderCursor(line) {
   return false;
 }
 
-function qoderComposerState(output, text) {
+function qoderComposerState(output, text, allowPasteSummary = false) {
   const rows = cleanScreenRows(output);
   const end = rows.findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
   const footer = rows.slice(end + 1).filter(line => line.trim());
@@ -1059,6 +1059,12 @@ function qoderComposerState(output, text) {
     && content.map(line => line.trim()).join(' ') === 'Type your message or @path/to/file') {
     return 'empty';
   }
+  // Qoder folds large pastes. This is readiness evidence only, and is accepted
+  // solely after this transaction observed an empty composer before its paste.
+  if (allowPasteSummary) {
+    const summary = /^\[PastedText:(\d+)(lines|chars)(?:#\d+)?\]$/u.exec(composer.replace(/\s/gu, ''));
+    if (summary && Number(summary[1]) === (summary[2] === 'lines' ? text.split('\n').length : text.length)) return 'draft';
+  }
   return composer === text.replace(/\r\n?/gu, '\n').trimEnd() ? 'draft' : 'other';
 }
 
@@ -1077,12 +1083,13 @@ function hasCodexSlashCompletionDraft(output, command) {
 // longer holds the draft, not that the Agent has executed it or persisted a turn.
 export async function ensureAgentInputSubmitted({
   paneId, text, provider = 'codex', allowBusy = true,
-  execTmux, capturePane, waitForSubmit, verifyPane,
+  execTmux, capturePane, waitForSubmit, verifyPane, allowPasteSummary = false,
 }) {
   if (!PANE_ID.test(paneId || '') || typeof text !== 'string' || !text.trim()) return 'unconfirmed';
   let retries = 0;
   let emptyCaptures = 0;
-  const composerState = provider === 'qodercli' ? qoderComposerState : agentComposerState;
+  const composerState = provider === 'qodercli'
+    ? (screen, value) => qoderComposerState(screen, value, allowPasteSummary) : agentComposerState;
   try {
     for (let attempt = 0; attempt < SUBMIT_CONFIRM_ATTEMPTS + 2; attempt += 1) {
       await waitForSubmit(SUBMIT_CONFIRM_DELAY_MS);
@@ -1101,7 +1108,8 @@ export async function ensureAgentInputSubmitted({
       // A slow asynchronous paste may not have rendered during the first capture.
       if (state === 'empty') {
         emptyCaptures += 1;
-        if (emptyCaptures >= 2) return await verifyPane?.() ? 'submitted' : 'unconfirmed';
+        if (emptyCaptures >= 2) return await verifyPane?.()
+          ? provider === 'qodercli' ? 'attempted' : 'submitted' : 'unconfirmed';
         continue;
       }
       emptyCaptures = 0;
@@ -1232,6 +1240,18 @@ function exitPaneModeThen(paneId, args) {
   return ['copy-mode', '-q', '-t', paneId, ';', ...args];
 }
 
+// Raw CLI keys use the same transaction lane as autonomous sends and scrolling.
+// Capability replies deliberately bypass this API to avoid blocking TUI redraws.
+export function writeTerminalInput(sessionName, data, { write, isCurrent, execTmux = args => exec('tmux', args) }) {
+  if (!validateSessionName(sessionName)) throw new Error('无效的会话名');
+  return queueSessionInput(sessionName, async () => {
+    if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
+    await execTmux(['copy-mode', '-q', '-t', `=${sessionName}:`]);
+    if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
+    write(data);
+  });
+}
+
 // Local textarea submissions are raw terminal bytes, including their final Enter.
 // Unlike individual keys, they must not be interpreted by tmux's copy-mode key table.
 export async function submitTerminalInput(sessionName, data, overrides = {}) {
@@ -1324,12 +1344,12 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         : agentComposerState(screen, '', provider) === 'empty';
       if (!empty || (requireIdle && (signals.busy || signals.background)) || session.agent?.question
         || hasCodexInputModal(screen) || !await verifyPane()) {
+        if (provider === 'qodercli') return { submissionStatus: 'not-sent' };
         throw new Error('终端输入框未就绪，请先处理草稿或弹窗；未打断当前任务');
       }
     }
-    // Qoder input follows ordinary terminal semantics. Its screen is used only
-    // for best-effort confirmation after sending, never as a layout-based gate.
     let activeCodexInput = false;
+    let qoderPasteReady = false;
     const prepareCodexComposer = async (matchingDraft = '') => {
       let screen = '';
       try {
@@ -1408,6 +1428,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
           text,
           provider,
           allowBusy: !inputWasQueued(),
+          allowPasteSummary: qoderPasteReady,
           execTmux,
           verifyPane,
           capturePane: captureInputPane,
@@ -1553,6 +1574,12 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         return {};
       }
     }
+    if (provider === 'qodercli') {
+      // A delayed Enter is only safe when we own a previously empty composer.
+      if (qoderComposerState(await captureInputPane(paneId, { joinWrapped: true }), '') !== 'empty') {
+        return { submissionStatus: 'not-sent' };
+      }
+    }
     await loadBuffer(bufferName, text);
     let pasted = false;
     try {
@@ -1569,7 +1596,17 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         ['paste-buffer', '-p', '-d', '-b', bufferName, '-t', paneId],
       ));
       pasted = true;
-      await waitForPaste(pasteDelay);
+      if (provider === 'qodercli') {
+        let ready = false;
+        for (let attempt = 0; attempt < 25; attempt++) {
+          await waitForPaste(SUBMIT_CONFIRM_DELAY_MS);
+          if (!await verifyPane()) break;
+          const state = qoderComposerState(await captureInputPane(paneId, { joinWrapped: true }), text, true);
+          if (state === 'draft') { ready = true; qoderPasteReady = true; break; }
+          if (state === 'other') break;
+        }
+        if (!ready) return { submissionStatus: 'unconfirmed' };
+      } else await waitForPaste(pasteDelay);
       if ((provider === 'codex' || provider === 'qodercli' || isCurrent) && !await verifyPane()) {
         return { submissionStatus: 'unconfirmed', ...(inputWasQueued() ? { inputWasQueued: true } : {}) };
       }
@@ -1958,30 +1995,28 @@ export function parseViewport(searchParams) {
 // has nothing to scroll, so scrollTop is inert no matter who handles the gesture. The
 // history lives in tmux's copy mode, so scrolling has to be asked of tmux itself.
 // Positive `lines` moves back into history.
-export function scrollSession(name, lines) {
-  return queueSessionScroll(name, lines);
+export function scrollSession(name, lines, overrides = {}) {
+  // One session-wide lane: a different WebSocket must not re-enter copy-mode
+  // between an autonomous paste and its delayed Enter/confirmation.
+  return queueSessionInput(name, () => runSessionScroll(name, lines, overrides));
 }
 
-async function runSessionScroll(name, lines) {
+async function runSessionScroll(name, lines, overrides) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');
   const count = Math.min(Math.trunc(Math.abs(lines)), MAX_SCROLL_LINES);
   if (!count) return;
+  const execTmux = overrides.execTmux || (args => exec('tmux', args));
   if (lines > 0) {
     // copy-mode is idempotent here: re-entering while already in it keeps the current
     // scroll position rather than resetting it. `-e` makes tmux leave copy mode on its
     // own once the view is back at the bottom.
-    await exec('tmux', ['copy-mode', '-e', '-t', name, ';', 'send-keys', '-X', '-t', name, '-N', String(count), 'scroll-up']);
+    await execTmux(['copy-mode', '-e', '-t', name, ';', 'send-keys', '-X', '-t', name, '-N', String(count), 'scroll-up']);
     return;
   }
   // Scrolling forward is only meaningful inside copy mode; tmux answers "not in a mode"
   // otherwise, which is the no-op we want rather than an error worth surfacing.
-  await exec('tmux', ['send-keys', '-X', '-t', name, '-N', String(count), 'scroll-down']).catch(() => {});
+  await execTmux(['send-keys', '-X', '-t', name, '-N', String(count), 'scroll-down']).catch(() => {});
 }
-
-// Keep at most one tmux process in flight per session. Touchmove can emit dozens of
-// updates during one drag; folding the pending deltas prevents those old commands from
-// continuing to move the viewport after the finger has stopped.
-const queueSessionScroll = createSessionScrollQueue(runSessionScroll);
 
 export async function getSessionSize(name) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');

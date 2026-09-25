@@ -480,6 +480,47 @@ test('legacy setup recovery never sends while history is unavailable or after a 
   }
 });
 
+test('human takeover cancels pending A recovery, including late read failures', async () => {
+  for (const fail of [false, true]) {
+    const qoder = { ...target, provider: 'qodercli' }, f = fixture();
+    f.session.agent.kind = 'qodercli';
+    await f.manager.start(qoder); await f.manager.tick();
+    f.manager.runs.get(autonomyKey(qoder)).exchange.deliveryState = 'not-sent';
+    f.manager.pause(qoder);
+    let finish;
+    f.manager.readThread = () => new Promise((resolve, reject) => {
+      finish = () => fail ? reject(new Error('cancelled read failed')) : resolve({ thread: { turns: [] } });
+    });
+    const recovery = f.manager.start(qoder);
+    f.manager.pauseSession(qoder.tmuxSession);
+    finish(); await recovery; await f.manager.tick();
+    assert.equal(f.manager.snapshot(qoder).status, 'paused');
+    assert.equal(f.sent.length, 1, 'manual takeover prevents configuration dispatch');
+    assert.match(f.manager.snapshot(qoder).reason, /接管/);
+  }
+});
+
+test('a new explicit A after takeover is not joined to or cancelled by the old recovery', async () => {
+  const qoder = { ...target, provider: 'qodercli' }, f = fixture();
+  f.session.agent.kind = 'qodercli';
+  await f.manager.start(qoder); await f.manager.tick();
+  f.manager.runs.get(autonomyKey(qoder)).exchange.deliveryState = 'not-sent';
+  f.manager.pause(qoder);
+  const finishes = [];
+  f.manager.readThread = () => new Promise(resolve => { finishes.push(() => resolve({ thread: { turns: [] } })); });
+  const old = f.manager.start(qoder);
+  f.manager.pauseSession(qoder.tmuxSession);
+  const fresh = f.manager.start(qoder);
+  assert.equal(finishes.length, 2, 'fresh approval must not join a cancelled recovery');
+  finishes[0](); await old;
+  assert.equal(f.manager.snapshot(qoder).status, 'paused');
+  const duplicate = f.manager.start(qoder);
+  assert.equal(finishes.length, 2, 'old completion must not clear the fresh single-flight entry');
+  finishes[1](); await Promise.all([fresh, duplicate]);
+  await f.manager.tick();
+  assert.equal(f.sent.length, 2, 'only the newly approved recovery dispatches');
+});
+
 test('late send preparation cannot send or pause a replacement configuration', async () => {
   for (const fail of [false, true]) {
     let settle;
