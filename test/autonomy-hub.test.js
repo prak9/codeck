@@ -11,7 +11,7 @@ class Socket extends EventEmitter {
   send(raw) { this.sent.push(JSON.parse(raw)); }
 }
 const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'work' };
-async function fixture() {
+async function fixture({ openThread = true } = {}) {
   const sent = []; const interrupted = []; const submissions = [];
   const backend = new EventEmitter(); backend.openThread = async () => ({ thread: { id: 'thread', turns: [] } });
   const registry = new AgentRegistry({ codex: backend }, {
@@ -35,9 +35,47 @@ async function fixture() {
     }
     throw new Error(`No response: ${type}`);
   };
-  await request('openThread', { readOnly: true });
+  if (openThread) await request('openThread', { readOnly: true });
   return { sent, submissions, interrupted, autonomy, socket, hub, registry, backend, request };
 }
+
+test('normal mode binds autonomy without subscribing to history', async () => {
+  const f = await fixture({ openThread: false });
+  f.backend.openThread = async () => assert.fail('binding must not read history');
+  assert.equal(f.socket.sent[0].autonomySessionBinding, true);
+  assert.equal((await f.request('startAutonomy', { commandId: 'normal-unbound' })).ok, false);
+  assert.equal((await f.request('bindAutonomySession')).ok, true);
+  assert.equal(f.hub.clients.get(f.socket).threadSubscription, null);
+  assert.equal((await f.request('startAutonomy', { commandId: 'normal-foreign', tmuxSession: 'other' })).ok, false);
+  assert.equal((await f.request('startAutonomy', { commandId: 'normal-bound' })).ok, true);
+  await f.autonomy.tick(); assert.equal(f.sent.length, 1);
+  await f.request('sendSessionMessage', { commandId: 'bound-progress', text: AUTONOMY_PROGRESS_PROMPT });
+  assert.equal(f.hub.clients.get(f.socket).threadSubscription, null, 'progress must not retain a history stream in normal mode');
+  await f.request('sendSessionMessage', { commandId: 'bound-direction', text: '只修改后端' });
+  assert.equal(f.hub.clients.get(f.socket).threadSubscription, null);
+});
+
+test('explicit normal binding cannot fall back to an older history target after unbinding', async () => {
+  const f = await fixture();
+  await f.request('bindAutonomySession');
+  await f.request('startAutonomy', { commandId: 'normal-start' });
+  await f.request('sendSessionMessage', { commandId: 'normal-progress', text: AUTONOMY_PROGRESS_PROMPT });
+  await f.request('bindAutonomySession', { threadId: null, tmuxSession: null });
+  assert.equal((await f.request('pauseAutonomy', { commandId: 'normal-stale' })).ok, false);
+  assert.equal(f.autonomy.snapshot(target).status, 'configuring');
+});
+
+test('normal mode and Remote observe the same autonomous run', async () => {
+  const f = await fixture({ openThread: false });
+  await f.request('bindAutonomySession'); await f.request('startAutonomy', { commandId: 'normal-start' });
+  await f.autonomy.tick(); const before = f.autonomy.snapshot(target);
+  const other = new Socket(); f.hub.handleConnection(other);
+  assert.equal(other.sent[0].autonomy[0].id, before.id);
+  await f.request('pauseAutonomy', { commandId: 'normal-pause' });
+  assert.equal(other.sent.at(-1).run.status, 'paused');
+  assert.equal(other.sent.at(-1).run.id, before.id);
+  assert.equal(f.sent.length, 1); assert.equal(f.interrupted.length, 0);
+});
 
 test('progress is a non-interrupting question, not autonomy start, redirection or another round', async () => {
   const f = await fixture();
@@ -129,7 +167,7 @@ test('opening report restores its lost ready proposal without sending configurat
   assert.match(f.sent.at(-1), /"phase":"round"/);
 });
 
-test('reopening research broadcasts recovered setup choices without sending continue again', async () => {
+for (const method of ['openThread', 'bindAutonomySession']) test(`${method} recovers research choices without sending continue again`, async () => {
   const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-work' }); await f.autonomy.tick();
   const text = f.sent[0]; const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
   f.autonomy.pause(target, '发送状态未确认');
@@ -138,7 +176,8 @@ test('reopening research broadcasts recovered setup choices without sending cont
     { type: 'agentMessage', text: '请选择目标\n\n```codeck-autonomy\n' + JSON.stringify({ nonce, status: 'ask',
       questions: [{ id: 'goal', header: '目标', question: '推进到哪一步？', options: ['修复及离线原型', '只继续研究'] }] }) + '\n```' },
   ] }] } });
-  await f.request('openThread', { readOnly: true });
+  await f.request(method, { readOnly: true });
+  await new Promise(resolve => setImmediate(resolve));
   const run = f.autonomy.snapshot(target);
   assert.equal(run.status, 'configuring'); assert.ok(run.requestId); assert.equal(run.questions.length, 1);
   assert.ok(f.socket.sent.some(message => message.type === 'autonomyState' && message.run.requestId === run.requestId));

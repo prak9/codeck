@@ -25,6 +25,7 @@ function fixture({ legacy = false, draftValue = 'echo intact', agentKind = 'qode
   const context = vm.createContext({
     state, $: () => draft, WebSocket: { OPEN: 1 }, terminalDraftForSend, terminalDraftForHandoff,
     voiceInput: { abort() {} }, terminalVoiceBaseDraft: '', terminalVoiceHadResult: false,
+    terminalAutonomy: { sendDirection: () => null },
     resizeTerminalVoiceDraft() {}, syncTerminalVoiceControls() {},
     setTerminalVoiceState: (_active, message) => feedback.push(message),
     setConnectionMessage: (message) => feedback.push(message),
@@ -88,6 +89,45 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.draft.value, '');
   assert.equal(f.state.terminalSubmitPending, null);
   assert.equal(f.timers.size, 0);
+});
+
+test('autonomous direction uses the shared control path, not raw terminal input', async () => {
+  const f = fixture({ draftValue: '只修改后端，继续' });
+  const routed = []; let finish;
+  f.context.terminalAutonomy.sendDirection = text => { routed.push(text); return new Promise(resolve => { finish = resolve; }); };
+  const pending = f.context.submitTerminalVoiceDraft();
+  await f.context.submitTerminalVoiceDraft();
+  assert.deepEqual(routed, ['只修改后端，继续']); assert.deepEqual(f.sent, []);
+  assert.equal(f.draft.value, '只修改后端，继续');
+  finish(); await pending; assert.equal(f.draft.value, '');
+  assert.equal(f.state.terminalSubmitPending, null);
+});
+
+test('failed or stale autonomy direction never clears the current draft or falls back to raw input', async () => {
+  for (const outcome of ['error', 'switch', 'edit']) {
+    const f = fixture(); let finish, fail;
+    f.context.terminalAutonomy.sendDirection = () => new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+    const pending = f.context.submitTerminalVoiceDraft();
+    if (outcome === 'error') fail(new Error('Agent 连接已断开'));
+    else {
+      if (outcome === 'switch') { f.state.active = 'two'; f.state.connectionId++; }
+      f.draft.value = '新草稿'; finish();
+    }
+    await pending; assert.deepEqual(f.sent, []);
+    assert.equal(f.draft.value, outcome === 'error' ? 'echo intact' : '新草稿');
+  }
+});
+
+test('switching cancels the local wait for a direction without blocking the new terminal', async () => {
+  const f = fixture(); let finish;
+  f.context.terminalAutonomy.sendDirection = () => new Promise(resolve => { finish = resolve; });
+  const pending = f.context.submitTerminalVoiceDraft();
+  f.context.rejectTerminalSubmit('会话已切换');
+  f.state.active = 'two'; f.state.connectionId++;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.state.terminalSubmitPending, null);
+  assert.equal(f.draft.value, 'echo intact'); assert.deepEqual(f.sent, []);
+  finish(); await pending;
 });
 
 test('slash commands request a separate final Enter even before Agent identity resolves', async () => {

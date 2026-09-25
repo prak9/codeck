@@ -1,5 +1,6 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=5';
+import { createTerminalAutonomy } from './terminal-autonomy.js?v=1';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -142,6 +143,11 @@ function localInputEnabled() {
 
 const TERMINAL_KEY_HINT = '回车发送 · \u2303J 换行 · @ Tab Esc 直达 CLI';
 const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT;
+const terminalAutonomy = createTerminalAutonomy({
+  getTarget: () => state.canWrite && state.terminalInputReady ? activeAgentSessionTarget() : null,
+  request: sessionFeedRequest,
+  focusTerminal: () => state.terminal?.focus(),
+});
 
 function setTerminalVoiceState(active, message = '') {
   const capture = $('#terminalVoiceCaptureButton');
@@ -318,7 +324,14 @@ async function submitTerminalVoiceDraft() {
   if (!isCurrentTerminalTarget(target)) return setTerminalVoiceState(false, '终端尚未连接，草稿仍保留在这里。');
   voiceInput.abort();
   try {
-    const receipt = requestTerminalSubmit(target, `${text}\r`, {
+    const direction = terminalAutonomy.sendDirection(text);
+    let directionPending;
+    const receipt = direction ? Promise.race([direction, new Promise((_resolve, reject) => {
+      directionPending = { reject };
+      state.terminalSubmitPending = directionPending;
+    })]).finally(() => {
+      if (state.terminalSubmitPending === directionPending) state.terminalSubmitPending = null;
+    }) : requestTerminalSubmit(target, `${text}\r`, {
       // Agent identity can still be unresolved on an SSH-backed or newly opened session.
       // Slash commands share the same TUI race regardless of provider: let the text settle
       // before Enter so the key acts on the command, not the previous composer state.
@@ -1045,6 +1058,7 @@ function connectSessionFeed() {
     }
     if (message.type === 'ready') {
       state.sessionFeedReady = true;
+      terminalAutonomy.ready(message);
       syncTerminalProgressButton();
       if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) {
         state.sessionStreamCursor = null;
@@ -1060,6 +1074,7 @@ function connectSessionFeed() {
       void refreshActiveAgentOutput({ force: true });
       return;
     }
+    if (message.type === 'autonomyState') { terminalAutonomy.update(message.run); return; }
     const applyFeedSnapshot = (snapshot, cursor) => {
       state.sessionStreamCursor = cursor;
       state.sessionStreamSnapshot = snapshot;
@@ -1113,6 +1128,7 @@ function connectSessionFeed() {
     state.sessionFeedReady = false;
     state.sessionStreamHealthy = false;
     rejectSessionFeedRequests('Agent 连接已断开');
+    terminalAutonomy.disconnect();
     syncAgentOutputCopyButtons();
     syncTerminalProgressButton();
     scheduleSessionFeedReconnect();
@@ -1137,6 +1153,7 @@ function syncTerminalAccess() {
   if (writable && localInputEnabled()) openTerminalComposer();
   syncTerminalVoiceControls();
   syncTerminalProgressButton();
+  terminalAutonomy.sync();
 }
 
 function terminalOutputForSession(output, sessionName) {

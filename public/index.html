@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=68">
+    <link rel="stylesheet" href="/styles.css?v=69">
   <link rel="stylesheet" href="/terminal-theme.css?v=4">
   <link rel="stylesheet" href="/terminal-image-preview.css?v=1">
 </head>
@@ -54,13 +54,20 @@
 
       <section class="terminal-view" id="terminalView" hidden>
         <header class="terminal-header">
-          <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
-          <div class="terminal-actions"><button class="terminal-progress-button" id="terminalProgressButton" type="button" aria-label="询问 Agent 进度" title="询问 Agent 进度" hidden>?</button><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-heading">
+            <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
+            <div class="terminal-agent-controls">
+              <button class="terminal-progress-button" id="terminalProgressButton" type="button" aria-label="询问 Agent 进度" title="询问 Agent 进度" hidden>?</button>
+              <button class="terminal-autonomy-button" id="terminalAutonomyButton" type="button" aria-label="配置自主迭代" aria-pressed="false" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">A</span><span id="terminalAutonomyStatus" aria-live="polite"></span></button>
+            </div>
+          </div>
+          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
           <div class="terminal-disconnect" id="terminalDisconnect" hidden>
             <span id="terminalDisconnectMessage" role="status" aria-live="polite"></span>
             <button class="secondary-button" id="reconnectTerminalButton" type="button">重新连接</button>
           </div>
         </header>
+        <p id="terminalAutonomyNotice" class="terminal-autonomy-notice" role="status" hidden></p>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
           <span class="terminal-voice-prompt" aria-hidden="true">›</span><textarea id="terminalVoiceDraft" rows="1" aria-label="终端输入" maxlength="100000" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入指令，回车发送"></textarea>
@@ -75,6 +82,11 @@
       </section>
     </main>
   </div>
+
+  <dialog id="terminalAutonomyDialog" aria-labelledby="terminalAutonomyTitle">
+    <div class="terminal-autonomy-head dialog-head"><h2 id="terminalAutonomyTitle">设置自主目标</h2><button class="secondary-button" id="closeTerminalAutonomy" type="button" aria-label="关闭自主目标弹窗">关闭</button></div>
+    <div id="terminalAutonomyContent"></div>
+  </dialog>
 
   <dialog id="terminalSelectionDialog" aria-labelledby="terminalSelectionTitle" aria-describedby="terminalSelectionHint">
     <div class="terminal-selection-body">
@@ -157,6 +169,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-  <script type="module" src="/app.js?v=122"></script>
+  <script type="module" src="/app.js?v=123"></script>
 </body>
 </html>

@@ -447,7 +447,7 @@ export class AgentHub {
         commandReceiptTtlMs: COMMAND_RECEIPT_TTL_MS,
       },
       providers: this.registry.providerInfo(),
-      ...(this.autonomy ? { autonomy: this.autonomy.snapshots() } : {}),
+      ...(this.autonomy ? { autonomy: this.autonomy.snapshots(), autonomySessionBinding: true } : {}),
     });
     if (this.sessionFeed && negotiatedStreamVersion === 1) this.#subscribeSessions(socket, null);
     socket.on('message', (data) => this.#handleMessage(socket, data));
@@ -550,10 +550,31 @@ export class AgentHub {
       this.#invalidateThreadSubscription(target);
       return { dismissedDeliveryIds: [commandId] };
     }
+    if (message.type === 'bindAutonomySession') {
+      if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
+      const client = this.clients.get(socket);
+      client.autonomyTarget = null;
+      if (message.threadId == null && message.tmuxSession == null) return {};
+      if (!['codex', 'claude', 'qodercli'].includes(provider)) throw new Error('自主迭代需要 Agent 会话');
+      const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
+      // Terminal mode binds controls without retaining an expensive history stream.
+      // Every write still verifies live Agent/thread/pane identity in the controller.
+      client.autonomyTarget = target;
+      const run = this.autonomy.snapshot(target);
+      if (run?.status === 'paused' && run.round === 0 && !run.plan && !run.proposal) {
+        // One read can recover a lost setup dialog; never retain a history stream
+        // or block control binding on a slow transcript. A later start wins.
+        this.registry.openThread(provider, target.threadId, { readOnly: true }).then(result => {
+          if (client.autonomyTarget === target) this.autonomy.restoreProposal(target, result?.thread);
+        }).catch(() => {});
+      }
+      return { autonomy: this.autonomy.snapshot(target) };
+    }
     if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(message.type)) {
       if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
       const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
-      const subscribed = this.clients.get(socket)?.threadSubscription?.target;
+      const client = this.clients.get(socket);
+      const subscribed = Object.hasOwn(client, 'autonomyTarget') ? client.autonomyTarget : client.threadSubscription?.target;
       if (!subscribed || subscribed.provider !== provider || subscribed.threadId !== target.threadId
         || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
       cleanCommandId(message.commandId);
@@ -679,7 +700,9 @@ export class AgentHub {
       const baseline = cleanDeliveryBaseline(message);
       const commandId = message.commandId == null ? '' : String(message.commandId).trim();
       if (provider !== 'shell') this.registry.backend(provider);
-      this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
+      if (!Object.hasOwn(this.clients.get(socket), 'autonomyTarget')) {
+        this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
+      }
       const payload = {
         threadId, sessionName, text,
         ...(turnId ? { turnId, mode: message.mode === 'steer' ? 'steer' : 'followUp' } : {}),
