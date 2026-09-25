@@ -130,6 +130,9 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   let awaitingSessionActivity = false;
   let inputGeneration = 0;
   let inputOperation = null;
+  // An attach may inherit copy-mode. Scroll owns history until the next human
+  // input restores CLI ownership; terminal protocol replies never change it.
+  let inputMode = 'unknown';
   const pending = [];
   const isOpen = () => !closed && ws.readyState === ws.OPEN;
   const sendInputResult = (message, error) => {
@@ -151,17 +154,23 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   const queueTerminalOperation = (message) => {
     const generation = inputGeneration;
     const targetSession = activeSession;
+    const attachment = attachSequence;
     const operation = {};
     inputOperation = operation;
     const isCurrent = () => isOpen() && generation === inputGeneration;
     Promise.resolve().then(async () => {
       if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
-      if (message.type === 'scroll') return dependencies.scrollSession(targetSession, message.lines);
+      if (message.type === 'scroll') {
+        inputMode = 'history';
+        return dependencies.scrollSession(targetSession, message.lines);
+      }
+      inputMode = 'unknown';
       if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
       await dependencies.submitTerminalInput(targetSession, message.data, {
         isCurrent,
         separateFinalEnter: message.separateFinalEnter === true,
       });
+      if (isCurrent() && attachment === attachSequence) inputMode = 'live';
     }).then(() => { if (message.type === 'input') sendInputResult(message); }, (error) => {
       // A legacy/raw handoff has no receipt ID. Its stale failure must not close
       // the socket after that same connection has switched to a different session.
@@ -281,7 +290,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       }
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
         if (message.data && !TERMINAL_REPLY.test(message.data)) dependencies.onHumanInput?.(activeSession);
-        if (explicitInput) queueTerminalOperation(message);
+        if (explicitInput || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
         else {
           terminal.write(message.data);
           if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
@@ -309,6 +318,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
 
   async function attachTerminal(nextSession, nextViewport, resetScreen = false) {
     const sequence = ++attachSequence;
+    inputMode = 'unknown';
     activeSession = nextSession;
     killTerminal();
     let initialSize = nextViewport;

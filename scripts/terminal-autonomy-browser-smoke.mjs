@@ -19,7 +19,7 @@ function reset(provider) {
   const target = { provider, threadId: 'fixture-thread', tmuxSession: 'fixture' };
   const sessions = ['fixture', 'other'].map(name => ({ name, width: 100, height: 24, activityAt: Date.now(),
     agent: { kind: provider, id: name === 'fixture' ? target.threadId : 'other-thread', paneId: '%7' } }));
-  const f = fixture = { target, sessions, sent: [], inputs: [], requests: [], turns: [], stops: 0, manualStops: [], agents: [] };
+  const f = fixture = { target, sessions, sent: [], inputs: [], requests: [], turns: [], stops: 0, manualStops: [], agents: [], terminals: [] };
   const thread = () => ({ thread: { id: target.threadId, turns: f.turns } });
   const backend = new EventEmitter(); backend.openThread = async () => thread();
   f.autonomy = new AutonomyController({ schedule: () => 1, cancel() {},
@@ -77,6 +77,7 @@ sockets.on('connection', (socket, req) => {
     socket.on('message', raw => f.requests.push(JSON.parse(raw)));
     f.hub.handleConnection(socket, { streamVersion: 2 });
   } else {
+    f.terminals.push(socket);
     socket.send('› fixture terminal\r\n');
     socket.on('message', raw => {
       const m = JSON.parse(raw);
@@ -223,6 +224,18 @@ try {
     assert.equal(await page.inputValue('#terminalVoiceDraft'), '断线仍保留的草稿');
     await page.locator('#terminalAutonomyDialog[open]').waitFor();
     assert.equal(fixture.stops, 1, 'reconnect must never approve a goal');
+    await page.click('#closeTerminalAutonomy');
+    const beforeDisconnect = fixture.inputs.length;
+    for (const socket of fixture.terminals) socket.close();
+    await page.locator('#terminalDisconnect:not([hidden])').waitFor();
+    assert.equal(await page.locator('#sendTerminalVoiceButton').isDisabled(), true);
+    await page.locator('#terminal .xterm-helper-textarea').press('x');
+    assert.equal(fixture.inputs.length, beforeDisconnect, 'disconnected keys must not be sent');
+    await page.click('#reconnectTerminalButton');
+    await page.waitForFunction(() => document.querySelector('#terminalDisconnect').hidden
+      && !document.querySelector('#sendTerminalVoiceButton').disabled);
+    assert.equal(await page.inputValue('#terminalVoiceDraft'), '断线仍保留的草稿');
+    assert.equal(fixture.inputs.length, beforeDisconnect, 'reconnect must not replay input');
     // Native CLI questions retain control of the terminal; A cannot answer them.
     fixture.sessions[0].agent.question = { id: 'native-approval' };
     await page.reload();

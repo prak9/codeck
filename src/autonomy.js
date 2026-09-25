@@ -214,7 +214,7 @@ export class AutonomyController extends EventEmitter {
   }
   async restartLegacyConfiguration(run, exchange) {
     const generation = run.generation;
-    const result = await this.readThread(run.target);
+    const result = await this.readThread(run.target, undefined, { waitForReady: true });
     if (this.closed || run.status !== 'paused' || run.generation !== generation
       || run.suspended?.exchange !== exchange) return this.snapshot(run.target);
     const thread = result?.thread;

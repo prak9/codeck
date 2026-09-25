@@ -94,13 +94,14 @@ export class QoderAgentBackend extends SdkAgentBackend {
     reader.terminate().catch(() => {});
   }
 
-  async openThread(threadId, { turnLimit = 20 } = {}) {
+  async openThread(threadId, { turnLimit = 20, waitForReady = false } = {}) {
     const key = `${threadId}:${turnLimit}`;
     // A read that finished between polls must be delivered once before starting
     // another refresh; otherwise every slow poll reintroduces historyLoading.
-    if (this.readyReads.delete(key)) return this.#withRuntime(threadId, this.latestReads.get(key));
+    if (!waitForReady && this.readyReads.delete(key)) return this.#withRuntime(threadId, this.latestReads.get(key));
     const previousError = this.readErrors.get(key);
-    if (previousError) {
+    if (waitForReady) this.readErrors.delete(key);
+    if (previousError && !waitForReady) {
       this.readErrors.delete(key);
       // A deferred failure must reach the snapshot/UI, not just a stream-error
       // callback that the browser may suppress while reconnecting.
@@ -129,6 +130,9 @@ export class QoderAgentBackend extends SdkAgentBackend {
       }).finally(() => { if (this.openReads.get(key) === loading) this.openReads.delete(key); });
       this.openReads.set(key, loading);
     }
+    // Explicit configuration recovery needs the result of this read, not the
+    // display feed's consumable ready flag. The worker retains its normal timeout.
+    if (waitForReady) return this.#withRuntime(threadId, await loading);
     let timer;
     let result;
     try {

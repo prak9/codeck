@@ -74,8 +74,13 @@ test('legacy paused Qoder config migrates through normal server preparation only
   f.manager.pause(target); f.manager.close(); f.now += 60000;
   f.manager = new AutonomyController(f.options);
   await f.manager.tick(); assert.equal(f.writes.length, 1);
-  // Finish the read-only worker warmup before the explicit click.
-  await f.backend.openThread(threadId); await Promise.all([...f.backend.openReads.values()]);
+  // Force a genuinely slow cold display read; migration must wait through the
+  // production server callback instead of rejecting its first loading snapshot.
+  const read = f.backend.read.bind(f.backend);
+  f.backend.read = async (...args) => {
+    if (args[0] === 'open') await new Promise(resolve => setTimeout(resolve, 150));
+    return read(...args);
+  };
   await Promise.all([f.manager.start(target), f.manager.start(target)]);
   await f.manager.tick();
   const current = f.stored().exchange;

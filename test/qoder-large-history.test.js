@@ -47,9 +47,9 @@ test('Qoder worker reads the exact discovered file when bounded metadata has no 
 test('Qoder worker settles timeout, restarts cleanly, and preserves runtime list entries', async t => {
   const { backend } = await fixture(t, [user('one')]);
   backend.readTimeoutMs = 1;
-  await assert.rejects(backend.read('open', { threadId }), /超时/);
+  await assert.rejects(backend.openThread(threadId, { waitForReady: true }), /超时/);
   backend.readTimeoutMs = 30_000;
-  assert.equal((await backend.read('open', { threadId })).thread.turns.length, 1);
+  assert.equal((await backend.openThread(threadId, { waitForReady: true })).thread.turns.length, 1);
   backend.runtimes.set('runtime-only', { threadId: 'runtime-only', preview: 'live', cwd: '/fixture',
     createdAt: Date.now(), activeTurn: { id: 'active' }, pendingTurns: [] });
   const result = await backend.listThreads();
@@ -113,6 +113,37 @@ test('Qoder publishes a deferred result before starting another slow refresh', a
   assert.equal(reads, 2, 'later polls still refresh the transcript');
   finish({ thread: { id: threadId, turns: [] } });
   await [...backend.openReads.values()][0];
+});
+
+test('explicit ready wait survives a feed consuming the prior result and shares the next slow read', async t => {
+  const backend = new QoderAgentBackend(); t.after(() => backend.close());
+  let finish, reads = 0;
+  backend.read = () => { reads++; return new Promise(resolve => { finish = resolve; }); };
+  assert.equal((await backend.openThread(threadId)).thread.historyLoading, true);
+  const first = backend.openReads.values().next().value;
+  finish({ thread: { id: threadId, turns: [{ id: 'old', items: [] }] } }); await first;
+  assert.equal((await backend.openThread(threadId)).thread.turns[0].id, 'old', 'feed consumes readyReads');
+  let settled = false;
+  const explicit = backend.openThread(threadId, { waitForReady: true }).then(result => { settled = true; return result; });
+  const feed = await backend.openThread(threadId);
+  assert.equal(feed.thread.historyLoading, true);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(settled, false, 'A must await the read, not return a historyLoading frame');
+  assert.equal(reads, 2, 'feed and A share one new read');
+  finish({ thread: { id: threadId, turns: [{ id: 'fresh', items: [] }] } });
+  const result = await explicit;
+  assert.equal(result.thread.historyLoading, undefined); assert.equal(result.thread.turns[0].id, 'fresh');
+});
+
+test('explicit ready wait joins an existing read and propagates its failure', async t => {
+  const backend = new QoderAgentBackend(); t.after(() => backend.close());
+  let rejectRead, reads = 0;
+  backend.read = () => { reads++; return new Promise((_resolve, reject) => { rejectRead = reject; }); };
+  await backend.openThread(threadId);
+  const explicit = backend.openThread(threadId, { waitForReady: true });
+  const rejected = assert.rejects(explicit, /fixture read timeout/);
+  rejectRead(new Error('fixture read timeout')); await rejected;
+  assert.equal(reads, 1);
 });
 
 test('Qoder large history cannot block small history, metadata, or evict its cache', async t => {
