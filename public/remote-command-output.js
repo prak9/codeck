@@ -60,7 +60,7 @@ function splitModelLabel(line) {
 function splitNumberedModelLabel(line) {
   const match = /^[›>❯]?\s*\d+\.\s+(.+)$/u.exec(line);
   if (!match) return null;
-  const current = /^(.*?)\s+\(current\)(?:\s{2,}(.*))?$/iu.exec(match[1]);
+  const current = /^(.*?)\s+\(current\)(?:\s+(.*))?$/iu.exec(match[1]);
   if (current) {
     return {
       label: current[1].trim(),

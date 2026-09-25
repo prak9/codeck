@@ -135,13 +135,19 @@ sockets.on('connection', socket => {
       return reply({ turns: fixture.turns.slice(start, end), truncated: start > 0, oldestTurnId: fixture.turns[start]?.id,
         nextCursor: start > 0 ? encodeHistoryCursor(fixture.provider, 'fixture-thread', fixture.turns[start].id) : null });
     }
-    if (request.type === 'selectSessionModel') return reply({ completed: true });
+    if (request.type === 'selectSessionModel') {
+      assert.equal(request.option, fixture.modelSelected ? 'Extra high' : 'model-a');
+      if (fixture.modelSelected) return reply({ completed: true });
+      fixture.modelSelected = true;
+      const terminalOutput = 'Select Reasoning Level for model-a\n1. High  Deep\n› 2. Extra high (current) More reasoning';
+      return reply({ terminalOutput, commandOutput: normalizeSessionCommandOutput(fixture.provider, '/model', { terminalOutput }) });
+    }
     if (request.type === 'dismissSessionCommand') return reply({ dismissed: true });
     if (request.type === 'sendSessionMessage') {
       fixture.sent.push(request);
       if (request.text.startsWith('/')) {
         const terminalOutput = request.text === '/model'
-          ? 'Select Model and Effort\n› 1. model-a (current)  Fast\n2. model-b  Deep'
+          ? 'Select Model and Effort\n› 1. model-a (current) Fast\n2. model-b  Deep'
           : `Fixture ${request.text}\nModel: fixture-model\nUsage: 10%`;
         return reply({ terminalOutput, commandOutput: normalizeSessionCommandOutput(fixture.provider, request.text, { terminalOutput }) });
       }
@@ -402,7 +408,11 @@ try {
         await page.waitForSelector('#commandDialog[open]');
         if (command === '/model') assert.equal(await page.locator('.model-row').count(), provider === 'codex' ? 2 : 0);
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-${command.slice(1)}.png`) });
-        if (command === '/model' && provider === 'codex') await page.locator('.model-row').last().click();
+        if (command === '/model' && provider === 'codex') {
+          await page.locator('.model-row').first().click();
+          await page.getByText('选择推理强度', { exact: true }).waitFor();
+          await page.locator('.model-row').last().click();
+        }
         else await page.locator('#commandDialogClose').click();
         await page.waitForSelector('#commandDialog[open]', { state: 'detached' });
       }

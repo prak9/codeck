@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { normalizeSessionCommandOutput } from '../public/remote-command-output.js';
 import { resolveSessionStatus, sessionSnapshotRefreshInterval } from '../src/session-status.js';
 import { AGENT_SCREEN_MARKERS, dismissSessionCommand, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
@@ -778,6 +779,32 @@ test('recovers the real short narrow model picker without a title or complete hi
   assert.match(result.terminalOutput, /gpt-6-astra \(current\)/);
   assert.match(result.terminalOutput, /Our most capable model for complex, demanding work\./);
   assert.deepEqual(commands, []);
+});
+
+test('Remote narrow picker labels round-trip through model and reasoning selection', async () => {
+  for (const [screen, nextScreen, label] of [
+    [NARROW_CODEX_MODEL_PICKER, NARROW_CODEX_REASONING_PICKER, 'gpt-6-astra'],
+    [NARROW_CODEX_MODEL_PICKER.replace('(curr…', '(current)'), NARROW_CODEX_REASONING_PICKER, 'gpt-6-astra'],
+    [NARROW_CODEX_REASONING_PICKER, EMPTY_CODEX_COMPOSER, 'Extra high'],
+    [NARROW_CODEX_REASONING_PICKER.replace('(curre…', '(current)'), EMPTY_CODEX_COMPOSER, 'Extra high'],
+  ]) {
+    const commands = [];
+    const target = { provider: 'codex', sessionName: 'work', threadId: 'thread-1' };
+    const overrides = {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => commands.length ? nextScreen : screen,
+      execTmux: async args => commands.push(args),
+      waitForSlashOutput: async () => {},
+    };
+    const opened = await sendSessionMessage({ ...target, text: '/model' }, overrides);
+    const output = normalizeSessionCommandOutput('codex', '/model', opened);
+    const item = output.parsed.items.find(item => item.label.startsWith(label));
+    const result = await selectSessionModel({ ...target, option: item.label }, overrides);
+    assert.equal(output.parsed.selected, label);
+    assert.equal(item.label, label);
+    if (label === 'Extra high') assert.equal(result.completed, true);
+    else assert.match(result.terminalOutput, /Select Reasoning Level/);
+  }
 });
 
 test('model selection returns the real clipped reasoning menu instead of claiming completion', async () => {

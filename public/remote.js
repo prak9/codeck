@@ -28,7 +28,7 @@ import { composerControlState, composerSubmitAction, createComposerRequestGate, 
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=4';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
-import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=4';
+import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=5';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
