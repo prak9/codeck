@@ -5,7 +5,7 @@
 - Overall status: `完成`
 - Profile: `Lite`
 - Active plan node: None
-- Latest evidence: `/tmp/codeck-state-qoder-final2.log` — 1093/1093 pass; `/tmp/codeck-qoder-guards-final.log` — 147/147 final adapter guards; `/tmp/codeck-qoder-normal-browser.log` and `/tmp/codeck-qoder-remote-browser.log` — six journeys each pass
+- Latest evidence: `/tmp/codeck-state-release-tests.log` — 1093/1093 pass; release 3e07d6b live health/assets/API/V2 capabilities pass; all 10 pane/PIDs and both autonomous run IDs/rounds retained
 - Current blocker: None
 - Next step: None
 - Next checkpoint: None
@@ -13,7 +13,7 @@
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / NODE-016/018 reconciled with current tests and browser evidence; implementation complete, not released; historical Qoder unsupported boundary superseded by R-011`
+- Last clean: `2026-09-25 / NODE-016/019 reconciled with release 3e07d6b, final tests and live health; historical Qoder unsupported boundary superseded by R-011`
 
 ## Outcome
 
@@ -56,6 +56,7 @@
 
 | Node | Status | Action | Verification | Evidence | Reflection |
 |---|---|---|---|---|---|
+| NODE-019 | `完成` | Commit 3e07d6b pushed and deployed on explicit user request | 1093 tests; authenticated health/assets/API/V2 ready capabilities; exact pane/PID comparison | /tmp/codeck-state-release-tests.log; service MainPID 1180995, started 2026-09-25 14:57:48 CST; 10 retained panes; report/research rounds 4/2 paused | None: service healthy, no live Agent input or cancellation sent; no daemon-reload of unrelated unit changes |
 | NODE-016 | `完成` | Review and fix continuation checkpoints and activity presentation | Controller regression tests | /tmp/codeck-state-red.log; /tmp/codeck-state-blocked-red.log; /tmp/codeck-qoder-all.log | R-010 |
 | NODE-017 | `完成` | Verified scoped interruption and compact controls including Qoder task-panel cancellation | Hub/adapter and browser checks | /tmp/codeck-stop-red.log; /tmp/codeck-qoder-stop-red.log; /tmp/codeck-qoder-guards-final.log; /tmp/codeck-qoder-remote-browser.log | R-011 |
 | NODE-018 | `完成` | Regression, rendered verification and state documentation | Full tests, browser checks, strict plan validation | /tmp/codeck-state-qoder-final2.log; /tmp/codeck-qoder-normal-browser.log; /tmp/codeck-qoder-remote-browser.log | None: all selected journeys passed; no live cancellation or service restart |
