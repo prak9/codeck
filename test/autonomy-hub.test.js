@@ -128,3 +128,19 @@ test('opening report restores its lost ready proposal without sending configurat
   await f.autonomy.tick(); assert.equal(f.sent.length, 2);
   assert.match(f.sent.at(-1), /"phase":"round"/);
 });
+
+test('reopening research broadcasts recovered setup choices without sending continue again', async () => {
+  const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-work' }); await f.autonomy.tick();
+  const text = f.sent[0]; const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
+  f.autonomy.pause(target, '发送状态未确认');
+  f.backend.openThread = async () => ({ thread: { id: target.threadId, turns: [{ status: 'completed', items: [
+    { type: 'userMessage', content: text },
+    { type: 'agentMessage', text: '请选择目标\n\n```codeck-autonomy\n' + JSON.stringify({ nonce, status: 'ask',
+      questions: [{ id: 'goal', header: '目标', question: '推进到哪一步？', options: ['修复及离线原型', '只继续研究'] }] }) + '\n```' },
+  ] }] } });
+  await f.request('openThread', { readOnly: true });
+  const run = f.autonomy.snapshot(target);
+  assert.equal(run.status, 'configuring'); assert.ok(run.requestId); assert.equal(run.questions.length, 1);
+  assert.ok(f.socket.sent.some(message => message.type === 'autonomyState' && message.run.requestId === run.requestId));
+  await f.autonomy.tick(); assert.equal(f.sent.length, 1); assert.equal(f.interrupted.length, 0);
+});

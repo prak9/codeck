@@ -138,8 +138,10 @@ export class AutonomyController extends EventEmitter {
       || !/^[\w-]{8,128}$/u.test(context.nonce || '')) return;
     const { record } = resultFor(thread, { text, nonce: context.nonce });
     const proposal = record?.status === 'ready' && validPlan(record.plan);
-    if (!proposal) return;
-    run.proposal = proposal; run.status = 'confirming'; run.requestId = crypto.randomUUID();
+    const questions = record?.status === 'ask' && validQuestions(record.questions);
+    if (!proposal && !questions) return;
+    run.proposal = proposal || null; run.questions = questions || null;
+    run.status = proposal ? 'confirming' : 'configuring'; run.requestId = crypto.randomUUID();
     run.reason = ''; run.confirmAfterConfig = false;
     this.changed(run);
   }

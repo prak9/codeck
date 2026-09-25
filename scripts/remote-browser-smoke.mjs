@@ -14,6 +14,7 @@ import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 import { QoderQuestionTracker } from '../src/qoder-question.js';
 import { AUTONOMY_PROGRESS_PROMPT as progressPrompt } from '../public/remote-autonomy.js';
 import { AutonomyController } from '../src/autonomy.js';
+import { interruptSession } from '../src/tmux.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
@@ -34,16 +35,39 @@ function reset(provider) {
   if (provider === 'codex') fixture.recovery = createFixtureRecovery();
   fixture.autonomySent = [];
   fixture.autonomyStops = 0;
+  fixture.stopCommands = [];
   fixture.autonomy = new AutonomyController({
     schedule: () => 1, cancel() {},
     readSession: async () => ({ name: 'fixture', hasRunningProcess: fixture.status === 'working',
       agent: { kind: provider, id: 'fixture-thread', paneId: '%7', question: fixture.question,
         hasBackgroundProcess: fixture.status === 'background' } }),
     readThread: async () => ({ thread: thread() }),
-    stop: async (_target, guard) => {
+    stop: async (target, guard) => {
       assert.equal(guard(), true); fixture.autonomyStops++;
       if (fixture.holdAutonomyStop) await new Promise(resolve => { fixture.finishStop = resolve; });
       if (fixture.failAutonomyStop) { fixture.failAutonomyStop = false; throw new Error('旧任务未停止，新目标未启动'); }
+      if (provider === 'codex') {
+        let background = fixture.status === 'background'; let goal = true; let draft = '';
+        await interruptSession({ provider, sessionName: target.tmuxSession, threadId: target.threadId,
+          expectedPaneId: target.paneId, isCurrent: guard, waitForIdle: true, stopBackground: true,
+        }, {
+          listTmuxSessions: async () => [{ name: 'fixture', hasRunningProcess: fixture.status === 'working',
+            agent: { kind: provider, id: 'fixture-thread', paneId: '%7', hasBackgroundProcess: background } }],
+          capturePane: async () => `» ${draft}\n\n  gpt-6-astra ultra · /fixture${goal ? '   Goal stalled (/goal resume)' : ''}`,
+          execTmux: async args => {
+            if (args.includes('Escape')) fixture.status = background ? 'background' : 'done';
+            if (args.includes('-l')) draft = args.at(-1).trimEnd();
+            if (args.at(-1) === 'Enter') {
+              fixture.stopCommands.push(draft);
+              if (draft === '/goal clear') goal = false;
+              if (draft === '/stop') background = false;
+              draft = '';
+            }
+          },
+          waitForPaste: async () => {}, waitForStop: async () => {}, invalidatePaneSnapshot() {},
+        });
+        assert.equal(background, false); assert.equal(goal, false);
+      }
       fixture.status = 'done'; publishSessions();
     },
     send: async (_target, text, guard) => {
@@ -595,6 +619,14 @@ try {
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '待回答');
       await dialog.getByText('这次推进哪个目标？', { exact: true }).waitFor();
       assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
+      // research regression: a received ask reply outlives lost controller state.
+      const setupRun = [...fixture.autonomy.runs.values()][0];
+      fixture.autonomy.pause(setupRun.target, '发送状态未确认');
+      await page.reload();
+      await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+      assert.equal(fixture.autonomySent.length, 1, 'choice recovery must not queue another continue');
+      assert.equal(fixture.autonomyStops, 0);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-recovered-choices.png`) });
       await dialog.getByRole('button', { name: '确认选择' }).click();
       await dialog.getByRole('alert').filter({ hasText: '请回答“目标”' }).waitFor();
       assert.equal(fixture.autonomySent.length, 1, 'an incomplete form cannot advance configuration');
@@ -615,7 +647,7 @@ try {
       assert.match(await dialog.locator('.autonomy-plan').textContent(), /修复选择器.*回归测试通过.*3 轮.*30 分钟.*不提交部署/);
       assert.equal(fixture.autonomySent.length, 2, 'a proposed plan is not yet authorized work');
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-confirm.png`) });
-      assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
+      assert.equal(await page.inputValue('#composerInput'), '');
       // report regression: the final ready reply exists, but a failed send check
       // lost the controller's proposal. Reopening recovers it without another prompt.
       const run = [...fixture.autonomy.runs.values()][0];
@@ -644,9 +676,11 @@ try {
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 已暂停');
       await page.locator('#liveStatus').getByText('自主任务已暂停：旧任务未停止，新目标未启动', { exact: true }).waitFor();
       assert.equal(fixture.autonomySent.length, 2, 'failed cancellation spends no round and dispatches no work');
+      if (provider === 'codex') { fixture.status = 'background'; publishSessions(); }
       await auto.click();
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
       assert.equal(fixture.autonomyStops, 2, 'only explicit retry can attempt cancellation again');
+      if (provider === 'codex') assert.deepEqual(fixture.stopCommands, ['/goal clear', '/stop']);
       assert.equal(await page.inputValue('#composerInput'), viewport.width < 500 ? '保留确认前草稿' : '');
       assert.equal(await auto.getAttribute('aria-pressed'), 'true');
       const box = await auto.boundingBox(); assert.ok(box.width >= 44 && box.height >= 44);

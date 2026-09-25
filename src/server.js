@@ -357,7 +357,7 @@ const autonomy = new AutonomyController({
   }),
   stop: (target, isCurrent) => agentRegistry.interruptSession(target.provider, {
     sessionName: target.tmuxSession, threadId: target.threadId,
-    expectedPaneId: target.paneId, isCurrent, waitForIdle: true,
+    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: true,
   }),
   send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true } = {}) => {
     const commandId = crypto.randomUUID();

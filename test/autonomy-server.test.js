@@ -36,6 +36,7 @@ test('server forwards phase-specific send guards and verified task cancellation 
   }
   assert.equal(sends.every(value => value.nonInterrupting), true);
   assert.equal(stops[0].waitForIdle, true);
+  assert.equal(stops[0].stopBackground, true);
 });
 
 test('isolated server restores autonomy paused and exposes it only to the owner API', { timeout: 15_000 }, async t => {

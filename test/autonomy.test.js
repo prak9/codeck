@@ -87,6 +87,38 @@ test('proposal recovery rejects stale, foreign, unfinished and tool-generated co
     await f.manager.tick(); assert.equal(f.sent.length, 1, scenario);
   }
 });
+
+test('lost setup choices recover without another continue prompt or authorizing work', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  const questions = [{ id: 'goal', header: '目标', question: '推进到哪里？', options: ['修复并验证', '只继续研究'] }];
+  f.reply({ status: 'ask', questions });
+  f.manager.pause(target, '发送未确认，请检查终端');
+  f.manager.restoreProposal(target, { id: target.threadId, ...f.thread });
+  assert.equal(f.state().status, 'configuring');
+  assert.equal(f.state().questions[0].question, questions[0].question);
+  const requestId = f.state().requestId;
+  assert.ok(requestId);
+  f.manager.restoreProposal(target, { id: target.threadId, ...f.thread });
+  assert.equal(f.state().requestId, requestId);
+  await f.manager.start(target); await f.manager.tick();
+  assert.equal(f.sent.length, 1); assert.equal(f.state().round, 0);
+  await f.manager.respond(target, { requestId, answers: { goal: ['只继续研究'] } });
+  await f.manager.tick(); assert.match(f.sent.at(-1), /目标：只继续研究/);
+});
+
+test('invalid or obsolete setup choices are not recovered as a dialog', async () => {
+  for (const scenario of ['malformed', 'nonce', 'unfinished', 'tool', 'human']) {
+    const f = fixture(); await f.manager.start(target); await f.manager.tick();
+    const questions = [{ id: 'goal', header: '目标', question: '做什么？', options: ['修复', '分析'] }];
+    f.reply({ status: 'ask', questions: scenario === 'malformed' ? [] : questions },
+      scenario === 'nonce' ? { nonce: 'wrong' } : scenario === 'unfinished' ? { status: 'inProgress' }
+        : scenario === 'tool' ? { type: 'commandExecution' } : {});
+    if (scenario === 'human') f.thread.turns.push({ items: [{ type: 'userMessage', content: '先不要继续' }] });
+    f.manager.pause(target);
+    f.manager.restoreProposal(target, { id: target.threadId, ...f.thread });
+    assert.equal(f.state().status, 'paused', scenario); assert.equal(f.state().requestId, null, scenario);
+  }
+});
 function fixture(options = {}) {
   const f = { sent: [], thread: { turns: [] }, session: { name: 'work', hasRunningProcess: false,
     agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }, now: 100_000 };
@@ -412,6 +444,23 @@ test('restart during cancellation never repeats the stop or starts the new goal'
     assert.equal(restored.state().status, 'paused'); assert.equal(restored.state().round, 0);
     assert.deepEqual(restored.sent, []);
     finish(); await tick; assert.equal(f.sent.length, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('restart after receiving setup choices recovers the dialog from artifacts without replay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-autonomy-choices-'));
+  try {
+    const file = path.join(dir, 'runs.json'); const f = fixture({ file });
+    await f.manager.start(target); await f.manager.tick();
+    f.reply({ status: 'ask', questions: [{ id: 'goal', header: '目标', question: '要做哪项？', options: ['修复', '研究'] }] });
+    // The CLI effect succeeded, but its controller acknowledgment was lost.
+    f.manager.close();
+    const restored = fixture({ file });
+    restored.manager.restoreProposal(target, { id: target.threadId, ...f.thread });
+    assert.equal(restored.state().status, 'configuring');
+    assert.ok(restored.state().requestId); assert.equal(restored.state().questions.length, 1);
+    await restored.manager.tick(); assert.deepEqual(restored.sent, []); assert.equal(restored.state().round, 0);
+    await assert.rejects(restored.manager.respond(target, { requestId: 'obsolete', answers: { goal: ['修复'] } }));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

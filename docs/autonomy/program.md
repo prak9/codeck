@@ -4,16 +4,16 @@
 
 - Overall status: `进行中`
 - Profile: `Lite`
-- Active plan node: `NODE-011`
-- Latest evidence: `/tmp/codeck-autonomy-switch-all-final.log` — 1056/1056 pass; `/tmp/codeck-autonomy-switch-browser-final.log` — six provider/viewport journeys pass, zero browser errors
-- Current blocker: NODE-009 background cancellation scope requires the user's answer; foreground cancellation and safe background rejection are implemented and tested.
-- Next step: Commit, push and deploy the verified foreground/fail-closed implementation, as explicitly requested by the user. Background cancellation remains a separate undecided scope.
-- Next checkpoint: Post-restart health, served asset versions, read-only API/WebSocket and unchanged tmux pane/PID identities.
-- Next human decision: Whether cancelling the old task also terminates its background commands/experiments (asked asynchronously).
+- Active plan node: `NODE-014`
+- Latest evidence: `/tmp/codeck-research-repair-all-final.log` — 1069/1069 pass; `/tmp/codeck-research-repair-browser-final.log` — six provider/viewport journeys pass, zero browser errors
+- Current blocker: None; user explicitly authorized commit, push and deployment of the research repair.
+- Next step: Release NODE-013 only, then verify health/API/WebSocket and tmux pane survival. NODE-012 WIP is parked outside the release at /tmp/codeck-normal-autonomy-wip.SP261t/normal-mode-binding.patch; UI implementation remains pending.
+- Next checkpoint: Exact release tests, origin/main push, service restart and read-only health checks. Never confirm or replay a research task during deployment.
+- Next human decision: None for this release.
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / README, NODE-008..010 and Verification boundary reconciled against /tmp/codeck-autonomy-switch-all-final.log and /tmp/codeck-autonomy-switch-browser-final.log; background scope remains explicit`
+- Last clean: `2026-09-25 / README, NODE-009/013 and boundaries reconciled against research repair tests/browser evidence; explicit current-session cancellation authority recorded; NODE-012 remains unfinished`
 
 ## Outcome
 
@@ -27,7 +27,7 @@
 - Tactical objective: Lightweight session UI with reliable bounded execution and human takeover.
 - Imperative bounds: No implicit authority expansion; no replay of uncertain sends; no continuation after pause or identity change; agent-reported completion is not independent verification.
 - Negotiable space: Protocol, module boundaries, persistent state shape, conservative recovery behavior.
-- Material assumptions: Foreground cancellation is authorized only after goal confirmation. Background cancellation is not inferred; currently fail closed when background execution remains.
+- Material assumptions: User explicitly authorized stopping the current session's old foreground and background tasks after goal confirmation. Other sessions, arbitrary detached processes and implicit replay remain out of scope; unsupported cancellation fails closed.
 - Active unknowns: Native CLIs lack a shared task-result tool. Use nonce-bound final assistant records with a confirmed outbound message anchor; malformed/missing records pause rather than guess. Fee/token budgets are advisory without metering; round/deadline limits are controller-enforced.
 - Escalate when: A preference conflicts or evidence reveals a better option that requires changing a bound.
 
@@ -46,6 +46,8 @@
 | A-009 | Compact ? and adjacent controls | Prompt length and browser geometry | Prompt <= 120 Chinese characters; both controls retain 44px targets with no distributed gap |
 | A-010 | A configuration never waits for Agent idle | Busy/background controller and tmux tests, browser journeys | Configuration is sent safely without interrupting old work; no 等空闲 UI; drafts and native questions stay protected |
 | A-011 | Confirmed new goal replaces old work | Controller and guarded interruption tests | No cancellation before confirmation; stop then verify before new work; failure, stale identity or pause prevents dispatch |
+| A-012 | Normal mode and Remote expose the same ?/A behavior | Shared-protocol tests and browser flows | Non-interrupting progress, goal/budget/preferences choices, explicit approval, shared rounds/status, pause/resume; stale session/disconnect cannot send; drafts preserved |
+| A-013 | Lost setup choices recover and confirmed research replacement stops background work | Controller/Hub regressions, guarded native-command tests, browser fixture | Valid latest ask/ready recovers without a send; current-session Codex background work is stopped only after approval; no work until verified stopped |
 
 ## Plan
 
@@ -59,9 +61,12 @@
 | NODE-006 | `完成` | A choice-based questions and final goal approval, bound to exact configuration nonce | Controller/Hub tests and browser journeys | /tmp/codeck-autonomy-choices-red.log; /tmp/codeck-autonomy-refinement-all-final.log; /data/tmp/codeck-remote-smoke-G6WtWS | None: existing modal and nonce-bound protocol support the revised flow |
 | NODE-007 | `完成` | Concise progress prompt, adjacent controls, full verification and README | npm test; browser smoke; strict plan check | /tmp/codeck-autonomy-refinement-all-final.log; /tmp/codeck-autonomy-refinement-browser.log | R-004 |
 | NODE-008 | `完成` | Separate setup delivery from execution idle requirements | Controller/tmux regressions and browser busy/background cases | /tmp/codeck-autonomy-noidle-red.log; /tmp/codeck-autonomy-switch-all-final.log; /tmp/codeck-autonomy-switch-browser.log | R-005 |
-| NODE-009 | `阻塞` | Foreground stop-and-verify implemented; user must choose whether to cancel background commands/experiments too | Ordering, failure, identity, pause and restart regressions; background scope needs user answer | /tmp/codeck-autonomy-switch-red.log; /tmp/codeck-autonomy-stop-red.log; /tmp/codeck-autonomy-switch-all-final.log | R-005 |
+| NODE-009 | `完成` | Foreground stop-and-verify delivered; user resolved background scope, Codex implementation verified in NODE-013 | Explicit user choice and cancellation regressions | User: 一并停止，再启动新目标; /tmp/codeck-research-repair-targeted-final.log | R-008 |
 | NODE-010 | `完成` | Regression, rendered states, cache versions and documentation | npm test; browser smoke; strict plan validation | /tmp/codeck-autonomy-switch-all-final.log; /tmp/codeck-autonomy-switch-browser-final.log; /data/tmp/codeck-remote-smoke-YVo7oT | R-006 |
-| NODE-011 | `进行中` | User-authorized commit, push and local system-service deployment; no live task input | Full test rerun, health/assets/API/WebSocket and pane survival | /tmp/codeck-autonomy-release-tests.log; /tmp/codeck-autonomy-release-panes-before.log | None: deployment verification pending |
+| NODE-011 | `完成` | Commit e189e92 pushed to origin/main and deployed locally; no live task input | Full test rerun, health/assets/API/WebSocket and pane survival | /tmp/codeck-autonomy-release-tests.log; /tmp/codeck-autonomy-release-health.log; /tmp/codeck-autonomy-release-panes-before.log | None: 1056 tests and live health pass; all 10 pane/PID identities retained |
+| NODE-012 | `进行中` | Add compact normal-mode A control and choice modal, sharing controller/presentation with Remote | Backend binding tests, UI tests and isolated browser journeys | Pending | None: implementation pending |
+| NODE-013 | `完成` | Recover lost ask choices; after approval stop current Codex foreground/Goal/background work before dispatch | 183 targeted + 1069 full tests; 6 browser journeys; restart artifact recovery | /tmp/codeck-research-repair-red.log; /tmp/codeck-research-animation-red.log; /tmp/codeck-research-stop-boundary-red.log; /tmp/codeck-research-repair-targeted-final.log; /tmp/codeck-research-repair-all-final.log; /tmp/codeck-research-repair-browser-final.log | R-007 |
+| NODE-014 | `进行中` | Commit, push and deploy research repair; exclude and preserve unfinished NODE-012 code | Full tests on exact release; health/assets/API/read-only WebSocket; unchanged tmux pane/PIDs | Pending release checks | None: release verification pending |
 
 ## Reflection Log
 
@@ -75,6 +80,8 @@ Record consequential findings here; routine verification stays in the Plan table
 | R-004 | NODE-007 prompt compatibility | /tmp/codeck-cached-progress-red.log; /tmp/codeck-cached-progress-green.log | Replacing the prompt alone makes an already-open page's old ? look like a manual direction change | Exact recognition avoids treating arbitrary messages as read-only progress | Recognize the deployed previous prompt in both Hub dispatch and autonomous result parsing; cache-bust both page entries |
 | R-005 | NODE-008, NODE-009 setup and task switching | Live research snapshot; /tmp/codeck-autonomy-noidle-red.log; /tmp/codeck-autonomy-stop-red.log | Idle gates blocked configuration; Escape alone does not prove cancellation | Guarded non-interrupting input and exact pane identity | Config bypasses idle gates but preserves draft/modal guards; explicit approval precedes cancellation, verified cancellation precedes work |
 | R-006 | NODE-010 cancellation feedback | /tmp/codeck-autonomy-switch-feedback-red.log; /tmp/codeck-autonomy-switch-browser-final.log | Pausing was visible but its reason was only in hover text, inaccessible on mobile | Reuse the existing live-message area; avoid adding panels | Show the current session's pause reason, preserve it across the action response, and test failure followed by explicit retry |
+| R-007 | NODE-013 research setup/cancellation | IMG_1579.png; live transcript/read-only state; /tmp/codeck-research-repair-red.log; /tmp/codeck-research-animation-red.log; /tmp/codeck-research-stop-boundary-red.log | Recovery excluded ask choices; fixture stop callbacks hid composer repaint and stale registered-terminal cases | Keep nonce/final-answer validation, current-session identity and no replay/automatic approval | Recover questions too; run browser confirmation through the actual stop adapter with simulated terminal I/O; distinguish actual busy markers from command-input repaint |
+| R-008 | NODE-009 cancellation authority | User explicitly chose 一并停止，再启动新目标; /tmp/codeck-research-repair-targeted-final.log | Earlier foreground-only behavior intentionally rejected background work; the user has now authorized its cancellation | Scope stays the confirmed current session; no arbitrary process-tree kills or other-session changes | Use supported native stop controls after confirmation and verify completion; unsupported providers still fail closed |
 
 ## Verification boundary
 
@@ -82,5 +89,7 @@ Record consequential findings here; routine verification stays in the Plan table
 - Initial implementation was released as f6227a4 on the user's separate request (1020 tests; API/assets/V2 stream; all 10 tmux identities retained). After follow-up acceptance, the user separately requested commit, push and deployment. Real long-running CLI protocol compliance remains unverified; malformed results pause safely.
 - Deadline and rounds prevent future dispatch, not kill an in-flight command. Money/token limits are advisory; completion is Agent-reported evidence, not independent goal validation.
 - Follow-up acceptance A-007 through A-009 completed 2026-09-25. A-010/A-011 reopened on research's background-only setup stall. Implementation verification must not restart services, interrupt real research work or inject live CLI input. Agent-generated choice/proposal compliance in real long-running sessions remains outside the isolated fixture verification.
-- Current foreground stop adapter sends one Escape only to the verified pane, then checks the identity and running state up to 20 times with 250 ms delays. Background execution, timeout, stale identity or cancellation fail closed; no new round is sent. This is not provider-native Goal cancellation or a guarantee of stopping detached/background resources. The latter scope still requires a user decision and provider-specific implementation, not removal of the safety check.
+- Foreground interruption remains scoped to the verified pane. NODE-013 adds Codex replacement checks up to 40 times with 250 ms delays per phase, allowing process-cache expiry and the six-second repaint heuristic. It clears a visible native Goal and invokes /stop for registered/current-session background terminals. Native confirmation dialogs, lingering or unmanaged detached processes, timeout, identity change and pause still stop dispatch rather than trigger a blind retry or process-tree kill.
 - A-010 and the foreground/fail-closed portion of A-011 pass 1056 automated tests and six real-browser fixture journeys at 390/1365 pixels for Codex/Claude/Qoder. Actual UI/controller plus simulated Agent/stop responses cover busy/background configuration, explicit approval, switching, failed stop with visible feedback, explicit retry, restart without replay, pause and redirection. Mobile and desktop confirmation/switching screenshots inspected; no new panel or layout change. Implementation verification did not cancel live tasks or restart services; real provider cancellation behavior remains unverified. The user subsequently authorized commit, push and deployment; NODE-011 tracks that release separately from undecided background cancellation.
+- Release e189e92 is pushed and deployed: system codeck.service restarted at 2026-09-25 13:37:40 CST, health/API/assets/read-only V2 stream passed, all 10 tmux pane/PID identities retained. Report/research autonomous state restored paused without replay. The subsequent normal-mode parity request is NODE-012; its new changes require separate release verification.
+- NODE-013 completed 2026-09-25: 1069 tests and six 390/1365 browser fixture journeys pass. Screenshots inspected in /data/tmp/codeck-remote-smoke-696EXA; final rerun artifacts /data/tmp/codeck-remote-smoke-oRRNXY. Recovery interruption probe reconstructs an ask dialog from persisted controller state plus an acknowledged CLI transcript after losing the result, without another send or execution. Browser tests use the real controller and Codex stop adapter with simulated terminal I/O, not a live cancellation. Codex native commands were checked against official command documentation; actual research cancellation remains unexercised. Claude/Qoder background cancellation is not implemented. Service MainPID/start time remain unchanged; nothing from this repair has been committed, pushed or deployed.

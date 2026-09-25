@@ -1722,7 +1722,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   });
 }
 
-export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false }, overrides = {}) {
+export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false }, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未取消旧任务');
@@ -1732,26 +1732,84 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       if ((isCurrent && !isCurrent()) || currentPane !== paneId || (expectedPaneId && currentPane !== expectedPaneId)) {
         throw new Error('自主任务或会话已变化，已停止切换');
       }
-      if (waitForIdle && currentSession.agent?.hasBackgroundProcess) {
+      if (waitForIdle && currentSession.agent?.hasBackgroundProcess && !(stopBackground && provider === 'codex')) {
         throw new Error('旧任务仍有后台执行，新目标未启动；请先停止后台任务后再次确认');
       }
       return !currentSession.hasRunningProcess && !currentSession.agent?.question;
     };
     const idle = check(paneId, session);
-    if (waitForIdle && idle) return;
+    if (waitForIdle && idle && !(stopBackground && provider === 'codex')) return;
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
-    await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
+    if (!waitForIdle || !idle) await execTmux(['send-keys', '-t', paneId, provider === 'shell' ? 'C-c' : 'Escape']);
     if (!waitForIdle) return;
     const waitForStop = overrides.waitForStop || (() => new Promise(resolve => setTimeout(resolve, 250)));
-    for (let attempt = 0; attempt < 20; attempt++) {
+    let foregroundStopped = idle;
+    const stopChecks = stopBackground && provider === 'codex' ? 40 : 20;
+    for (let attempt = 0; !foregroundStopped && attempt < stopChecks; attempt++) {
       await waitForStop();
       const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
-      if (check(current.paneId, current.session)) return;
+      foregroundStopped = check(current.paneId, current.session);
     }
-    throw new Error('无法确认旧任务已停止，新目标未启动；请检查终端后重试');
+    if (!foregroundStopped) throw new Error('无法确认旧任务已停止，新目标未启动；请检查终端后重试');
+    if (!stopBackground || provider !== 'codex') return;
+
+    // Native commands scope cancellation to this Codex session. Never kill process
+    // trees, clear drafts, replay a command, or approve an unexpected native dialog.
+    const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
+    const readState = async () => {
+      const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+      const idle = check(current.paneId, current.session);
+      const screen = await capture(paneId);
+      if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，已停止切换');
+      const footer = cleanScreenRows(screen).findLast(line => line.trim()) || '';
+      return { idle, screen, background: Boolean(current.session.agent?.hasBackgroundProcess)
+        || resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex).background,
+        goal: AGENT_SCREEN_IDENTITY.codex.some(pattern => pattern.test(footer.trim())) && /\bGoal\b/u.test(footer) };
+    };
+    const command = async text => {
+      const before = await readState();
+      if (!before.idle || agentComposerState(before.screen, '') !== 'empty' || hasCodexInputModal(before.screen)) {
+        throw new Error('终端有草稿或弹窗，旧任务未停止；请先处理后再次确认');
+      }
+      const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+      if (!check(current.paneId, current.session)) throw new Error('旧任务状态已变化，已停止切换');
+      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-l', '-t', paneId, '--', `${text} `]));
+      const waitForPaste = overrides.waitForPaste || (delay => new Promise(resolve => setTimeout(resolve, delay)));
+      await waitForPaste(CODEX_PASTE_SUBMIT_DELAY_MS);
+      const draft = await readState();
+      // Typing repaints the composer and can set the heuristic working flag.
+      // At this boundary the matching draft and live busy marker are authoritative.
+      if (resolveScreenSignals(draft.screen, AGENT_SCREEN_MARKERS.codex).busy
+        || agentComposerState(draft.screen, text) !== 'draft' || hasCodexInputModal(draft.screen)) {
+        throw new Error('停止命令或终端草稿已变化，未提交；请检查终端后再次确认');
+      }
+      const verified = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+      check(verified.paneId, verified.session);
+      if (verified.session.agent?.question) throw new Error('终端弹窗已变化，已停止切换');
+      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      invalidatePaneSnapshot(sessionName);
+    };
+    const waitUntil = async predicate => {
+      // Process observations can be cached for five seconds. Allow their expiry
+      // as well as the CLI redraw, but never resend to make the check pass.
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await waitForStop();
+        const state = await readState();
+        if (state.idle && agentComposerState(state.screen, '') === 'empty' && predicate(state)) return;
+      }
+      throw new Error('无法确认旧目标或后台任务已停止，新目标未启动；请检查终端后重试');
+    };
+    if ((await readState()).goal) {
+      await command('/goal clear');
+      await waitUntil(state => !state.goal);
+    }
+    if ((await readState()).background) {
+      await command('/stop');
+      await waitUntil(state => !state.background);
+    }
   });
 }
 

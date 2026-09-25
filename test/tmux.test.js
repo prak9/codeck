@@ -1432,6 +1432,116 @@ test('goal switching fails closed on timeout, replacement, background work or pa
   }
 });
 
+function codexStopFixture({ busy = false, goal = true, background = true } = {}) {
+  const f = { busy, goal, background, current: true, pane: '%7', draft: '', commands: [], waits: 0 };
+  f.params = { provider: 'codex', sessionName: 'research', threadId: 'thread-1',
+    expectedPaneId: '%7', isCurrent: () => f.current, waitForIdle: true, stopBackground: true };
+  f.options = {
+    listTmuxSessions: async () => [{ name: 'research', hasRunningProcess: f.busy,
+      agent: { kind: 'codex', id: 'thread-1', paneId: f.pane, hasBackgroundProcess: f.background } }],
+    capturePane: async () => `${f.background ? '2 background terminals running · /ps to view · /stop to close\n' : ''}\n» ${f.draft}\n\n  gpt-6-astra ultra · ~/py${f.goal ? '    Goal stalled (/goal resume)' : ''}`,
+    execTmux: async args => {
+      f.commands.push(args);
+      if (args.includes('Escape')) f.busy = false;
+      if (args.includes('-l')) f.draft = args.at(-1).trimEnd();
+      if (args.at(-1) === 'Enter') {
+        if (f.draft === '/goal clear') f.goal = false;
+        if (f.draft === '/stop' && !f.keepBackground) f.background = false;
+        f.draft = '';
+      }
+    },
+    waitForStop: async () => { f.waits++; }, waitForPaste: async () => {},
+    invalidatePaneSnapshot() {},
+  };
+  return f;
+}
+
+test('confirmed Codex replacement stops foreground, native Goal and session background terminals', async () => {
+  for (const busy of [false, true]) {
+    const f = codexStopFixture({ busy });
+    await interruptSession(f.params, f.options);
+    assert.equal(f.busy, false); assert.equal(f.goal, false); assert.equal(f.background, false);
+    assert.deepEqual(f.commands.filter(args => args.includes('-l')).map(args => args.at(-1).trim()), ['/goal clear', '/stop']);
+    assert.equal(f.commands.filter(args => args.includes('Escape')).length, Number(busy));
+    assert.equal(f.commands.filter(args => args.at(-1) === 'Enter').length, 2);
+    assert.ok(f.commands.every(args => args[args.indexOf('-t') + 1] === '%7'));
+  }
+});
+
+test('background stop protects drafts and checks pause, identity and input before Enter', async () => {
+  for (const scenario of ['draft', 'modal', 'pause', 'replacement', 'edited']) {
+    const f = codexStopFixture({ goal: false });
+    if (scenario === 'draft') f.draft = 'my unsent work';
+    if (scenario === 'modal') f.options.capturePane = async () => 'Select Model and Effort\n› 1. model\nPress enter to confirm or esc to go back';
+    f.options.waitForPaste = async () => {
+      if (scenario === 'pause') f.current = false;
+      if (scenario === 'replacement') f.pane = '%8';
+      if (scenario === 'edited') f.draft += ' user edit';
+    };
+    await assert.rejects(interruptSession(f.params, f.options), /草稿|弹窗|变化|暂停|未停止/);
+    assert.equal(f.background, true);
+    assert.equal(f.commands.some(args => args.at(-1) === 'Enter'), false, scenario);
+    if (['draft', 'modal'].includes(scenario)) assert.deepEqual(f.commands, [], scenario);
+  }
+});
+
+test('native stop is not replayed and lingering processes fail closed within a finite check', async () => {
+  const f = codexStopFixture({ goal: false }); f.keepBackground = true;
+  await assert.rejects(interruptSession(f.params, f.options), /后台|停止/);
+  assert.equal(f.commands.filter(args => args.includes('-l')).length, 1);
+  assert.equal(f.commands.filter(args => args.at(-1) === 'Enter').length, 1);
+  assert.ok(f.waits > 0 && f.waits <= 40);
+});
+
+test('typing the native stop command is not mistaken for a newly running Agent turn', async () => {
+  const f = codexStopFixture({ background: false });
+  const list = f.options.listTmuxSessions;
+  f.options.listTmuxSessions = async () => {
+    const sessions = await list();
+    // The ordinary status detector treats a changed composer as animation.
+    sessions[0].hasRunningProcess = Boolean(f.draft);
+    return sessions;
+  };
+  await interruptSession(f.params, f.options);
+  assert.equal(f.goal, false);
+  assert.equal(f.commands.filter(args => args.at(-1) === 'Enter').length, 1);
+});
+
+test('replacement retires native background terminals even after their child processes exited', async () => {
+  const f = codexStopFixture({ goal: false });
+  const list = f.options.listTmuxSessions;
+  f.options.listTmuxSessions = async () => {
+    const sessions = await list(); sessions[0].agent.hasBackgroundProcess = false; return sessions;
+  };
+  await interruptSession(f.params, f.options);
+  assert.equal(f.background, false, 'native terminal footer must not block the next guarded send');
+  assert.deepEqual(f.commands.filter(args => args.includes('-l')).map(args => args.at(-1).trim()), ['/stop']);
+});
+
+test('Codex replacement allows the six-second repaint heuristic to settle after Escape', async () => {
+  const f = codexStopFixture({ busy: true, goal: false, background: false });
+  const list = f.options.listTmuxSessions;
+  f.options.listTmuxSessions = async () => {
+    const sessions = await list(); sessions[0].hasRunningProcess = f.busy || f.waits < 24; return sessions;
+  };
+  await interruptSession(f.params, f.options);
+  assert.equal(f.commands.filter(args => args.includes('Escape')).length, 1);
+  assert.ok(f.waits >= 24 && f.waits <= 40);
+});
+
+test('background cancellation never guesses another provider native command', async () => {
+  for (const provider of ['claude', 'qodercli']) {
+    const commands = [];
+    await assert.rejects(interruptSession({ provider, sessionName: 'work', threadId: 'thread-1',
+      expectedPaneId: '%7', waitForIdle: true, stopBackground: true,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: provider, id: 'thread-1', paneId: '%7', hasBackgroundProcess: true } }],
+      execTmux: async args => commands.push(args),
+    }), /后台/);
+    assert.deepEqual(commands, []);
+  }
+});
+
 test('sends shell input and Ctrl-C only to the exact verified shell pane', async () => {
   const calls = [];
   const options = {
