@@ -2,18 +2,18 @@
 
 > Single-file current-state plan for direct, independently verifiable work.
 
-- Overall status: `进行中`
+- Overall status: `完成`
 - Profile: `Lite`
-- Active plan node: `NODE-015`
-- Latest evidence: `/tmp/codeck-normal-all-final2.log` — 1074/1074 pass; `/tmp/codeck-normal-autonomy-browser-final3.log` and `/tmp/codeck-normal-remote-browser-final.log` — six journeys each, zero browser errors
+- Active plan node: None
+- Latest evidence: `/tmp/codeck-normal-release-tests.log` — 1074/1074 pass; `/tmp/codeck-normal-release-health.log` — assets, API/V2 binding and 10 retained pane/PIDs pass; normal/Remote six-journey browser evidence unchanged
 - Current blocker: None
-- Next step: Commit/push normal-mode parity, restart codeck.service, verify health/assets/V2 binding and retained tmux pane/PIDs without live Agent input.
-- Next checkpoint: Exact release tests and read-only post-deployment checks.
+- Next step: None
+- Next checkpoint: None
 - Next human decision: None
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / README, NODE-012/014 and release boundaries reconciled with 1074 tests, normal/Remote browser logs and unchanged service PID; research repair deployed, normal-mode work uncommitted`
+- Last clean: `2026-09-25 / NODE-012/015 reconciled with release 4543365, 1074 tests and live health evidence; normal-mode support deployed, no pending implementation or release work`
 
 ## Outcome
 
@@ -67,7 +67,7 @@
 | NODE-012 | `完成` | Normal-mode compact ?/A and goal-choice modal share server state; guard binding, recovery, directions and drafts | 1074 tests; six normal + six Remote browser journeys; theme regression | /tmp/codeck-normal-all-final2.log; /tmp/codeck-normal-autonomy-browser-final3.log; /tmp/codeck-normal-remote-browser-final.log; /tmp/codeck-normal-theme-browser.log | R-009 |
 | NODE-013 | `完成` | Recover lost ask choices; after approval stop current Codex foreground/Goal/background work before dispatch | 183 targeted + 1069 full tests; 6 browser journeys; restart artifact recovery | /tmp/codeck-research-repair-red.log; /tmp/codeck-research-animation-red.log; /tmp/codeck-research-stop-boundary-red.log; /tmp/codeck-research-repair-targeted-final.log; /tmp/codeck-research-repair-all-final.log; /tmp/codeck-research-repair-browser-final.log | R-007 |
 | NODE-014 | `完成` | Commit d05ac23 pushed and deployed; normal-mode WIP preserved separately | 1067 release tests; health/assets/API/read-only V2 stream; unchanged tmux pane/PIDs | /tmp/codeck-research-release-tests.log; /tmp/codeck-research-release-health.log | None: release passed; live runs changed during verification, so no claim that they remained paused; no control/input sent |
-| NODE-015 | `进行中` | User-authorized commit, push and deployment of normal-mode parity | Full tests; served assets, authenticated API/V2 binding capability; preserved tmux pane/PIDs | Pending release checks | None: release verification pending |
+| NODE-015 | `完成` | Normal-mode parity committed as 4543365, pushed to origin/main and deployed | 1074 tests; served assets, authenticated API/V2 binding/unbind; 10 preserved tmux pane/PIDs | /tmp/codeck-normal-release-tests.log; /tmp/codeck-normal-release-health.log; /tmp/codeck-normal-release-panes-before.log; /tmp/codeck-normal-release-autonomy-before.log | None: clean restart and health checks pass; no live Agent control/input sent |
 
 ## Reflection Log
 
@@ -95,4 +95,4 @@ Record consequential findings here; routine verification stays in the Plan table
 - A-010 and the foreground/fail-closed portion of A-011 pass 1056 automated tests and six real-browser fixture journeys at 390/1365 pixels for Codex/Claude/Qoder. Actual UI/controller plus simulated Agent/stop responses cover busy/background configuration, explicit approval, switching, failed stop with visible feedback, explicit retry, restart without replay, pause and redirection. Mobile and desktop confirmation/switching screenshots inspected; no new panel or layout change. Implementation verification did not cancel live tasks or restart services; real provider cancellation behavior remains unverified. The user subsequently authorized commit, push and deployment; NODE-011 tracks that release separately from undecided background cancellation.
 - Release e189e92 is pushed and deployed: system codeck.service restarted at 2026-09-25 13:37:40 CST, health/API/assets/read-only V2 stream passed, all 10 tmux pane/PID identities retained. Report/research autonomous state restored paused without replay. The subsequent normal-mode parity request is NODE-012; its new changes require separate release verification.
 - NODE-013 completed 2026-09-25: 1069 tests and six 390/1365 browser fixture journeys pass. Screenshots inspected in /data/tmp/codeck-remote-smoke-696EXA; final rerun artifacts /data/tmp/codeck-remote-smoke-oRRNXY. Recovery interruption probe reconstructs an ask dialog from persisted controller state plus an acknowledged CLI transcript after losing the result, without another send or execution. Browser tests use the real controller and Codex stop adapter with simulated terminal I/O, not a live cancellation. Codex native commands were checked against official command documentation; actual research cancellation remains unexercised. Claude/Qoder background cancellation is not implemented. Subsequent authorized release d05ac23 passed NODE-014: 1067 release-only tests, health/assets/API/V2 stream, 10 retained pane/PIDs. Verification observed live report/research advancing; it sent no control/input and does not claim they remained paused.
-- NODE-012 completed 2026-09-25: actual terminal page, AgentHub and controller with simulated Agent replies; no live task input. Six provider/viewport journeys cover readable choices/custom answers, explicit confirmation, rounds, pause/reload, direction changes, retry, stale forms, reconnect, native-question protection and drafts. Read-only/shell/old-backend controls stay hidden. Screenshots inspected at /data/tmp/codeck-terminal-autonomy-GqHsRy and /data/tmp/codeck-terminal-autonomy-puoi1P; desktop/mobile and light/dark styles verified. Physical Safari and live long-running CLI responses are not verified. The new ordinary-mode A is hidden against an older backend using a capability flag. Local composer directions use the shared controller; direct keystrokes still pause autonomous continuation through the existing server path. This implementation has not been committed, pushed or deployed; service MainPID remains 1133732.
+- NODE-012 completed 2026-09-25: actual terminal page, AgentHub and controller with simulated Agent replies; no live task input. Six provider/viewport journeys cover readable choices/custom answers, explicit confirmation, rounds, pause/reload, direction changes, retry, stale forms, reconnect, native-question protection and drafts. Read-only/shell/old-backend controls stay hidden. Screenshots inspected at /data/tmp/codeck-terminal-autonomy-GqHsRy and /data/tmp/codeck-terminal-autonomy-puoi1P; desktop/mobile and light/dark styles verified. Physical Safari and live long-running CLI responses are not verified. The new ordinary-mode A is hidden against an older backend using a capability flag. Local composer directions use the shared controller; direct keystrokes still pause autonomous continuation through the existing server path. Subsequent authorized release 4543365 completed NODE-015: service restarted 2026-09-25 14:22:32 CST, MainPID 1158770; control capability/binding, assets and 10 pane/PIDs verified. Report/research run IDs and rounds 3/2 restored paused, without pending dispatch. No native input, goal approval or task cancellation was sent by release verification.
