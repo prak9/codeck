@@ -1,4 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=1';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -140,7 +141,7 @@ function localInputEnabled() {
 }
 
 const TERMINAL_KEY_HINT = '回车发送 · \u2303J 换行 · @ Tab Esc 直达 CLI';
-const PROGRESS_PROMPT = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
+const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT;
 
 function setTerminalVoiceState(active, message = '') {
   const capture = $('#terminalVoiceCaptureButton');

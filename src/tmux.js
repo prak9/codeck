@@ -957,7 +957,7 @@ function hasDimComposerText(line, prefixLength) {
   return found;
 }
 
-function agentComposerState(output, text) {
+function agentComposerState(output, text, provider = 'codex') {
   const rows = cleanScreenRows(output);
   const prompt = /^(\s*)[»›>❯](?: (.*))?$/u;
   const start = rows.findLastIndex((line) => prompt.test(line) && (text !== '' || /^\S/u.test(line)));
@@ -972,7 +972,7 @@ function agentComposerState(output, text) {
   const codexFooter = AGENT_SCREEN_IDENTITY.codex.some((pattern) => pattern.test(footer))
     || CODEX_CLIPPED_FOOTER.test(footer);
   const endOffset = codexFooter ? lastRow - start - 1
-    : text === '' ? -1 : rows.slice(start + 1).findIndex((line) => (
+    : text === '' && provider === 'codex' ? -1 : rows.slice(start + 1).findIndex((line) => (
       SCREEN_SEPARATOR.test(line.trim()) || /^\s*(?:gpt-\S+.*·|⏵⏵)/u.test(line)
     ));
   // A transcript prompt, clipped composer, or collapsed paste is not enough evidence
@@ -1283,14 +1283,21 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
   });
 }
 
-export async function sendSessionMessage({ provider, sessionName, threadId, text }, overrides = {}) {
+export async function sendSessionMessage({ provider, sessionName, threadId, text, isCurrent, expectedPaneId, requireIdle = false, nonInterrupting = false }, overrides = {}) {
   if (typeof text !== 'string' || !text.trim() || text.length > 100_000) throw new Error('消息内容无效');
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
+    if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，消息未发送');
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
     const { paneId, session } = await verifiedSessionTarget(
       { provider, sessionName, threadId }, listTmuxSessions,
     );
+    if ((isCurrent && !isCurrent()) || (expectedPaneId && paneId !== expectedPaneId)) {
+      throw new Error('自主任务或会话已变化，消息未发送');
+    }
+    if (requireIdle && (session.hasRunningProcess || session.agent?.hasBackgroundProcess || session.agent?.question)) {
+      throw new Error('终端正在工作或等待确认，自主消息未发送');
+    }
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
@@ -1302,13 +1309,23 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const verifyPane = async () => {
       try {
         const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
-        return current.paneId === paneId;
+        return current.paneId === paneId && (!isCurrent || isCurrent());
       } catch { return false; }
     };
     const captureInputPane = overrides.capturePane
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
+    if (requireIdle || nonInterrupting) {
+      const screen = await captureInputPane(paneId, { joinWrapped: true });
+      const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
+      const empty = provider === 'qodercli' ? qoderComposerState(screen, '') === 'empty'
+        : agentComposerState(screen, '', provider) === 'empty';
+      if (!empty || (requireIdle && (signals.busy || signals.background)) || session.agent?.question
+        || hasCodexInputModal(screen) || !await verifyPane()) {
+        throw new Error('终端输入框未就绪，请先处理草稿或弹窗；未打断当前任务');
+      }
+    }
     // Qoder input follows ordinary terminal semantics. Its screen is used only
     // for best-effort confirmation after sending, never as a layout-based gate.
     let activeCodexInput = false;
@@ -1318,6 +1335,9 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         screen = await captureInputPane(paneId, { joinWrapped: true });
       } catch { /* Screen recognition is not an authorization gate for input. */ }
       if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
+      if ((requireIdle || nonInterrupting) && agentComposerState(screen, '') !== 'empty') {
+        throw new Error('终端出现草稿或弹窗，自主消息未发送');
+      }
       activeCodexInput = !command && hasCodexActiveTurn(screen);
       if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
       const localPicker = codexLocalCommandPicker(screen);
@@ -1370,7 +1390,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     const finishAgentInput = async () => {
       let terminalWorking = false;
       let submissionStatus = 'submitted';
-      if (shouldCheckQueuedInput()) {
+      if (!nonInterrupting && shouldCheckQueuedInput()) {
         terminalWorking = await releaseCodexQueuedInput({
           paneId,
           execTmux,
@@ -1430,6 +1450,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     if (literalAgentInput && !command && provider !== 'codex' && provider !== 'qodercli') {
       await loadBuffer(bufferName, text);
       try {
+        if (isCurrent && !await verifyPane()) throw new Error('自主任务已暂停，消息未发送');
         // A normal line is raw terminal input, not an asynchronous bracketed paste.
         // Paste its bytes and Enter in one tmux command queue so another attached
         // terminal cannot insert a capability reply between the text and submission.
@@ -1456,7 +1477,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       const existingUsagePicker = composerRecovery === 'usage-picker';
       const existingModelPicker = composerRecovery === 'model-picker';
       const initialScreen = await captureCommandPane(paneId).catch(() => '');
-      if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) {
+      if ((provider === 'codex' || provider === 'qodercli' || isCurrent) && !await verifyPane()) {
         throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       }
       if (existingUsagePicker) {
@@ -1535,7 +1556,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     let pasted = false;
     try {
       if (provider === 'codex') await prepareCodexComposer();
-      if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) {
+      if ((provider === 'codex' || provider === 'qodercli' || isCurrent) && !await verifyPane()) {
         throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       }
       // Agent TUIs handle bracketed paste asynchronously. If Enter arrives in the same
@@ -1548,7 +1569,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       ));
       pasted = true;
       await waitForPaste(pasteDelay);
-      if ((provider === 'codex' || provider === 'qodercli') && !await verifyPane()) {
+      if ((provider === 'codex' || provider === 'qodercli' || isCurrent) && !await verifyPane()) {
         return { submissionStatus: 'unconfirmed', ...(inputWasQueued() ? { inputWasQueued: true } : {}) };
       }
       await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));

@@ -12,13 +12,14 @@ import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../pu
 import { encodeHistoryCursor, decodeHistoryCursor } from '../src/thread-history-cursor.js';
 import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 import { QoderQuestionTracker } from '../src/qoder-question.js';
+import { AUTONOMY_PROGRESS_PROMPT as progressPrompt } from '../public/remote-autonomy.js';
+import { AutonomyController } from '../src/autonomy.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-remote-smoke-'));
 console.log(`Browser artifacts: ${artifacts}`);
 const providers = ['codex', 'claude', 'qodercli'];
-const progressPrompt = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
 let fixture;
 const turn = n => ({ id: `turn-${n}`, status: 'completed', items: [
   { id: `user-${n}`, type: 'userMessage', content: [{ type: 'text', text: `问题 ${n}` }] },
@@ -26,9 +27,41 @@ const turn = n => ({ id: `turn-${n}`, status: 'completed', items: [
 ] });
 function reset(provider) {
   fixture?.recovery?.close();
+  fixture?.autonomy?.close();
   fixture = { provider, turns: Array.from({ length: 80 }, (_, i) => turn(i + 1)),
     status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [] };
   if (provider === 'codex') fixture.recovery = createFixtureRecovery();
+  fixture.autonomySent = [];
+  fixture.autonomy = new AutonomyController({
+    schedule: () => 1, cancel() {},
+    readSession: async () => ({ name: 'fixture', hasRunningProcess: fixture.status === 'working',
+      agent: { kind: provider, id: 'fixture-thread', paneId: '%7' } }),
+    readThread: async () => ({ thread: thread() }),
+    send: async (_target, text, guard) => {
+      assert.equal(guard(), true);
+      fixture.autonomySent.push(text);
+      const turnId = `autonomy-${fixture.autonomySent.length}`;
+      const entry = { id: turnId, status: 'inProgress', items: [
+        { id: `${turnId}-user`, type: 'userMessage', content: [{ type: 'text', text }] },
+      ] };
+      fixture.turns.push(entry);
+      const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
+      fixture.finishAutonomy = (record, prose = '本轮检查已完成。') => {
+        entry.status = 'completed';
+        entry.items.push({ id: `${turnId}-answer`, type: 'agentMessage',
+          text: `${prose}\n\n\`\`\`codeck-autonomy\n${JSON.stringify({ nonce, ...record })}\n\`\`\`` });
+        fixture.status = 'done'; publishThread(); publishSessions();
+      };
+      if (text.includes('"phase":"config"')) {
+        fixture.finishAutonomy(fixture.autonomyPlan ? { status: 'ready', plan: fixture.autonomyPlan } : { status: 'ask' },
+          fixture.autonomyPlan ? '目标与预算已整理，请回复“开始”。' : '你希望完成什么具体目标？最多几轮，有哪些预算和偏好？');
+      } else { fixture.status = 'working'; publishThread(); publishSessions(); }
+      return { submissionStatus: 'submitted' };
+    },
+  });
+  fixture.autonomy.on('change', run => {
+    for (const socket of sockets.clients) send(socket, { type: 'autonomyState', run });
+  });
 }
 function createFixtureRecovery() {
   return new CodexDeliveryRecovery({
@@ -99,11 +132,19 @@ function publishEvent(method, params) {
 }
 sockets.on('connection', socket => {
   send(socket, { type: 'ready', hostname: 'isolated-fixture', defaultCwd: '/fixture',
+    autonomy: fixture.autonomy.snapshots(),
     protocol: { version: 1, epoch: fixture.epoch, commandReceiptTtlMs: 600_000 },
     providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
-  socket.on('message', raw => {
+  socket.on('message', async raw => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });
+    const autonomyTarget = { provider: request.provider, threadId: request.threadId, tmuxSession: request.tmuxSession };
+    if (request.type === 'startAutonomy' || request.type === 'pauseAutonomy') {
+      if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget);
+      else fixture.autonomy.pause(autonomyTarget);
+      await fixture.autonomy.tick(); await fixture.autonomy.tick();
+      return reply({ autonomy: fixture.autonomy.snapshot(autonomyTarget) });
+    }
     if (request.type === 'openThread') {
       for (const receipt of request.deliveryReceipts || []) {
         fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
@@ -144,6 +185,12 @@ sockets.on('connection', socket => {
     }
     if (request.type === 'dismissSessionCommand') return reply({ dismissed: true });
     if (request.type === 'sendSessionMessage') {
+      const autonomous = fixture.autonomy.snapshot(autonomyTarget);
+      if (autonomous && !['completed', 'limit'].includes(autonomous.status) && request.text !== progressPrompt) {
+        await fixture.autonomy.message(autonomyTarget, request.text);
+        await fixture.autonomy.tick(); await fixture.autonomy.tick();
+        return reply({ autonomyHandled: true, autonomy: fixture.autonomy.snapshot(autonomyTarget) });
+      }
       fixture.sent.push(request);
       if (request.text.startsWith('/')) {
         const terminalOutput = request.text === '/model'
@@ -391,7 +438,7 @@ try {
       fixture.status = 'background'; publishSessions();
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('后台任务'));
       await page.locator('#composerInput').fill('正在写的草稿');
-      const progress = page.getByRole('button', { name: '询问进度，无需决策则继续执行', exact: true });
+      const progress = page.getByRole('button', { name: '询问目标与进度，不打断当前任务', exact: true });
       const progressBox = await progress.boundingBox();
       const inputBox = await page.locator('#composerInput').boundingBox();
       assert.ok(progressBox.width >= 44 && progressBox.height >= 44);
@@ -466,6 +513,46 @@ try {
       assert.ok(Math.abs((await page.locator('[data-turn-id="turn-41"]').boundingBox()).y - readPosition.y) < 3,
         'filling a reconnect gap below the viewport preserves the visible history');
       await page.getByRole('button', { name: '直达最新消息' }).click();
+      // Actual controller + real UI; only the Agent's reasoning/results are fixtures.
+      const auto = page.locator('#autonomyButton');
+      assert.equal(await auto.locator('.autonomy-icon').textContent(), 'A');
+      assert.equal(await auto.locator('#autonomyStatus').textContent(), '');
+      await page.locator('#composerInput').fill('保留自主配置前的草稿');
+      await auto.click();
+      await page.getByText('你希望完成什么具体目标？最多几轮，有哪些预算和偏好？', { exact: true }).waitFor();
+      assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
+      fixture.autonomyPlan = { goal: '修复选择器', acceptance: '回归测试通过', maxRounds: 3,
+        minutes: 30, preferences: '最小修改，不提交部署', advisoryBudget: '' };
+      await page.locator('#composerInput').fill('修复选择器，最多三轮，不提交部署');
+      await page.locator('#sendButton').click();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 待确认');
+      await page.locator('#composerInput').fill('开始'); await page.locator('#sendButton').click();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      assert.equal(await auto.getAttribute('aria-pressed'), 'true');
+      const box = await auto.boundingBox(); assert.ok(box.width >= 44 && box.height >= 44);
+      assert.equal(await auto.locator('.autonomy-icon').evaluate(node => getComputedStyle(node).borderRadius), '50%');
+      assert.doesNotMatch(await page.locator('#turns').textContent(), /codeck-autonomy|"nonce"/);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-running.png`) });
+      const beforeReload = fixture.autonomySent.length;
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      assert.equal(fixture.autonomySent.length, beforeReload, 'reconnect cannot start another round');
+      await auto.focus(); await page.keyboard.press('Space');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 已暂停');
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-paused.png`) });
+      fixture.finishAutonomy({ status: 'continue', summary: '旧方向完成一项', next: '旧方向', progress: true });
+      await fixture.autonomy.tick(); assert.equal(fixture.autonomySent.length, beforeReload);
+      fixture.autonomyPlan.goal = '只修后端';
+      await page.locator('#composerInput').fill('只修改后端，继续'); await page.locator('#sendButton').click();
+      await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
+      await fixture.autonomy.tick();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3');
+      assert.match(fixture.autonomySent.at(-1), /只修后端/);
+      fixture.finishAutonomy({ status: 'complete', summary: '后端完成', evidence: '回归测试通过', progress: true });
+      await fixture.autonomy.tick();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3 已完成');
+      assert.equal(await auto.getAttribute('aria-pressed'), 'false');
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-completed.png`) });
       if (viewport.width < 500) {
         await page.setViewportSize({ width: viewport.width, height: 420 });
         await page.locator('#composerInput').focus();
@@ -480,13 +567,14 @@ try {
       assert.deepEqual(errors, []);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-conversation.png`) });
       results.push({ provider, viewport: viewport.width, eventRenderMs,
-        journeys: 'history/latest/live-output/reading-position/reconnect-gap/background/failure/approval/progress/commands/selection/attachment/copy/receipt/lost-response/restart/geometry', errors: 0 });
+        journeys: 'history/latest/live-output/reading-position/reconnect-gap/background/failure/approval/progress/commands/selection/attachment/copy/receipt/lost-response/restart/autonomy/geometry', errors: 0 });
       await context.close();
     }
   }
   console.log(JSON.stringify({ artifacts, results }, null, 2));
 } finally {
   fixture?.recovery?.close();
+  fixture?.autonomy?.close();
   await browser.close();
   for (const socket of sockets.clients) socket.terminate();
   await new Promise(resolve => sockets.close(resolve));

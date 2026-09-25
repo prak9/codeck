@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { autonomyDisplayText, autonomyKey, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 import * as model from '../public/agent-model.js';
 import * as composer from '../public/remote-composer.js';
 import * as delivery from '../public/remote-delivery.js';
@@ -25,6 +26,7 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
   const sent = [];
   let liveMessage = '';
   const context = vm.createContext({
+    autonomyDisplayText, autonomyKey,
     ...model, ...composer, ...delivery, ...commands,
     state, crypto: { randomUUID: () => `command-${sent.length + 1}` },
     Date, setTimeout, clearTimeout,
@@ -74,7 +76,7 @@ test('unconfirmed submission preserves the draft and original command without cl
 
 test('the progress shortcut sends its own prompt without touching the draft or attachments', async () => {
   const f = fixture({ submissionStatus: 'unconfirmed' });
-  const progressPrompt = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
+  const progressPrompt = AUTONOMY_PROGRESS_PROMPT;
   const attachment = { id: 'attachment-1', path: '/uploads/report.txt', status: 'uploaded' };
   f.input.value = '我正在写另一条消息';
   f.state.attachments = [attachment];

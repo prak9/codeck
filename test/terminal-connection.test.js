@@ -52,6 +52,21 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const inputResults = (ws) => ws.sent.filter(Buffer.isBuffer).map((data) => JSON.parse(data.toString()));
 const sendFrame = (ws, message) => ws.emit('message', Buffer.from(JSON.stringify(message)), false);
 
+test('human terminal input pauses autonomy before writing; resize and scroll do not', async () => {
+  const ws = new FakeSocket(); const events = []; const terminal = fakeTerminal();
+  terminal.write = data => events.push(['write', data]);
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal, onHumanInput: session => events.push(['pause', session]),
+  }));
+  sendFrame(ws, { type: 'resize', cols: 90, rows: 24 });
+  sendFrame(ws, { type: 'scroll', lines: 1 });
+  assert.deepEqual(events, []);
+  sendFrame(ws, { type: 'input', data: '\x1b[>0;276;0c' });
+  assert.deepEqual(events, [['write', '\x1b[>0;276;0c']]); events.length = 0;
+  sendFrame(ws, { type: 'input', data: 'x' });
+  assert.deepEqual(events, [['pause', 'work'], ['write', 'x']]); ws.close();
+});
+
 test('whole terminal submissions leave copy mode without changing raw key semantics', async () => {
   const ws = new FakeSocket();
   const terminal = fakeTerminal();

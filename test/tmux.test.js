@@ -5,6 +5,73 @@ import { resolveSessionStatus, sessionSnapshotRefreshInterval } from '../src/ses
 import { AGENT_SCREEN_MARKERS, dismissSessionCommand, ensureAgentInputSubmitted, capturePanes, capturePaneSnapshots, createSession, createSessionScrollQueue, findLinkedWindowSessions, identifyAgentFromScreen, interruptSession, mergeWindowActivity, parsePanes, parseSessions, parseViewport, resolveAgentActivityText, resolveAgentBackgroundState, resolveAgentLiveOutput, resolveAgentSessionLiveOutput, resolvePaneAgent, resolveScreenActivity, resolveScreenSignals, resolveSessionClientCommand, resolveShellLiveOutput, resolveSlashCommandOutput, resolveWorkingState, selectSessionModel, sendSessionMessage, supportsWindowSizeOption, validateClient, validateSessionName, withoutTmuxEnvironment } from '../src/tmux.js';
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
+
+test('progress input preserves Codex native queue without forcing Escape or clearing a draft', async () => {
+  const commands = []; let pasted = false;
+  const queued = 'Messages to be submitted after next tool call\npress esc to interrupt and send immediately';
+  const options = {
+    listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: true,
+      agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => pasted ? queued : EMPTY_CODEX_COMPOSER,
+    execTmux: async args => { commands.push(args); if (args.includes('paste-buffer')) pasted = true; },
+    loadBuffer: async () => {}, waitForPaste: async () => {}, waitForQueuedInput: async () => {}, waitForSubmit: async () => {},
+  };
+  const params = { provider: 'codex', sessionName: 'work', threadId: 'thread-1', text: 'Status?', nonInterrupting: true };
+  const result = await sendSessionMessage(params, options);
+  assert.equal(result.inputWasQueued, true);
+  assert.equal(result.submissionStatus, 'submitted');
+  assert.equal(commands.some(args => args.some(key => ['Escape', 'C-c', 'C-u', 'C-k'].includes(key))), false);
+  commands.length = 0;
+  for (const screen of [EMPTY_CODEX_COMPOSER.replace('» ', '» my draft'), NARROW_CODEX_MODEL_PICKER]) {
+    await assert.rejects(sendSessionMessage(params, { ...options, capturePane: async () => screen }));
+    assert.equal(commands.some(args => args.includes('send-keys') || args.includes('paste-buffer')), false);
+  }
+});
+
+test('pausing an autonomous write during paste prevents Enter for every provider', async () => {
+  for (const provider of ['codex', 'claude', 'qodercli']) {
+    let current = true; const commands = [];
+    const result = await sendSessionMessage({ provider, sessionName: 'work', threadId: 'thread-1',
+      text: 'Round\nInstructions', isCurrent: () => current,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: provider, id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => EMPTY_CODEX_COMPOSER,
+      execTmux: async args => commands.push(args), loadBuffer: async () => {},
+      waitForPaste: async () => { current = false; },
+    });
+    assert.equal(result.submissionStatus, 'unconfirmed', provider);
+    assert.equal(commands.some(args => args.includes('Enter')), false, provider);
+  }
+});
+
+test('Claude guarded input checks the full composer, including a draft after an empty first line', async () => {
+  const commands = [];
+  await assert.rejects(sendSessionMessage({ provider: 'claude', sessionName: 'work', threadId: 'thread-1',
+    text: 'Round\nInstructions', requireIdle: true,
+  }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'claude', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => '❯ \n  my existing draft\n────────────────────\n  ⏵⏵ bypass permissions on',
+    execTmux: async args => commands.push(args), loadBuffer: async () => {}, waitForPaste: async () => {}, waitForSubmit: async () => {},
+  }));
+  assert.deepEqual(commands, []);
+});
+
+test('autonomous writes reject cancelled generations, busy panes and native menus without keys', async () => {
+  for (const scenario of ['cancelled', 'busy', 'menu', 'draft', 'replaced']) {
+    const commands = [];
+    await assert.rejects(sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+      text: 'Autonomous round\nDo the next step', requireIdle: true, expectedPaneId: '%7',
+      isCurrent: () => scenario !== 'cancelled',
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: scenario === 'busy',
+        agent: { kind: 'codex', id: 'thread-1', paneId: scenario === 'replaced' ? '%8' : '%7' } }],
+      capturePane: async () => scenario === 'menu' ? NARROW_CODEX_MODEL_PICKER
+        : scenario === 'draft' ? EMPTY_CODEX_COMPOSER.replace('» ', '» my draft') : EMPTY_CODEX_COMPOSER,
+      execTmux: async args => commands.push(args), loadBuffer: async () => {}, waitForPaste: async () => {},
+    }));
+    assert.deepEqual(commands, [], scenario);
+  }
+});
 // Codex 0.153.2 at 37x21: the title is offscreen and both annotations and hints clip.
 const NARROW_CODEX_MODEL_PICKER = `
 › 1. gpt-6-astra (curr… Our most

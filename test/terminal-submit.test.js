@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 import { terminalDraftForSend, terminalDraftForHandoff } from '../public/terminal-compose.js';
 
 const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -62,7 +63,7 @@ function progressFixture({
     crypto: { randomUUID: () => 'progress-command' },
     sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
     setConnectionMessage: (message, restore) => feedback.push({ message, restore }),
-    PROGRESS_PROMPT: '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。',
+    PROGRESS_PROMPT: AUTONOMY_PROGRESS_PROMPT,
   });
   for (const name of ['activeAgentSessionTarget', 'syncTerminalProgressButton', 'askTerminalProgress']) {
     vm.runInContext(functionSource(source, name), context);
@@ -190,7 +191,7 @@ test('normal terminal progress button sends one verified Agent message without t
     provider: 'codex',
     threadId: 'thread-1',
     tmuxSession: 'one',
-    text: '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。',
+    text: AUTONOMY_PROGRESS_PROMPT,
     commandId: 'progress-command',
   }]);
   assert.equal(f.state.terminalProgressPending.commandId, 'progress-command');

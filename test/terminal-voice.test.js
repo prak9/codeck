@@ -121,6 +121,6 @@ test('normal Agent sessions expose one compact progress action', () => {
   assert.match(html, /id="terminalProgressButton"[^>]*type="button"[^>]*aria-label="询问 Agent 进度"[^>]*hidden[^>]*>\?<\/button>/);
   assert.equal((html.match(/id="terminalProgressButton"/g) || []).length, 1);
   assert.match(css, /\.terminal-progress-button\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
-  assert.match(appJs, /const PROGRESS_PROMPT = '现在进展怎么样？/);
+  assert.match(appJs, /const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT/);
   assert.match(appJs, /'#terminalProgressButton'\)\.addEventListener\('click', askTerminalProgress\)/);
 });

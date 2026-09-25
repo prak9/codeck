@@ -32,6 +32,7 @@ import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsComm
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=1';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -76,7 +77,7 @@ const THREAD_COMPLETION_REFRESH_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 const THREAD_VIEW_CACHE_LIMIT = 6;
 const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
-const PROGRESS_PROMPT = '现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。';
+const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT;
 let viewportFrame = 0;
 let transcriptScrollFrame = 0;
 let transcriptScrollRevision = 0;
@@ -140,6 +141,9 @@ const state = {
   sessionCloseTarget: null,
   pendingDeliveries: new Map(),
   dismissedNativeQuestion: '',
+  autonomySupported: false,
+  autonomyRuns: new Map(),
+  autonomyPending: false,
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -638,6 +642,8 @@ async function handleReady(message) {
     }
   }
   state.protocolEpoch = nextEpoch;
+  state.autonomySupported = Array.isArray(message.autonomy);
+  state.autonomyRuns = new Map((message.autonomy || []).map(run => [autonomyKey(run.target), run]));
   state.streamVersion = message.protocol?.version === 2 ? 2 : 1;
   if (Number.isFinite(message.protocol?.commandReceiptTtlMs) && message.protocol.commandReceiptTtlMs > 0) {
     state.commandReceiptTtlMs = message.protocol.commandReceiptTtlMs;
@@ -687,6 +693,11 @@ async function handleReady(message) {
 }
 
 function handleSocketMessage(message) {
+  if (message.type === 'autonomyState' && message.run?.target) {
+    state.autonomyRuns.set(autonomyKey(message.run.target), message.run);
+    renderComposerState();
+    return;
+  }
   if (message.type === 'ready') {
     handleReady(message).catch((error) => setLiveMessage(error.message));
     return;
@@ -1720,7 +1731,7 @@ function imageRenderer() {
 
 function itemNode(item, turn) {
   if (item.type === 'userMessage') {
-    const node = element('div', 'message user-message', userMessageText(item));
+    const node = element('div', 'message user-message', autonomyDisplayText(userMessageText(item)));
     if (item.codeckImages?.length) imageRenderer().renderMessage(node, item, { inline: false });
     if (['accepted', 'received', 'unknown'].includes(item.delivery?.status)) {
       node.append(element('small', 'message-delivery-status', item.delivery.status === 'received'
@@ -1734,7 +1745,7 @@ function itemNode(item, turn) {
     return node;
   }
   if (item.type === 'agentMessage') {
-    const node = element('div', 'message assistant-message', item.text || '');
+    const node = element('div', 'message assistant-message', autonomyDisplayText(item.text));
     if (item.codeckImages?.length) imageRenderer().renderMessage(node, item);
     if (turn.status === 'inProgress' && item === turn.items.at(-1)) node.classList.add('streaming');
     return node;
@@ -2365,11 +2376,20 @@ function renderComposerState() {
   $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected || !attachmentsSupported;
   const progressButton = $('#progressButton');
   const progressUnavailable = !state.thread || state.provider === 'shell' || readOnly;
-  const progressHint = waitingForInput ? '处理 Agent 等待的问题' : '询问进度，无需决策则继续执行';
+  const progressHint = waitingForInput ? '处理 Agent 等待的问题' : '询问目标与进度，不打断当前任务';
   progressButton.hidden = progressUnavailable;
   progressButton.disabled = progressUnavailable || opening || closing || pending || !state.connected;
   progressButton.setAttribute('aria-label', progressHint);
   progressButton.title = progressHint;
+  const autonomyButton = $('#autonomyButton');
+  const autonomy = currentAutonomy();
+  const presentation = autonomyPresentation(autonomy);
+  autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
+  autonomyButton.disabled = opening || closing || state.autonomyPending || !state.connected;
+  autonomyButton.classList.toggle('running', ['running', 'queued', 'waiting'].includes(autonomy?.status));
+  autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
+  autonomyButton.setAttribute('aria-pressed', String(presentation.active));
+  $('#autonomyStatus').textContent = presentation.detail;
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
@@ -2630,6 +2650,19 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
           baselineLastItemId: delivery.baselineLastItemId,
           baselineMatchingTextCount: delivery.baselineMatchingTextCount,
         });
+        if (result?.autonomyHandled) {
+          state.pendingDeliveries.delete(deliveryKey);
+          if (result.autonomy) state.autonomyRuns.set(autonomyKey(result.autonomy.target), result.autonomy);
+          if (state.provider === targetProvider && state.thread?.id === targetThreadId && state.thread?.tmux?.name === sessionName) {
+            if (!usesPreset) {
+              input.value = draftAfterSuccessfulSend(input.value, draft);
+              clearAttachments(attachments);
+              resizeComposer();
+            }
+            setLiveMessage(''); renderComposerState();
+          }
+          return;
+        }
         const unconfirmed = result?.submissionStatus === 'unconfirmed';
         if (unconfirmed) state.pendingDeliveries.set(deliveryKey, {
           ...delivery, provider: targetProvider, threadId: targetThreadId,
@@ -2760,6 +2793,28 @@ async function askProgress() {
     return;
   }
   await submitComposer({ presetText: PROGRESS_PROMPT });
+}
+
+function currentAutonomy() {
+  return state.thread && state.autonomyRuns.get(autonomyKey({ provider: state.provider,
+    threadId: state.thread.id, tmuxSession: state.thread.tmux?.name }));
+}
+
+async function toggleAutonomy() {
+  const button = $('#autonomyButton');
+  if (button.hidden || button.disabled) return;
+  const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
+  const active = autonomyPresentation(currentAutonomy()).active;
+  state.autonomyPending = true; renderComposerState();
+  try {
+    const result = await agentRequest(active ? 'pauseAutonomy' : 'startAutonomy', { ...target, commandId: crypto.randomUUID() });
+    if (result.autonomy) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
+    if (state.provider === target.provider && state.thread?.id === target.threadId && state.thread?.tmux?.name === target.tmuxSession) {
+      setLiveMessage('');
+      if (!active) $('#composerInput').focus({ preventScroll: true });
+    }
+  } catch (error) { setLiveMessage(error.message); }
+  finally { state.autonomyPending = false; renderComposerState(); }
 }
 
 function toggleSpeechInput() {
@@ -3044,6 +3099,7 @@ $('#settingsButton').addEventListener('click', openSettings);
 $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#progressButton').addEventListener('click', askProgress);
+$('#autonomyButton').addEventListener('click', toggleAutonomy);
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });

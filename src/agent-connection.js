@@ -8,6 +8,7 @@ import { latestAgentOutputText } from '../public/remote-copy.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
 import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
+import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
@@ -395,6 +396,7 @@ export class AgentHub {
     threadFeed = null,
     invalidateSessions = null,
     paneExcerpt = null,
+    autonomy = null,
     // 打开会话的首帧只发尾部若干轮: 这条 1.2MB / 43 turns 的会话往返要 73ms,
     // 几乎全花在序列化、permessage-deflate 与客户端解析上, 而用户一眼能看到的
     // 只有最后几轮。更早的按需再取。
@@ -408,6 +410,7 @@ export class AgentHub {
     this.threadFeed = threadFeed;
     this.invalidateSessions = invalidateSessions;
     this.paneExcerpt = paneExcerpt;
+    this.autonomy = autonomy;
     this.threadTurnWindow = threadTurnWindow;
     this.clients = new Map();
     this.commandReceipts = createCommandReceiptCache();
@@ -417,6 +420,9 @@ export class AgentHub {
     registry.on('notification', (message) => this.#broadcastNotification(message));
     registry.on('serverRequest', (message) => this.#broadcastServerRequest(message));
     registry.on('backendError', ({ provider }) => this.#clearProviderRequests(provider));
+    autonomy?.on('change', run => {
+      for (const socket of this.clients.keys()) send(socket, { type: 'autonomyState', run });
+    });
   }
 
   handleConnection(socket, { streamVersion = 1 } = {}) {
@@ -439,6 +445,7 @@ export class AgentHub {
         commandReceiptTtlMs: COMMAND_RECEIPT_TTL_MS,
       },
       providers: this.registry.providerInfo(),
+      ...(this.autonomy ? { autonomy: this.autonomy.snapshots() } : {}),
     });
     if (this.sessionFeed && negotiatedStreamVersion === 1) this.#subscribeSessions(socket, null);
     socket.on('message', (data) => this.#handleMessage(socket, data));
@@ -530,6 +537,16 @@ export class AgentHub {
 
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
+    if (message.type === 'startAutonomy' || message.type === 'pauseAutonomy') {
+      if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
+      const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
+      const subscribed = this.clients.get(socket)?.threadSubscription?.target;
+      if (!subscribed || subscribed.provider !== provider || subscribed.threadId !== target.threadId
+        || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
+      cleanCommandId(message.commandId);
+      return this.#runCommand(message, provider, target, async () => ({ autonomy: message.type === 'startAutonomy'
+        ? await this.autonomy.start(target) : this.autonomy.pause(target) }));
+    }
     if (message.type === 'subscribeSessions') {
       const client = this.clients.get(socket);
       if (client?.streamVersion !== 2) throw new Error('Session cursors require stream protocol V2');
@@ -646,9 +663,17 @@ export class AgentHub {
         ...baseline,
       };
       return this.#runCommand(message, provider, payload, async () => {
+        const target = { provider, threadId, tmuxSession: sessionName };
+        const autonomous = this.autonomy?.snapshot(target);
+        if (autonomous && !['completed', 'limit'].includes(autonomous.status) && text !== AUTONOMY_PROGRESS_PROMPT) {
+          if (!text.startsWith('/')) return { autonomyHandled: true, autonomy: await this.autonomy.message(target, text) };
+          this.autonomy.pause(target, '用户正在操作原生命令菜单');
+        }
         const deliveryBaseline = provider === 'qodercli'
           ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;
-        const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text });
+        const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text,
+          ...(text === AUTONOMY_PROGRESS_PROMPT ? { nonInterrupting: true } : {}),
+        });
         const submission = provider === 'codex' || result?.submissionStatus != null
           ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
           : {};
@@ -668,7 +693,6 @@ export class AgentHub {
             ...baseline,
           });
         this.#invalidateSessionFeed();
-        const target = { provider, threadId, tmuxSession: sessionName };
         if (receiptRecorded) this.#invalidateThreadSubscription(target);
         else this.#refreshThreadSubscription(target);
         return result;
@@ -695,6 +719,7 @@ export class AgentHub {
         threadId: cleanId(message.threadId, 'Thread'),
         tmuxSession: cleanId(message.tmuxSession, 'tmux session'),
       };
+      this.autonomy?.pause({ provider, ...target }, '用户已中断执行');
       const result = await this.registry.interruptSession(provider, {
         threadId: target.threadId,
         sessionName: target.tmuxSession,
@@ -1065,6 +1090,11 @@ export class AgentHub {
 
   #broadcastServerRequest(message) {
     const { provider, ...request } = message;
+    for (const run of this.autonomy?.snapshots() || []) {
+      if (run.target.provider === provider && run.target.threadId === request.params?.threadId) {
+        this.autonomy.pause(run.target, 'Agent 需要用户授权或回答');
+      }
+    }
     const requestKey = approvalKey(provider, request.id);
     this.resolvedRequests.delete(requestKey);
     for (const client of this.clients.values()) client.deliveredRequests.delete(requestKey);

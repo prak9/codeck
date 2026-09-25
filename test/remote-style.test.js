@@ -98,8 +98,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=44/);
-  assert.match(html, /\/remote\.js\?v=100/);
+  assert.match(html, /\/remote\.css\?v=45/);
+  assert.match(html, /\/remote\.js\?v=101/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -309,10 +309,10 @@ test('an open Agent session has a labelled touch-sized progress shortcut above t
   assert.match(css, /\.progress-button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px/s);
   assert.match(css, /\.composer\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\) 44px/s);
   assert.doesNotMatch(css, /progress-enabled/);
-  assert.match(remoteJs, /现在进展怎么样？请简要汇报当前进展、剩余事项和阻塞；如果不需要我决策，汇报后继续完成任务。/);
+  assert.match(remoteJs, /const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT/);
   assert.match(remoteJs, /progressButton'\)\.addEventListener\('click', askProgress\)/);
-  assert.match(html, /remote\.css\?v=44/);
-  assert.match(html, /remote\.js\?v=100/);
+  assert.match(html, /remote\.css\?v=45/);
+  assert.match(html, /remote\.js\?v=101/);
 });
 
 test('the load-earlier control is styled', () => {

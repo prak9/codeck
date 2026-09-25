@@ -282,6 +282,12 @@ a.header-button { text-decoration: none; }
 .composer-plus:hover { background: #ffffff08; }
 .progress-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex: none; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 20px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .progress-button:hover { color: var(--ink); }
+.autonomy-button { min-width: 44px; min-height: 44px; flex: none; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 0; background: transparent; color: var(--muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.autonomy-button[hidden] { display: none; }
+.autonomy-icon { width: 20px; height: 20px; display: inline-grid; place-items: center; border: 1.5px solid currentColor; border-radius: 50%; font-size: 12px; font-weight: 650; line-height: 1; }
+.autonomy-button.running { color: var(--accent); }
+.autonomy-button:hover { color: var(--ink); }
+.autonomy-button:disabled { opacity: .42; cursor: default; }
 .voice-input-button { width: 44px; height: 44px; display: none; background: transparent; color: var(--muted); }
 .speech-input .voice-input-button { display: grid; }
 .voice-input-button:hover { background: #ffffff08; color: var(--ink); }

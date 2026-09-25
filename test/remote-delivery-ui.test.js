@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { autonomyDisplayText } from '../public/remote-autonomy.js';
 import {
   findTmuxThreadTarget,
   normalizeAgentThread,
@@ -34,6 +35,7 @@ test('a completed history snapshot clears the loading notice without needing new
 
 test('unknown delivery has an explicit terminal-check warning instead of a waiting label', () => {
   const context = vm.createContext({
+    autonomyDisplayText,
     userMessageText: () => 'Continue',
     element: (tag, className, text) => ({ tag, className, text, children: [], append(node) { this.children.push(node); } }),
   });
