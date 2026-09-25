@@ -1,6 +1,7 @@
 import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=9';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
 import { chooseStopScope } from './session-stop.js?v=1';
+import { createAutonomyForm } from './autonomy-form.js?v=1';
 
 // The terminal and Remote are views of the same server-owned run, not two loops.
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
@@ -13,6 +14,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   const runs = new Map();
   let supported = false, simple = false, connected = false, bindingKey, bound = false, generation = 0;
   let pending = false, dismissed = '', formKey = '', lastReason = '';
+  let setupOpened = false;
   const keyOf = target => target ? autonomyKey(target) : '';
   const targetNow = () => supported && connected ? getTarget() : null;
   const current = () => runs.get(keyOf(getTarget()));
@@ -54,6 +56,14 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     }
   }
   function buildForm(run, questions) {
+    if (run.setup && run.definition?.version === 2) {
+      const epoch = generation;
+      return createAutonomyForm({ document, run,
+        isCurrent: () => epoch === generation && current()?.requestId === run.requestId && bound && connected,
+        submit: async (answers, commandId) => {
+          if (!await act('answerAutonomy', { requestId: run.requestId, answers, commandId })) throw new Error('连接或会话已变化，未提交');
+        } });
+    }
     const form = element('form');
     if (run.proposal) {
       const plan = run.proposal, details = element('dl', 'terminal-autonomy-plan');
@@ -116,6 +126,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     const target = targetNow(), key = keyOf(target);
     if (key !== bindingKey) {
       bindingKey = key; bound = false; generation++; pending = false; dismissed = ''; formKey = '';
+      setupOpened = false;
       content.replaceChildren(); if (dialog.open) dialog.close(); lastReason = ''; message();
       if (connected && supported) {
         const epoch = generation, before = runs.get(key);
@@ -143,20 +154,24 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     status.textContent = simple ? view.progress : view.detail;
     const reason = bound && run?.status === 'paused' ? run.reason : '';
     if (reason !== lastReason) { lastReason = reason; message(reason); }
-    if (!target || !bound || (target.question && !run?.setup) || !questions) { if (dialog.open) dialog.close(); return; }
+    if (!target || !bound || (simple && !setupOpened) || (target.question && !run?.setup) || !questions) { if (dialog.open) dialog.close(); return; }
     const nextKey = `${key}:${run.requestId}`;
     if (formKey !== nextKey) {
       formKey = nextKey;
       $('terminalAutonomyTitle').textContent = run.recovery ? '重新配置自主目标' : run.proposal ? '确认自主目标' : '设置自主目标';
       content.replaceChildren(buildForm(run, questions));
     }
-    for (const input of content.querySelectorAll('input, button')) input.disabled = pending;
+    const form = content.querySelector('form');
+    form?.updateDefinition?.(run);
+    if (form?.setPending) form.setPending(pending);
+    else for (const input of content.querySelectorAll('input, button')) input.disabled = pending;
     if (!dialog.open && dismissed !== nextKey && !document.querySelector('dialog[open]')) dialog.showModal();
   }
   button.addEventListener('click', async () => {
     if (button.disabled || button.hidden) return;
     if (targetNow()?.question && !simple) { focusTerminal(); message('Agent 正在等待回答，请在终端中处理。'); return; }
     const run = current(), questions = questionFor(run);
+    setupOpened = true;
     if (questions && !run.proposal) { dismissed = ''; sync(); return; }
     try {
       await act(!simple && questions && run.proposal ? 'answerAutonomy' : autonomyPresentation(run).active ? 'pauseAutonomy' : 'startAutonomy',
@@ -179,6 +194,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   return {
     sync, update,
     ready(message) {
+      setupOpened = false;
       generation++; bindingKey = undefined; bound = false;
       connected = true; supported = message.autonomySessionBinding === true;
       simple = message.simpleAutonomy === true;

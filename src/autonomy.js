@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { autonomyKey, isProgressPrompt, isAutonomyObservation, AUTONOMY_DECISIONS } from '../public/remote-autonomy.js';
+import { contextGoals } from '../public/autonomy-definition.js';
 
 const ACTIVE = new Set(['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked', 'exiting']);
 const TERMINAL = new Set(['completed', 'limit', 'off']);
@@ -77,7 +78,7 @@ function resultFor(thread, exchange) {
 
 function exchangePrompt(run, kind, text, nonce) {
   const context = { nonce, phase: kind, round: run.round, plan: run.plan, proposed: run.proposal,
-    noProgress: run.noProgress };
+    noProgress: run.noProgress, deadline: run.deadline, checkpoint: run.checkpoint, best: run.best, handoff: run.previous?.handoff };
   if (kind === 'summary') return `${text}\n\n<codeck-autonomy-context>\n上下文：${JSON.stringify(context)}\n自主执行已中断。先用自然语言简短总结目标、已完成事项及证据、未完成事项、后台任务和风险，不续跑、不开始新工作、不停止后台任务。最后输出 codeck-autonomy fenced JSON：${JSON.stringify({ nonce, status: 'summary', summary: '当前进展和结果的简明总结' })}\n</codeck-autonomy-context>`;
   const rules = `这是 Codeck 管理的自主任务，不扩大原任务权限；不自动批准权限或擅自提交、推送、部署、删除资源。用户新指令优先。
 本轮只工作一次，然后交回结果，由 Codeck 决定下一轮，不要自行无限循环。不要创建另一套自动续跑或原生 Goal。
@@ -93,7 +94,12 @@ function exchangePrompt(run, kind, text, nonce) {
 目标、完成标准和权限边界保持不变，初始方案与步骤不是固定路线。每轮根据证据复盘，自主调整探索方向、假设、方法和优先级；边界内的调整不必反复请求批准。没有结论或假设被否定不等于任务出错，不因固定的无进展轮数停下；应吸取结果换方法验证，不机械重复。无法提出有价值且可执行的下一步时，用blocked说明原因；更换目标、扩大权限或增加用户明确设置的预算须先确认。
 输出 {"nonce":"${nonce}","status":"continue|complete|wait|blocked|error","summary":"本轮进展或阻塞","progress":true,"next":"下一步（continue/wait必填）","evidence":"完成证据（complete必填）"}。
 选择一个真实 status；没有新进展时 progress=false。wait仅用于正在运行的后台任务，不要无休止询问进度；需要用户决定或授权时blocked，发生错误时error并说明原因，不自行反复重试。达到轮数上限时在正文汇总剩余事项。`;
-  return `${text}\n\n<codeck-autonomy-context>\n${rules}\n${instruction}\n</codeck-autonomy-context>`;
+  const definitionRules = run.plan?.definitionVersion === 2 && kind === 'round' ? `
+先复现或建立基线，分开记录原有失败与本次引入的问题。每轮只解决一个关键问题，说明假设、预期观察和实际结果；否定假设也可以是进展。
+验证必须对应具体代码版本（含未提交差异标识）或研究材料版本。不得降低已确认目标或验收标准。自己查测试入口、命令和数据位置；只有答案显著改变行动或验收时才追问。
+分开保存最佳已验证成果与当前尝试，不用未验证探索覆盖可靠成果，不擅自清理用户改动。交回 checkpoint: {"baseline":"起点和原有失败","version":"版本/差异或资料标识","verification":"方法与结果","current":"未完成尝试"}；有新的可靠成果才附 best: {"version":"版本/差异或资料标识","evidence":"验证结果","artifact":"可恢复成果位置"}。这些是你的证据报告，不代表Codeck独立验证。
+达标、预算结束、无法提出有价值下一步、出错或用户退出时，报告 handoff：可靠成果、证据、未完成事项、风险和建议下一步。保持当前项目与既有权限范围。` : '';
+  return `${text}\n\n<codeck-autonomy-context>\n${rules}\n${instruction}\n${definitionRules}\n</codeck-autonomy-context>`;
 }
 
 export class AutonomyController extends EventEmitter {
@@ -166,6 +172,12 @@ export class AutonomyController extends EventEmitter {
     fs.renameSync(temporary, this.file);
   }
   changed(run) {
+    if ((TERMINAL.has(run.status) || run.status === 'paused') && run.plan) {
+      run.stoppedAt ??= this.now();
+      run.remainingMs ??= run.deadline == null ? null : Math.max(0, run.deadline - run.stoppedAt);
+      run.handoff = { goal: run.plan.goal, summary: run.summary, reason: run.reason,
+        checkpoint: run.checkpoint || null, best: run.best || null, next: run.next || '', round: run.round, remainingMs: run.remainingMs };
+    }
     run.updatedAt = this.now();
     this.persist();
     this.emit('change', this.snapshot(run.target));
@@ -245,19 +257,38 @@ export class AutonomyController extends EventEmitter {
         { id: 'strategy', header: '策略', question: '采用什么策略？', options: ['自主推进，按每轮结果调整方向', '最小修改，优先验证'], isOther: true },
         { id: 'budget', header: '预算', question: '本次执行预算？（自定义示例：8轮 / 60分钟）', options: ['不设预算，直到完成或出错', '5 轮', '10 轮'], isOther: true },
       ];
+      run.definition = { version: 2, suggestions: [], loading: true };
+      if (old?.plan) run.previous = { plan: structuredClone(old.plan), round: old.round, summary: old.summary,
+        remainingMs: old.remainingMs ?? (old.deadline == null ? null : Math.max(0, old.deadline - (old.stoppedAt ?? this.now()))),
+        checkpoint: old.checkpoint, best: old.best, handoff: old.handoff };
+      else if (old?.previous) run.previous = structuredClone(old.previous);
+      if (!this.legacyConfigurations.has(key)) this.loadDefinitionSuggestions(run);
+      else run.definition.loading = false;
       this.changed(run); return this.snapshot(target);
     } catch (error) {
       if (current()) { this.pause(target, error.message); throw error; }
       return this.snapshot(target);
     }
   }
-  async finish(target) {
+  async loadDefinitionSuggestions(run) {
+    const requestId = run.requestId;
+    try {
+      const result = await this.readThread(run.target);
+      if (this.closed || this.runs.get(autonomyKey(run.target)) !== run || !run.setup || run.requestId !== requestId) return;
+      run.definition.suggestions = contextGoals(result?.thread);
+    } catch { /* Suggestions never gate configuration or trigger terminal input. */ }
+    if (!this.closed && this.runs.get(autonomyKey(run.target)) === run && run.setup && run.requestId === requestId) {
+      run.definition.loading = false; this.changed(run);
+    }
+  }
+  async finish(target, reason = '用户退出') {
     const run = this.runs.get(autonomyKey(target));
     if (!run || TERMINAL.has(run.status) || run.status === 'stopping' || run.status === 'exiting') return this.snapshot(target);
     run.mode = 'simple'; run.generation = (run.generation || 0) + 1;
     const generation = run.generation;
     run.status = 'stopping'; run.pending = null; run.exchange = null; run.suspended = null;
-    run.questions = null; run.requestId = null; run.setup = false; run.recovery = null; run.deadline = null;
+    run.questions = null; run.requestId = null; run.setup = false; run.recovery = null;
+    run.stoppedAt = this.now(); run.remainingMs = run.deadline == null ? null : Math.max(0, run.deadline - this.now()); run.deadline = null;
     this.changed(run);
     const current = () => !this.closed && run.generation === generation && run.status === 'stopping';
     try {
@@ -269,7 +300,7 @@ export class AutonomyController extends EventEmitter {
       const stopped = await this.readSession(target);
       if (!current()) return this.snapshot(target);
       if (!this.sameSession(run, stopped) || stopped.hasRunningProcess || stopped.agent.question) throw new Error('当前执行尚未中断，未发送总结');
-      run.status = 'exiting'; run.pending = { kind: 'summary', text: '退出自主模式，请总结当前进展和结果，然后结束。' };
+      run.status = 'exiting'; run.pending = { kind: 'summary', text: `${reason}，退出自主模式，请总结当前进展和结果，然后结束。` };
       this.changed(run); return this.snapshot(target);
     } catch (error) {
       if (current()) { this.pause(target, `退出未完成：${error.message}`); throw error; }
@@ -426,6 +457,38 @@ export class AutonomyController extends EventEmitter {
     }
     if (!answers || typeof answers !== 'object' || Array.isArray(answers)) throw new Error('请完成选择');
     if (run.setup) {
+      if (!Object.hasOwn(answers, 'strategy')) {
+        const keys = ['goal', 'budget', 'constraints', 'acceptance', 'deliverable', 'rounds', 'continuation'];
+        if (Object.keys(answers).length !== keys.length || keys.some(key => !Array.isArray(answers[key])
+          || answers[key].length !== 1 || typeof answers[key][0] !== 'string' || answers[key][0].length > 4000)) throw new Error('任务定义格式无效');
+        const values = Object.fromEntries(keys.map(key => [key, answers[key][0].trim()]));
+        if (!values.goal || !values.acceptance || !values.deliverable || !['true', 'false'].includes(values.continuation)) throw new Error('请填写目标、验收与交付物');
+        let plan, remainingMs;
+        if (values.continuation === 'true') {
+          const old = run.previous;
+          if (!old || ['goal', 'acceptance', 'deliverable'].some(key => values[key] !== (old.plan[key] || ''))
+            || values.constraints !== (old.plan.constraints || '')) throw new Error('继续任务不能改变目标、验收或约束；请作为新目标开始');
+          if (old.remainingMs === 0 || (old.plan.maxRounds != null && old.round >= old.plan.maxRounds)) throw new Error('上次预算已用完，请明确设置新目标和预算');
+          plan = structuredClone(old.plan); remainingMs = old.remainingMs;
+          run.round = old.round; run.summary = old.summary; run.checkpoint = old.checkpoint; run.best = old.best;
+        } else {
+          const match = /^(\d+)\s*分钟$/u.exec(values.budget);
+          const minutes = values.budget === '不限' ? null : match ? Number(match[1]) : NaN;
+          const maxRounds = values.rounds ? Number(values.rounds) : null;
+          if ((minutes !== null && (!Number.isSafeInteger(minutes) || minutes < 1 || !Number.isSafeInteger(minutes * 60000)))
+            || (maxRounds !== null && (!/^\d+$/u.test(values.rounds) || !Number.isSafeInteger(maxRounds) || maxRounds < 1))) throw new Error('预算须为正整数，或选择不限');
+          plan = { definitionVersion: 2, goal: values.goal, acceptance: values.acceptance, deliverable: values.deliverable,
+            constraints: values.constraints, preferences: values.constraints || '继承当前项目和既有权限；根据每轮证据自主调整方法。',
+            minutes, maxRounds, advisoryBudget: '' };
+          remainingMs = minutes == null ? null : minutes * 60000;
+        }
+        run.plan = plan; run.setup = false; run.questions = null; run.requestId = null;
+        run.startedAt = this.now(); run.stoppedAt = null; run.remainingMs = null;
+        run.deadline = remainingMs == null ? null : this.now() + remainingMs;
+        run.status = 'queued'; run.pending = { kind: 'round', replaceTask: true,
+          text: values.continuation === 'true' ? '沿用已确认目标、可靠成果和剩余预算继续；不要重放旧轮次。' : '按确认的任务定义开始自主执行。' };
+        this.changed(run); return this.snapshot(target);
+      }
       const values = ['goal', 'strategy', 'budget'].map(key => Array.isArray(answers[key]) && answers[key].length === 1 && textField(answers[key][0]));
       if (Object.keys(answers).length !== 3 || values.some(value => !value)) throw new Error('请完成目标、策略和预算选择');
       const [goal, preferences, budget] = values;
@@ -504,6 +567,10 @@ export class AutonomyController extends EventEmitter {
     let session = await this.readSession(run.target).catch(error => { if (current()) throw error; });
     if (!current()) return;
     if (!this.sameSession(run, session)) { this.pause(run.target, '会话身份或 pane 已变化'); return; }
+    if (run.plan?.definitionVersion === 2 && ((run.deadline != null && this.now() >= run.deadline)
+      || (pending?.kind === 'round' && run.plan.maxRounds != null && run.round >= run.plan.maxRounds))) {
+      await this.finish(run.target, '预算已耗尽'); return;
+    }
     if (run.deadline != null && this.now() >= run.deadline) { this.limit(run); return; }
     if (session.agent.question) {
       if (run.status !== 'blocked') { run.status = 'blocked'; this.changed(run); }
@@ -640,10 +707,25 @@ export class AutonomyController extends EventEmitter {
     run.exchange = null;
     run.noProgress = record.progress === false || record.summary === run.summary ? run.noProgress + 1 : 0;
     run.summary = record.summary;
+    run.next = textField(record.next) || '';
+    if (run.plan?.definitionVersion === 2) {
+      const checkpoint = record.checkpoint;
+      if (['continue', 'wait', 'complete'].includes(record.status) && (!checkpoint
+        || !['baseline', 'version', 'verification'].every(key => textField(checkpoint[key]))
+        || typeof checkpoint.current !== 'string' || checkpoint.current.length > 4000)) {
+        this.pause(run.target, '本轮报告缺少基线、版本与验证记录'); return;
+      }
+      if (checkpoint && ['baseline', 'version', 'verification', 'current'].every(key => typeof checkpoint[key] === 'string' && checkpoint[key].length <= 4000)) {
+        run.checkpoint = structuredClone(checkpoint);
+      }
+      if (record.best && ['version', 'evidence', 'artifact'].every(key => textField(record.best[key]))) run.best = structuredClone(record.best);
+    }
     if (record.status === 'complete') {
       run.status = 'completed'; run.evidence = record.evidence; run.reason = 'Agent 报告目标完成';
     } else if (record.status === 'blocked' || record.status === 'error') {
       this.pause(run.target, record.summary); return;
+    } else if (run.plan?.definitionVersion === 2 && run.plan.maxRounds != null && run.round >= run.plan.maxRounds) {
+      await this.finish(run.target, '轮数预算已耗尽'); return;
     } else if (this.limit(run)) return;
     else if (record.status === 'wait') {
       run.status = 'waiting'; run.reason = record.summary;

@@ -137,7 +137,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-autonomy-button { min-width: 44px; min-height: 44px; padding: 0 8px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .terminal-autonomy-button:hover { background: var(--raised); }
 .terminal-autonomy-button[aria-pressed="true"] { color: var(--ink); }
-.terminal-autonomy-button[aria-pressed="true"] .terminal-autonomy-symbol { border-color: #ff8580; color: #ff8580; }
+.terminal-autonomy-button[aria-pressed="true"] .terminal-autonomy-symbol { border-color: #ff8580; color: #fff; background: #b52c36; box-shadow: 0 0 0 4px #ff858024; font-weight: 800; }
 .terminal-autonomy-button:disabled { opacity: .5; cursor: wait; }
 #terminalAutonomyStatus { white-space: normal; max-width: 150px; line-height: 1.4; text-align: left; }
 .session-stop-dialog { width: min(360px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--base); color: var(--ink); }

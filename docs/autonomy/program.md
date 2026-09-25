@@ -5,7 +5,7 @@
 - Overall status: `完成`
 - Profile: `Lite`
 - Active plan node: None
-- Latest evidence: `/tmp/codeck-simple-final-tests.log` — 1151/1151 pass; `/tmp/codeck-simple-normal-final.log` and `/tmp/codeck-simple-remote-final.log` — 12 current UI journeys pass; `/tmp/codeck-simple-legacy-browser.log` — 6 legacy journeys pass; isolated tmux 37→140 column recovery passes
+- Latest evidence: `/tmp/codeck-definition-release-tests.log` — 1158/1158 pass; `/tmp/codeck-definition-release-normal.log` and `/tmp/codeck-definition-release-remote.log` — 12 current UI journeys pass, including reconnect without auto-popup and async suggestion draft preservation
 - Current blocker: None
 - Next step: None
 - Next checkpoint: None
@@ -13,11 +13,13 @@
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / NODE-020 current flow and README aligned; earlier nodes retained as historical/legacy behavior, not current A instructions`
+- Last clean: `2026-09-25 / NODE-021 current flow and README aligned; prior nodes remain historical, not current A instructions`
 
 ## Outcome
 
 ### Current revision (2026-09-25)
+
+- NODE-021 supersedes the strategy questionnaire: goal and time budget required; constraints optional; editable acceptance/deliverable previews; folded round limit. Context suggestions must not gate setup or overwrite edits. Explicit continuation inherits saved progress and remaining budget, never silently resumes. Record evidence/checkpoints separately from unfinished work; preserve A stop/summary/off. Activation is visibly red in both views. No real session input during verification. User authorizes local deployment and push after verification.
 
 - NODE-020 implementation is verified; the user subsequently authorized commit, push and deployment. Implementation verification sent no real Agent input. Real remote-server behavior and physical Safari remain outside the isolated tmux/browser verification.
 
@@ -67,6 +69,7 @@
 
 | Node | Status | Action | Verification | Evidence | Reflection |
 |---|---|---|---|---|---|
+| NODE-021 | `完成` | Compact task definition, context suggestions, explicit continuation and evidence checkpoints; stronger active A; explicit-click-only setup | Controller tests, normal/Remote browser mobile/desktop, full suite and service health | /tmp/codeck-definition-red.log; /tmp/codeck-definition-boundaries.log; /tmp/codeck-definition-release-tests.log; /tmp/codeck-definition-release-normal.log; /tmp/codeck-definition-release-remote.log; system service PID 1356712, started 20:08:52 CST, authenticated health and app130/remote112 assets verified, all 10 pane/PIDs unchanged | R-013 |
 | NODE-020 | `完成` | Recover desktop window sizing; interrupt/local setup/approval/execute/interrupt/summary/off; fresh setup and legacy guards | Isolated tmux, controller/API, full suite, normal/Remote and legacy browser journeys | /tmp/codeck-size-red.log; /tmp/codeck-size-green.log; /tmp/codeck-simple-final-tests.log; /tmp/codeck-simple-normal-final.log; /tmp/codeck-simple-remote-final.log; /tmp/codeck-simple-legacy-browser.log | R-012 |
 | NODE-019 | `完成` | Commit 3e07d6b pushed and deployed on explicit user request | 1093 tests; authenticated health/assets/API/V2 ready capabilities; exact pane/PID comparison | /tmp/codeck-state-release-tests.log; service MainPID 1180995, started 2026-09-25 14:57:48 CST; 10 retained panes; report/research rounds 4/2 paused | None: service healthy, no live Agent input or cancellation sent; no daemon-reload of unrelated unit changes |
 | NODE-016 | `完成` | Review and fix continuation checkpoints and activity presentation | Controller regression tests | /tmp/codeck-state-red.log; /tmp/codeck-state-blocked-red.log; /tmp/codeck-qoder-all.log | R-010 |
@@ -94,6 +97,7 @@ Record consequential findings here; routine verification stays in the Plan table
 
 | ID | Scope | Evidence | Wrong / changed | Right / preserve | Next rule |
 |---|---|---|---|---|---|
+| R-013 | NODE-021 setup visibility and verifiable progress | research user report; browser reload tests; test/autonomy-definition.test.js | Persisted unanswered setup was treated as permission to open a modal on every entry; completion evidence lacked a version-bound checkpoint | Persist task data and receipts, but keep dialog intent local to the current visit; suggestions only add options; require version/verification reports without claiming independent validation | Reconnect must not open setup or authorize work; only explicit A opens it. Preserve edited definitions and best evidence separately from new attempts. |
 | R-012 | NODE-020 sizing and new-run replacement | /tmp/codeck-size-red.log; /tmp/codeck-simple-stale-red.log; test/tmux-size-recovery.test.js; test/autonomy-simple.test.js | Global latest cannot override a window-local manual width; a late legacy receipt could resume configuration into a different run sharing the same session key | Local window policy leaves other windows untouched; nonce/identity guards and isolated real tmux/PTY tests remain useful | Apply sizing to the attached window; async recovery must match the current run object as well as its generation; test state replacement, not only pauses |
 | R-010 | NODE-016 design review | src/autonomy.js pause/message/poll; public/remote-autonomy.js | Pause discards the in-flight exchange; resume sets replaceTask even for the same goal; missing-result timeout runs during background execution | Preserve nonce validation, session identity, bounded rounds and explicit new-goal confirmation | Retain a private checkpoint, invalidate stale async work, resume observation without replay; derive visible activity independently of continuation |
 | R-011 | NODE-017 Qoder parity review | /tmp/codeck-qoder-stop-red.log; installed qodercli-1.1.46 task-panel implementation; https://docs.qoder.com/cli/tools | Five-second foreground verification is shorter than the six-second activity heuristic; Codex stop commands do not apply to Qoder | Native task panel scopes cancellation to the current session and advertises killable selections | Wait beyond repaint; use /tasks with per-frame identity/selection checks, no repeated unconfirmed k, no history-clear actions, and final idle/background verification; supersedes the historical Qoder unsupported limitation |
@@ -108,6 +112,8 @@ Record consequential findings here; routine verification stays in the Plan table
 | R-009 | NODE-012 normal-mode parity | /tmp/codeck-normal-labels-red.log; /tmp/codeck-normal-history-red.log; /tmp/codeck-normal-retry-red.log; /tmp/codeck-normal-switch-red.log; /tmp/codeck-normal-notice-red.log | Clicking through a fixture missed object-valued option labels; old binding fallback/history subscriptions and retained failed receipts caused unsafe or stuck controls; paused reason hid action errors | Shared controller/presentation, explicit approval, session generation guards, no raw-input fallback | Test actual option labels and sent answers, binding cleanup, definite-error retry, local wait cancellation, and visible failure feedback; ordinary controls do not retain a history stream |
 
 ## Verification boundary
+
+- NODE-021 completed 2026-09-25. 1158 tests and 12 browser journeys pass. Isolated persistence tests retain best/checkpoint and do not replay after restart; both actual pages preserve edits under late suggestions and require explicit A after reload. Task suggestions extract recent user requirements locally; previews are editable templates, not a separate model inference. CLI evidence and saved best-artifact locations are Agent-reported, not independently verified or automatically backed up. Physical Safari and live Agent compliance remain untested. Deployment verification only authenticated health/assets and compared panes; no live Agent input or goal activation was sent. README current flow supersedes historical verification below.
 
 - NODE-016–018 completed 2026-09-25, not committed/pushed/deployed. Current behavior supersedes older release notes below: pause/restart retains a private checkpoint, same-goal resume never cancels or replays, old legacy checkpoints wait for actual idle before a bounded result check. Explicit stop holds a server-side continuation lock and verifies foreground/all scope. Qoder cancellation is implemented against the installed 1.1.46 task-panel code and official task documentation; native keys run only inside an identified current-session panel, with observed selection changes and no history clearing. Tests cover timeout, changed pane, cancellation, empty/previously-open panel, background preservation, and exact result feedback. Native Qoder Goal/scheduled automation outside Codeck is not managed by this adapter; future CLI layout variants and service-managed unkillable tasks fail closed. Claude background cancellation remains unsupported.
 - Current evidence: 1093 full tests; 147 final guard tests after the last parser tightening; 6 normal and 6 Remote browser journeys at 390/1365. Remote Qoder journeys run the actual cancellation adapter against simulated terminal I/O, including new-goal replacement and manual all-stop. Screenshots inspected in /data/tmp/codeck-remote-smoke-7YFGxg and /data/tmp/codeck-terminal-autonomy-vuODWL, with mobile/desktop and light/dark coverage. Restart tests recover a persisted in-flight result without replay after a lost acknowledgment. No live Agent input, native task cancellation, commit, push or deployment was performed; real native CLI cancellation remains unexercised.

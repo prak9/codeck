@@ -33,6 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
+import { createAutonomyForm } from './autonomy-form.js?v=1';
 import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=9';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
@@ -148,6 +149,7 @@ const state = {
   autonomyRuns: new Map(),
   autonomyPending: false,
   dismissedAutonomyQuestion: '',
+  autonomyDialogIntent: '',
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -655,6 +657,7 @@ async function handleReady(message) {
   state.protocolEpoch = nextEpoch;
   state.autonomySupported = Array.isArray(message.autonomy);
   state.simpleAutonomy = message.simpleAutonomy === true;
+  state.autonomyDialogIntent = '';
   state.scopedSessionStop = message.scopedSessionStop === true;
   state.autonomyRuns = new Map((message.autonomy || []).map(run => [autonomyKey(run.target), run]));
   state.streamVersion = message.protocol?.version === 2 ? 2 : 1;
@@ -1088,6 +1091,7 @@ async function loadThreads({ quiet = false } = {}) {
 async function openThread(threadId, {
   provider = state.provider, quiet = false, readOnly = false, tmuxSession = null,
 } = {}) {
+  if (!quiet || threadId !== state.thread?.id || provider !== state.provider) state.autonomyDialogIntent = '';
   resetThreadHistory();
   state.threadHandoff = null;
   const opening = {};
@@ -2071,6 +2075,16 @@ function dismissNativeQuestionDialog() {
 }
 
 function interactionNode(key, entry) {
+  if (entry.setup && entry.run?.definition?.version === 2) return createAutonomyForm({ document, run: entry.run,
+    isCurrent: () => state.connected && currentAutonomy()?.requestId === entry.request.id
+      && autonomyKey(currentAutonomy().target) === autonomyKey(entry.run.target),
+    submit: async (answers, commandId) => {
+      const before = currentAutonomy();
+      const result = await agentRequest('answerAutonomy', { ...entry.run.target, requestId: entry.request.id, answers, commandId });
+      const targetKey = autonomyKey(entry.run.target);
+      if (result.autonomy && state.autonomyRuns.get(targetKey) === before) state.autonomyRuns.set(targetKey, result.autonomy);
+      renderComposerState();
+    } });
   const questions = normalizeInteractionQuestions(entry.request.params);
   const form = element('form', 'question-card');
   form.dataset.requestKey = key;
@@ -2883,7 +2897,7 @@ function autonomyQuestionEntry() {
   const questions = run.status === 'confirming' && run.proposal ? [{ id: 'decision', header: '下一步',
     question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
   if (!questions?.length) return null;
-  return { autonomy: true, setup: Boolean(run.setup), recovery: Boolean(run.recovery), provider: run.target.provider, tmuxSession: run.target.tmuxSession,
+  return { autonomy: true, run, setup: Boolean(run.setup), recovery: Boolean(run.recovery), provider: run.target.provider, tmuxSession: run.target.tmuxSession,
     plan: run.status === 'confirming' ? run.proposal : null, round: run.round,
     request: { id: run.requestId, params: { threadId: run.target.threadId, questions } } };
 }
@@ -2891,13 +2905,15 @@ function autonomyQuestionEntry() {
 function syncAutonomyDialog() {
   const dialog = $('#autonomyDialog');
   const entry = autonomyQuestionEntry();
-  if (!entry || !state.connected || state.threadOpening) { if (dialog.open) dialog.close(); return; }
+  if (!entry || !state.connected || state.threadOpening
+    || (state.simpleAutonomy && state.autonomyDialogIntent !== autonomyKey(entry.run.target))) { if (dialog.open) dialog.close(); return; }
   const key = `${entry.provider}:${entry.tmuxSession}:${entry.request.params.threadId}:${entry.request.id}`;
   if (dialog.dataset.questionKey !== key) {
     dialog.dataset.questionKey = key;
     $('#autonomyDialogTitle').textContent = entry.recovery ? '重新配置自主目标' : entry.plan ? '确认自主目标' : '设置自主目标';
     $('#autonomyDialogContent').replaceChildren(interactionNode(key, entry));
   }
+  $('#autonomyDialogContent').querySelector('form')?.updateDefinition?.(entry.run);
   if (!dialog.open && state.dismissedAutonomyQuestion !== key && !document.querySelector('dialog[open]')) dialog.showModal();
 }
 
@@ -2911,6 +2927,7 @@ async function toggleAutonomy() {
   const button = $('#autonomyButton');
   if (button.hidden || button.disabled) return;
   if (!state.simpleAutonomy && currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
+  if (state.simpleAutonomy) state.autonomyDialogIntent = autonomyKey({ provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name });
   const question = autonomyQuestionEntry();
   if (question && !question.plan) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
