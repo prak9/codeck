@@ -5,7 +5,7 @@
 - Overall status: `完成`
 - Profile: `Lite`
 - Active plan node: None
-- Latest evidence: `/tmp/codeck-normal-release-tests.log` — 1074/1074 pass; `/tmp/codeck-normal-release-health.log` — assets, API/V2 binding and 10 retained pane/PIDs pass; normal/Remote six-journey browser evidence unchanged
+- Latest evidence: `/tmp/codeck-state-qoder-final2.log` — 1093/1093 pass; `/tmp/codeck-qoder-guards-final.log` — 147/147 final adapter guards; `/tmp/codeck-qoder-normal-browser.log` and `/tmp/codeck-qoder-remote-browser.log` — six journeys each pass
 - Current blocker: None
 - Next step: None
 - Next checkpoint: None
@@ -13,7 +13,7 @@
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / NODE-012/015 reconciled with release 4543365, 1074 tests and live health evidence; normal-mode support deployed, no pending implementation or release work`
+- Last clean: `2026-09-25 / NODE-016/018 reconciled with current tests and browser evidence; implementation complete, not released; historical Qoder unsupported boundary superseded by R-011`
 
 ## Outcome
 
@@ -48,11 +48,17 @@
 | A-011 | Confirmed new goal replaces old work | Controller and guarded interruption tests | No cancellation before confirmation; stop then verify before new work; failure, stale identity or pause prevents dispatch |
 | A-012 | Normal mode and Remote expose the same ?/A behavior | Shared-protocol tests and browser flows | Non-interrupting progress, goal/budget/preferences choices, explicit approval, shared rounds/status, pause/resume; stale session/disconnect cannot send; drafts preserved |
 | A-013 | Lost setup choices recover and confirmed research replacement stops background work | Controller/Hub regressions, guarded native-command tests, browser fixture | Valid latest ask/ready recovers without a send; current-session Codex background work is stopped only after approval; no work until verified stopped |
+| A-014 | Execution and continuation are independent; resume is not replacement | Controller pause/resume/restart races and shared presentation tests | No cancellation, resend or round spending on resume; foreground/background remains visible with continuation off |
+| A-015 | Explicit stop disables continuation and verifies its scope | Hub/adapter tests and browser interactions | No restart during stop; foreground-only retains background; unsupported background stop reports failure |
+| A-016 | Qoder uses the same controls without false cancellation timeout or unsupported normal task stops | Native-adapter tests and actual UI with simulated Qoder task panel | One Escape outlasts activity cache; /tasks cancellation checks each visible change; no key replay or history clearing; completed panel closes |
 
 ## Plan
 
 | Node | Status | Action | Verification | Evidence | Reflection |
 |---|---|---|---|---|---|
+| NODE-016 | `完成` | Review and fix continuation checkpoints and activity presentation | Controller regression tests | /tmp/codeck-state-red.log; /tmp/codeck-state-blocked-red.log; /tmp/codeck-qoder-all.log | R-010 |
+| NODE-017 | `完成` | Verified scoped interruption and compact controls including Qoder task-panel cancellation | Hub/adapter and browser checks | /tmp/codeck-stop-red.log; /tmp/codeck-qoder-stop-red.log; /tmp/codeck-qoder-guards-final.log; /tmp/codeck-qoder-remote-browser.log | R-011 |
+| NODE-018 | `完成` | Regression, rendered verification and state documentation | Full tests, browser checks, strict plan validation | /tmp/codeck-state-qoder-final2.log; /tmp/codeck-qoder-normal-browser.log; /tmp/codeck-qoder-remote-browser.log | None: all selected journeys passed; no live cancellation or service restart |
 | NODE-001 | `完成` | Protocol, persistence and bounded controller with tests | node --test test/autonomy.test.js | /tmp/codeck-autonomy-all-final.log; test/autonomy.test.js | R-001 |
 | NODE-002 | `完成` | Wire authenticated Agent API, guarded tmux writes and human takeover | AgentHub/tmux/terminal/server integration tests | /tmp/codeck-autonomy-all-final.log; /tmp/codeck-autonomy-server.log | R-002 |
 | NODE-003 | `完成` | Remote symbol, status and conversational controls | UI unit/browser checks | /data/tmp/codeck-remote-smoke-feeERG; test/remote-submission.test.js | None: existing UI primitives fit; mobile/desktop rendered states pass |
@@ -75,6 +81,8 @@ Record consequential findings here; routine verification stays in the Plan table
 
 | ID | Scope | Evidence | Wrong / changed | Right / preserve | Next rule |
 |---|---|---|---|---|---|
+| R-010 | NODE-016 design review | src/autonomy.js pause/message/poll; public/remote-autonomy.js | Pause discards the in-flight exchange; resume sets replaceTask even for the same goal; missing-result timeout runs during background execution | Preserve nonce validation, session identity, bounded rounds and explicit new-goal confirmation | Retain a private checkpoint, invalidate stale async work, resume observation without replay; derive visible activity independently of continuation |
+| R-011 | NODE-017 Qoder parity review | /tmp/codeck-qoder-stop-red.log; installed qodercli-1.1.46 task-panel implementation; https://docs.qoder.com/cli/tools | Five-second foreground verification is shorter than the six-second activity heuristic; Codex stop commands do not apply to Qoder | Native task panel scopes cancellation to the current session and advertises killable selections | Wait beyond repaint; use /tasks with per-frame identity/selection checks, no repeated unconfirmed k, no history-clear actions, and final idle/background verification; supersedes the historical Qoder unsupported limitation |
 | R-001 | NODE-001 result/recovery races | /tmp/codeck-autonomy-edge-red.log; /tmp/codeck-autonomy-race-red.log; test/autonomy.test.js | A later progress answer could hide completion; stale read failure could pause a new direction; persistent history errors could hang | Nonce + user anchor + final assistant evidence; generation guards; conservative restart | Retain final result across read-only progress turns; guard rejected promises too; bound history failures |
 | R-002 | NODE-002 non-interrupting progress and safe input | /tmp/codeck-progress-red.log; /tmp/codeck-autonomy-claude-red.log; test/tmux.test.js | Existing send forced Escape on Codex queued messages; Claude blank first line did not prove empty composer | Reuse verified pane, input serialization and native queues | ? skips forced queue release; guarded sends inspect full composer and cancel before Enter |
 | R-003 | NODE-005 screenshot IMG_1567 | Live read-only codeck snapshot and isolated recovery/Hub probe (2026-09-25) | Short receipt differs from accepted longer input; restoration drops queued placement and appends it at latest | Exact text/nonce evidence must not be weakened into prefix success | Restore using known anchor; provide explicit persisted dismissal distinct from confirmation, never resend |
@@ -86,6 +94,9 @@ Record consequential findings here; routine verification stays in the Plan table
 | R-009 | NODE-012 normal-mode parity | /tmp/codeck-normal-labels-red.log; /tmp/codeck-normal-history-red.log; /tmp/codeck-normal-retry-red.log; /tmp/codeck-normal-switch-red.log; /tmp/codeck-normal-notice-red.log | Clicking through a fixture missed object-valued option labels; old binding fallback/history subscriptions and retained failed receipts caused unsafe or stuck controls; paused reason hid action errors | Shared controller/presentation, explicit approval, session generation guards, no raw-input fallback | Test actual option labels and sent answers, binding cleanup, definite-error retry, local wait cancellation, and visible failure feedback; ordinary controls do not retain a history stream |
 
 ## Verification boundary
+
+- NODE-016–018 completed 2026-09-25, not committed/pushed/deployed. Current behavior supersedes older release notes below: pause/restart retains a private checkpoint, same-goal resume never cancels or replays, old legacy checkpoints wait for actual idle before a bounded result check. Explicit stop holds a server-side continuation lock and verifies foreground/all scope. Qoder cancellation is implemented against the installed 1.1.46 task-panel code and official task documentation; native keys run only inside an identified current-session panel, with observed selection changes and no history clearing. Tests cover timeout, changed pane, cancellation, empty/previously-open panel, background preservation, and exact result feedback. Native Qoder Goal/scheduled automation outside Codeck is not managed by this adapter; future CLI layout variants and service-managed unkillable tasks fail closed. Claude background cancellation remains unsupported.
+- Current evidence: 1093 full tests; 147 final guard tests after the last parser tightening; 6 normal and 6 Remote browser journeys at 390/1365. Remote Qoder journeys run the actual cancellation adapter against simulated terminal I/O, including new-goal replacement and manual all-stop. Screenshots inspected in /data/tmp/codeck-remote-smoke-7YFGxg and /data/tmp/codeck-terminal-autonomy-vuODWL, with mobile/desktop and light/dark coverage. Restart tests recover a persisted in-flight result without replay after a lost acknowledgment. No live Agent input, native task cancellation, commit, push or deployment was performed; real native CLI cancellation remains unexercised.
 
 - README's revised flow is exercised with actual UI/controller plus simulated Agent responses: click A, select/customize answers, defer/reopen without losing choices, explicitly approve the plan, observe rounds, reload, pause, redirect with spent budget retained, complete. Three providers at 390/1365 pixels; light/dark screenshots inspected. Unknown receipt dismissal survives a simulated server reset and browser reload without resend; separate V2 Hub tests cover synchronized-frame propagation to another client.
 - Initial implementation was released as f6227a4 on the user's separate request (1020 tests; API/assets/V2 stream; all 10 tmux identities retained). After follow-up acceptance, the user separately requested commit, push and deployment. Real long-running CLI protocol compliance remains unverified; malformed results pause safely.

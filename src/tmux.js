@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
 import { clampTerminalGrid } from '../public/terminal-utils.js';
 import { parseQoderQuestion, QoderQuestionTracker } from './qoder-question.js';
+import { qoderTaskPanel, stopQoderTasks } from './qoder-stop.js';
 export { parseQoderQuestion } from './qoder-question.js';
 
 const exec = promisify(execFile);
@@ -1722,7 +1723,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   });
 }
 
-export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false }, overrides = {}) {
+export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, allowBackground = false }, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未取消旧任务');
@@ -1732,13 +1733,13 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       if ((isCurrent && !isCurrent()) || currentPane !== paneId || (expectedPaneId && currentPane !== expectedPaneId)) {
         throw new Error('自主任务或会话已变化，已停止切换');
       }
-      if (waitForIdle && currentSession.agent?.hasBackgroundProcess && !(stopBackground && provider === 'codex')) {
+      if (waitForIdle && currentSession.agent?.hasBackgroundProcess && !(allowBackground && !stopBackground) && !(stopBackground && ['codex', 'qodercli'].includes(provider))) {
         throw new Error('旧任务仍有后台执行，新目标未启动；请先停止后台任务后再次确认');
       }
       return !currentSession.hasRunningProcess && !currentSession.agent?.question;
     };
     const idle = check(paneId, session);
-    if (waitForIdle && idle && !(stopBackground && provider === 'codex')) return;
+    if (waitForIdle && idle && !(stopBackground && ['codex', 'qodercli'].includes(provider))) return;
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
@@ -1747,13 +1748,58 @@ export async function interruptSession({ provider, sessionName, threadId, expect
     if (!waitForIdle) return;
     const waitForStop = overrides.waitForStop || (() => new Promise(resolve => setTimeout(resolve, 250)));
     let foregroundStopped = idle;
-    const stopChecks = stopBackground && provider === 'codex' ? 40 : 20;
+    // The activity heuristic retains a repaint for six seconds on every provider.
+    // Verification must outlast it, including Qoder foreground cancellation.
+    const stopChecks = 40;
     for (let attempt = 0; !foregroundStopped && attempt < stopChecks; attempt++) {
       await waitForStop();
       const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
       foregroundStopped = check(current.paneId, current.session);
     }
     if (!foregroundStopped) throw new Error('无法确认旧任务已停止，新目标未启动；请检查终端后重试');
+    if (stopBackground && provider === 'qodercli') {
+      const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
+      const read = async () => {
+        const current = await verifiedSessionTarget({ provider, sessionName, threadId }, listTmuxSessions);
+        check(current.paneId, current.session);
+        const screen = await capture(paneId);
+        if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，停止操作已取消');
+        return { current: current.session, screen };
+      };
+      const before = await read();
+      let opened = Boolean(qoderTaskPanel(before.screen));
+      if (!opened && !before.current.agent?.hasBackgroundProcess && !resolveScreenSignals(before.screen, AGENT_SCREEN_MARKERS.qodercli).background) return;
+      if (!opened && (qoderComposerState(before.screen, '') !== 'empty' || before.current.agent?.question)) {
+        throw new Error('Qoder 输入框有草稿或弹窗，后台任务未停止');
+      }
+      if (!opened) {
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-l', '-t', paneId, '--', '/tasks ']));
+        await waitForStop();
+        const draft = await read();
+        if (qoderComposerState(draft.screen, '/tasks') !== 'draft'
+          || resolveScreenSignals(draft.screen, AGENT_SCREEN_MARKERS.qodercli).busy) throw new Error('Qoder 停止命令已变化，未提交');
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+        for (let attempt = 0; attempt < 20; attempt++) {
+          await waitForStop();
+          if (qoderTaskPanel((await read()).screen)) { opened = true; break; }
+        }
+        if (!opened) throw new Error('Qoder /tasks 面板未打开，后台停止未确认');
+      }
+      await stopQoderTasks({ read: async () => (await read()).screen, wait: waitForStop,
+        key: async (key, expected) => {
+          // Recheck identity and the visible panel immediately before each key.
+          const current = await read();
+          if (JSON.stringify(qoderTaskPanel(current.screen)) !== JSON.stringify(expected)) throw new Error('Qoder 任务面板已变化，已停止操作');
+          await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, key]));
+        } });
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await waitForStop(); const after = await read();
+        if (!after.current.hasRunningProcess && !after.current.agent?.hasBackgroundProcess
+          && !after.current.agent?.question && qoderComposerState(after.screen, '') === 'empty'
+          && !resolveScreenSignals(after.screen, AGENT_SCREEN_MARKERS.qodercli).background) return;
+      }
+      throw new Error('Qoder 后台任务仍未停止，新目标未启动');
+    }
     if (!stopBackground || provider !== 'codex') return;
 
     // Native commands scope cancellation to this Codex session. Never kill process

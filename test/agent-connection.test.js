@@ -319,6 +319,7 @@ test('advertises and routes all three providers through one owner-scoped socket'
     type: 'ready',
     defaultCwd: '/srv/codeck',
     hostname: 'devbox',
+    scopedSessionStop: true,
     protocol: { version: 1, epoch: 'test-epoch', commandReceiptTtlMs: 600_000 },
     providers: [
       { id: 'codex', label: 'Codex', capabilities: { ...backends.codex.capabilities, modelSelection: false, dismissCommands: [] } },

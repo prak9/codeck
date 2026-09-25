@@ -6,23 +6,30 @@ const LEGACY_PROGRESS_PROMPT = '现在进展怎么样？这是一次进度问询
 export function isProgressPrompt(text) {
   return text === AUTONOMY_PROGRESS_PROMPT || text === PREVIOUS_PROGRESS_PROMPT || text === LEGACY_PROGRESS_PROMPT;
 }
+export function isAutonomyObservation(text) {
+  return isProgressPrompt(text) || /^\/(?:status|usage)$/u.test(text.trim());
+}
 export const AUTONOMY_DECISIONS = ['按此目标开始', '调整目标或预算', '暂不开始'];
 
 export function autonomyKey({ provider, threadId, tmuxSession }) {
   return JSON.stringify([provider, threadId, tmuxSession]);
 }
 
-export function autonomyPresentation(run) {
+export function autonomyPresentation(run, session) {
   const needsAnswer = Boolean(run?.requestId && run?.questions?.length);
   const labels = { configuring: needsAnswer ? '待回答' : '配置中',
-    confirming: '待确认', switching: '切换中', queued: '待执行', waiting: '等待中',
+    confirming: '待确认', switching: '切换中', stopping: '停止中', queued: '待执行', waiting: '等待中',
     blocked: '待处理', paused: '已暂停', completed: '已完成', limit: '已达上限' };
   const active = ['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked'].includes(run?.status);
   const budget = run?.plan || run?.proposal;
   const count = budget ? `${run.round}/${budget.maxRounds}` : '';
+  const activity = session?.agent?.question ? '待处理' : session?.hasRunningProcess ? '执行中'
+    : session?.agent?.hasBackgroundProcess ? '后台执行中' : '';
+  const phase = run && activity && !['configuring', 'confirming', 'switching', 'stopping'].includes(run.status)
+    ? [activity, !active && '续跑关闭'].filter(Boolean).join(' · ') : labels[run?.status];
   return {
-    text: ['Ⓐ', count, labels[run?.status]].filter(Boolean).join(' '),
-    detail: [count, labels[run?.status]].filter(Boolean).join(' '),
+    text: ['Ⓐ', count, phase].filter(Boolean).join(' '),
+    detail: [count, phase].filter(Boolean).join(' '),
     active,
     label: run?.status === 'configuring'
       ? needsAnswer ? '回答自主配置问题' : '暂停自主配置'

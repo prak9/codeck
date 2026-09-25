@@ -31,11 +31,30 @@ function reset(provider) {
   fixture?.recovery?.close();
   fixture?.autonomy?.close();
   fixture = { provider, turns: Array.from({ length: 80 }, (_, i) => turn(i + 1)),
-    status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [], dismissed: new Set() };
+    status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], scopedStops: [], receivedDeliveryIds: [], dismissed: new Set() };
   if (provider === 'codex') fixture.recovery = createFixtureRecovery();
   fixture.autonomySent = [];
   fixture.autonomyStops = 0;
   fixture.stopCommands = [];
+  fixture.stopQoder = async (target, guard, all = true) => {
+    let background = fixture.background || fixture.status === 'background', menu = false, draft = '';
+    await interruptSession({ provider: 'qodercli', sessionName: target.tmuxSession, threadId: target.threadId,
+      expectedPaneId: '%7', isCurrent: guard, waitForIdle: true, stopBackground: all, allowBackground: !all }, {
+      listTmuxSessions: async () => [{ name: 'fixture', hasRunningProcess: fixture.status === 'working',
+        agent: { kind: 'qodercli', id: 'fixture-thread', paneId: '%7', hasBackgroundProcess: background } }],
+      capturePane: async () => menu
+        ? `Background tasks\n${background ? '1 running' : '1 completed'}\nCommands (1)\n❯ test ${background ? 'running' : 'exited (0)'} PID 123\n↑↓ navigate · Enter output · k ${background ? 'kill' : 'clear'} · Esc close`
+        : `────────\n > ${draft}\n────────\nAuto Model · /fixture`,
+      execTmux: async args => {
+        const key = args.at(-1); fixture.stopCommands.push(key);
+        if (args.includes('-l')) draft = key;
+        else if (key === 'Enter') { menu = true; draft = ''; }
+        else if (key === 'k') background = false;
+        else if (key === 'Escape') { menu = false; fixture.status = background ? 'background' : 'done'; }
+      }, waitForStop: async () => {}, invalidatePaneSnapshot() {},
+    });
+    fixture.background = background; fixture.status = background ? 'background' : 'done';
+  };
   fixture.autonomy = new AutonomyController({
     schedule: () => 1, cancel() {},
     readSession: async () => ({ name: 'fixture', hasRunningProcess: fixture.status === 'working',
@@ -68,6 +87,7 @@ function reset(provider) {
         });
         assert.equal(background, false); assert.equal(goal, false);
       }
+      if (provider === 'qodercli') await fixture.stopQoder(target, guard);
       fixture.status = 'done'; publishSessions();
     },
     send: async (_target, text, guard) => {
@@ -111,6 +131,7 @@ function createFixtureRecovery() {
 function snapshot() {
   return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status,
     agent: { kind: fixture.provider, id: 'fixture-thread', name: 'Remote fixture',
+      hasBackgroundProcess: fixture.background || fixture.status === 'background',
       ...(fixture.question ? { question: fixture.question } : {}) } }] };
 }
 function thread() {
@@ -170,6 +191,7 @@ function publishEvent(method, params) {
 }
 sockets.on('connection', socket => {
   send(socket, { type: 'ready', hostname: 'isolated-fixture', defaultCwd: '/fixture',
+    scopedSessionStop: true,
     autonomy: fixture.autonomy.snapshots(),
     protocol: { version: 1, epoch: fixture.epoch, commandReceiptTtlMs: 600_000 },
     providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
@@ -177,6 +199,17 @@ sockets.on('connection', socket => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });
     const autonomyTarget = { provider: request.provider, threadId: request.threadId, tmuxSession: request.tmuxSession };
+    if (request.type === 'interruptSession') {
+      fixture.scopedStops.push(request);
+      await fixture.autonomy.interrupt(autonomyTarget, async () => {
+        if (fixture.holdManualStop) await new Promise(resolve => { fixture.finishManualStop = resolve; });
+        if (fixture.provider === 'qodercli') await fixture.stopQoder(autonomyTarget, () => true, request.scope === 'all');
+        fixture.status = request.scope === 'foreground' && fixture.background ? 'background' : 'done';
+        for (const turn of fixture.turns) if (turn.status === 'inProgress') turn.status = 'completed';
+        if (request.scope === 'all') fixture.background = false;
+      });
+      publishThread(); publishSessions(); return reply({});
+    }
     if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(request.type)) {
       if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget);
       else if (request.type === 'answerAutonomy') await fixture.autonomy.respond(autonomyTarget, request);
@@ -673,12 +706,12 @@ try {
       assert.equal(fixture.autonomyStops, 1);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-switching.png`) });
       fixture.holdAutonomyStop = false; fixture.finishStop();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 已暂停');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 执行中 · 续跑关闭');
       await page.locator('#liveStatus').getByText('自主任务已暂停：旧任务未停止，新目标未启动', { exact: true }).waitFor();
       assert.equal(fixture.autonomySent.length, 2, 'failed cancellation spends no round and dispatches no work');
-      if (provider === 'codex') { fixture.status = 'background'; publishSessions(); }
+      if (provider === 'codex' || provider === 'qodercli') { fixture.status = 'background'; publishSessions(); }
       await auto.click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 执行中');
       assert.equal(fixture.autonomyStops, 2, 'only explicit retry can attempt cancellation again');
       if (provider === 'codex') assert.deepEqual(fixture.stopCommands, ['/goal clear', '/stop']);
       assert.equal(await page.inputValue('#composerInput'), viewport.width < 500 ? '保留确认前草稿' : '');
@@ -692,18 +725,43 @@ try {
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-running.png`) });
       const beforeReload = fixture.autonomySent.length;
       await page.reload();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 执行中');
       assert.equal(fixture.autonomySent.length, beforeReload, 'reconnect cannot start another round');
       await auto.focus(); await page.keyboard.press('Space');
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 已暂停');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3 执行中 · 续跑关闭');
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-paused.png`) });
       fixture.finishAutonomy({ status: 'continue', summary: '旧方向完成一项', next: '旧方向', progress: true });
       await fixture.autonomy.tick(); assert.equal(fixture.autonomySent.length, beforeReload);
+      fixture.status = 'background'; fixture.background = true; publishSessions();
+      await page.locator('#composerInput').fill('');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('后台执行中 · 续跑关闭'));
+      await page.click('#sendButton');
+      await page.getByRole('button', { name: '取消', exact: true }).click();
+      assert.equal(fixture.scopedStops.length, 0);
+      await page.click('#sendButton');
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-stop-scope.png`) });
+      fixture.holdManualStop = true;
+      await page.getByRole('button', { name: '仅停止当前执行', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('停止中'));
+      assert.equal(await auto.isDisabled(), true);
+      fixture.holdManualStop = false; fixture.finishManualStop();
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('后台执行中 · 续跑关闭'));
+      assert.equal(fixture.scopedStops.at(-1).scope, 'foreground');
+      assert.equal(fixture.background, true);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-background-paused.png`) });
+      if (provider === 'qodercli') {
+        await page.click('#sendButton');
+        await page.getByRole('button', { name: '全部停止', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('#liveStatus').textContent.includes('已停止本会话任务'));
+        assert.equal(fixture.background, false);
+        assert.ok(fixture.stopCommands.includes('k'));
+      }
+      fixture.status = 'done'; fixture.background = false; publishSessions();
       fixture.autonomyPlan.goal = '只修后端';
       await page.locator('#composerInput').fill('只修改后端，继续'); await page.locator('#sendButton').click();
       await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
       await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3');
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3 执行中');
       assert.match(fixture.autonomySent.at(-1), /只修后端/);
       fixture.finishAutonomy({ status: 'complete', summary: '后端完成', evidence: '回归测试通过', progress: true });
       await fixture.autonomy.tick();

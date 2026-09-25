@@ -8,7 +8,7 @@ import { latestAgentOutputText } from '../public/remote-copy.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
 import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
-import { isProgressPrompt } from '../public/remote-autonomy.js';
+import { isAutonomyObservation } from '../public/remote-autonomy.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const SESSION_START_MATCH_MS = 120_000;
@@ -415,6 +415,7 @@ export class AgentHub {
     this.threadTurnWindow = threadTurnWindow;
     this.clients = new Map();
     this.commandReceipts = createCommandReceiptCache();
+    this.sessionStops = new Set();
     this.sessionMessageReceipts = new Map();
     this.dismissedDeliveries = new Map();
     this.pendingRequests = new Map();
@@ -447,6 +448,7 @@ export class AgentHub {
         commandReceiptTtlMs: COMMAND_RECEIPT_TTL_MS,
       },
       providers: this.registry.providerInfo(),
+      scopedSessionStop: true,
       ...(this.autonomy ? { autonomy: this.autonomy.snapshots(), autonomySessionBinding: true } : {}),
     });
     if (this.sessionFeed && negotiatedStreamVersion === 1) this.#subscribeSessions(socket, null);
@@ -539,6 +541,10 @@ export class AgentHub {
 
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
+    const stopKey = JSON.stringify([provider, message.threadId, message.tmuxSession]);
+    if (this.sessionStops.has(stopKey) && ['startAutonomy', 'answerAutonomy', 'sendSessionMessage'].includes(message.type)) {
+      throw new Error('正在停止任务，请等待结果后操作');
+    }
     if (message.type === 'dismissSessionDelivery') {
       const threadId = cleanId(message.threadId, 'Thread');
       const commandId = cleanCommandId(message.deliveryId);
@@ -711,14 +717,14 @@ export class AgentHub {
       return this.#runCommand(message, provider, payload, async () => {
         const target = { provider, threadId, tmuxSession: sessionName };
         const autonomous = this.autonomy?.snapshot(target);
-        if (autonomous && !['completed', 'limit'].includes(autonomous.status) && !isProgressPrompt(text)) {
+        if (autonomous && !['completed', 'limit'].includes(autonomous.status) && !isAutonomyObservation(text)) {
           if (!text.startsWith('/')) return { autonomyHandled: true, autonomy: await this.autonomy.message(target, text) };
           this.autonomy.pause(target, '用户正在操作原生命令菜单');
         }
         const deliveryBaseline = provider === 'qodercli'
           ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text,
-          ...(isProgressPrompt(text) ? { nonInterrupting: true } : {}),
+          ...(isAutonomyObservation(text) ? { nonInterrupting: true } : {}),
         });
         const submission = provider === 'codex' || result?.submissionStatus != null
           ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
@@ -765,14 +771,22 @@ export class AgentHub {
         threadId: cleanId(message.threadId, 'Thread'),
         tmuxSession: cleanId(message.tmuxSession, 'tmux session'),
       };
-      this.autonomy?.pause({ provider, ...target }, '用户已中断执行');
-      const result = await this.registry.interruptSession(provider, {
-        threadId: target.threadId,
-        sessionName: target.tmuxSession,
+      if (message.scope != null && !['foreground', 'all'].includes(message.scope)) throw new Error('停止范围无效');
+      return this.#runCommand(message, provider, { ...target, scope: message.scope }, async () => {
+        if (this.sessionStops.has(stopKey)) throw new Error('正在停止任务，请等待结果');
+        this.sessionStops.add(stopKey);
+        const operation = () => this.registry.interruptSession(provider, {
+          threadId: target.threadId, sessionName: target.tmuxSession,
+          ...(message.scope ? { waitForIdle: true, stopBackground: message.scope === 'all',
+            allowBackground: message.scope === 'foreground' } : {}),
+        });
+        try {
+          return this.autonomy ? await this.autonomy.interrupt({ provider, ...target }, operation, { verified: Boolean(message.scope) }) : await operation();
+        } finally {
+          this.sessionStops.delete(stopKey);
+          this.#invalidateSessionFeed(); this.#refreshThreadSubscription({ provider, ...target });
+        }
       });
-      this.#invalidateSessionFeed();
-      this.#refreshThreadSubscription({ provider, ...target });
-      return result;
     }
     if (message.type === 'newThread') {
       const text = cleanMessage(message.text);

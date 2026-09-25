@@ -89,6 +89,19 @@ test('progress is a non-interrupting question, not autonomy start, redirection o
   assert.equal(f.interrupted.length, 0);
 });
 
+test('read-only status queries keep continuation; mutating commands still pause it', async () => {
+  const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-query' }); await f.autonomy.tick();
+  const before = f.autonomy.snapshot(target);
+  for (const text of ['/status', '/usage']) {
+    const response = await f.request('sendSessionMessage', { commandId: `query-${text.slice(1)}`, text });
+    assert.equal(response.ok, true, response.error);
+    assert.deepEqual(f.autonomy.snapshot(target), before);
+    assert.equal(f.submissions.at(-1).nonInterrupting, true);
+  }
+  await f.request('sendSessionMessage', { commandId: 'model-change', text: '/model' });
+  assert.equal(f.autonomy.snapshot(target).status, 'paused');
+});
+
 test('owner Agent API binds start to the open session and deduplicates control requests', async () => {
   const f = await fixture();
   assert.deepEqual(f.socket.sent[0].autonomy, []);
@@ -117,6 +130,32 @@ test('permission requests pause autonomy; they are not automatically answered', 
   const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-work' });
   f.registry.emit('serverRequest', { provider: 'codex', id: 42, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread' } });
   assert.equal(f.autonomy.snapshot(target).status, 'paused'); await f.autonomy.tick(); assert.equal(f.sent.length, 0);
+});
+
+test('verified stop locks continuation until completion and forwards the explicit scope', async () => {
+  const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-stop' });
+  await f.autonomy.tick();
+  let finish;
+  f.registry.interruptSession = async (_provider, params) => {
+    assert.equal(params.waitForIdle, true); assert.equal(params.stopBackground, true);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const stopping = f.request('interruptSession', { scope: 'all', commandId: 'stop-all' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.autonomy.snapshot(target).status, 'stopping');
+  assert.equal((await f.request('startAutonomy', { commandId: 'racing-resume' })).ok, false);
+  await f.autonomy.tick(); assert.equal(f.sent.length, 1);
+  finish(); assert.equal((await stopping).ok, true);
+  assert.equal(f.autonomy.snapshot(target).status, 'paused');
+});
+
+test('failed verified stop stays paused with a visible failure, never claims success', async () => {
+  const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-failure' });
+  f.registry.interruptSession = async () => { throw new Error('后台任务仍在运行'); };
+  const result = await f.request('interruptSession', { scope: 'all', commandId: 'stop-failed' });
+  assert.equal(result.ok, false);
+  assert.match(f.autonomy.snapshot(target).reason, /停止未确认.*后台/);
+  await f.autonomy.tick(); assert.equal(f.sent.length, 0);
 });
 
 test('cached progress buttons remain non-interrupting after the prompt changes', async () => {

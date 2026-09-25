@@ -146,6 +146,84 @@ function fixture(options = {}) {
   return f;
 }
 
+test('resume observes the same in-flight round without cancellation or replay', async () => {
+  const f = fixture(); await f.run();
+  f.manager.stop = async () => assert.fail('same goal must not cancel work');
+  f.session.hasRunningProcess = true;
+  f.manager.pause(target); await f.manager.start(target); await f.manager.tick();
+  assert.equal(f.state().round, 1); assert.equal(f.sent.length, 2);
+  f.session.hasRunningProcess = false;
+  f.reply({ status: 'complete', summary: 'Done', evidence: 'tests pass' });
+  await f.manager.tick();
+  assert.equal(f.state().status, 'completed'); assert.equal(f.sent.length, 2);
+});
+
+test('restart preserves a reserved round for observation, never replay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-resume-'));
+  try {
+    const file = path.join(dir, 'runs.json'); const f = fixture({ file }); await f.run();
+    f.reply({ status: 'complete', summary: 'Done', evidence: 'tests pass' }); f.manager.close();
+    const restored = fixture({ file, stop: async () => assert.fail('no cancellation') });
+    restored.thread = f.thread;
+    await restored.manager.start(target); await restored.manager.tick();
+    assert.equal(restored.state().status, 'completed'); assert.equal(restored.state().round, 1);
+    assert.deepEqual(restored.sent, []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('background work does not trigger the idle missing-result timeout', async () => {
+  const f = fixture(); await f.run(); f.session.agent.hasBackgroundProcess = true;
+  await f.manager.tick(); f.now += 40_000; await f.manager.tick();
+  assert.equal(f.state().status, 'running');
+  f.session.agent.hasBackgroundProcess = false;
+  await f.manager.tick(); f.now += 31_000; await f.manager.tick();
+  assert.equal(f.state().status, 'paused');
+});
+
+test('pause and immediate resume invalidate a pending read without spending another round', async () => {
+  const f = fixture(); await f.run();
+  f.reply({ status: 'continue', summary: 'Tested', next: 'Next', progress: true }); await f.manager.tick();
+  let finish; const read = f.manager.readSession;
+  f.manager.readSession = () => new Promise(resolve => { finish = resolve; });
+  const tick = f.manager.tick(); await Promise.resolve();
+  f.manager.pause(target); await f.manager.start(target); finish(f.session); await tick;
+  assert.equal(f.sent.length, 2); assert.equal(f.state().round, 1);
+  f.manager.readSession = read; await f.manager.tick();
+  assert.equal(f.sent.length, 3); assert.equal(f.state().round, 2);
+});
+
+test('legacy paused runs wait for current work before checking results, without cancellation', async () => {
+  const f = fixture(); await f.run(); f.manager.pause(target);
+  f.manager.runs.get(autonomyKey(target)).suspended = null;
+  f.manager.stop = async () => assert.fail('legacy resume cannot cancel');
+  f.session.hasRunningProcess = true;
+  await f.manager.start(target); await f.manager.tick(); assert.equal(f.sent.length, 2);
+  f.session.hasRunningProcess = false; f.session.agent.hasBackgroundProcess = true;
+  await f.manager.tick(); assert.equal(f.sent.length, 2);
+  f.session.agent.hasBackgroundProcess = false;
+  await f.manager.tick(); await f.manager.tick(); assert.equal(f.state().round, 2);
+});
+
+test('explicit resume after a blocked result queues a bounded check instead of hanging', async () => {
+  const f = fixture(); await f.run();
+  f.reply({ status: 'blocked', summary: 'Need a decision' }); await f.manager.tick();
+  assert.equal(f.state().status, 'paused');
+  await f.manager.start(target); await f.manager.tick(); await f.manager.tick();
+  assert.equal(f.state().round, 2); assert.equal(f.sent.length, 3);
+});
+
+test('paused activity remains visible without changing the A resume action', () => {
+  const run = { status: 'paused', round: 2, plan };
+  for (const [session, label] of [
+    [{ hasRunningProcess: true }, '执行中'],
+    [{ agent: { hasBackgroundProcess: true } }, '后台执行中'],
+  ]) {
+    const view = autonomyPresentation(run, session);
+    assert.equal(view.detail, `2/3 ${label} · 续跑关闭`);
+    assert.equal(view.active, false); assert.equal(view.label, '继续自主迭代');
+  }
+});
+
 test('autonomy asks for configuration before dispatching any work and requires human confirmation', async () => {
   const f = fixture(); await f.ready();
   assert.equal(f.sent.length, 1); assert.equal(f.state().round, 0);
@@ -273,7 +351,7 @@ test('Qoder configuration sends while busy and distinguishes preparing, question
   await f.manager.respond(qoderTarget, { requestId: state().requestId, answers: { goal: ['修复选择器'] } });
   await f.manager.tick(); f.reply({ status: 'ready', plan }); await f.manager.tick();
   assert.equal(autonomyPresentation(state()).detail, '0/3 待确认');
-  await f.manager.tick(); assert.equal(state().round, 0); assert.equal(f.sent.length, 3);
+  await f.manager.tick(); assert.equal(state().round, 0); assert.equal(f.sent.length, 2, 'resume observes setup instead of resending it');
 });
 
 test('native question dismissal restores the queued or in-flight phase even while the Agent is busy', async () => {

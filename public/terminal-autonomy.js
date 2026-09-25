@@ -1,5 +1,6 @@
-import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, isProgressPrompt } from './remote-autonomy.js?v=5';
+import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=6';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
+import { chooseStopScope } from './session-stop.js?v=1';
 
 // The terminal and Remote are views of the same server-owned run, not two loops.
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
@@ -7,6 +8,8 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   const button = $('terminalAutonomyButton'), status = $('terminalAutonomyStatus');
   const dialog = $('terminalAutonomyDialog'), content = $('terminalAutonomyContent');
   const notice = $('terminalAutonomyNotice');
+  const stopButton = $('terminalStopButton');
+  let stopSupported = false;
   const runs = new Map();
   let supported = false, connected = false, bindingKey, bound = false, generation = 0;
   let pending = false, dismissed = '', formKey = '', lastReason = '';
@@ -31,7 +34,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   }
   async function act(type, extra = {}) {
     const target = targetNow();
-    if (!target || !bound || pending || keyOf(target) !== bindingKey || target.question) return false;
+    if (!target || !bound || pending || keyOf(target) !== bindingKey || (target.question && type !== 'interruptSession')) return false;
     const epoch = generation;
     const before = current();
     pending = true; message(); sync();
@@ -122,15 +125,18 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
         }).catch(error => { if (epoch === generation) { message(error.message); } });
       }
     }
-    const run = current(), view = autonomyPresentation(run), questions = questionFor(run);
+    const run = current(), view = autonomyPresentation(run, target?.session), questions = questionFor(run);
     const label = target?.question ? '处理 Agent 等待的问题'
       : run?.status === 'confirming' && run.proposal ? '确认目标并开始自主迭代' : view.label;
     button.hidden = !supported || !getTarget();
-    button.disabled = !target || !bound || pending;
+    button.disabled = !target || !bound || pending || run?.status === 'stopping';
     button.title = [label, run?.reason].filter(Boolean).join('：');
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-pressed', String(view.active));
     button.setAttribute('aria-busy', String(pending));
+    stopButton.hidden = !stopSupported || !target || !(target.session?.hasRunningProcess
+      || target.session?.agent?.hasBackgroundProcess || run?.status === 'stopping');
+    stopButton.disabled = !bound || pending || run?.status === 'stopping';
     status.textContent = view.detail;
     const reason = bound && run?.status === 'paused' ? run.reason : '';
     if (reason !== lastReason) { lastReason = reason; message(reason); }
@@ -154,6 +160,16 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
         questions && run.proposal ? { requestId: run.requestId, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {});
     } catch { /* The scoped notice already describes the failure. */ }
   });
+  stopButton.addEventListener('click', async () => {
+    const target = targetNow(), epoch = generation;
+    if (!target || stopButton.disabled) return;
+    const scope = await chooseStopScope(target.session?.agent?.hasBackgroundProcess, document);
+    if (!scope || epoch !== generation || keyOf(targetNow()) !== keyOf(target)) return;
+    try {
+      const stopped = await act('interruptSession', { scope });
+      if (stopped && epoch === generation) message(scope === 'all' ? '已停止本会话任务，续跑关闭' : '已停止当前执行，后台任务保留，续跑关闭');
+    } catch { /* act exposes the scoped failure. */ }
+  });
   function dismiss() { dismissed = formKey; dialog.close(); }
   $('closeTerminalAutonomy').addEventListener('click', dismiss);
   dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
@@ -162,13 +178,14 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     ready(message) {
       generation++; bindingKey = undefined; bound = false;
       connected = true; supported = message.autonomySessionBinding === true;
+      stopSupported = message.scopedSessionStop === true;
       runs.clear(); for (const run of message.autonomy || []) runs.set(autonomyKey(run.target), run);
       sync();
     },
     disconnect() { connected = false; sync(); },
     sendDirection(text) {
       const run = current();
-      if (!supported || !run || ['completed', 'limit'].includes(run.status) || text.startsWith('/') || isProgressPrompt(text)
+      if (!supported || !run || ['completed', 'limit'].includes(run.status) || (text.startsWith('/') && !isAutonomyObservation(text)) || isProgressPrompt(text)
         || getTarget()?.question) return null;
       if (!targetNow() || !bound || pending) return Promise.reject(new Error('自主任务连接未就绪，草稿已保留'));
       return act('sendSessionMessage', { text }).then(accepted => { if (!accepted) throw new Error('会话已变化，未确认发送'); });

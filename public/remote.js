@@ -22,7 +22,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=46';
+} from './agent-model.js?v=47';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
@@ -32,7 +32,8 @@ import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsComm
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=5';
+import { chooseStopScope } from './session-stop.js?v=1';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=6';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -142,6 +143,7 @@ const state = {
   pendingDeliveries: new Map(),
   dismissedNativeQuestion: '',
   autonomySupported: false,
+  scopedSessionStop: false,
   autonomyRuns: new Map(),
   autonomyPending: false,
   dismissedAutonomyQuestion: '',
@@ -651,6 +653,7 @@ async function handleReady(message) {
   }
   state.protocolEpoch = nextEpoch;
   state.autonomySupported = Array.isArray(message.autonomy);
+  state.scopedSessionStop = message.scopedSessionStop === true;
   state.autonomyRuns = new Map((message.autonomy || []).map(run => [autonomyKey(run.target), run]));
   state.streamVersion = message.protocol?.version === 2 ? 2 : 1;
   if (Number.isFinite(message.protocol?.commandReceiptTtlMs) && message.protocol.commandReceiptTtlMs > 0) {
@@ -2419,7 +2422,7 @@ function renderComposerState() {
   const opening = Boolean(state.threadOpening);
   const closing = state.sessionClosePending;
   const controls = composerControlState({
-    active, connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
+    active: active || (background && state.scopedSessionStop), connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
   });
   const composer = $('.composer');
   sendButton.classList.toggle('stop-mode', controls.stopMode && !shellAttachmentOnly);
@@ -2438,9 +2441,10 @@ function renderComposerState() {
   progressButton.title = progressHint;
   const autonomyButton = $('#autonomyButton');
   const autonomy = currentAutonomy();
-  const presentation = autonomyPresentation(autonomy);
+  const presentation = autonomyPresentation(autonomy, { hasRunningProcess: active,
+    agent: { hasBackgroundProcess: background, question: waitingForInput } });
   autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
-  autonomyButton.disabled = opening || closing || state.autonomyPending || !state.connected;
+  autonomyButton.disabled = opening || closing || pending || state.autonomyPending || !state.connected || autonomy?.status === 'stopping';
   autonomyButton.classList.toggle('running', ['running', 'queued', 'waiting'].includes(autonomy?.status));
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
@@ -2576,7 +2580,8 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
   const text = draft.trim();
   const running = latestRunningTurn(state.thread);
   const sessionName = state.thread?.tmux?.name;
-  const active = threadExecutionState(state.thread) === 'working';
+  const execution = threadExecutionState(state.thread);
+  const active = execution === 'working' || (execution === 'background' && state.scopedSessionStop);
   const attachments = usesPreset ? [] : [...state.attachments];
   const submitAction = composerSubmitAction({
     active, attachmentCount: attachments.length, explicitInterrupt,
@@ -2591,28 +2596,35 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
     return;
   }
   if (submitAction === 'interrupt') {
+    const stopTarget = { provider: state.provider, threadId: state.thread?.id, tmuxSession: sessionName };
     if (!sessionName && !running) {
       setLiveMessage('尚未获取当前任务标识，请等待同步后再停止。');
       return;
     }
     await composerRequestGate.run(async () => {
       try {
-        setLiveMessage('正在停止任务…');
         if (sessionName) {
+          const scope = state.scopedSessionStop
+            ? await chooseStopScope(Boolean(state.thread?.tmux?.hasBackgroundProcess || execution === 'background')) : undefined;
+          if (scope === null || state.thread?.id !== stopTarget.threadId || state.provider !== stopTarget.provider
+            || state.thread?.tmux?.name !== stopTarget.tmuxSession) return;
+          setLiveMessage('正在停止任务…');
           await agentRequest('interruptSession', {
-            provider: state.provider,
-            threadId: state.thread.id,
-            tmuxSession: sessionName,
+            ...stopTarget, ...(scope ? { scope, commandId: crypto.randomUUID() } : {}),
           });
+          if (state.thread?.id !== stopTarget.threadId || state.provider !== stopTarget.provider
+            || state.thread?.tmux?.name !== stopTarget.tmuxSession) return;
           state.threadRefreshUntil = Date.now() + 3_000;
+          setLiveMessage(scope === 'all' ? '已停止本会话任务，续跑关闭'
+            : scope ? '已停止当前执行，后台任务保留，续跑关闭' : '已发送停止请求');
         } else {
           await agentRequest('interruptTurn', {
             provider: state.provider,
             threadId: state.thread.id,
             turnId: running.id,
           });
+          setLiveMessage('已发送停止请求');
         }
-        setLiveMessage('已发送停止请求');
       } catch (error) { setLiveMessage(error.message); }
     });
     return;

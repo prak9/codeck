@@ -27,6 +27,7 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
   let liveMessage = '';
   const context = vm.createContext({
     autonomyDisplayText, autonomyKey,
+    chooseStopScope: async () => 'foreground',
     ...model, ...composer, ...delivery, ...commands,
     state, crypto: { randomUUID: () => `command-${sent.length + 1}` },
     Date, setTimeout, clearTimeout,
@@ -72,6 +73,24 @@ test('unconfirmed submission preserves the draft and original command without cl
   assert.equal(f.sent.length, 1);
   assert.equal(f.input.value, draft);
   assert.match(f.message, /提交未确认.*勿重复发送/);
+});
+
+test('background-only stop chooses a scope; cancelling or switching sessions sends no interrupt', async () => {
+  for (const scenario of ['foreground', 'cancel', 'switch']) {
+    const f = fixture({}); f.input.value = ''; f.state.scopedSessionStop = true;
+    f.state.thread.tmux.status = 'background';
+    f.context.chooseStopScope = async background => {
+      assert.equal(background, true);
+      if (scenario === 'switch') f.state.thread = { ...thread(), id: 'another' };
+      return scenario === 'cancel' ? null : 'foreground';
+    };
+    await f.context.submitComposer({ explicitInterrupt: true });
+    assert.equal(f.sent.length, scenario === 'foreground' ? 1 : 0);
+    if (f.sent.length) {
+      assert.equal(f.sent[0].type, 'interruptSession'); assert.equal(f.sent[0].scope, 'foreground');
+      assert.match(f.message, /后台任务保留/);
+    }
+  }
 });
 
 test('the progress shortcut sends its own prompt without touching the draft or attachments', async () => {

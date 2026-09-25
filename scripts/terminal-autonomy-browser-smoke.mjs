@@ -19,7 +19,7 @@ function reset(provider) {
   const target = { provider, threadId: 'fixture-thread', tmuxSession: 'fixture' };
   const sessions = ['fixture', 'other'].map(name => ({ name, width: 100, height: 24, activityAt: Date.now(),
     agent: { kind: provider, id: name === 'fixture' ? target.threadId : 'other-thread', paneId: '%7' } }));
-  const f = fixture = { target, sessions, sent: [], inputs: [], requests: [], turns: [], stops: 0, agents: [] };
+  const f = fixture = { target, sessions, sent: [], inputs: [], requests: [], turns: [], stops: 0, manualStops: [], agents: [] };
   const thread = () => ({ thread: { id: target.threadId, turns: f.turns } });
   const backend = new EventEmitter(); backend.openThread = async () => thread();
   f.autonomy = new AutonomyController({ schedule: () => 1, cancel() {},
@@ -44,6 +44,13 @@ function reset(provider) {
   });
   f.hub = new AgentHub(new AgentRegistry({ [provider]: backend }, {
     sendTmuxMessage: async params => { f.inputs.push(params); return { submissionStatus: 'submitted' }; },
+    interruptTmuxSession: async params => {
+      f.manualStops.push(params);
+      if (f.holdStop) await new Promise(resolve => { f.finishStop = resolve; });
+      if (params.stopBackground && provider === 'claude') throw new Error('后台停止尚不支持，请在终端处理');
+      sessions[0].hasRunningProcess = false;
+      if (params.stopBackground) sessions[0].agent.hasBackgroundProcess = false;
+    },
   }), { autonomy: f.autonomy });
 }
 const snapshot = () => ({ sessions: fixture.sessions, capabilities: { canManage: true, canWrite: !fixture.readOnly, terminalSubmit: true } });
@@ -146,6 +153,37 @@ try {
     await a.click();
     await page.waitForFunction(() => document.querySelector('#terminalAutonomyNotice').textContent.includes('继续请求未确认'));
     fixture.autonomy.start = start;
+    fixture.sessions[0].hasRunningProcess = true;
+    fixture.sessions[0].agent.hasBackgroundProcess = true;
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#terminalAutonomyStatus').textContent.includes('执行中 · 续跑关闭'));
+    const sendsBeforeResume = fixture.sent.length;
+    await a.click(); await fixture.autonomy.tick();
+    assert.equal(fixture.sent.length, sendsBeforeResume); assert.equal(fixture.stops, 1);
+    await a.click();
+    await page.click('#terminalStopButton');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    assert.equal(fixture.manualStops.length, 0);
+    await page.click('#terminalStopButton');
+    await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-stop-scope.png`) });
+    fixture.holdStop = true;
+    await page.getByRole('button', { name: '仅停止当前执行', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('#terminalAutonomyStatus').textContent.includes('停止中'));
+    assert.equal(await a.isDisabled(), true);
+    fixture.holdStop = false; fixture.finishStop();
+    await page.waitForFunction(() => document.querySelector('#terminalAutonomyStatus').textContent.includes('续跑关闭'));
+    assert.equal(fixture.manualStops[0].allowBackground, true);
+    assert.equal(fixture.sessions[0].agent.hasBackgroundProcess, true);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#terminalAutonomyStatus').textContent.includes('后台执行中 · 续跑关闭'));
+    assert.equal(await page.locator('.terminal-header').evaluate(el => el.scrollWidth <= el.clientWidth), true);
+    await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-background-paused.png`) });
+    await page.click('#terminalStopButton');
+    await page.getByRole('button', { name: '全部停止', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
+    assert.equal(fixture.manualStops.at(-1).stopBackground, true);
+    if (provider === 'claude') assert.match(await page.textContent('#terminalAutonomyNotice'), /后台停止尚不支持/);
+    fixture.sessions[0].agent.hasBackgroundProcess = false;
     // Manual direction goes through the same controller and preserves spent rounds.
     fixture.plan = null;
     await page.locator('#terminalVoiceDraft').fill('只修改后端，先重新确认目标');

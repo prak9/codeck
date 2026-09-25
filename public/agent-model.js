@@ -223,6 +223,7 @@ export function tmuxSessionsToThreads(sessions) {
           ? session.status
           : 'done',
         available,
+        ...(session.agent?.hasBackgroundProcess ? { hasBackgroundProcess: true } : {}),
         ...(provider === 'qodercli' && session.agent?.question ? { question: session.agent.question } : {}),
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
         ...(liveOutput ? { liveOutput } : {}),

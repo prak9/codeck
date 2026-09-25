@@ -1399,6 +1399,30 @@ test('goal switching interrupts once and verifies the exact Agent pane has stopp
   }
 });
 
+test('explicit foreground stop verifies foreground idle while preserving background work', async () => {
+  for (const provider of ['codex', 'claude', 'qodercli']) {
+    const commands = []; let busy = true;
+    await interruptSession({ provider, sessionName: 'work', threadId: 'thread-1',
+      waitForIdle: true, allowBackground: true,
+    }, {
+      listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: busy,
+        agent: { kind: provider, id: 'thread-1', paneId: '%7', hasBackgroundProcess: true } }],
+      execTmux: async args => commands.push(args), waitForStop: async () => { busy = false; },
+    });
+    assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']]);
+  }
+});
+
+test('Qoder stop tolerates the six-second activity repaint window without repeating Escape', async () => {
+  const commands = []; let waits = 0;
+  await interruptSession({ provider: 'qodercli', sessionName: 'work', threadId: 'thread-1', waitForIdle: true }, {
+    listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: waits < 25,
+      agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+    execTmux: async args => commands.push(args), waitForStop: async () => { waits++; },
+  });
+  assert.equal(waits, 25); assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']]);
+});
+
 test('goal switching preserves unrelated background tasks and rejects stale cancellation without keys', async () => {
   for (const scenario of ['background', 'cancelled', 'replaced', 'idle']) {
     const commands = [];
@@ -1428,7 +1452,7 @@ test('goal switching fails closed on timeout, replacement, background work or pa
       execTmux: async args => commands.push(args), waitForStop: async () => { waits++; },
     }), /停止|后台|变化|暂停/);
     assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Escape']], scenario);
-    assert.ok(waits <= 20, 'stop confirmation has a finite timeout');
+    assert.ok(waits <= 40, 'stop confirmation has a finite timeout');
   }
 });
 
@@ -1537,8 +1561,44 @@ test('background cancellation never guesses another provider native command', as
     }, {
       listTmuxSessions: async () => [{ name: 'work', agent: { kind: provider, id: 'thread-1', paneId: '%7', hasBackgroundProcess: true } }],
       execTmux: async args => commands.push(args),
+      capturePane: async () => '',
     }), /后台/);
     assert.deepEqual(commands, []);
+  }
+});
+
+for (const alreadyOpen of [false, true]) test(`Qoder all-stop verifies cancellation and closes the panel (already open: ${alreadyOpen})`, async () => {
+  const composer = text => `────────\n > ${text}\n────────\nAuto Model · /fixture`;
+  const running = 'Background tasks\n1 running\nCommands (1)\n❯ test running PID 123\n↑↓ navigate · Enter output · k kill · Esc close';
+  let background = true, screen = alreadyOpen ? running : composer('');
+  const keys = [];
+  await interruptSession({ provider: 'qodercli', sessionName: 'work', threadId: 'thread-1',
+    waitForIdle: true, stopBackground: true }, {
+    listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: false,
+      agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7', hasBackgroundProcess: background } }],
+    capturePane: async () => screen,
+    execTmux: async args => {
+      const key = args.at(-1); keys.push(key);
+      if (args.includes('-l')) screen = composer('/tasks ');
+      else if (key === 'Enter') screen = running;
+      else if (key === 'k') { background = false; screen = 'Background tasks\n1 completed\nCommands (1)\n❯ test exited (0) PID 123\n↑↓ navigate · Enter output · k clear · Esc close'; }
+      else if (key === 'Escape') screen = composer('');
+    }, waitForStop: async () => {}, invalidatePaneSnapshot() {},
+  });
+  assert.deepEqual(keys, [...(alreadyOpen ? [] : ['/tasks ', 'Enter']), 'k', 'Escape']); assert.equal(background, false);
+});
+
+test('Qoder stop cannot submit its draft after pane replacement or cancellation', async () => {
+  for (const scenario of ['pane', 'pause']) {
+    const keys = [];
+    await assert.rejects(interruptSession({ provider: 'qodercli', sessionName: 'work', threadId: 'thread-1',
+      waitForIdle: true, stopBackground: true, isCurrent: () => scenario !== 'pause' || !keys.length }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'qodercli', id: 'thread-1',
+        paneId: scenario === 'pane' && keys.length ? '%8' : '%7', hasBackgroundProcess: true } }],
+      capturePane: async () => '────────\n > \n────────\nAuto Model · /fixture',
+      execTmux: async args => keys.push(args.at(-1)), waitForStop: async () => {}, invalidatePaneSnapshot() {},
+    }), /变化|暂停/);
+    assert.deepEqual(keys, ['/tasks ']);
   }
 });
 
