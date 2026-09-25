@@ -118,6 +118,31 @@ export class AutonomyController extends EventEmitter {
     return structuredClone(view);
   }
   snapshots() { return [...this.runs.values()].map(run => this.snapshot(run.target)); }
+  restoreProposal(target, thread) {
+    const run = this.runs.get(autonomyKey(target));
+    if (!run || run.status !== 'paused' || run.round !== 0 || run.plan || run.proposal || run.exchange || run.pending
+      || thread?.id !== target.threadId || thread.historyLoading || thread.historyError) return;
+    // A failed send check/restart can lose the exchange while its final reply is
+    // already in the transcript. Recover only the latest unambiguous setup, never work.
+    const input = (thread.turns || []).flatMap(turn => turn.items || []).findLast(item => (
+      item.type === 'userMessage' && !item.delivery && !isProgressPrompt(userText(item).trim())
+    ));
+    if (!input) return;
+    const text = userText(input);
+    const block = /\n\n<codeck-autonomy-context>\n([^]*?)\n<\/codeck-autonomy-context>\s*$/u.exec(text);
+    const encoded = block && /^上下文：(\{[^\n]+\})$/mu.exec(block[1]);
+    if (!encoded) return;
+    let context;
+    try { context = JSON.parse(encoded[1]); } catch { return; }
+    if (context.phase !== 'config' || context.round !== run.round || context.plan
+      || !/^[\w-]{8,128}$/u.test(context.nonce || '')) return;
+    const { record } = resultFor(thread, { text, nonce: context.nonce });
+    const proposal = record?.status === 'ready' && validPlan(record.plan);
+    if (!proposal) return;
+    run.proposal = proposal; run.status = 'confirming'; run.requestId = crypto.randomUUID();
+    run.reason = ''; run.confirmAfterConfig = false;
+    this.changed(run);
+  }
   persist() {
     if (!this.file) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });

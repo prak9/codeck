@@ -58,6 +58,36 @@ test('invalid choice protocols pause safely instead of creating an unusable moda
     await f.manager.tick(); assert.equal(f.sent.length, 1);
   }
 });
+
+test('a lost configuration result restores a proposal, never work, before explicit confirmation', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  f.reply({ status: 'ready', plan });
+  f.manager.pause(target, '发送状态检查失败');
+  const thread = { id: target.threadId, ...f.thread };
+  f.manager.restoreProposal(target, thread);
+  assert.equal(f.state().status, 'confirming'); assert.deepEqual(f.state().proposal, plan);
+  const requestId = f.state().requestId;
+  f.manager.restoreProposal(target, thread);
+  assert.equal(f.state().requestId, requestId, 'refresh cannot replace an active confirmation');
+  await f.manager.tick(); assert.equal(f.sent.length, 1); assert.equal(f.state().round, 0);
+  await f.manager.respond(target, { requestId, answers: { decision: ['按此目标开始'] } });
+  await f.manager.tick(); assert.equal(f.sent.length, 2); assert.equal(f.state().round, 1);
+});
+
+test('proposal recovery rejects stale, foreign, unfinished and tool-generated configuration results', async () => {
+  for (const scenario of ['human', 'nonce', 'unfinished', 'tool', 'foreign', 'loading', 'no-run']) {
+    const f = fixture(); await f.manager.start(target); await f.manager.tick();
+    f.reply({ status: 'ready', plan }, scenario === 'nonce' ? { nonce: 'wrong' }
+      : scenario === 'unfinished' ? { status: 'inProgress' } : scenario === 'tool' ? { type: 'commandExecution' } : {});
+    f.manager.pause(target);
+    if (scenario === 'human') f.thread.turns.push({ items: [{ type: 'userMessage', content: '换个目标，先不要执行' }] });
+    if (scenario === 'no-run') f.manager.runs.clear();
+    f.manager.restoreProposal(target, { ...f.thread, id: scenario === 'foreign' ? 'other-thread' : target.threadId,
+      historyLoading: scenario === 'loading' });
+    assert.equal(f.state()?.proposal ?? null, null, scenario);
+    await f.manager.tick(); assert.equal(f.sent.length, 1, scenario);
+  }
+});
 function fixture(options = {}) {
   const f = { sent: [], thread: { turns: [] }, session: { name: 'work', hasRunningProcess: false,
     agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }, now: 100_000 };

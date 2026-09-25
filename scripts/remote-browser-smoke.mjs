@@ -151,6 +151,7 @@ sockets.on('connection', socket => {
       return reply({ autonomy: fixture.autonomy.snapshot(autonomyTarget) });
     }
     if (request.type === 'openThread') {
+      fixture.autonomy.restoreProposal(autonomyTarget, thread());
       for (const id of request.dismissedDeliveryIds || []) { fixture.dismissed.add(id); fixture.recovery?.dismiss('fixture-thread', id); }
       for (const receipt of request.deliveryReceipts || []) {
         if (!fixture.dismissed.has(receipt.commandId)) fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
@@ -568,10 +569,26 @@ try {
       assert.match(await dialog.locator('.autonomy-plan').textContent(), /修复选择器.*回归测试通过.*3 轮.*30 分钟.*不提交部署/);
       assert.equal(fixture.autonomySent.length, 2, 'a proposed plan is not yet authorized work');
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-confirm.png`) });
-      await dialog.getByRole('radio', { name: '按此目标开始', exact: true }).check();
-      await dialog.getByRole('button', { name: '确认选择' }).click();
-      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
       assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
+      // report regression: the final ready reply exists, but a failed send check
+      // lost the controller's proposal. Reopening recovers it without another prompt.
+      const run = [...fixture.autonomy.runs.values()][0];
+      run.proposal = null; fixture.autonomy.pause(run.target, '终端输入框未就绪');
+      await page.reload();
+      await dialog.getByRole('heading', { name: '确认自主目标' }).waitFor();
+      assert.equal(fixture.autonomySent.length, 2, 'recovering a proposal must not resend setup');
+      // Keep explicit choice confirmation covered on desktop; mobile uses A itself.
+      if (viewport.width < 500) {
+        await page.keyboard.press('Escape');
+        await page.locator('#composerInput').fill('保留确认前草稿');
+        assert.match(await auto.getAttribute('aria-label'), /确认并执行/);
+        await auto.focus(); await page.keyboard.press('Space');
+      } else {
+        await dialog.getByRole('radio', { name: '按此目标开始', exact: true }).check();
+        await dialog.getByRole('button', { name: '确认选择' }).click();
+      }
+      await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      assert.equal(await page.inputValue('#composerInput'), viewport.width < 500 ? '保留确认前草稿' : '');
       assert.equal(await auto.getAttribute('aria-pressed'), 'true');
       const box = await auto.boundingBox(); assert.ok(box.width >= 44 && box.height >= 44);
       const groupedProgressBox = await page.locator('#progressButton').boundingBox();

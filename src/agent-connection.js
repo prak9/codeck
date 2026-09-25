@@ -661,6 +661,7 @@ export class AgentHub {
         const result = this.#windowThread(this.#withPaneExcerpt(
           await this.registry.openThread(provider, threadId, options), target.tmuxSession,
         ));
+        this.autonomy?.restoreProposal(target, result?.thread);
         const restored = this.#restoreSessionMessageReceipts(provider, threadId, result);
         return afterReply(restored, () => this.#activateThreadSubscription(socket, subscription));
       } catch (error) {
@@ -977,6 +978,7 @@ export class AgentHub {
   }
 
   #deliverV2ThreadFrame(socket, subscription, frame) {
+    this.autonomy?.restoreProposal(subscription.target, frame.snapshot?.thread);
     const restored = frame.snapshot
       ? this.#restoreSessionMessageReceipts(
         subscription.target.provider,
@@ -1042,6 +1044,7 @@ export class AgentHub {
       const onSnapshot = client.streamVersion === 2
         ? (frame) => this.#deliverV2ThreadFrame(socket, subscription, frame)
         : ({ epoch, sequence, snapshot }) => {
+          this.autonomy?.restoreProposal(subscription.target, snapshot?.thread);
           const restored = this.#restoreSessionMessageReceipts(
             subscription.target.provider,
             subscription.target.threadId,

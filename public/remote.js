@@ -2442,7 +2442,9 @@ function renderComposerState() {
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
   $('#autonomyStatus').textContent = presentation.detail;
-  if (autonomyQuestionEntry()) autonomyButton.setAttribute('aria-label', '确认自主目标');
+  const autonomyQuestion = autonomyQuestionEntry();
+  if (autonomyQuestion) autonomyButton.setAttribute('aria-label', autonomyQuestion.plan ? '确认并执行自主任务' : '设置自主目标');
+  autonomyButton.title = autonomyButton.getAttribute('aria-label');
   syncAutonomyDialog();
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
@@ -2887,12 +2889,16 @@ function dismissAutonomyDialog() {
 async function toggleAutonomy() {
   const button = $('#autonomyButton');
   if (button.hidden || button.disabled) return;
-  if (autonomyQuestionEntry()) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
+  const question = autonomyQuestionEntry();
+  if (question && !question.plan) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
   const active = autonomyPresentation(currentAutonomy()).active;
   state.autonomyPending = true; renderComposerState();
   try {
-    const result = await agentRequest(active ? 'pauseAutonomy' : 'startAutonomy', { ...target, commandId: crypto.randomUUID() });
+    const result = await agentRequest(question?.plan ? 'answerAutonomy' : active ? 'pauseAutonomy' : 'startAutonomy', {
+      ...target, commandId: crypto.randomUUID(),
+      ...(question?.plan ? { requestId: question.request.id, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {}),
+    });
     if (result.autonomy) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
     if (state.provider === target.provider && state.thread?.id === target.threadId && state.thread?.tmux?.name === target.tmuxSession) {
       setLiveMessage('');

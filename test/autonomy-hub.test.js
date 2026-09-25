@@ -36,7 +36,7 @@ async function fixture() {
     throw new Error(`No response: ${type}`);
   };
   await request('openThread', { readOnly: true });
-  return { sent, submissions, interrupted, autonomy, socket, hub, registry, request };
+  return { sent, submissions, interrupted, autonomy, socket, hub, registry, backend, request };
 }
 
 test('progress is a non-interrupting question, not autonomy start, redirection or another round', async () => {
@@ -104,4 +104,24 @@ test('choice answers bind to the subscribed session and deduplicate before start
   assert.equal((await f.request('answerAutonomy', answer)).ok, true);
   assert.equal((await f.request('answerAutonomy', { ...answer, commandId: 'stale-goal' })).ok, false);
   await f.autonomy.tick(); assert.equal(f.sent.length, 1); assert.equal(run.round, 1);
+});
+
+test('opening report restores its lost ready proposal without sending configuration or work', async () => {
+  const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-work' }); await f.autonomy.tick();
+  const text = f.sent[0]; const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
+  f.autonomy.pause(target, '终端输入框未就绪');
+  f.backend.openThread = async () => ({ thread: { id: target.threadId, turns: [{ status: 'completed', items: [
+    { type: 'userMessage', content: text },
+    { type: 'agentMessage', text: '配置完成\n\n```codeck-autonomy\n' + JSON.stringify({ nonce, status: 'ready',
+      plan: { goal: '收尾诊断并验证一个候选', acceptance: '完成对照并交付裁决', preferences: '不改生产，不部署', maxRounds: 5, minutes: null } }) + '\n```' },
+  ] }] } });
+  assert.equal((await f.request('openThread', { readOnly: true })).ok, true);
+  const run = f.autonomy.snapshot(target);
+  assert.equal(run.status, 'confirming'); assert.equal(run.proposal.maxRounds, 5);
+  assert.ok(f.socket.sent.some(message => message.type === 'autonomyState' && message.run.requestId === run.requestId));
+  await f.autonomy.tick(); assert.equal(f.sent.length, 1);
+  assert.equal((await f.request('answerAutonomy', { commandId: 'confirm-report', requestId: run.requestId,
+    answers: { decision: ['按此目标开始'] } })).ok, true);
+  await f.autonomy.tick(); assert.equal(f.sent.length, 2);
+  assert.match(f.sent.at(-1), /"phase":"round"/);
 });

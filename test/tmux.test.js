@@ -2639,6 +2639,22 @@ test('narrow Codex confirmation retries only the exact draft then recognizes the
   }
 });
 
+test('autonomous input accepts the report paused-goal footer but never clears a real draft', async () => {
+  for (const draft of ['', '保留这份草稿', '\n  第二行草稿']) {
+    const commands = [];
+    const sending = sendSessionMessage({ provider: 'codex', sessionName: 'report', threadId: 'thread-1',
+      text: '按确认方案执行', requireIdle: true, isCurrent: () => true, expectedPaneId: '%3' }, {
+      listTmuxSessions: async () => [{ name: 'report', agent: { kind: 'codex', id: 'thread-1', paneId: '%3' } }],
+      loadBuffer: async () => {}, execTmux: async args => commands.push(args),
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+      capturePane: async () => `› ${draft || '\x1b[2mAsk Codex to do anything\x1b[0m'}\n\n  gpt-6… Goal paused (/goal resume)`,
+    });
+    if (draft) { await assert.rejects(sending, /未就绪/); assert.equal(commands.length, 0); }
+    else { assert.equal((await sending).submissionStatus, 'submitted'); assert.equal(commands.filter(args => args.includes('Enter')).length, 1); }
+    assert.equal(commands.some(args => args.includes('C-u') || args.includes('Escape')), false);
+  }
+});
+
 test('narrow Codex replacement clears drafts resembling truncated placeholders and footers', async () => {
   for (const draft of [
     'Ask Codex to do anyth', '\x1b[38;2;2;2;2mAsk Codex to do anyth',
