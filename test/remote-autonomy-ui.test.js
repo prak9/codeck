@@ -39,6 +39,24 @@ test('A still opens missing-information choices and pauses an executing run', as
   assert.equal(running.calls[0].type, 'pauseAutonomy');
 });
 
+test('paused configuration recovery exposes choices and A never implicitly authorizes replacement', async () => {
+  const run = { status: 'paused', recovery: { nonce: 'old' }, requestId: 'recovery-request',
+    target: { provider: 'qodercli', threadId: 'thread', tmuxSession: 'report' },
+    questions: [{ id: 'recovery', question: '重新配置？', options: ['保持暂停', '放弃旧配置并重新配置'], isOther: false }] };
+  const context = vm.createContext({ currentAutonomy: () => run, AUTONOMY_DECISIONS });
+  const start = source.indexOf('function autonomyQuestionEntry(');
+  vm.runInContext(source.slice(start, start + source.slice(start).search(/^}$/m) + 1), context);
+  const entry = context.autonomyQuestionEntry();
+  assert.equal(entry.recovery, true);
+  assert.equal(entry.request.id, run.requestId);
+  assert.equal(entry.request.params.questions[0].isOther, false);
+  const f = fixture('paused', entry);
+  await f.context.toggleAutonomy();
+  assert.deepEqual(f.calls, [{ type: 'dialog' }]);
+  run.recovery = null;
+  assert.equal(context.autonomyQuestionEntry(), null);
+});
+
 test('A cancels queued configuration without approving or starting work', async () => {
   const f = fixture('configuring', null); await f.context.toggleAutonomy();
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0].type, 'pauseAutonomy');

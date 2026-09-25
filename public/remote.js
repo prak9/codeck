@@ -2874,11 +2874,11 @@ function currentAutonomy() {
 
 function autonomyQuestionEntry() {
   const run = currentAutonomy();
-  if (!run?.requestId || !['configuring', 'confirming'].includes(run.status)) return null;
+  if (!run?.requestId || (!['configuring', 'confirming'].includes(run.status) && !(run.status === 'paused' && run.recovery))) return null;
   const questions = run.status === 'confirming' && run.proposal ? [{ id: 'decision', header: '下一步',
     question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
   if (!questions?.length) return null;
-  return { autonomy: true, provider: run.target.provider, tmuxSession: run.target.tmuxSession,
+  return { autonomy: true, recovery: Boolean(run.recovery), provider: run.target.provider, tmuxSession: run.target.tmuxSession,
     plan: run.status === 'confirming' ? run.proposal : null, round: run.round,
     request: { id: run.requestId, params: { threadId: run.target.threadId, questions } } };
 }
@@ -2890,7 +2890,7 @@ function syncAutonomyDialog() {
   const key = `${entry.provider}:${entry.tmuxSession}:${entry.request.params.threadId}:${entry.request.id}`;
   if (dialog.dataset.questionKey !== key) {
     dialog.dataset.questionKey = key;
-    $('#autonomyDialogTitle').textContent = entry.plan ? '确认自主目标' : '设置自主目标';
+    $('#autonomyDialogTitle').textContent = entry.recovery ? '重新配置自主目标' : entry.plan ? '确认自主目标' : '设置自主目标';
     $('#autonomyDialogContent').replaceChildren(interactionNode(key, entry));
   }
   if (!dialog.open && state.dismissedAutonomyQuestion !== key && !document.querySelector('dialog[open]')) dialog.showModal();

@@ -777,6 +777,32 @@ try {
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '2/3 已完成');
       assert.equal(await auto.getAttribute('aria-pressed'), 'false');
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-completed.png`) });
+      if (provider === 'qodercli') {
+        const run = fixture.autonomy.runs.values().next().value;
+        const text = fixture.autonomySent[0], nonce = /"nonce":"([^"]+)"/.exec(text)[1];
+        fixture.turns = []; fixture.autonomyPlan = null;
+        Object.assign(run, { status: 'paused', plan: null, proposal: null, questions: null, requestId: null,
+          pending: null, exchange: null, round: 0,
+          suspended: { status: 'configuring', exchange: { kind: 'config', nonce, commandId: nonce, text, sentAt: 0 } } });
+        fixture.autonomy.changed(run);
+        const sent = fixture.autonomySent.length;
+        await auto.click();
+        await dialog.getByRole('heading', { name: '重新配置自主目标' }).waitFor();
+        assert.equal(await dialog.locator('input[type=text]').count(), 0);
+        assert.equal(fixture.autonomySent.length, sent);
+        await dialog.getByRole('radio', { name: '保持暂停', exact: true }).check();
+        await dialog.getByRole('button', { name: '确认选择' }).click();
+        await page.locator('#autonomyDialog:not([open])').waitFor({ state: 'attached' });
+        await auto.click();
+        await dialog.getByRole('radio', { name: '放弃旧配置并重新配置', exact: true }).check();
+        await dialog.getByRole('button', { name: '确认选择' }).click();
+        await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+        assert.equal(fixture.autonomySent.length, sent + 1);
+        assert.notEqual(/"nonce":"([^"]+)"/.exec(fixture.autonomySent.at(-1))[1], nonce);
+        assert.equal(run.round, 0);
+        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-replacement.png`) });
+        await page.keyboard.press('Escape');
+      }
       if (viewport.width < 500) {
         await page.setViewportSize({ width: viewport.width, height: 420 });
         await page.locator('#composerInput').focus();

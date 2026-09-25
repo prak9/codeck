@@ -112,6 +112,7 @@ export class AutonomyController extends EventEmitter {
           status: run.status, exchange: run.exchange, pending: run.pending, questions: run.questions,
         };
         run.exchange = null; run.pending = null; run.questions = null; run.requestId = null;
+        run.recovery = null;
         if (!TERMINAL.has(run.status)) { run.status = 'paused'; run.reason = '服务已重启，请核对终端后继续；不会重发上一轮'; }
         this.runs.set(autonomyKey(run.target), run);
       }
@@ -122,7 +123,7 @@ export class AutonomyController extends EventEmitter {
   snapshot(target) {
     const run = this.runs.get(autonomyKey(target));
     if (!run) return null;
-    const { exchange, pending, suspended, generation, paneId, idleSince, ...view } = run;
+    const { exchange, pending, suspended, generation, paneId, idleSince, abandonedConfigNonces, ...view } = run;
     return structuredClone(view);
   }
   snapshots() { return [...this.runs.values()].map(run => this.snapshot(run.target)); }
@@ -143,12 +144,14 @@ export class AutonomyController extends EventEmitter {
     let context;
     try { context = JSON.parse(encoded[1]); } catch { return; }
     if (context.phase !== 'config' || context.round !== run.round || context.plan
+      || run.abandonedConfigNonces?.includes(context.nonce)
       || !/^[\w-]{8,128}$/u.test(context.nonce || '')) return;
     const { record } = resultFor(thread, { text, nonce: context.nonce });
     const proposal = record?.status === 'ready' && validPlan(record.plan);
     const questions = record?.status === 'ask' && validQuestions(record.questions);
     if (!proposal && !questions) return;
     run.proposal = proposal || null; run.questions = questions || null;
+    run.recovery = null;
     run.suspended = null;
     run.status = proposal ? 'confirming' : 'configuring'; run.requestId = crypto.randomUUID();
     run.reason = ''; run.confirmAfterConfig = false;
@@ -182,6 +185,7 @@ export class AutonomyController extends EventEmitter {
     if (old?.status === 'stopping') throw new Error('正在停止任务，请等待结果后再继续');
     if (old && ACTIVE.has(old.status)) return this.snapshot(target);
     if (old?.status === 'paused') {
+      if (old.recovery && old.requestId) return this.snapshot(target);
       const legacy = old.suspended?.exchange;
       if (target.provider === 'qodercli' && legacy?.kind === 'config' && !legacy.receivedAt
         && (!legacy.commandId || ['not-sent', 'unconfirmed'].includes(legacy.deliveryState) || this.now() - legacy.sentAt >= 30_000)
@@ -239,7 +243,14 @@ export class AutonomyController extends EventEmitter {
         return this.message(run.target, '继续');
       }
       if (exchange.deliveryState !== 'not-sent') {
-        throw new Error('配置投递结果仍不确定，未重发；请先检查终端草稿和对话，再明确新的配置要求');
+        run.recovery = { nonce: exchange.nonce };
+        run.requestId = crypto.randomUUID();
+        run.questions = [{ id: 'recovery', header: '重新配置',
+          question: '旧配置是否送达无法确认。放弃旧配置并重新询问目标？这不会停止旧任务或开始执行新目标。',
+          options: ['保持暂停', '放弃旧配置并重新配置'], isOther: false }];
+        run.reason = '旧配置投递结果不确定，请选择保持暂停或重新配置';
+        this.changed(run);
+        return this.snapshot(run.target);
       }
     }
     if (!proposal && !questions && (alreadyReceived || found.record)) {
@@ -266,12 +277,13 @@ export class AutonomyController extends EventEmitter {
     run.generation = (run.generation || 0) + 1;
     run.status = 'paused'; run.reason = reason; run.pending = null; run.exchange = null;
     run.questions = null; run.requestId = null;
+    run.recovery = null;
     this.changed(run);
     return this.snapshot(target);
   }
   pauseSession(sessionName, reason = '用户已在终端接管，请确认方向后继续') {
     for (const run of this.runs.values()) if (run.target.tmuxSession === sessionName
-      && (ACTIVE.has(run.status) || this.legacyConfigurations.has(autonomyKey(run.target)))) this.pause(run.target, reason);
+      && (ACTIVE.has(run.status) || run.recovery || this.legacyConfigurations.has(autonomyKey(run.target)))) this.pause(run.target, reason);
   }
   async interrupt(target, operation, { verified = false } = {}) {
     const run = this.runs.get(autonomyKey(target));
@@ -303,6 +315,8 @@ export class AutonomyController extends EventEmitter {
     if (run.status === 'stopping') throw new Error('正在停止任务，请等待结果后调整目标');
     if (!textField(text, 90_000)) throw new Error('消息为空或过长');
     if (PAUSE.test(text.trim())) return this.pause(target);
+    if (run.recovery && CONFIRM.test(text.trim())) throw new Error('请在弹窗中明确选择是否放弃旧配置');
+    run.recovery = null;
     if (CONFIRM.test(text.trim()) && !run.proposal && run.plan && ACTIVE.has(run.status)) return this.snapshot(target);
     if (CONFIRM.test(text.trim()) && !run.proposal && run.status === 'paused') {
       const saved = run.suspended;
@@ -346,10 +360,22 @@ export class AutonomyController extends EventEmitter {
   }
   async respond(target, { requestId, answers }) {
     const run = this.runs.get(autonomyKey(target));
-    if (!requestId || run?.requestId !== requestId || !['configuring', 'confirming'].includes(run.status)) {
+    if (!requestId || run?.requestId !== requestId
+      || (!['configuring', 'confirming'].includes(run.status) && !(run.status === 'paused' && run.recovery))) {
       throw new Error('问题或目标已变化，请重新打开 Ⓐ');
     }
     if (!answers || typeof answers !== 'object' || Array.isArray(answers)) throw new Error('请完成选择');
+    if (run.recovery) {
+      const decision = Array.isArray(answers.recovery) && answers.recovery.length === 1 && answers.recovery[0];
+      if (Object.keys(answers).length !== 1 || !['保持暂停', '放弃旧配置并重新配置'].includes(decision)) throw new Error('请选择下一步');
+      if (decision === '保持暂停') return this.pause(target);
+      const exchange = run.suspended?.exchange;
+      if (exchange?.kind !== 'config' || exchange.nonce !== run.recovery.nonce) throw new Error('旧配置已变化，请重新打开 Ⓐ');
+      // Explicit replacement, not a retry of the old message. Late old replies
+      // must not resurrect its dialog, including after another pause/restart.
+      run.abandonedConfigNonces = [...(run.abandonedConfigNonces || []), exchange.nonce];
+      return this.message(target, '请重新和我确认自主迭代的目标、预算及偏好，确认前不要开始执行。');
+    }
     if (run.status === 'confirming' && run.proposal) {
       const decision = answers.decision?.length === 1 && answers.decision[0];
       if (!AUTONOMY_DECISIONS.includes(decision) || Object.keys(answers).length !== 1) throw new Error('请选择下一步');

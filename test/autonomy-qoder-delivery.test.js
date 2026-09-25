@@ -69,8 +69,76 @@ test('real Qoder adapter: composer clears but no input or transcript receipt mea
   assert.equal(saved.commandId, saved.nonce); assert.ok(saved.deliveryBaseline.inputLog);
   await f.manager.tick(); f.now += 30001; await f.manager.tick();
   assert.equal(f.state().status, 'paused'); assert.match(f.state().reason, /未确认送达/);
-  await assert.rejects(f.manager.start(target), /投递结果仍不确定/); await f.manager.tick();
+  await f.manager.start(target); await f.manager.tick();
   assert.equal(f.state().status, 'paused'); assert.equal(f.writes.length, 1, 'resume never replays a possibly delivered message');
+  assert.ok(f.state().recovery); assert.ok(f.state().requestId);
+});
+
+test('uncertain legacy config requires explicit replacement, deduplicates A and ignores stale choices', async t => {
+  const f = await fixture(t);
+  await f.manager.start(target); await f.manager.tick();
+  const run = f.manager.runs.values().next().value;
+  const old = structuredClone(run.exchange);
+  delete run.exchange.deliveryState;
+  f.manager.pause(target); f.now += 30001;
+  await Promise.all([f.manager.start(target), f.manager.start(target)]);
+  const requestId = f.state().requestId;
+  assert.ok(requestId); assert.equal(f.writes.length, 1);
+  await f.manager.start(target); assert.equal(f.state().requestId, requestId);
+  const answer = { requestId, answers: { recovery: ['放弃旧配置并重新配置'] } };
+  await f.manager.respond(target, answer);
+  await assert.rejects(f.manager.respond(target, answer), /已变化/);
+  await Promise.all([f.manager.tick(), f.manager.tick()]);
+  assert.equal(f.writes.length, 2);
+  assert.notEqual(f.stored().exchange.nonce, old.nonce);
+  assert.equal(f.state().round, 0);
+  assert.match(f.writes[1], /确认前不要开始执行/);
+  f.manager.pause(target);
+  f.manager.restoreProposal(target, { id: threadId, turns: [{ status: 'completed', items: [
+    { type: 'userMessage', content: old.text },
+    { type: 'agentMessage', text: '```codeck-autonomy\n' + JSON.stringify({ nonce: old.nonce, status: 'ask',
+      questions: [{ id: 'old', header: '旧目标', question: '旧目标？', options: ['一', '二'] }] }) + '\n```' },
+  ] }] });
+  assert.equal(f.state().status, 'paused', 'abandoned response cannot restore an obsolete dialog');
+});
+
+test('replacement confirmation cancels safely and restart never sends or accepts an old choice', async t => {
+  const f = await fixture(t);
+  await f.manager.start(target); await f.manager.tick(); f.now += 30001; await f.manager.tick();
+  await f.manager.start(target);
+  const first = f.state().requestId;
+  await f.manager.respond(target, { requestId: first, answers: { recovery: ['保持暂停'] } });
+  assert.equal(f.state().requestId, null); assert.equal(f.state().status, 'paused');
+  await f.manager.start(target); const second = f.state().requestId;
+  assert.notEqual(second, first);
+  f.manager.close(); f.manager = new AutonomyController(f.options);
+  await f.manager.tick(); assert.equal(f.writes.length, 1);
+  assert.equal(f.state().requestId, null);
+  await assert.rejects(f.manager.respond(target, { requestId: second, answers: { recovery: ['放弃旧配置并重新配置'] } }));
+  await f.manager.start(target); assert.ok(f.state().requestId);
+  f.manager.pauseSession(target.tmuxSession);
+  assert.equal(f.state().requestId, null, 'manual takeover invalidates confirmation');
+  assert.equal(f.writes.length, 1);
+});
+
+test('a late original reply replaces the recovery choice before replacement is authorized', async t => {
+  const f = await fixture(t);
+  await f.manager.start(target); await f.manager.tick();
+  const old = f.stored().exchange;
+  f.now += 30001; await f.manager.tick(); await f.manager.start(target);
+  const recoveryId = f.state().requestId;
+  f.manager.restoreProposal(target, { id: threadId, turns: [{ status: 'completed', items: [
+    { type: 'userMessage', content: old.text },
+    { type: 'agentMessage', text: '```codeck-autonomy\n' + JSON.stringify({ nonce: old.nonce, status: 'ask',
+      questions: [{ id: 'goal', header: '目标', question: '目标？', options: ['修复', '诊断'] }] }) + '\n```' },
+  ] }] });
+  assert.equal(f.state().status, 'configuring');
+  assert.equal(f.state().recovery, null);
+  await assert.rejects(f.manager.respond(target, { requestId: recoveryId, answers: { recovery: ['放弃旧配置并重新配置'] } }));
+  assert.equal(f.writes.length, 1);
+  await f.manager.respond(target, { requestId: f.state().requestId, answers: { goal: ['诊断'] } });
+  await f.manager.tick(); assert.equal(f.writes.length, 2);
+  assert.match(f.writes[1], /目标：诊断/);
 });
 
 test('legacy paused Qoder config migrates through normal server preparation only on explicit A', async t => {

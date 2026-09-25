@@ -22,7 +22,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     const el = document.createElement(tag); el.className = className; el.textContent = text; return el;
   }
   function questionFor(run) {
-    if (!run?.requestId || !['configuring', 'confirming'].includes(run.status)) return null;
+    if (!run?.requestId || (!['configuring', 'confirming'].includes(run.status) && !(run.status === 'paused' && run.recovery))) return null;
     if (run.status === 'confirming' && run.proposal) return [{ id: 'decision', header: '下一步',
       question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }];
     return run.questions?.length ? run.questions : null;
@@ -74,7 +74,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
         label.append(input, copy); field.append(label); return input;
       });
       let other;
-      if (!run.proposal) {
+      if (!run.proposal && question.isOther !== false) {
         const label = element('label', 'terminal-autonomy-custom', `${question.header}：自定义回答`);
         other = element('input'); other.type = 'text'; other.autocomplete = 'off'; other.maxLength = 2000;
         label.append(other); field.append(label);
@@ -144,7 +144,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     const nextKey = `${key}:${run.requestId}`;
     if (formKey !== nextKey) {
       formKey = nextKey;
-      $('terminalAutonomyTitle').textContent = run.proposal ? '确认自主目标' : '设置自主目标';
+      $('terminalAutonomyTitle').textContent = run.recovery ? '重新配置自主目标' : run.proposal ? '确认自主目标' : '设置自主目标';
       content.replaceChildren(buildForm(run, questions));
     }
     for (const input of content.querySelectorAll('input, button')) input.disabled = pending;

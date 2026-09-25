@@ -236,6 +236,35 @@ try {
       && !document.querySelector('#sendTerminalVoiceButton').disabled);
     assert.equal(await page.inputValue('#terminalVoiceDraft'), '断线仍保留的草稿');
     assert.equal(fixture.inputs.length, beforeDisconnect, 'reconnect must not replay input');
+    if (provider === 'qodercli') {
+      const run = fixture.autonomy.runs.values().next().value;
+      const text = fixture.sent[0], nonce = /"nonce":"([^"]+)"/.exec(text)[1];
+      fixture.turns = []; fixture.plan = null;
+      Object.assign(run, { status: 'paused', plan: null, proposal: null, questions: null, requestId: null,
+        pending: null, exchange: null, round: 0,
+        suspended: { status: 'configuring', exchange: { kind: 'config', nonce, commandId: nonce, text, sentAt: 0 } } });
+      fixture.autonomy.changed(run);
+      const sent = fixture.sent.length;
+      await a.click();
+      const recovery = page.locator('#terminalAutonomyDialog[open]');
+      await recovery.getByRole('heading', { name: '重新配置自主目标' }).waitFor();
+      assert.equal(await recovery.locator('input[type=text]').count(), 0);
+      assert.equal(fixture.sent.length, sent);
+      await recovery.getByRole('radio', { name: '保持暂停', exact: true }).check();
+      await recovery.getByRole('button', { name: '确认选择' }).click();
+      await page.locator('#terminalAutonomyDialog:not([open])').waitFor({ state: 'attached' });
+      await a.click();
+      await recovery.getByRole('radio', { name: '放弃旧配置并重新配置', exact: true }).check();
+      await recovery.getByRole('button', { name: '确认选择' }).click();
+      await page.waitForFunction(() => !document.querySelector('#terminalAutonomyDialog').open);
+      await fixture.autonomy.tick(); await fixture.autonomy.tick();
+      await recovery.getByRole('heading', { name: '设置自主目标' }).waitFor();
+      assert.equal(fixture.sent.length, sent + 1);
+      assert.notEqual(/"nonce":"([^"]+)"/.exec(fixture.sent.at(-1))[1], nonce);
+      assert.equal(run.round, 0);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-replacement.png`) });
+      await page.click('#closeTerminalAutonomy');
+    }
     // Native CLI questions retain control of the terminal; A cannot answer them.
     fixture.sessions[0].agent.question = { id: 'native-approval' };
     await page.reload();
