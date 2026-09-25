@@ -1,0 +1,20 @@
+Asking User
+────────────────────────────────────
+是否在推送并继续生产验证前，对已提
+交的 TASK-035/TASK-036 变更运行 L3
+深度安全审查？
+
+❯ 1. Run L3 deep security review
+     先审查已提交变更，确认无安全阻
+     塞后再推送。
+  2. Skip scan and continue
+     跳过本次安全审查，直接继续既定
+     交付。
+  3. Type something.
+
+────────────────────────────────────
+
+  4. Chat about this
+
+↑↓ navigate · Enter select · Esc
+cancel

@@ -26,6 +26,79 @@ YOLO mode
 // Qoder CLI 1.1.46 ExitPlanMode layout: unlike Asking User, no navigation footer.
 const planScreen = fs.readFileSync(new URL('./fixtures/qoder-plan-screen.txt', import.meta.url), 'utf8');
 const clippedPlanScreen = fs.readFileSync(new URL('./fixtures/qoder-plan-screen-clipped.txt', import.meta.url), 'utf8');
+const chatScreen = fs.readFileSync(new URL('./fixtures/qoder-asking-user-chat.txt', import.meta.url), 'utf8');
+
+test('IMG_1577 Asking User exposes answers before the text and chat editors', () => {
+  const question = tmux.parseQoderQuestion(chatScreen);
+  assert.ok(question, 'the screenshot layout must produce a Remote question');
+  assert.equal(question.question, '是否在推送并继续生产验证前，对已提\n交的 TASK-035/TASK-036 变更运行 L3\n深度安全审查？');
+  assert.deepEqual(question.options, [
+    { label: 'Run L3 deep security review', description: '先审查已提交变更，确认无安全阻\n塞后再推送。' },
+    { label: 'Skip scan and continue', description: '跳过本次安全审查，直接继续既定\n交付。' },
+  ]);
+  assert.equal(question.cursor, 0);
+  assert.notEqual(question.selectByNumber, true, 'use the visible arrow/Enter navigation contract');
+  const tracker = new QoderQuestionTracker();
+  const agent = { kind: 'qodercli', id: 'thread', paneId: '%42' };
+  const observed = tracker.observe('qoder', agent, chatScreen);
+  const [thread] = tmuxSessionsToThreads([{ name: 'qoder', status: 'done', agent: { ...agent, question: observed } }]);
+  assert.equal(thread.tmux.question.id, observed.id);
+  assert.equal(threadExecutionState(thread), 'waitingForInput');
+  assert.equal(tracker.observe('qoder', agent, chatScreen.replace('❯ 1.', '  1.').replace('  2.', '❯ 2.')).id, observed.id);
+});
+
+test('text spelling and wrapped navigation hints retain supported single-choice layouts', () => {
+  for (const label of ['Type Something', 'Type Something.', 'Type something…', 'Type\n     something.']) {
+    for (const action of ['back', 'cancel', 'close']) {
+      const variant = screen.replace('Type Something', label).replace('Esc\nback', `Esc\n${action}`);
+      assert.ok(tmux.parseQoderQuestion(variant), `${label}: ${action}`);
+    }
+  }
+  assert.ok(tmux.parseQoderQuestion(chatScreen.replace('↑↓ navigate · Enter select · Esc\ncancel',
+    '↑↓ navigate · Enter\nselect · Esc cancel')));
+});
+
+test('auxiliary controls are classified structurally rather than by a fixed suffix layout', () => {
+  const variants = [
+    chatScreen.replace('Type something.\n\n────────────────────────────────────', 'Type something.'),
+    chatScreen.replace('  4. Chat about this', ''),
+    chatScreen.replace('Type something.', 'TYPE   SOMETHING…').replace('Chat about this', 'CHAT ABOUT THIS.'),
+    chatScreen.replace('Chat about this', 'Chat about\n     this.'),
+    chatScreen.replace('Type something.', 'Chat about this').replace('4. Chat about this', '4. Type Something'),
+    chatScreen.replace('↑↓ navigate · Enter select · Esc\ncancel', '↑↓\nnavigate • ENTER select • ESC cancel'),
+    chatScreen.replace('  2.', '────────────────────────────────────\n  2.'),
+  ];
+  const baseline = tmux.parseQoderQuestion(chatScreen);
+  for (const variant of variants) {
+    const parsed = tmux.parseQoderQuestion(variant);
+    assert.ok(parsed, variant);
+    assert.deepEqual(parsed.options, baseline.options);
+    assert.equal(parsed.fingerprint, baseline.fingerprint, 'cosmetic changes cannot create a new question');
+  }
+});
+
+test('chat layout fails closed for editors, partial menus, stale output and unsupported controls', () => {
+  for (const invalid of [
+    chatScreen.replace('❯ 1.', '  1.'),
+    chatScreen.replace('❯ 1.', '  1.').replace('  3.', '❯ 3.'),
+    chatScreen.replace('❯ 1.', '  1.').replace('  4.', '❯ 4.'),
+    chatScreen.replace('  4.', '❯ 4.'),
+    chatScreen.replace('  4.', '  5.'),
+    chatScreen.replace('  4. Chat about this', '  4. Submit'),
+    chatScreen.replace('  4. Chat about this', '  4. Chat about this\n  5. Unknown action'),
+    chatScreen.replace('  4. Chat about this', '  4. Type Something'),
+    chatScreen.replace('  3. Type something.\n', ''),
+    chatScreen.replace('Type something.', 'Type something.\n     unfinished text'),
+    chatScreen.replace('Chat about this', 'Chat about this\n     unfinished text'),
+    chatScreen.replace('Enter select', 'Enter toggle'),
+    chatScreen.replace('Esc\ncancel', 'Esc\nunknown'),
+    chatScreen + '> 新的输入\n',
+    chatScreen + 'User answered: Skip scan and continue\n',
+    chatScreen + 'Generating...\n',
+    chatScreen + '› 新的输入\n',
+    '```\n' + chatScreen + '```\n',
+  ]) assert.equal(tmux.parseQoderQuestion(invalid), null, invalid);
+});
 
 test('IMG_1564 Plan menu works with a scrolled-off title, truncated descriptions and Ctrl+X', () => {
   const parsed = tmux.parseQoderQuestion(clippedPlanScreen);
@@ -149,11 +222,11 @@ test('native question round-trips through session model and overrides false read
   assert.equal(threadExecutionState(thread), 'waitingForInput');
 });
 
-function nativeFixture() {
+function nativeFixture(initialScreen = screen) {
   const tracker = new QoderQuestionTracker();
   const agent = { kind: 'qodercli', id: 'thread', paneId: '%42' };
-  const question = tracker.observe('qoder', agent, screen);
-  let visible = screen;
+  const question = tracker.observe('qoder', agent, initialScreen);
+  let visible = initialScreen;
   const calls = [];
   const overrides = { questionTracker: tracker,
     listTmuxSessions: async () => [{ name: 'qoder', agent }],
@@ -161,13 +234,37 @@ function nativeFixture() {
     waitForQuestion: async () => {},
     execTmux: async args => {
       calls.push(args);
-      if (args.at(-1) === 'Down') visible = screen.replace('❯ 1.', '  1.').replace('  2.', '❯ 2.');
+      if (args.at(-1) === 'Down') visible = initialScreen.replace('❯ 1.', '  1.').replace('  2.', '❯ 2.');
       if (args.at(-1) === 'Enter') visible = 'AskUserQuestion\nUser answered: Skip scan';
     },
   };
   return { tracker, agent, question, calls, overrides, setScreen: value => { visible = value; },
     params: { provider: 'qodercli', sessionName: 'qoder', threadId: 'thread', questionId: question.id, answer: 'Skip scan' } };
 }
+
+test('chat-layout answers use the native answer row once and never enter an editor', async () => {
+  for (const [answer, keys] of [['Run L3 deep security review', ['Enter']], ['Skip scan and continue', ['Down', 'Enter']]]) {
+    const f = nativeFixture(chatScreen); f.params.answer = answer;
+    assert.equal((await tmux.answerSessionQuestion(f.params, f.overrides)).submitted, true);
+    assert.deepEqual(f.calls.map(args => args.at(-1)), keys);
+    assert.ok(f.calls.every(args => args.includes('%42')));
+    await assert.rejects(tmux.answerSessionQuestion(f.params, f.overrides));
+    assert.equal(f.calls.length, keys.length, 'a consumed answer cannot be replayed');
+  }
+});
+
+test('chat-layout stale answers, editor rows and stalled navigation cannot send Enter', async () => {
+  for (const kind of ['question', 'text', 'chat', 'editing', 'stalled']) {
+    const f = nativeFixture(chatScreen); f.params.answer = 'Skip scan and continue';
+    if (kind === 'question') f.setScreen(chatScreen.replace('TASK-035', 'TASK-999'));
+    if (kind === 'text') f.params.answer = 'Type something.';
+    if (kind === 'chat') f.params.answer = 'Chat about this';
+    if (kind === 'editing') f.setScreen(chatScreen.replace('❯ 1.', '  1.').replace('  3.', '❯ 3.'));
+    if (kind === 'stalled') f.overrides.execTmux = async args => { f.calls.push(args); };
+    await assert.rejects(tmux.answerSessionQuestion(f.params, f.overrides), undefined, kind);
+    assert.equal(f.calls.some(args => args.at(-1) === 'Enter'), false, kind);
+  }
+});
 
 test('native selection waits for cursor repaint before Enter and rejects concurrent duplicate answers', async () => {
   const f = nativeFixture();

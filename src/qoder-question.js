@@ -42,6 +42,11 @@ function parseQoderPlan(lines) {
   return { question, options, cursor, fingerprint, selectByNumber: true };
 }
 
+function questionControl(text) {
+  const label = text.trim().replace(/\s+/gu, ' ').replace(/[.。…]+$/u, '').toLowerCase();
+  return ['type something', 'chat about this'].includes(label) ? label : null;
+}
+
 // Only the complete native single-choice layout is actionable. Tool history,
 // multi-select/review tabs and partially visible menus are not input evidence.
 export function parseQoderQuestion(screen) {
@@ -53,16 +58,16 @@ export function parseQoderQuestion(screen) {
   const start = lines.findLastIndex(line => line.trim() === 'Asking User');
   const divider = lines.findIndex((line, index) => index > start && line.trim());
   if (start < 0 || !/^\s*[─━-]{4,}\s*$/u.test(lines[divider] || '')) return null;
-  const footer = lines.findIndex((line, index) => index > divider && /^\s*↑↓ navigate/u.test(line));
+  const footer = lines.findIndex((line, index) => index > divider && /^\s*↑↓(?:\s|$)/u.test(line));
   let footerEnd = -1;
   for (let end = footer; footer >= 0 && end < Math.min(lines.length, footer + 4); end += 1) {
-    if (/^\s*↑↓ navigate\s*·\s*Enter\s+select\s*·\s*Esc\s+back\s*$/u.test(lines.slice(footer, end + 1).join(' '))) {
+    if (/^\s*↑↓\s+navigate\s*[·•]\s*Enter\s+select\s*[·•]\s*Esc\s+(?:back|cancel|close)\s*$/iu.test(lines.slice(footer, end + 1).join(' '))) {
       footerEnd = end;
       break;
     }
   }
   if (footerEnd < 0 || lines.slice(footerEnd + 1).filter(line => line.trim()).length > 5
-    || lines.slice(footerEnd + 1).some(line => /^\s*[>❯]\s|User answered:|Generating\.\.\./u.test(line))) return null;
+    || lines.slice(footerEnd + 1).some(line => /^\s*[>❯›]\s|User answered:|Generating\.\.\.|```/u.test(line))) return null;
   const rows = [];
   let first = -1;
   for (let index = divider + 1; index < footer; index += 1) {
@@ -71,19 +76,27 @@ export function parseQoderQuestion(screen) {
       if (first < 0) first = index;
       if (Number(row[2]) !== rows.length + 1) return null;
       rows.push({ label: row[3], description: '', cursor: Boolean(row[1]) });
-    } else if (rows.length && lines[index].trim()) {
+    } else if (rows.length && lines[index].trim() && !/^\s*[─━-]{4,}\s*$/u.test(lines[index])) {
       const previous = rows.at(-1);
       previous.description += `${previous.description ? '\n' : ''}${lines[index].trim()}`;
     }
   }
-  if (rows.length < 2 || rows.length > 9 || rows.at(-1).label !== 'Type Something'
-    || rows.at(-1).description || rows.filter(row => row.cursor).length !== 1) return null;
+  // Classify the auxiliary section independently of row count, wrapping and
+  // separators. Unknown controls or answers after an editor fail closed: arrow
+  // navigation must never cross an editor to reach a supposedly safe answer.
+  const controls = rows.map(row => questionControl(`${row.label} ${row.description}`));
+  const editorIndex = controls.findIndex(Boolean);
+  const auxiliary = controls.slice(editorIndex);
+  if (editorIndex < 1 || rows.length > 9 || rows.filter(row => row.cursor).length !== 1
+    || !auxiliary.includes('type something') || auxiliary.some(control => !control)
+    || new Set(auxiliary).size !== auxiliary.length) return null;
   const question = lines.slice(divider + 1, first).map(line => line.trim()).filter(Boolean).join('\n');
   if (!question || /```|User answered:|\bSubmit\b/u.test(question)) return null;
   const cursor = rows.findIndex(row => row.cursor);
-  if (cursor === rows.length - 1) return null; // Native free-text editor owns input.
-  const options = rows.slice(0, -1).map(({ label, description }) => ({ label, description }));
-  if (new Set(options.map(option => option.label)).size !== options.length) return null;
+  if (cursor >= editorIndex) return null; // A native editor owns input.
+  const options = rows.slice(0, editorIndex).map(({ label, description }) => ({ label, description }));
+  if (options.some(option => questionControl(option.label))
+    || new Set(options.map(option => option.label)).size !== options.length) return null;
   const fingerprint = createHash('sha256').update(JSON.stringify([question, options])).digest('hex');
   return { question, options, cursor, fingerprint };
 }

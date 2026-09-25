@@ -356,14 +356,19 @@ try {
       await page.waitForSelector('.approval-card', { state: 'detached' });
 
       if (provider === 'qodercli') {
-        fixture.question = { id: 'native-question', question: '是否现在对部署后的最终提交运行 L3 深度安全扫描？',
-          options: [{ label: 'Run L3 deep security review', description: '立即审查当前最终提交集。' },
-            { label: 'Skip scan', description: '保持现状，不运行扫描。' }] };
+        const askingScreen = await fs.readFile(path.join(root, 'test/fixtures/qoder-asking-user-chat.txt'), 'utf8');
+        fixture.question = new QoderQuestionTracker().observe('fixture',
+          { kind: provider, id: 'fixture-thread', paneId: '%42' }, askingScreen);
+        assert.ok(fixture.question, 'screenshot menu must reach Remote through the real parser');
         // A slow transcript must not hide a live question on session entry/reconnect.
         fixture.holdOpenThread = true;
         await page.reload();
         const dialog = page.locator('#nativeQuestionDialog');
         await page.waitForSelector('#nativeQuestionDialog[open]');
+        assert.equal(await dialog.getByRole('radio').count(), 2);
+        assert.equal(await dialog.locator('input:checked').count(), 0, 'never preselect an answer');
+        assert.match(await dialog.textContent(), /TASK-035\/TASK-036/);
+        assert.doesNotMatch(await dialog.textContent(), /Type something|Chat about this/);
         await page.waitForFunction(() => document.querySelector('#composerInput').disabled);
         assert.ok(fixture.finishOpening, 'history response is still pending when the question appears');
         fixture.holdOpenThread = false;
@@ -384,7 +389,7 @@ try {
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-native-question.png`) });
         await dialog.getByRole('button', { name: '回答并继续' }).click();
         await page.waitForSelector('#nativeQuestionDialog[open]', { state: 'detached' });
-        assert.equal(fixture.answer, 'Skip scan');
+        assert.equal(fixture.answer, 'Skip scan and continue');
         fixture.question = { id: 'next-question', question: '继续下一步？', options: [{ label: 'Continue' }] };
         publishSessions();
         await page.waitForSelector('#nativeQuestionDialog[open]');
