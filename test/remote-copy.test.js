@@ -34,6 +34,14 @@ test('copies model output without changing whitespace', async () => {
   assert.deepEqual(writes, ['第一行\n\n  indented']);
 });
 
+test('copying a final autonomy result excludes its machine protocol', async () => {
+  const text = '已完成验证。下一步：扩大回归。\n```codeck-autonomy\n{"nonce":"n","status":"complete"}\n```';
+  assert.equal(agentOutputText({ items: [{ type: 'agentMessage', text }] }), '已完成验证。下一步：扩大回归。');
+  const writes = [];
+  await writeAgentOutputToClipboard(text, { writeText: async value => writes.push(value) });
+  assert.deepEqual(writes, ['已完成验证。下一步：扩大回归。']);
+});
+
 test('reports unsupported and denied clipboard writes clearly', async () => {
   await assert.rejects(
     writeAgentOutputToClipboard('answer', null),

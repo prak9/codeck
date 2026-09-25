@@ -180,6 +180,55 @@ test('background work does not trigger the idle missing-result timeout', async (
   assert.equal(f.state().status, 'paused');
 });
 
+test('quiet live turns do not time out before a delayed final result, on all providers', async () => {
+  for (const provider of ['codex', 'claude', 'qodercli']) {
+    for (const status of ['inProgress', 'interrupted']) {
+      const f = fixture(); await f.run();
+      const run = f.manager.runs.get(autonomyKey(target));
+      run.target.provider = provider; f.session.agent.kind = provider;
+      f.manager.runs.delete(autonomyKey(target)); f.manager.runs.set(autonomyKey(run.target), run);
+      f.thread.turns.push({ id: 'live', status, completedAt: null, items: [{ type: 'userMessage', content: f.sent.at(-1) }] });
+      await f.manager.tick(); f.now += 33_000; await f.manager.tick();
+      assert.equal(run.status, 'running', `${provider}/${status}`); assert.equal(f.sent.length, 2);
+      f.reply({ status: 'continue', summary: '完成轻量验收', next: '继续配对实验', progress: true });
+      await f.manager.tick(); assert.equal(run.status, 'queued'); assert.equal(run.round, 1);
+      f.manager.close();
+    }
+  }
+});
+
+test('a closed turn with no result still fails, while paused runs never resume on a late reply', async () => {
+  const f = fixture(); await f.run();
+  f.thread.turns.push({ status: 'completed', items: [{ type: 'userMessage', content: f.sent.at(-1) }, { type: 'agentMessage', text: '没有协议结果' }] });
+  await f.manager.tick(); f.now += 31_000; await f.manager.tick();
+  assert.equal(f.state().status, 'paused'); assert.equal(f.state().failed, true);
+  f.reply({ status: 'continue', summary: '迟到', next: '不得自行恢复', progress: true });
+  await f.manager.tick(); assert.equal(f.state().status, 'paused'); assert.equal(f.sent.length, 2); f.manager.close();
+});
+
+test('a completed read-only progress reply does not close the still-active work turn', async () => {
+  const f = fixture(); await f.run();
+  f.thread.turns.push({ status: 'inProgress', items: [{ type: 'userMessage', content: f.sent.at(-1) }] });
+  f.thread.turns.push({ status: 'completed', items: [{ type: 'userMessage', content: AUTONOMY_PROGRESS_PROMPT }, { type: 'agentMessage', text: '仍在验证。' }] });
+  await f.manager.tick(); f.now += 31_000; await f.manager.tick();
+  assert.equal(f.state().status, 'running'); assert.equal(f.sent.length, 2); f.manager.close();
+});
+
+test('autonomous rounds discover available skills and continue evidence-based work without micromanagement', async () => {
+  const f = fixture(); await f.run();
+  assert.match(f.sent.at(-1), /主动推进.*不要等待用户逐步派活/);
+  assert.match(f.sent.at(-1), /可用.*Skill.*读取.*SKILL\.md/);
+  assert.match(f.sent.at(-1), /正常实验失败.*不.*error/);
+  assert.match(f.sent.at(-1), /权限.*预算/);
+  f.manager.close();
+});
+
+test('human rendering hides protocol while streaming and preserves ordinary JSON and trailing prose', () => {
+  assert.equal(autonomyDisplayText('已通过8项测试。\n```codeck-autonomy\n{"nonce":"abc'), '已通过8项测试。');
+  assert.equal(autonomyDisplayText('已完成。\n```codeck-autonomy\n{}\n```\n下一步：扩大验证。'), '已完成。\n\n下一步：扩大验证。');
+  assert.equal(autonomyDisplayText('示例：\n```json\n{"value":1}\n```'), '示例：\n```json\n{"value":1}\n```');
+});
+
 test('pause and immediate resume invalidate a pending read without spending another round', async () => {
   const f = fixture(); await f.run();
   f.reply({ status: 'continue', summary: 'Tested', next: 'Next', progress: true }); await f.manager.tick();

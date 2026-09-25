@@ -10,20 +10,19 @@ export function createAutonomyForm({ document, run, submit, isCurrent }) {
     input.required = required; input.placeholder = placeholder; input.autocomplete = 'off';
     wrapper.append(input); form.append(wrapper); return input;
   };
-  const problem = field('问题定义', { required: true, multiline: true, placeholder: '待补充：当前要解决什么问题？' });
   const goal = field('目标', { required: true, placeholder: '待补充：期望达到什么结果？' });
   const choices = el('div'); choices.className = 'autonomy-goals'; goal.parentElement.after(choices);
   const strategy = field('策略', { required: true, multiline: true, placeholder: '待补充：如何推进，可根据结果调整什么？' });
   const acceptance = field('验证方法', { required: true, multiline: true, placeholder: '待补充：怎样判断目标达成？' });
   const budget = field('预算轮次', { required: true, placeholder: '如 30分钟、5轮 / 30分钟，或不限' });
   const constraints = field('其他（可选）', { multiline: true, placeholder: '约束、偏好或补充说明' });
-  const fields = { problem, goal, strategy, acceptance, budget, constraints };
+  const fields = { goal, strategy, acceptance, budget, constraints };
   const edited = new Set();
   for (const input of Object.values(fields)) input.addEventListener('input', () => edited.add(input));
   const details = el('details'); details.append(el('summary', '详细设置'));
   details.append(el('p', '范围继承当前项目和既有权限；方法由 Agent 根据结果调整。')); form.append(details);
   let continuation;
-  if (run.previous?.plan?.problem && run.previous?.plan?.strategy) {
+  if (run.previous?.plan?.strategy) {
     const label = el('label', '继续上次目标，沿用进展与剩余预算'); continuation = el('input'); continuation.type = 'checkbox';
     label.prepend(continuation); details.append(label);
     continuation.addEventListener('change', () => {

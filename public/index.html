@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=72">
+    <link rel="stylesheet" href="/styles.css?v=73">
     <link rel="stylesheet" href="/autonomy-form.css?v=2">
   <link rel="stylesheet" href="/terminal-theme.css?v=4">
   <link rel="stylesheet" href="/terminal-image-preview.css?v=1">
@@ -69,6 +69,10 @@
           </div>
         </header>
         <p id="terminalAutonomyNotice" class="terminal-autonomy-notice" role="status" hidden></p>
+        <details id="terminalAutonomySummary" class="terminal-autonomy-summary" hidden>
+          <summary>自主运行总结</summary>
+          <dl id="terminalAutonomySummaryContent"></dl>
+        </details>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
           <span class="terminal-voice-prompt" aria-hidden="true">›</span><textarea id="terminalVoiceDraft" rows="1" aria-label="终端输入" maxlength="100000" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入指令，回车发送"></textarea>
@@ -170,6 +174,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-    <script type="module" src="/app.js?v=131"></script>
+    <script type="module" src="/app.js?v=132"></script>
 </body>
 </html>

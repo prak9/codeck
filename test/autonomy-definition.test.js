@@ -24,6 +24,29 @@ function fixture(file) {
 const answers = { goal: ['修复会话切换后输入丢失'], budget: ['30 分钟'], constraints: ['不改变公开接口'],
   acceptance: ['复现后修复，切换和重连回归通过'], deliverable: ['改动及验证记录'], rounds: [''], continuation: ['false'] };
 
+test('latest dialogue alone supplies defaults and five-field setup needs no problem field', async () => {
+  const definition = contextDefinition({ turns: [
+    { items: [{ type: 'userMessage', content: '修复旧任务的缓存错误' }, { type: 'agentMessage', text: '## 目标\n修复旧任务的缓存错误。\n## 策略\n替换缓存。' }] },
+    { items: [{ type: 'userMessage', content: '制定下一阶段目标' }] },
+  ] });
+  assert.equal(definition.goal, ''); assert.equal(definition.strategy, ''); assert.deepEqual(definition.suggestions, []);
+  const f = fixture(); await f.manager.start(target, { simple: true });
+  const input = { goal: answers.goal, strategy: ['复现并最小修复'], acceptance: answers.acceptance,
+    budget: ['5轮 / 30分钟'], constraints: [''], continuation: ['false'] };
+  await f.manager.respond(target, { requestId: f.manager.snapshot(target).requestId, answers: input });
+  assert.equal(f.manager.snapshot(target).plan.maxRounds, 5);
+  assert.equal(f.manager.snapshot(target).plan.problem, undefined); f.manager.close();
+});
+
+test('execution failures carry an explicit error flag while human pauses do not', async () => {
+  const f = fixture(); await f.manager.start(target, { simple: true });
+  await f.manager.respond(target, { requestId: f.manager.snapshot(target).requestId, answers });
+  f.manager.send = async () => { throw new Error('发送失败'); };
+  await f.manager.tick(); assert.equal(f.manager.snapshot(target).failed, true);
+  f.manager.pause(target, '用户接管'); assert.equal(f.manager.snapshot(target).failed, false);
+  f.manager.close();
+});
+
 test('six-field definition preserves problem and strategy, requires them, and accepts unlimited budget', async () => {
   const f = fixture(); await f.manager.start(target, { simple: true });
   const requestId = f.manager.snapshot(target).requestId;
@@ -58,7 +81,7 @@ test('explicit A refreshes saved older setup once without stopping or sending ag
   await f.manager.start(target, { simple: true }); await f.manager.start(target, { simple: true });
   assert.equal(reads, 1); assert.equal(f.sent.length, 0);
   release({ thread: { turns: [] } }); await Promise.resolve();
-  assert.equal(run.definition.fieldsVersion, 3); f.manager.close();
+  assert.equal(run.definition.fieldsVersion, 4); f.manager.close();
 });
 
 test('compact setup accepts editable definition without strategy and freezes it in execution', async () => {

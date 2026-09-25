@@ -6,6 +6,14 @@ import path from 'node:path';
 import { AutonomyController } from '../src/autonomy.js';
 import { autonomyPresentation } from '../public/remote-autonomy.js';
 
+test('A border distinguishes running, completed, failed and manual exit', () => {
+  for (const [status, failed, tone] of [['running', false, 'running'], ['completed', false, 'completed'],
+    ['paused', true, 'error'], ['paused', false, 'idle'], ['off', true, 'idle'], ['limit', false, 'idle']]) {
+    assert.equal(autonomyPresentation({ status, failed }).tone, tone);
+  }
+  assert.equal(autonomyPresentation({ status: 'configuring', setup: true }).tone, 'idle');
+});
+
 test('simple A presents setup, execution, summary and off without a resume label', () => {
   for (const [status, extra, detail, active] of [
     ['configuring', { setup: true }, '待设置', false], ['running', {}, '执行中', true],
@@ -67,8 +75,10 @@ test('simple A interrupts a running turn, summarizes once and next A starts fres
   assert.equal(f.stops.length, 3); assert.equal(f.stops.at(-1).stopBackground, false);
   await f.manager.tick(); assert.equal(f.sent.length, 2); assert.equal(f.state().round, 1);
   assert.match(f.sent[1], /"phase":"summary"/);
-  f.reply({ status: 'summary', summary: '已完成解析修复，剩余验证' }); await f.manager.tick();
+  assert.match(f.sent[1], /建议下一步/); assert.match(f.sent[1], /不能只输出协议 JSON/);
+  f.reply({ status: 'summary', summary: '已完成解析修复，剩余验证', next: '验证窄屏回归' }); await f.manager.tick();
   assert.equal(f.state().status, 'off');
+  assert.equal(f.state().handoff.next, '验证窄屏回归');
   await f.manager.tick(); assert.equal(f.sent.length, 2);
   const oldId = f.state().id;
   await f.manager.start(f.target, { simple: true });

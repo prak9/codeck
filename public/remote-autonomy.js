@@ -40,6 +40,7 @@ export function autonomyPresentation(run, session) {
     detail: [count, phase].filter(Boolean).join(' '),
     progress: budget ? budget.maxRounds == null ? String(run.round) : count : '',
     active,
+    tone: run?.status === 'completed' ? 'completed' : run?.status === 'paused' && run.failed ? 'error' : active ? 'running' : 'idle',
     label: run?.mode === 'simple' ? active ? '中断并退出自主模式' : '设置自主目标' : run?.status === 'configuring'
       ? needsAnswer ? '回答自主配置问题' : '暂停自主配置'
       : active ? '暂停自主迭代' : run?.status === 'paused' ? '继续自主迭代' : '配置自主迭代',
@@ -50,5 +51,6 @@ export function autonomyPresentation(run, session) {
 export function autonomyDisplayText(text) {
   return String(text || '')
     .replace(/\n\n<codeck-autonomy-context>\n[\s\S]*$/u, '')
-    .replace(/(?:\n|^)```codeck-autonomy\s*\n[\s\S]*$/u, '').trimEnd();
+    .replace(/(?:\n|^)```codeck-autonomy[^\S\n]*\n[\s\S]*?(?:\n```(?=\n|$)|$)/gu, '\n')
+    .replace(/(?:\n|^)```codeck-autonomy[^\S\n]*$/u, '').trimEnd();
 }

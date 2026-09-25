@@ -44,7 +44,8 @@ const compact = (value, limit = 700) => {
 // particular "制定下一阶段目标" is resolved by the plan that follows it. No CLI
 // input or new conversation is created, so preparation cannot alter Agent mode.
 export function contextDefinition(thread) {
-  const entries = (thread?.turns || []).slice(-20).flatMap(turn => turn.items || [])
+  thread = { turns: (thread?.turns || []).slice(-1) };
+  const entries = thread.turns.flatMap(turn => turn.items || [])
     .filter(item => !item.delivery && ['userMessage', 'agentMessage'].includes(item.type))
     .map(item => ({ role: item.type, text: item.type === 'agentMessage' ? item.text || ''
       : typeof item.content === 'string' ? item.content : (item.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n') }))
@@ -78,7 +79,7 @@ export function contextDefinition(thread) {
     const goal = compact(inlineGoal || (end < 0 ? body : body.slice(0, end)).join(' '), 320);
     if (goal.length >= 8) {
       const defaults = taskPreview(goal);
-      return { fieldsVersion: 3, goal, problem, strategy, budget, acceptance: section(/^(?:\d+[.、]\s*)?(?:验收方法|验收|完成标准|评价方法|验证方法)/u),
+      return { fieldsVersion: 4, goal, problem, strategy, budget, acceptance: section(/^(?:\d+[.、]\s*)?(?:验收方法|验收|完成标准|评价方法|验证方法)/u),
         deliverable: section(/^(?:\d+[.、]\s*)?(?:最终交付|交付|产出|结束后得到)/u) || defaults.deliverable,
         constraints: other || compact(lines.filter(line => /暂不|不得|不要|必须|保持|冻结|不改变|不能|不扩大|不额外/u.test(line)).join('\n'), 1200),
         suggestions: [goal] };
@@ -88,5 +89,5 @@ export function contextDefinition(thread) {
   const text = user >= 0 ? entries[user].text : goals[0] || '';
   // Do not offer a meta request as if it were an actionable goal.
   const goal = /^(?:请|帮我|帮忙)?(?:制定|整理|总结|明确).{0,12}(?:目标|计划|方案)[。？?！!]*$/u.test(text.trim()) ? '' : compact(text, 320);
-  return { fieldsVersion: 3, goal, problem, strategy, budget, acceptance: '', constraints: other, suggestions: goal ? [...new Set([goal, ...goals])].slice(0, 3) : [] };
+  return { fieldsVersion: 4, goal, problem, strategy, budget, acceptance: '', constraints: other, suggestions: goal ? [...new Set([goal, ...goals])].slice(0, 3) : [] };
 }

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { AutonomyController } from '../src/autonomy.js';
+import { writeReceipt } from '../src/autonomy-receipt.js';
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-terminal-autonomy-'));
@@ -121,9 +122,9 @@ try {
         { type: 'agentMessage', text: '## 问题定义\n桌面保留了手机宽度。\n## 下一阶段目标\n\n修复终端宽度恢复并验证回归。\n\n### 策略\n先复现切换，再修复尺寸同步。\n### 验收方法\n在手机和桌面间切换，宽度恢复。\n### 预算轮次\n5轮 / 30分钟\n### 其他\n不重启真实会话。' },
       ] });
       await a.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+      assert.equal(await dialog.getByRole('textbox', { name: '问题定义' }).count(), 0);
       await page.waitForFunction(() => [...document.querySelectorAll('.autonomy-definition input[type="text"]')].some(input => input.value === '修复终端宽度恢复并验证回归。'));
       assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '在手机和桌面间切换，宽度恢复。');
-      assert.equal(await dialog.getByRole('textbox', { name: '问题定义' }).inputValue(), '桌面保留了手机宽度。');
       assert.equal(await dialog.getByRole('textbox', { name: '策略', exact: true }).inputValue(), '先复现切换，再修复尺寸同步。');
       assert.equal(await dialog.getByRole('textbox', { name: '预算轮次' }).inputValue(), '5轮 / 30分钟');
       assert.equal(await dialog.getByRole('textbox', { name: '其他（可选）' }).inputValue(), '不重启真实会话。');
@@ -135,7 +136,6 @@ try {
       Object.assign(draftRun.definition, { goal: '迟到目标不得覆盖', acceptance: '迟到验收', suggestions: ['修复会话切换后输入丢失的问题'] }); fixture.autonomy.changed(draftRun);
       await dialog.getByRole('button', { name: '修复会话切换后输入丢失的问题', exact: true }).waitFor();
       assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '37列到140列恢复，验证通过');
-      await dialog.getByRole('textbox', { name: '问题定义' }).fill('桌面继承了手机宽度');
       await dialog.getByRole('textbox', { name: '策略', exact: true }).fill('复现后最小修复');
       await dialog.getByRole('textbox', { name: '预算轮次' }).fill('5轮 / 30分钟');
       assert.equal(await dialog.getByRole('button', { name: '开始', exact: true }).evaluate(el => {
@@ -150,7 +150,8 @@ try {
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'queued');
       await fixture.autonomy.tick(); assert.equal(fixture.sent.length, 1);
       assert.equal(await page.locator('#terminalStopButton').isVisible(), false);
-      assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(255, 133, 128)');
+      assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
+      assert.deepEqual(await a.locator('.terminal-autonomy-symbol').evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).boxShadow]), ['rgba(0, 0, 0, 0)', 'none']);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-active.png`) });
       const id = fixture.autonomy.snapshot(fixture.target).id;
       const old = fixture.autonomy.runs.values().next().value;
@@ -166,9 +167,21 @@ try {
       assert.match(fixture.sent[1], /"phase":"summary"/);
       const nonce = /"nonce":"([^"]+)"/.exec(fixture.sent[1])[1];
       const turn = fixture.turns.at(-1); turn.status = 'completed';
-      turn.items.push({ type: 'agentMessage', text: '已完成宽度修复，验证待补。\n```codeck-autonomy\n' + JSON.stringify({ nonce, status: 'summary', summary: '已完成宽度修复，验证待补。' }) + '\n```' });
+      writeReceipt(['--receipt', old.exchange.receiptFile, '--status', 'summary', '--summary', '已完成宽度修复，验证待补。', '--next', '补手机与桌面切换回归。']);
+      turn.items.push({ type: 'agentMessage', text: '已完成宽度修复，验证待补。下一步：补手机与桌面切换回归。' });
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'off');
+      const handoff = page.locator('#terminalAutonomySummary');
+      await handoff.waitFor({ state: 'visible' });
+      assert.equal(await handoff.evaluate(el => el.open), true);
+      assert.match(await handoff.innerText(), /已完成宽度修复.*补手机与桌面切换回归/s);
+      assert.doesNotMatch(await handoff.innerText(), /codeck-autonomy|nonce|"status"/);
+      assert.equal(await page.locator('#terminal').isVisible(), true);
+      assert.equal(await dialog.isVisible(), false);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-handoff.png`) });
+      await handoff.locator('summary').click();
+      fixture.autonomy.changed(old);
+      assert.equal(await handoff.evaluate(el => el.open), false, 'updates preserve manual collapse');
       assert.equal(await page.locator('#terminalAutonomyStatus').textContent(), '1/5');
       assert.equal(await a.evaluate(el => el.nextElementSibling.id), 'shareButton');
       await a.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();

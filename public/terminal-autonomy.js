@@ -1,7 +1,7 @@
-import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=9';
+import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=10';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { createAutonomyForm } from './autonomy-form.js?v=2';
+import { createAutonomyForm } from './autonomy-form.js?v=3';
 
 // The terminal and Remote are views of the same server-owned run, not two loops.
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
@@ -15,6 +15,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   let supported = false, simple = false, connected = false, bindingKey, bound = false, generation = 0;
   let pending = false, dismissed = '', formKey = '', lastReason = '';
   let setupOpened = false;
+  let lastSummaryRun, summaryFingerprint = '';
   const keyOf = target => target ? autonomyKey(target) : '';
   const targetNow = () => supported && connected ? getTarget() : null;
   const current = () => runs.get(keyOf(getTarget()));
@@ -22,6 +23,33 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   function message(text = '') { notice.textContent = text; notice.hidden = !text; }
   function element(tag, className = '', text = '') {
     const el = document.createElement(tag); el.className = className; el.textContent = text; return el;
+  }
+  function syncSummary(run, key) {
+    const panel = $('terminalAutonomySummary'), body = $('terminalAutonomySummaryContent');
+    if (!panel || !body) return; // A connected page may still have the previous HTML.
+    const ended = ['completed', 'off', 'paused', 'limit'].includes(run?.status);
+    const visible = bound && ended && run?.plan && run.round > 0;
+    panel.hidden = !visible;
+    if (visible) {
+      const rows = [
+        ['结束原因', run.reason || ({ completed: '目标完成', off: '已退出', paused: '已暂停', limit: '预算耗尽' })[run.status]],
+        ['目标', run.plan.goal],
+        ['进展与结果', run.summary || '尚未收到完整总结；请核对终端，以下仅列出已保存的信息。'],
+        ['验证与证据', [run.best?.version, run.best?.evidence || run.checkpoint?.verification, run.best?.artifact].filter(Boolean).join('\n')],
+        ['未完成事项', run.checkpoint?.current],
+        ['下一步', run.next || run.handoff?.next],
+        ['预算使用', `已用 ${run.round} 轮${run.plan.maxRounds == null ? '，轮数不限' : `，上限 ${run.plan.maxRounds} 轮`}`],
+      ].filter(([, value]) => value);
+      const fingerprint = JSON.stringify([key, run.id, rows]);
+      if (summaryFingerprint !== fingerprint) {
+        body.replaceChildren();
+        for (const [label, value] of rows) body.append(element('dt', '', label), element('dd', '', autonomyDisplayText(value)));
+        summaryFingerprint = fingerprint;
+      }
+      if (lastSummaryRun?.key === key && lastSummaryRun.id === run.id && !lastSummaryRun.ended) panel.open = true;
+      else if (lastSummaryRun?.key !== key || lastSummaryRun?.id !== run.id) panel.open = false;
+    }
+    if (bound) lastSummaryRun = run ? { key, id: run.id, ended } : null;
   }
   function questionFor(run) {
     if (simple && !run?.setup) return null;
@@ -127,6 +155,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     if (key !== bindingKey) {
       bindingKey = key; bound = false; generation++; pending = false; dismissed = ''; formKey = '';
       setupOpened = false;
+      lastSummaryRun = null; summaryFingerprint = '';
       content.replaceChildren(); if (dialog.open) dialog.close(); lastReason = ''; message();
       if (connected && supported) {
         const epoch = generation, before = runs.get(key);
@@ -151,7 +180,9 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       || target.session?.agent?.hasBackgroundProcess || run?.status === 'stopping');
     stopButton.disabled = !bound || pending || run?.status === 'stopping';
     button.dataset.state = run?.status || 'off';
+    button.dataset.tone = view.tone;
     status.textContent = simple ? view.progress : view.detail;
+    syncSummary(run, key);
     const reason = bound && run?.status === 'paused' ? run.reason : '';
     if (reason !== lastReason) { lastReason = reason; message(reason); }
     if (!target || !bound || (simple && !setupOpened) || (target.question && !run?.setup) || !questions) { if (dialog.open) dialog.close(); return; }

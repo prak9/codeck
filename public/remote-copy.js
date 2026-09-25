@@ -1,7 +1,11 @@
+import { autonomyDisplayText } from './remote-autonomy.js?v=10';
+
+const visibleOutput = text => /codeck-autonomy/u.test(text) ? autonomyDisplayText(text) : text;
+
 export function agentOutputText(turn) {
   return (turn?.items || [])
     .filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string' && item.text)
-    .map((item) => item.text)
+    .map((item) => visibleOutput(item.text)).filter(Boolean)
     .join('\n\n');
 }
 
@@ -16,6 +20,7 @@ export function latestAgentOutputText(turns) {
 }
 
 export async function writeAgentOutputToClipboard(text, clipboard = globalThis.navigator?.clipboard) {
+  text = visibleOutput(text);
   if (!text) throw new Error('没有可复制的模型输出');
   if (!clipboard?.writeText) throw new Error('当前浏览器不支持剪贴板写入');
   try {

@@ -14,6 +14,7 @@ import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 import { QoderQuestionTracker } from '../src/qoder-question.js';
 import { AUTONOMY_PROGRESS_PROMPT as progressPrompt } from '../public/remote-autonomy.js';
 import { AutonomyController } from '../src/autonomy.js';
+import { writeReceipt } from '../src/autonomy-receipt.js';
 import { interruptSession } from '../src/tmux.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
@@ -102,8 +103,11 @@ function reset(provider) {
       const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
       fixture.finishAutonomy = (record, prose = '本轮检查已完成。') => {
         entry.status = 'completed';
+        if (simpleMode && record.status === 'summary') writeReceipt(['--receipt', [...fixture.autonomy.runs.values()][0].exchange.receiptFile,
+          '--status', 'summary', '--summary', record.summary, '--next', record.next]);
         entry.items.push({ id: `${turnId}-answer`, type: 'agentMessage',
-          text: `${prose}\n\n\`\`\`codeck-autonomy\n${JSON.stringify({ nonce, ...record })}\n\`\`\`` });
+          text: simpleMode && record.status === 'summary' ? `${record.summary}\n\n下一步：${record.next}`
+            : `${prose}\n\n\`\`\`codeck-autonomy\n${JSON.stringify({ nonce, ...record })}\n\`\`\`` });
         fixture.status = 'done'; publishThread(); publishSessions();
       };
       fixture.status = 'working'; publishThread(); publishSessions();
@@ -337,6 +341,7 @@ try {
         const auto = page.locator('#autonomyButton'), dialog = page.locator('#autonomyDialog');
         fixture.status = 'working'; publishSessions();
         await auto.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+        assert.equal(await dialog.getByRole('textbox', { name: '问题定义' }).count(), 0);
         assert.equal(fixture.autonomySent.length, 0); assert.equal(fixture.autonomyStops, 1);
         await dialog.getByRole('textbox', { name: '目标', exact: true }).fill('修复终端宽度，回归通过');
         await dialog.getByRole('textbox', { name: '验证方法' }).fill('37列到140列恢复，验证通过');
@@ -344,7 +349,6 @@ try {
         Object.assign(draftRun.definition, { goal: '迟到目标不得覆盖', acceptance: '迟到验收', suggestions: ['修复会话切换后输入丢失的问题'] }); fixture.autonomy.changed(draftRun);
         await dialog.getByRole('button', { name: '修复会话切换后输入丢失的问题', exact: true }).waitFor();
         assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '37列到140列恢复，验证通过');
-        await dialog.getByRole('textbox', { name: '问题定义' }).fill('桌面继承了手机宽度');
         await dialog.getByRole('textbox', { name: '策略', exact: true }).fill('复现后最小修复');
         await dialog.getByRole('textbox', { name: '预算轮次' }).fill('5轮 / 30分钟');
         assert.equal(await dialog.getByRole('button', { name: '开始', exact: true }).evaluate(el => {
@@ -358,8 +362,9 @@ try {
         await dialog.getByRole('button', { name: '开始', exact: true }).click();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'running');
         assert.equal(fixture.autonomySent.length, 1);
-        await page.waitForFunction(() => getComputedStyle(document.querySelector('.autonomy-icon')).borderTopColor === 'rgb(255, 133, 128)');
-        assert.equal(await auto.locator('.autonomy-icon').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(255, 133, 128)');
+        await page.waitForFunction(() => getComputedStyle(document.querySelector('.autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
+        assert.equal(await auto.locator('.autonomy-icon').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
+        assert.deepEqual(await auto.locator('.autonomy-icon').evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).boxShadow]), ['rgba(0, 0, 0, 0)', 'none']);
         assert.equal(await page.locator('#sendButton').evaluate(el => el.classList.contains('stop-mode')), false);
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-active.png`) });
         const run = fixture.autonomy.runs.values().next().value, id = run.id;
@@ -372,7 +377,7 @@ try {
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'exiting');
         assert.equal(await dialog.isVisible(), false, 'exit must not open another choice dialog');
         assert.equal(fixture.autonomySent.length, 2); assert.match(fixture.autonomySent[1], /"phase":"summary"/);
-        fixture.finishAutonomy({ status: 'summary', summary: '已修复宽度，剩余验证。' }); await fixture.autonomy.tick();
+        fixture.finishAutonomy({ status: 'summary', summary: '已修复宽度，剩余验证。', next: '补手机与桌面切换回归。' }); await fixture.autonomy.tick();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'off');
         assert.match(await page.locator('#autonomyStatus').textContent(), /^\d+(?:\/\d+)?$/);
         assert.equal(await auto.evaluate(el => el.closest('.composer-meta')?.id), 'composerMeta');
