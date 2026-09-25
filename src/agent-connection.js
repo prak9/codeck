@@ -449,7 +449,7 @@ export class AgentHub {
       },
       providers: this.registry.providerInfo(),
       scopedSessionStop: true,
-      ...(this.autonomy ? { autonomy: this.autonomy.snapshots(), autonomySessionBinding: true } : {}),
+      ...(this.autonomy ? { autonomy: this.autonomy.snapshots(), autonomySessionBinding: true, simpleAutonomy: true } : {}),
     });
     if (this.sessionFeed && negotiatedStreamVersion === 1) this.#subscribeSessions(socket, null);
     socket.on('message', (data) => this.#handleMessage(socket, data));
@@ -585,9 +585,10 @@ export class AgentHub {
         || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
       cleanCommandId(message.commandId);
       const answer = message.type === 'answerAutonomy' ? { requestId: cleanCommandId(message.requestId), answers: message.answers } : {};
-      return this.#runCommand(message, provider, { ...target, ...answer }, async () => ({ autonomy: message.type === 'startAutonomy'
-        ? await this.autonomy.start(target) : message.type === 'answerAutonomy'
-          ? await this.autonomy.respond(target, answer) : this.autonomy.pause(target) }));
+      const simple = message.simple === true;
+      return this.#runCommand(message, provider, { ...target, ...answer, ...(simple ? { simple } : {}) }, async () => ({ autonomy: message.type === 'startAutonomy'
+        ? await this.autonomy.start(target, { simple }) : message.type === 'answerAutonomy'
+          ? await this.autonomy.respond(target, answer) : simple ? await this.autonomy.finish(target) : this.autonomy.pause(target) }));
     }
     if (message.type === 'subscribeSessions') {
       const client = this.clients.get(socket);
@@ -717,9 +718,12 @@ export class AgentHub {
       return this.#runCommand(message, provider, payload, async () => {
         const target = { provider, threadId, tmuxSession: sessionName };
         const autonomous = this.autonomy?.snapshot(target);
-        if (autonomous && !['completed', 'limit'].includes(autonomous.status) && !isAutonomyObservation(text)) {
-          if (!text.startsWith('/')) return { autonomyHandled: true, autonomy: await this.autonomy.message(target, text) };
-          this.autonomy.pause(target, '用户正在操作原生命令菜单');
+        if (autonomous && !['completed', 'limit', 'off'].includes(autonomous.status) && !isAutonomyObservation(text)) {
+          if (autonomous.mode === 'simple') this.autonomy.pause(target, '用户已接管，自主续跑关闭');
+          else {
+            if (!text.startsWith('/')) return { autonomyHandled: true, autonomy: await this.autonomy.message(target, text) };
+            this.autonomy.pause(target, '用户正在操作原生命令菜单');
+          }
         }
         const deliveryBaseline = provider === 'qodercli'
           ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;

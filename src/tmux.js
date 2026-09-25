@@ -1039,9 +1039,14 @@ function qoderComposerState(output, text, allowPasteSummary = false) {
   const rows = cleanScreenRows(output);
   const end = rows.findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
   const footer = rows.slice(end + 1).filter(line => line.trim());
+  // The model footer also carries effort, context-window and function-switch
+  // settings. Those display fields are not evidence of a draft or modal.
   if (end < 0 || footer.length !== 1
-    || !/^.+ Model(?: · (?:ctx\s*[\u2580-\u259f]+\s*\d+%\s*·\s*)?(?:\/|~).*)?$/u.test(footer[0].trim())) return 'unknown';
-  const start = rows.slice(0, end).findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
+    || !/^.+ (?:Model|模型)(?: · .+)?$/u.test(footer[0].trim())) return 'unknown';
+  // Qoder can embed the session title in the composer's top border. The
+  // environment/mode hints above that border are not part of the input.
+  const start = rows.slice(0, end).findLastIndex(line => SCREEN_SEPARATOR.test(line.trim())
+    || /^[─━═-]+ .+ [─━═-]+$/u.test(line.trim()));
   // Qoder's YOLO chat mode uses '*'; '!' and '(r:)' belong to shell/search.
   if (start < 0 || !/^ [>*](?: |$)/u.test(rows[start + 1] || '')) return 'unknown';
   const content = [rows[start + 1].slice(3)];
@@ -1056,7 +1061,7 @@ function qoderComposerState(output, text, allowPasteSummary = false) {
   // placeholder proves this is the empty widget, not user-authored text.
   const raw = String(output).split('\n')[start + 1];
   if (hasQoderPlaceholderCursor(raw)
-    && content.map(line => line.trim()).join(' ') === 'Type your message or @path/to/file') {
+    && ['Type your message or @path/to/file', '输入消息或 @path/to/file'].includes(content.map(line => line.trim()).join(' '))) {
     return 'empty';
   }
   // Qoder folds large pastes. This is readiness evidence only, and is accepted
@@ -1931,9 +1936,13 @@ export async function renameSession(name, newName) {
 // the rows off the bottom. That only shows when content reaches the last row, which is why
 // popups like Claude Code's model picker appear cut off while ordinary output looks fine.
 // "latest" follows whichever client is active, so the terminal being typed into always fits.
-export async function preferLatestClientSize() {
-  if (!await detectWindowSizeSupport()) return false;
-  await exec('tmux', ['set-option', '-g', 'window-size', 'latest']);
+export async function preferLatestClientSize(sessionName, overrides = {}) {
+  if (!validateSessionName(sessionName)) throw new Error('无效的会话名');
+  if (!await (overrides.supportsWindowSize || detectWindowSizeSupport)()) return false;
+  const execTmux = overrides.execTmux || (args => exec('tmux', args));
+  // resize-window leaves a window-local "manual" override. A global default
+  // cannot clear it, so a desktop attach would keep the previous phone width.
+  await execTmux(['set-option', '-w', '-t', `=${sessionName}:`, 'window-size', 'latest']);
   return true;
 }
 

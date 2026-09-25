@@ -55,6 +55,24 @@ test('normal mode binds autonomy without subscribing to history', async () => {
   assert.equal(f.hub.clients.get(f.socket).threadSubscription, null);
 });
 
+test('simple A is scoped and deduplicated through the production hub, without reading configuration history', async () => {
+  const f = await fixture({ openThread: false });
+  let stops = 0;
+  f.autonomy.stop = async (_target, guard, options) => { assert.equal(guard(), true); assert.equal(options.stopBackground, false); stops++; };
+  f.backend.openThread = async () => assert.fail('local setup must not read transcript');
+  assert.equal(f.socket.sent[0].simpleAutonomy, true);
+  await f.request('bindAutonomySession');
+  const first = await f.request('startAutonomy', { commandId: 'simple-start', simple: true });
+  assert.equal(first.ok, true); assert.equal(first.result.autonomy.setup, true);
+  await f.request('startAutonomy', { commandId: 'simple-start', simple: true });
+  assert.equal(stops, 1); assert.equal(f.sent.length, 0);
+  const wrong = await f.request('pauseAutonomy', { commandId: 'foreign-exit', simple: true, tmuxSession: 'other' });
+  assert.equal(wrong.ok, false); assert.equal(stops, 1);
+  await f.request('pauseAutonomy', { commandId: 'simple-exit', simple: true });
+  assert.equal(stops, 2); assert.equal(f.autonomy.snapshot(target).status, 'exiting');
+  f.autonomy.close();
+});
+
 test('explicit normal binding cannot fall back to an older history target after unbinding', async () => {
   const f = await fixture();
   await f.request('bindAutonomySession');

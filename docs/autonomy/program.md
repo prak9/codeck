@@ -5,7 +5,7 @@
 - Overall status: `完成`
 - Profile: `Lite`
 - Active plan node: None
-- Latest evidence: `/tmp/codeck-state-release-tests.log` — 1093/1093 pass; release 3e07d6b live health/assets/API/V2 capabilities pass; all 10 pane/PIDs and both autonomous run IDs/rounds retained
+- Latest evidence: `/tmp/codeck-simple-final-tests.log` — 1151/1151 pass; `/tmp/codeck-simple-normal-final.log` and `/tmp/codeck-simple-remote-final.log` — 12 current UI journeys pass; `/tmp/codeck-simple-legacy-browser.log` — 6 legacy journeys pass; isolated tmux 37→140 column recovery passes
 - Current blocker: None
 - Next step: None
 - Next checkpoint: None
@@ -13,12 +13,23 @@
 - Owner: `AI`
 - Last updated: `2026-09-25`
 - Clean state: `Not due`
-- Last clean: `2026-09-25 / NODE-016/019 reconciled with release 3e07d6b, final tests and live health; historical Qoder unsupported boundary superseded by R-011`
+- Last clean: `2026-09-25 / NODE-020 current flow and README aligned; earlier nodes retained as historical/legacy behavior, not current A instructions`
 
 ## Outcome
 
+### Current revision (2026-09-25)
+
+- NODE-020 implementation is verified; the user subsequently authorized commit, push and deployment. Implementation verification sent no real Agent input. Real remote-server behavior and physical Safari remain outside the isolated tmux/browser verification.
+
+- User explicitly requests both entry and exit via A to interrupt current execution.
+- Setup is a Codeck-owned goal/strategy/budget choice form, with custom values; no CLI/history reply is required to display it. Approval starts work; cancelling does not start work.
+- A during execution interrupts the current foreground turn, requests one summary, then turns autonomy off. A after exit starts fresh setup, not a legacy resume. Background tasks are not silently killed by the exit operation.
+- Preserve legacy API handling for already-open clients; current normal/Remote UI uses the simplified contract. Prior pause/resume and Agent-generated setup acceptance below describes the legacy path, not the new A journey.
+- Desktop normal mode must measure its own viewport and not retain a mobile-sized grid. Need screenshot/isolated evidence to distinguish layout from tmux arbitration.
+- Acceptance: failing controller and sizing regressions first; provider/identity, cancellation, double-click, restart and failed delivery guards; full suite plus actual mobile/desktop browser journeys and screenshots. No real Agent input, service restart or release without a new request.
+
 - Problem: Remote requires manually asking an Agent to continue after each turn.
-- Success: Adjacent ? and circled A controls provide concise non-interrupting progress questions and choice-based goal/budget/preferences setup with explicit approval. Confirmed tasks continue server-side until completion, a finite round limit, or a safe pause; users can redirect without losing spent budget. Unknown delivery hints can be dismissed without replay or false confirmation.
+- Success: Adjacent ? and A controls provide non-interrupting progress questions and interrupting entry into local goal/strategy/budget setup. Approval starts autonomous execution; A interrupts then summarizes and exits; the next A starts fresh setup. Desktop attach recovers its own width. Unknown deliveries remain unconfirmed rather than replayed.
 - Non-goals: Workflow engine, dashboard, autonomous permission approval, new dependencies. Git release and deployment are separately authorized by the user's subsequent request.
 
 ## Constraints
@@ -27,7 +38,7 @@
 - Tactical objective: Lightweight session UI with reliable bounded execution and human takeover.
 - Imperative bounds: No implicit authority expansion; no replay of uncertain sends; no continuation after pause or identity change; agent-reported completion is not independent verification.
 - Negotiable space: Protocol, module boundaries, persistent state shape, conservative recovery behavior.
-- Material assumptions: User explicitly authorized stopping the current session's old foreground and background tasks after goal confirmation. Other sessions, arbitrary detached processes and implicit replay remain out of scope; unsupported cancellation fails closed.
+- Material assumptions: User explicitly authorized foreground interruption on both A entry and exit. Previously authorized current-session background replacement remains tied to goal approval, not exit. Other sessions, arbitrary detached processes and implicit replay remain out of scope; unsupported cancellation fails closed.
 - Active unknowns: Native CLIs lack a shared task-result tool. Use nonce-bound final assistant records with a confirmed outbound message anchor; malformed/missing records pause rather than guess. Fee/token budgets are advisory without metering; round/deadline limits are controller-enforced.
 - Escalate when: A preference conflicts or evidence reveals a better option that requires changing a bound.
 
@@ -56,6 +67,7 @@
 
 | Node | Status | Action | Verification | Evidence | Reflection |
 |---|---|---|---|---|---|
+| NODE-020 | `完成` | Recover desktop window sizing; interrupt/local setup/approval/execute/interrupt/summary/off; fresh setup and legacy guards | Isolated tmux, controller/API, full suite, normal/Remote and legacy browser journeys | /tmp/codeck-size-red.log; /tmp/codeck-size-green.log; /tmp/codeck-simple-final-tests.log; /tmp/codeck-simple-normal-final.log; /tmp/codeck-simple-remote-final.log; /tmp/codeck-simple-legacy-browser.log | R-012 |
 | NODE-019 | `完成` | Commit 3e07d6b pushed and deployed on explicit user request | 1093 tests; authenticated health/assets/API/V2 ready capabilities; exact pane/PID comparison | /tmp/codeck-state-release-tests.log; service MainPID 1180995, started 2026-09-25 14:57:48 CST; 10 retained panes; report/research rounds 4/2 paused | None: service healthy, no live Agent input or cancellation sent; no daemon-reload of unrelated unit changes |
 | NODE-016 | `完成` | Review and fix continuation checkpoints and activity presentation | Controller regression tests | /tmp/codeck-state-red.log; /tmp/codeck-state-blocked-red.log; /tmp/codeck-qoder-all.log | R-010 |
 | NODE-017 | `完成` | Verified scoped interruption and compact controls including Qoder task-panel cancellation | Hub/adapter and browser checks | /tmp/codeck-stop-red.log; /tmp/codeck-qoder-stop-red.log; /tmp/codeck-qoder-guards-final.log; /tmp/codeck-qoder-remote-browser.log | R-011 |
@@ -82,6 +94,7 @@ Record consequential findings here; routine verification stays in the Plan table
 
 | ID | Scope | Evidence | Wrong / changed | Right / preserve | Next rule |
 |---|---|---|---|---|---|
+| R-012 | NODE-020 sizing and new-run replacement | /tmp/codeck-size-red.log; /tmp/codeck-simple-stale-red.log; test/tmux-size-recovery.test.js; test/autonomy-simple.test.js | Global latest cannot override a window-local manual width; a late legacy receipt could resume configuration into a different run sharing the same session key | Local window policy leaves other windows untouched; nonce/identity guards and isolated real tmux/PTY tests remain useful | Apply sizing to the attached window; async recovery must match the current run object as well as its generation; test state replacement, not only pauses |
 | R-010 | NODE-016 design review | src/autonomy.js pause/message/poll; public/remote-autonomy.js | Pause discards the in-flight exchange; resume sets replaceTask even for the same goal; missing-result timeout runs during background execution | Preserve nonce validation, session identity, bounded rounds and explicit new-goal confirmation | Retain a private checkpoint, invalidate stale async work, resume observation without replay; derive visible activity independently of continuation |
 | R-011 | NODE-017 Qoder parity review | /tmp/codeck-qoder-stop-red.log; installed qodercli-1.1.46 task-panel implementation; https://docs.qoder.com/cli/tools | Five-second foreground verification is shorter than the six-second activity heuristic; Codex stop commands do not apply to Qoder | Native task panel scopes cancellation to the current session and advertises killable selections | Wait beyond repaint; use /tasks with per-frame identity/selection checks, no repeated unconfirmed k, no history-clear actions, and final idle/background verification; supersedes the historical Qoder unsupported limitation |
 | R-001 | NODE-001 result/recovery races | /tmp/codeck-autonomy-edge-red.log; /tmp/codeck-autonomy-race-red.log; test/autonomy.test.js | A later progress answer could hide completion; stale read failure could pause a new direction; persistent history errors could hang | Nonce + user anchor + final assistant evidence; generation guards; conservative restart | Retain final result across read-only progress turns; guard rejected promises too; bound history failures |

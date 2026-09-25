@@ -1,4 +1,4 @@
-import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=7';
+import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=8';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
 import { chooseStopScope } from './session-stop.js?v=1';
 
@@ -11,7 +11,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   const stopButton = $('terminalStopButton');
   let stopSupported = false;
   const runs = new Map();
-  let supported = false, connected = false, bindingKey, bound = false, generation = 0;
+  let supported = false, simple = false, connected = false, bindingKey, bound = false, generation = 0;
   let pending = false, dismissed = '', formKey = '', lastReason = '';
   const keyOf = target => target ? autonomyKey(target) : '';
   const targetNow = () => supported && connected ? getTarget() : null;
@@ -34,7 +34,8 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   }
   async function act(type, extra = {}) {
     const target = targetNow();
-    if (!target || !bound || pending || keyOf(target) !== bindingKey || (target.question && type !== 'interruptSession')) return false;
+    if (!target || !bound || pending || keyOf(target) !== bindingKey
+      || (target.question && type !== 'interruptSession' && !(extra.simple && ['startAutonomy', 'pauseAutonomy'].includes(type)))) return false;
     const epoch = generation;
     const before = current();
     pending = true; message(); sync();
@@ -85,7 +86,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     });
     const error = element('p', 'form-error'); error.setAttribute('role', 'alert');
     const actions = element('div', 'dialog-actions');
-    const submit = element('button', 'primary-button', '确认选择'); submit.type = 'submit';
+    const submit = element('button', 'primary-button', run.setup ? '开始自主执行' : '确认选择'); submit.type = 'submit';
     actions.append(submit); form.append(error, actions);
     const epoch = generation;
     let attempt;
@@ -126,10 +127,10 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       }
     }
     const run = current(), view = autonomyPresentation(run, target?.session), questions = questionFor(run);
-    const label = target?.question ? '处理 Agent 等待的问题'
+    const label = target?.question && !simple ? '处理 Agent 等待的问题'
       : run?.status === 'confirming' && run.proposal ? '确认目标并开始自主迭代' : view.label;
     button.hidden = !supported || !getTarget();
-    button.disabled = !target || !bound || pending || run?.status === 'stopping';
+    button.disabled = !target || !bound || pending || ['stopping', 'exiting'].includes(run?.status);
     button.title = [label, run?.reason].filter(Boolean).join('：');
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-pressed', String(view.active));
@@ -140,7 +141,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     status.textContent = view.detail;
     const reason = bound && run?.status === 'paused' ? run.reason : '';
     if (reason !== lastReason) { lastReason = reason; message(reason); }
-    if (!target || !bound || target.question || !questions) { if (dialog.open) dialog.close(); return; }
+    if (!target || !bound || (target.question && !run?.setup) || !questions) { if (dialog.open) dialog.close(); return; }
     const nextKey = `${key}:${run.requestId}`;
     if (formKey !== nextKey) {
       formKey = nextKey;
@@ -152,12 +153,12 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   }
   button.addEventListener('click', async () => {
     if (button.disabled || button.hidden) return;
-    if (targetNow()?.question) { focusTerminal(); message('Agent 正在等待回答，请在终端中处理。'); return; }
+    if (targetNow()?.question && !simple) { focusTerminal(); message('Agent 正在等待回答，请在终端中处理。'); return; }
     const run = current(), questions = questionFor(run);
     if (questions && !run.proposal) { dismissed = ''; sync(); return; }
     try {
-      await act(questions && run.proposal ? 'answerAutonomy' : autonomyPresentation(run).active ? 'pauseAutonomy' : 'startAutonomy',
-        questions && run.proposal ? { requestId: run.requestId, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {});
+      await act(!simple && questions && run.proposal ? 'answerAutonomy' : autonomyPresentation(run).active ? 'pauseAutonomy' : 'startAutonomy',
+        simple ? { simple: true } : questions && run.proposal ? { requestId: run.requestId, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {});
     } catch { /* The scoped notice already describes the failure. */ }
   });
   stopButton.addEventListener('click', async () => {
@@ -178,6 +179,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     ready(message) {
       generation++; bindingKey = undefined; bound = false;
       connected = true; supported = message.autonomySessionBinding === true;
+      simple = message.simpleAutonomy === true;
       stopSupported = message.scopedSessionStop === true;
       runs.clear(); for (const run of message.autonomy || []) runs.set(autonomyKey(run.target), run);
       sync();
@@ -185,7 +187,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     disconnect() { connected = false; sync(); },
     sendDirection(text) {
       const run = current();
-      if (!supported || !run || ['completed', 'limit'].includes(run.status) || (text.startsWith('/') && !isAutonomyObservation(text)) || isProgressPrompt(text)
+      if (!supported || !run || ['completed', 'limit', 'off'].includes(run.status) || (text.startsWith('/') && !isAutonomyObservation(text)) || isProgressPrompt(text)
         || getTarget()?.question) return null;
       if (!targetNow() || !bound || pending) return Promise.reject(new Error('自主任务连接未就绪，草稿已保留'));
       return act('sendSessionMessage', { text }).then(accepted => { if (!accepted) throw new Error('会话已变化，未确认发送'); });

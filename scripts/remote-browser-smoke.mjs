@@ -18,6 +18,7 @@ import { interruptSession } from '../src/tmux.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
+const simpleMode = process.env.CODECK_SIMPLE_AUTONOMY === '1';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-remote-smoke-'));
 console.log(`Browser artifacts: ${artifacts}`);
@@ -191,7 +192,7 @@ function publishEvent(method, params) {
 }
 sockets.on('connection', socket => {
   send(socket, { type: 'ready', hostname: 'isolated-fixture', defaultCwd: '/fixture',
-    scopedSessionStop: true,
+    scopedSessionStop: true, simpleAutonomy: simpleMode,
     autonomy: fixture.autonomy.snapshots(),
     protocol: { version: 1, epoch: fixture.epoch, commandReceiptTtlMs: 600_000 },
     providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
@@ -211,8 +212,9 @@ sockets.on('connection', socket => {
       publishThread(); publishSessions(); return reply({});
     }
     if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(request.type)) {
-      if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget);
+      if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget, { simple: request.simple === true });
       else if (request.type === 'answerAutonomy') await fixture.autonomy.respond(autonomyTarget, request);
+      else if (request.simple) await fixture.autonomy.finish(autonomyTarget);
       else fixture.autonomy.pause(autonomyTarget);
       await fixture.autonomy.tick(); await fixture.autonomy.tick();
       return reply({ autonomy: fixture.autonomy.snapshot(autonomyTarget) });
@@ -331,6 +333,34 @@ try {
       page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
+      if (simpleMode) {
+        const auto = page.locator('#autonomyButton'), dialog = page.locator('#autonomyDialog');
+        fixture.status = 'working'; publishSessions();
+        await auto.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+        assert.equal(fixture.autonomySent.length, 0); assert.equal(fixture.autonomyStops, 1);
+        await dialog.getByRole('textbox', { name: '目标：自定义回答' }).fill('修复终端宽度，回归通过');
+        await dialog.getByRole('radio', { name: '最小修改，优先验证', exact: true }).check();
+        await dialog.getByRole('radio', { name: '5 轮', exact: true }).check();
+        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-setup.png`) });
+        await page.keyboard.press('Escape'); assert.equal(fixture.autonomySent.length, 0);
+        await auto.click();
+        await dialog.getByRole('button', { name: '开始自主执行' }).click();
+        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('执行中'));
+        assert.equal(fixture.autonomySent.length, 1);
+        const run = fixture.autonomy.runs.values().next().value, id = run.id;
+        await auto.click();
+        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('总结退出中'));
+        assert.equal(fixture.autonomySent.length, 2); assert.match(fixture.autonomySent[1], /"phase":"summary"/);
+        fixture.finishAutonomy({ status: 'summary', summary: '已修复宽度，剩余验证。' }); await fixture.autonomy.tick();
+        await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent.includes('已退出'));
+        await auto.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+        assert.notEqual(fixture.autonomy.runs.values().next().value.id, id);
+        assert.equal(fixture.autonomySent.length, 2); assert.equal(fixture.autonomyStops, 4);
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+        assert.deepEqual(errors, []);
+        results.push({ provider, viewport: viewport.width, journeys: 'simple-setup/approval/interrupt/summary/exit/fresh-setup', errors: 0 });
+        await context.close(); continue;
+      }
       if (viewport.width < 720) await page.click('#drawerButton');
       await page.fill('#sessionSearch', 'NO-MATCH');
       assert.equal(await page.locator('#threadList .thread-row').count(), 0);

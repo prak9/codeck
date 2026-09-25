@@ -348,7 +348,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         ws.close(1008, '当前窗口被多个 tmux 会话共享，请先取消窗口链接');
         return;
       }
-      usesLatestClientSize = await dependencies.preferLatestClientSize();
+      usesLatestClientSize = await dependencies.preferLatestClientSize(nextSession);
       if (!isOpen() || sequence !== attachSequence) return;
     } catch (error) {
       if (isOpen() && sequence === attachSequence) ws.close(1011, error.message || 'tmux size configuration failed');

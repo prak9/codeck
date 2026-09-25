@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=7';
+import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=8';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -143,6 +143,7 @@ const state = {
   pendingDeliveries: new Map(),
   dismissedNativeQuestion: '',
   autonomySupported: false,
+  simpleAutonomy: false,
   scopedSessionStop: false,
   autonomyRuns: new Map(),
   autonomyPending: false,
@@ -653,6 +654,7 @@ async function handleReady(message) {
   }
   state.protocolEpoch = nextEpoch;
   state.autonomySupported = Array.isArray(message.autonomy);
+  state.simpleAutonomy = message.simpleAutonomy === true;
   state.scopedSessionStop = message.scopedSessionStop === true;
   state.autonomyRuns = new Map((message.autonomy || []).map(run => [autonomyKey(run.target), run]));
   state.streamVersion = message.protocol?.version === 2 ? 2 : 1;
@@ -2129,7 +2131,7 @@ function interactionNode(key, entry) {
   const error = element('p', 'question-error');
   error.setAttribute('role', 'alert');
   const actions = element('div', 'question-actions');
-  const submit = element('button', 'allow', entry.autonomy ? '确认选择' : '回答并继续');
+  const submit = element('button', 'allow', entry.setup ? '开始自主执行' : entry.autonomy ? '确认选择' : '回答并继续');
   submit.type = 'submit';
   actions.append(submit);
   form.append(error, actions);
@@ -2444,14 +2446,14 @@ function renderComposerState() {
   const presentation = autonomyPresentation(autonomy, { hasRunningProcess: active,
     agent: { hasBackgroundProcess: background, question: waitingForInput } });
   autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
-  autonomyButton.disabled = opening || closing || pending || state.autonomyPending || !state.connected || autonomy?.status === 'stopping';
+  autonomyButton.disabled = opening || closing || pending || state.autonomyPending || !state.connected || ['stopping', 'exiting'].includes(autonomy?.status);
   autonomyButton.classList.toggle('running', ['running', 'queued', 'waiting'].includes(autonomy?.status));
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
   $('#autonomyStatus').textContent = presentation.detail;
   const autonomyQuestion = autonomyQuestionEntry();
   if (autonomyQuestion) autonomyButton.setAttribute('aria-label', autonomyQuestion.plan ? '确认并执行自主任务' : '回答自主配置问题');
-  if (waitingForInput) autonomyButton.setAttribute('aria-label', '处理 Agent 等待的问题');
+  if (waitingForInput && !state.simpleAutonomy) autonomyButton.setAttribute('aria-label', '处理 Agent 等待的问题');
   autonomyButton.title = autonomyButton.getAttribute('aria-label');
   syncAutonomyDialog();
   const voiceButton = $('#voiceInputButton');
@@ -2878,7 +2880,7 @@ function autonomyQuestionEntry() {
   const questions = run.status === 'confirming' && run.proposal ? [{ id: 'decision', header: '下一步',
     question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
   if (!questions?.length) return null;
-  return { autonomy: true, recovery: Boolean(run.recovery), provider: run.target.provider, tmuxSession: run.target.tmuxSession,
+  return { autonomy: true, setup: Boolean(run.setup), recovery: Boolean(run.recovery), provider: run.target.provider, tmuxSession: run.target.tmuxSession,
     plan: run.status === 'confirming' ? run.proposal : null, round: run.round,
     request: { id: run.requestId, params: { threadId: run.target.threadId, questions } } };
 }
@@ -2905,16 +2907,16 @@ function dismissAutonomyDialog() {
 async function toggleAutonomy() {
   const button = $('#autonomyButton');
   if (button.hidden || button.disabled) return;
-  if (currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
+  if (!state.simpleAutonomy && currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
   const question = autonomyQuestionEntry();
   if (question && !question.plan) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
   const active = autonomyPresentation(currentAutonomy()).active;
   state.autonomyPending = true; renderComposerState();
   try {
-    const result = await agentRequest(question?.plan ? 'answerAutonomy' : active ? 'pauseAutonomy' : 'startAutonomy', {
+    const result = await agentRequest(!state.simpleAutonomy && question?.plan ? 'answerAutonomy' : active ? 'pauseAutonomy' : 'startAutonomy', {
       ...target, commandId: crypto.randomUUID(),
-      ...(question?.plan ? { requestId: question.request.id, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {}),
+      ...(state.simpleAutonomy ? { simple: true } : question?.plan ? { requestId: question.request.id, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {}),
     });
     if (result.autonomy) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
     if (state.provider === target.provider && state.thread?.id === target.threadId && state.thread?.tmux?.name === target.tmuxSession) {

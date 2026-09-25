@@ -22,21 +22,24 @@ export function autonomyBudgetText(plan, round) {
 
 export function autonomyPresentation(run, session) {
   const needsAnswer = Boolean(run?.requestId && run?.questions?.length);
-  const labels = { configuring: needsAnswer ? '待回答' : '配置中',
+  const labels = { configuring: run?.setup ? '待设置' : needsAnswer ? '待回答' : '配置中',
     confirming: '待确认', switching: '切换中', stopping: '停止中', queued: '待执行', waiting: '等待中',
-    blocked: '待处理', paused: '已暂停', completed: '已完成', limit: '已达上限' };
-  const active = ['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked'].includes(run?.status);
+    blocked: '待处理', paused: run?.mode === 'simple' ? '已退出' : '已暂停',
+    running: run?.mode === 'simple' ? '执行中' : undefined,
+    completed: '已完成', limit: '已达上限', exiting: '总结退出中', off: '已退出' };
+  const active = !run?.setup && ['configuring', 'confirming', 'switching', 'queued', 'running', 'waiting', 'blocked', 'exiting'].includes(run?.status);
   const budget = run?.plan || run?.proposal;
   const count = budget ? `${run.round}/${budget.maxRounds ?? '∞'}` : '';
   const activity = session?.agent?.question ? '待处理' : session?.hasRunningProcess ? '执行中'
     : session?.agent?.hasBackgroundProcess ? '后台执行中' : '';
-  const phase = run && activity && !['configuring', 'confirming', 'switching', 'stopping'].includes(run.status)
+  const phase = run?.status === 'off' ? ['已退出', activity].filter(Boolean).join(' · ')
+    : run && activity && !['configuring', 'confirming', 'switching', 'stopping', 'exiting'].includes(run.status)
     ? [activity, !active && '续跑关闭'].filter(Boolean).join(' · ') : labels[run?.status];
   return {
     text: ['Ⓐ', count, phase].filter(Boolean).join(' '),
     detail: [count, phase].filter(Boolean).join(' '),
     active,
-    label: run?.status === 'configuring'
+    label: run?.mode === 'simple' ? active ? '中断并退出自主模式' : '设置自主目标' : run?.status === 'configuring'
       ? needsAnswer ? '回答自主配置问题' : '暂停自主配置'
       : active ? '暂停自主迭代' : run?.status === 'paused' ? '继续自主迭代' : '配置自主迭代',
   };

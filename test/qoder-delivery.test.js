@@ -12,6 +12,95 @@ const pane = (composer = placeholder) => [
   ' Qwen3.8-Max Model · ctx ░░░░░░░░░░ 0% · /project',
 ].join('\n');
 
+// QoderCLI 1.1.46 localizations and status renderer: model, effort, context
+// window and function switches share the footer's model segment.
+test('Qoder accepts empty localized composers with effort and context-window status', async () => {
+  for (const [composer, footer] of [
+    [placeholder, 'Ultimate Model · High · 200K · Fast · ctx ▓▓░░░░░░░░ 20% · /project'],
+    [placeholder, 'Ultimate Model · Disabled Effort'],
+    [placeholder.replace('Type your message or', '输入消息或'), 'Ultimate 模型 · 高 · 200K · 快速 · 上下文 ▓▓░░░░░░░░ 20% · /project'],
+    [placeholder.replace('Type your message or @path/to/file', '输入消息或\n   @path/to/file'), 'Ultimate 模型'],
+  ]) {
+    for (const text of ['进展如何', '第一行\n第二行']) {
+      let draft = composer;
+      let pastes = 0;
+      const screen = () => pane(draft).replace(/Qwen3\.8-Max Model[^\n]*/, footer);
+      const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder-localized',
+        threadId: 'thread-1', text, nonInterrupting: true }, {
+        listTmuxSessions: async () => [{ name: 'qoder-localized', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+        capturePane: async () => screen(), loadBuffer: async () => {},
+        waitForPaste: async () => {}, waitForSubmit: async () => {},
+        execTmux: async args => {
+          if (args.includes('paste-buffer')) {
+            pastes++;
+            if (args.includes('-p')) draft = ` > ${text.replaceAll('\n', '\n   ')}`;
+          }
+          if (args.includes('Enter')) draft = composer;
+        },
+      });
+      assert.equal(result.submissionStatus, 'attempted', footer);
+      assert.equal(pastes, 1);
+    }
+  }
+});
+
+test('localized placeholder text without its cursor and real modals still block protected Qoder input', async () => {
+  for (const composer of [' > 输入消息或 @path/to/file', ' > 保留我的草稿', ' ! ', ' (r:) ']) {
+    for (const footer of ['Ultimate 模型 · 高', 'Ultimate Model · High']) {
+      const screen = pane(composer).replace(/Qwen3\.8-Max Model[^\n]*/, footer);
+      const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder-protected',
+        threadId: 'thread-1', text: '第一行\n第二行', nonInterrupting: true }, {
+        listTmuxSessions: async () => [{ name: 'qoder-protected', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+        capturePane: async () => screen, loadBuffer: async () => assert.fail('must preserve draft'),
+        execTmux: async () => assert.fail('must not inject keys'),
+      });
+      assert.equal(result.submissionStatus, 'not-sent');
+    }
+  }
+  assert.equal(await ensureAgentInputSubmitted({
+    paneId: '%7', provider: 'qodercli', text: '继续',
+    capturePane: async () => pane().replace('Qwen3.8-Max Model', 'Ultimate 模型 · 高') + '\n是否允许此操作？',
+    verifyPane: async () => true, waitForSubmit: async () => {}, execTmux: async () => assert.fail('must not answer modal'),
+  }), 'unconfirmed');
+});
+
+test('Qoder titled composer from hololoop screenshot accepts empty input but preserves real drafts', async () => {
+  const screenshot = composer => [
+    '生产 Run 仍为 running，已完成 20/46 个 Metric 批。',
+    '─────────────────────────────────────',
+    ' Tasks 4/5 completed (Ctrl+T to',
+    ' ───────────────────────────────────',
+    ' Next 1 继续只读观察',
+    ' ───────────────────────────────────', '', '',
+    '─────────────────────────────────────',
+    ' YOLO Shift+Tab to Auto Mode', '',
+    '  2 AGENTS.md files · 2 MCP servers…',
+    '─ Failure diagnosis and revalidati… ─',
+    composer,
+    '─────────────────────────────────────',
+    ' Ultimate Model · 200K context',
+  ].join('\n');
+  for (const draft of [false, true]) {
+    let pasted = false, entered = false;
+    const text = '检查目标\n询问预算';
+    const empty = ' * \x1b[7m \x1b[0m Type your message or\n   @path/to/file';
+    const result = await sendSessionMessage({ provider: 'qodercli', sessionName: 'qoder-title',
+      threadId: 'thread-1', text, nonInterrupting: true }, {
+      listTmuxSessions: async () => [{ name: 'qoder-title', agent: { kind: 'qodercli', id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => screenshot(draft ? ' * 我的未发送草稿' : pasted && !entered ? ' * 检查目标\n   询问预算' : empty),
+      loadBuffer: async () => { assert.equal(draft, false); },
+      waitForPaste: async () => {}, waitForSubmit: async () => {},
+      execTmux: async args => {
+        assert.equal(draft, false);
+        if (args.includes('paste-buffer')) pasted = true;
+        if (args.includes('Enter')) entered = true;
+      },
+    });
+    assert.equal(result.submissionStatus, draft ? 'not-sent' : 'attempted');
+    assert.equal(pasted, !draft); assert.equal(entered, !draft);
+  }
+});
+
 test('Qoder waits for its delayed paste summary while cross-connection scrolling stays queued', async () => {
   const events = [];
   const text = '目标\n' + 'x'.repeat(5147);

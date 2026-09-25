@@ -366,9 +366,9 @@ const autonomy = new AutonomyController({
   prepare: (target, text, commandId) => agentRegistry.prepareSessionMessage(target.provider, {
     threadId: target.threadId, text, commandId,
   }),
-  stop: (target, isCurrent) => agentRegistry.interruptSession(target.provider, {
+  stop: (target, isCurrent, { stopBackground = true } = {}) => agentRegistry.interruptSession(target.provider, {
     sessionName: target.tmuxSession, threadId: target.threadId,
-    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: true,
+    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground,
   }),
   send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true, commandId, deliveryBaseline } = {}) => {
     const result = await agentRegistry.sendSessionMessage(target.provider, {
