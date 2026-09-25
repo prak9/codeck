@@ -38,6 +38,7 @@ export function autonomyPresentation(run, session) {
   return {
     text: ['Ⓐ', count, phase].filter(Boolean).join(' '),
     detail: [count, phase].filter(Boolean).join(' '),
+    progress: budget ? budget.maxRounds == null ? String(run.round) : count : '',
     active,
     label: run?.mode === 'simple' ? active ? '中断并退出自主模式' : '设置自主目标' : run?.status === 'configuring'
       ? needsAnswer ? '回答自主配置问题' : '暂停自主配置'

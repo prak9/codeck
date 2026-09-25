@@ -16,6 +16,14 @@ test('simple A presents setup, execution, summary and off without a resume label
   }
 });
 
+test('compact autonomy progress contains only round counts, not execution or resume copy', () => {
+  for (const status of ['running', 'paused', 'off', 'completed']) {
+    assert.equal(autonomyPresentation({ mode: 'simple', status, round: 2, plan: { maxRounds: 5 } }).progress, '2/5');
+    assert.equal(autonomyPresentation({ mode: 'simple', status, round: 2, plan: { maxRounds: null } }).progress, '2');
+  }
+  assert.equal(autonomyPresentation({ mode: 'simple', status: 'configuring', setup: true }).progress, '');
+});
+
 function fixture(provider = 'qodercli') {
   const target = { provider, threadId: 'thread-1', tmuxSession: 'work' };
   const session = { name: 'work', hasRunningProcess: true, agent: { kind: provider, id: 'thread-1', paneId: '%7' } };

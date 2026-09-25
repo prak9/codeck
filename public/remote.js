@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=8';
+import { autonomyKey, autonomyPresentation, autonomyBudgetText, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=9';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -2424,7 +2424,8 @@ function renderComposerState() {
   const opening = Boolean(state.threadOpening);
   const closing = state.sessionClosePending;
   const controls = composerControlState({
-    active: active || (background && state.scopedSessionStop), connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
+    active: !(state.simpleAutonomy && state.autonomySupported && sessionName && state.provider !== 'shell')
+      && (active || (background && state.scopedSessionStop)), connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
   });
   const composer = $('.composer');
   sendButton.classList.toggle('stop-mode', controls.stopMode && !shellAttachmentOnly);
@@ -2450,7 +2451,8 @@ function renderComposerState() {
   autonomyButton.classList.toggle('running', ['running', 'queued', 'waiting'].includes(autonomy?.status));
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
-  $('#autonomyStatus').textContent = presentation.detail;
+  autonomyButton.dataset.state = autonomy?.status || 'off';
+  $('#autonomyStatus').textContent = state.simpleAutonomy ? presentation.progress : presentation.detail;
   const autonomyQuestion = autonomyQuestionEntry();
   if (autonomyQuestion) autonomyButton.setAttribute('aria-label', autonomyQuestion.plan ? '确认并执行自主任务' : '回答自主配置问题');
   if (waitingForInput && !state.simpleAutonomy) autonomyButton.setAttribute('aria-label', '处理 Agent 等待的问题');
@@ -2876,6 +2878,7 @@ function currentAutonomy() {
 
 function autonomyQuestionEntry() {
   const run = currentAutonomy();
+  if (state.simpleAutonomy && !run?.setup) return null;
   if (!run?.requestId || (!['configuring', 'confirming'].includes(run.status) && !(run.status === 'paused' && run.recovery))) return null;
   const questions = run.status === 'confirming' && run.proposal ? [{ id: 'decision', header: '下一步',
     question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
@@ -2912,13 +2915,14 @@ async function toggleAutonomy() {
   if (question && !question.plan) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
   const active = autonomyPresentation(currentAutonomy()).active;
+  const before = currentAutonomy();
   state.autonomyPending = true; renderComposerState();
   try {
     const result = await agentRequest(!state.simpleAutonomy && question?.plan ? 'answerAutonomy' : active ? 'pauseAutonomy' : 'startAutonomy', {
       ...target, commandId: crypto.randomUUID(),
       ...(state.simpleAutonomy ? { simple: true } : question?.plan ? { requestId: question.request.id, answers: { decision: [AUTONOMY_DECISIONS[0]] } } : {}),
     });
-    if (result.autonomy) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
+    if (result.autonomy && state.autonomyRuns.get(autonomyKey(target)) === before) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
     if (state.provider === target.provider && state.thread?.id === target.threadId && state.thread?.tmux?.name === target.tmuxSession) {
       setLiveMessage(result.autonomy?.status === 'paused' ? result.autonomy.reason : '');
       if (!active) $('#composerInput').focus({ preventScroll: true });

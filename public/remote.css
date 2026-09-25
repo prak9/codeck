@@ -290,6 +290,7 @@ a.header-button { text-decoration: none; }
 .autonomy-button[hidden] { display: none; }
 .autonomy-icon { width: 20px; height: 20px; display: inline-grid; place-items: center; border: 1.5px solid currentColor; border-radius: 50%; font-size: 12px; font-weight: 650; line-height: 1; }
 .autonomy-button.running { color: var(--accent); }
+.autonomy-button[aria-pressed="true"] .autonomy-icon { border-color: #ff8580; color: #ff8580; }
 .autonomy-button:hover { color: var(--ink); }
 .autonomy-button:disabled { opacity: .42; cursor: default; }
 #autonomyStatus { white-space: normal; max-width: 180px; line-height: 1.4; text-align: left; }

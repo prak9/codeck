@@ -43,7 +43,7 @@ test('paused configuration recovery exposes choices and A never implicitly autho
   const run = { status: 'paused', recovery: { nonce: 'old' }, requestId: 'recovery-request',
     target: { provider: 'qodercli', threadId: 'thread', tmuxSession: 'report' },
     questions: [{ id: 'recovery', question: '重新配置？', options: ['保持暂停', '放弃旧配置并重新配置'], isOther: false }] };
-  const context = vm.createContext({ currentAutonomy: () => run, AUTONOMY_DECISIONS });
+  const context = vm.createContext({ currentAutonomy: () => run, AUTONOMY_DECISIONS, state: { simpleAutonomy: false } });
   const start = source.indexOf('function autonomyQuestionEntry(');
   vm.runInContext(source.slice(start, start + source.slice(start).search(/^}$/m) + 1), context);
   const entry = context.autonomyQuestionEntry();

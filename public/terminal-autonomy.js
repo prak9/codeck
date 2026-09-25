@@ -1,4 +1,4 @@
-import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=8';
+import { AUTONOMY_DECISIONS, autonomyKey, autonomyPresentation, autonomyBudgetText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=9';
 import { shouldKeepDeliveryAttempt } from './remote-delivery.js?v=5';
 import { chooseStopScope } from './session-stop.js?v=1';
 
@@ -22,6 +22,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     const el = document.createElement(tag); el.className = className; el.textContent = text; return el;
   }
   function questionFor(run) {
+    if (simple && !run?.setup) return null;
     if (!run?.requestId || (!['configuring', 'confirming'].includes(run.status) && !(run.status === 'paused' && run.recovery))) return null;
     if (run.status === 'confirming' && run.proposal) return [{ id: 'decision', header: '下一步',
       question: '确认停止旧任务，按此目标和预算执行？', options: AUTONOMY_DECISIONS }];
@@ -135,10 +136,11 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-pressed', String(view.active));
     button.setAttribute('aria-busy', String(pending));
-    stopButton.hidden = !stopSupported || !target || !(target.session?.hasRunningProcess
+    stopButton.hidden = simple || !stopSupported || !target || !(target.session?.hasRunningProcess
       || target.session?.agent?.hasBackgroundProcess || run?.status === 'stopping');
     stopButton.disabled = !bound || pending || run?.status === 'stopping';
-    status.textContent = view.detail;
+    button.dataset.state = run?.status || 'off';
+    status.textContent = simple ? view.progress : view.detail;
     const reason = bound && run?.status === 'paused' ? run.reason : '';
     if (reason !== lastReason) { lastReason = reason; message(reason); }
     if (!target || !bound || (target.question && !run?.setup) || !questions) { if (dialog.open) dialog.close(); return; }

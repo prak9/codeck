@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
-    <link rel="stylesheet" href="/styles.css?v=70">
+    <link rel="stylesheet" href="/styles.css?v=71">
   <link rel="stylesheet" href="/terminal-theme.css?v=4">
   <link rel="stylesheet" href="/terminal-image-preview.css?v=1">
 </head>
@@ -58,11 +58,10 @@
             <div><p class="eyebrow">ACTIVE SESSION</p><h2 id="terminalTitle">—</h2></div>
             <div class="terminal-agent-controls">
               <button class="terminal-progress-button" id="terminalProgressButton" type="button" aria-label="询问 Agent 进度" title="询问 Agent 进度" hidden>?</button>
-              <button class="terminal-autonomy-button" id="terminalAutonomyButton" type="button" aria-label="配置自主迭代" aria-pressed="false" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">A</span><span id="terminalAutonomyStatus" aria-live="polite"></span></button>
               <button class="terminal-progress-button" id="terminalStopButton" type="button" aria-label="停止任务" title="停止任务" hidden>■</button>
             </div>
           </div>
-          <div class="terminal-actions"><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
+          <div class="terminal-actions"><button class="terminal-autonomy-button" id="terminalAutonomyButton" type="button" aria-label="设置自主目标" aria-pressed="false" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">A</span><span id="terminalAutonomyStatus" aria-live="polite"></span></button><button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button></div>
           <div class="terminal-disconnect" id="terminalDisconnect" hidden>
             <span id="terminalDisconnectMessage" role="status" aria-live="polite"></span>
             <button class="secondary-button" id="reconnectTerminalButton" type="button">重新连接</button>
@@ -170,6 +169,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-  <script type="module" src="/app.js?v=128"></script>
+    <script type="module" src="/app.js?v=129"></script>
 </body>
 </html>
