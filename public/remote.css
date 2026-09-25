@@ -135,6 +135,7 @@ a.header-button { text-decoration: none; }
 .message { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .user-message { max-width: min(76%, 620px); margin: 0 0 22px auto; padding: 12px 15px; border: 1px solid #ff8c6340; border-radius: 18px 18px 5px 18px; background: linear-gradient(145deg, #ff6b3529, #ff6b3518); color: #fff7f3; box-shadow: 0 8px 24px #00000016; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .message-delivery-status { display: block; margin-top: 7px; color: #f0c9b9; font: 12px/1.55 "Inter Variable", "Noto Sans SC Variable", sans-serif; white-space: normal; }
+.delivery-dismiss { display: block; min-height: 44px; margin-top: 2px; padding: 6px 0; border: 0; background: transparent; color: inherit; text-decoration: underline; text-underline-offset: 3px; font-size: 12px; }
 .assistant-message { max-width: 78ch; margin: 0 0 15px; color: #ebe8e5; font-size: 14px; line-height: 1.72; white-space: pre-wrap; }
 .remote-image { width: min(100%, 720px); min-width: 0; margin: 12px 0; white-space: normal; }
 .remote-image-stage { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 3 / 2; max-height: 420px; min-height: 120px; padding: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--raised); cursor: zoom-in; }
@@ -249,6 +250,9 @@ a.header-button { text-decoration: none; }
 .composer-meta, .composer-stack, .composer-hint { width: min(100%, var(--content)); margin-inline: auto; }
 .composer-meta { min-height: 26px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--subtle); font-size: 9px; }
 .composer-meta > span { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.session-controls { display: inline-flex; align-items: center; gap: 0; flex: none; margin-left: auto; }
+.composer-meta #composerStatus { min-width: 0; flex: 1; overflow: hidden; }
+.composer-meta #cwdButton { margin-left: auto; }
 #composerStatus { min-width: 0; flex: 1; color: var(--muted); font-size: 11px; white-space: normal; }
 .composer-meta #cwdButton { min-width: 0; padding: 4px 0 4px 12px; border: 0; background: transparent; color: var(--subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .composer-stack { min-width: 0; position: relative; }
@@ -328,6 +332,20 @@ a.header-button { text-decoration: none; }
 #nativeQuestionDialog .question-error { color: var(--danger); font-size: 12px; }
 #nativeQuestionDialog .sheet-note { font-size: 12px; }
 #nativeQuestionDialog .question-actions button { font-size: 13px; }
+#autonomyDialog > .sheet-head { padding: 20px 20px 0; margin: 0; }
+#autonomyDialog .question-card { margin: 0; padding: 20px; border: 0; background: none; box-shadow: none; }
+#autonomyDialog .question-kicker, #autonomyDialog .question-card > h3 { display: none; }
+#autonomyDialog .question-field > p { color: var(--ink); font-size: 15px; white-space: pre-wrap; }
+#autonomyDialog .question-option { display: flex; align-items: center; margin: 0; min-height: 48px; color: var(--ink); }
+#autonomyDialog .question-option input { width: 18px; height: 18px; padding: 0; flex: none; }
+#autonomyDialog .question-option strong { font-size: 14px; }
+#autonomyDialog .question-option small { font-size: 12px; }
+#autonomyDialog .question-other { font-size: 16px; }
+#autonomyDialog .question-error { color: var(--danger); font-size: 12px; }
+#autonomyDialog .question-actions button { min-height: 44px; font-size: 14px; }
+.autonomy-plan { margin: 0 0 20px; }
+.autonomy-plan dt { margin-top: 12px; color: var(--subtle); font-size: 11px; }
+.autonomy-plan dd { margin: 4px 0 0; color: var(--ink); font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .command-sheet .model-panel, .command-sheet .skills-panel, .command-sheet .command-output-body { max-height: min(520px, 60dvh); margin-top: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #ffffff20 transparent; }
 .command-sheet .model-row { min-height: 50px; }
 .command-sheet .terminal-live-output { margin-top: 0; }

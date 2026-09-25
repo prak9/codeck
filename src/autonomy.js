@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { autonomyKey, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { autonomyKey, isProgressPrompt, AUTONOMY_DECISIONS } from '../public/remote-autonomy.js';
 
 const ACTIVE = new Set(['configuring', 'confirming', 'queued', 'running', 'waiting', 'blocked']);
 const TERMINAL = new Set(['completed', 'limit']);
@@ -32,6 +32,24 @@ function userText(item) {
     : (item.content || []).filter(part => part.type === 'text').map(part => part.text).join('\n');
 }
 
+function validQuestions(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 3) return null;
+  const ids = new Set(); const questions = [];
+  for (const question of value) {
+    if (!/^[\w-]{1,40}$/u.test(question?.id || '') || ids.has(question.id)
+      || !textField(question.header, 40) || !textField(question.question, 1000)
+      || !Array.isArray(question.options) || question.options.length < 2 || question.options.length > 4) return null;
+    ids.add(question.id);
+    const options = question.options.map(option => typeof option === 'string' ? { label: option } : option);
+    if (options.some(option => !textField(option?.label, 200)
+      || (option.description != null && (typeof option.description !== 'string' || option.description.length > 500)))
+      || new Set(options.map(option => option.label)).size !== options.length) return null;
+    questions.push({ id: question.id, header: question.header, question: question.question,
+      options: options.map(option => ({ label: option.label, description: option.description || '' })), isOther: true });
+  }
+  return questions;
+}
+
 function resultFor(thread, exchange) {
   const turns = thread?.turns || [];
   const entries = turns.flatMap(turn => (turn.items || []).map(item => ({ turn, item })));
@@ -40,7 +58,7 @@ function resultFor(thread, exchange) {
   if (anchor < 0) return {};
   const tail = entries.slice(anchor + 1);
   if (tail.some(({ item }) => item.type === 'userMessage' && !item.delivery
-    && userText(item).trim() !== AUTONOMY_PROGRESS_PROMPT)) return { takeover: true };
+    && !isProgressPrompt(userText(item).trim()))) return { takeover: true };
   const last = tail.findLast(({ item }) => item.type === 'agentMessage');
   const progress = tail.findIndex(({ item }) => item.type === 'userMessage');
   // A later, read-only progress answer need not repeat an already-final result.
@@ -66,8 +84,8 @@ function exchangePrompt(run, kind, text, nonce) {
 上下文：${JSON.stringify(context)}`;
   const instruction = kind === 'config'
     ? `当前是配置，不要开始实际工作。主动询问用户目标、完成标准、预算（轮数/时间/费用）及偏好（质量/速度、汇报频率、必须询问的边界）。将理解的目标拆成具体子目标及各自完成标准，不用笼统概括替代。只补问缺失信息，给出建议默认值（5轮），不要反复填问卷。
-信息不足时输出 {"nonce":"${nonce}","status":"ask"}。
-信息齐全时简短总结约定，并请用户回复“开始”或“继续”；输出 {"nonce":"${nonce}","status":"ready","plan":{"goal":"具体目标","acceptance":"完成标准","maxRounds":5,"minutes":null,"preferences":"偏好和权限边界","advisoryBudget":"参考费用/token预算或空字符串"}}。maxRounds 是总上限，包含已使用的 ${run.round} 轮，调整方向不能偷偷增加预算。`
+信息不足时用弹窗选择题询问，基于已有对话提供具体目标/预算/偏好选项，不要求用户重写上下文。每次1–3题，每题2–4项，最推荐的放第一项；Codeck自动提供自定义回答。输出 {"nonce":"${nonce}","status":"ask","questions":[{"id":"goal","header":"目标","question":"这次推进哪项具体目标？","options":[{"label":"具体目标一","description":"完成标准"},{"label":"具体目标二","description":"完成标准"}]}]}。id用字母数字或短横线，勿调用原生提问工具替代此协议。
+信息齐全时简短总结约定，Codeck会弹窗让用户确认；输出 {"nonce":"${nonce}","status":"ready","plan":{"goal":"具体拆解的目标","acceptance":"逐项完成标准","maxRounds":5,"minutes":null,"preferences":"偏好和权限边界","advisoryBudget":"参考费用/token预算或空字符串"}}。maxRounds 是总上限，包含已使用的 ${run.round} 轮，调整方向不能偷偷增加预算。`
     : `执行第 ${run.round}/${run.plan.maxRounds} 轮。只推进已确认目标，验证结果；完成就结束，不为凑轮次增加任务。
 输出 {"nonce":"${nonce}","status":"continue|complete|wait|blocked","summary":"本轮进展或阻塞","progress":true,"next":"下一步（continue/wait必填）","evidence":"完成证据（complete必填）"}。
 选择一个真实 status；没有新进展时 progress=false。wait仅用于正在运行的后台任务，不要无休止询问进度；需要用户决定或授权时blocked。达到轮数上限时在正文汇总剩余事项。`;
@@ -85,7 +103,7 @@ export class AutonomyController extends EventEmitter {
       for (const run of saved.runs) {
         if (!targetIsValid(run.target) || !Number.isSafeInteger(run.round) || run.round < 0
           || (run.plan && !validPlan(run.plan)) || (run.proposal && !validPlan(run.proposal))) continue;
-        run.exchange = null; run.pending = null;
+        run.exchange = null; run.pending = null; run.questions = null; run.requestId = null;
         if (!TERMINAL.has(run.status)) { run.status = 'paused'; run.reason = '服务已重启，请核对终端后继续；不会重发上一轮'; }
         this.runs.set(autonomyKey(run.target), run);
       }
@@ -126,7 +144,12 @@ export class AutonomyController extends EventEmitter {
     if (!targetIsValid(target)) throw new Error('自主迭代需要已绑定的 Agent 会话，请等待会话就绪');
     const old = this.runs.get(autonomyKey(target));
     if (old && ACTIVE.has(old.status)) return this.snapshot(target);
-    if (old?.status === 'paused') return this.message(target, '继续');
+    if (old?.status === 'paused') {
+      if (old.proposal) {
+        old.status = 'confirming'; old.requestId = crypto.randomUUID(); this.changed(old); return this.snapshot(target);
+      }
+      return this.message(target, '继续');
+    }
     if (this.runs.size >= 100 && !old) throw new Error('自主任务记录已达上限');
     // Reserve before awaiting identity: double clicks cannot create two runs.
     const run = { id: crypto.randomUUID(), target: { ...target }, round: 0, status: 'configuring',
@@ -145,6 +168,7 @@ export class AutonomyController extends EventEmitter {
     const run = this.runs.get(autonomyKey(target));
     if (!run || TERMINAL.has(run.status)) return this.snapshot(target);
     run.status = 'paused'; run.reason = reason; run.pending = null; run.exchange = null;
+    run.questions = null; run.requestId = null;
     this.changed(run);
     return this.snapshot(target);
   }
@@ -158,6 +182,7 @@ export class AutonomyController extends EventEmitter {
     if (PAUSE.test(text.trim())) return this.pause(target);
     // Invalidating first wins against a tick waiting on transcript or tmux I/O.
     run.exchange = null; run.pending = null; run.reason = ''; run.idleSince = null;
+    run.questions = null; run.requestId = null;
     if (CONFIRM.test(text.trim()) && (run.proposal || run.plan)) {
       run.plan = run.proposal || run.plan; run.proposal = null;
       if (run.startedAt === null) run.startedAt = this.now();
@@ -170,6 +195,26 @@ export class AutonomyController extends EventEmitter {
       run.pending = { kind: 'config', text };
     }
     this.changed(run); return this.snapshot(target);
+  }
+  async respond(target, { requestId, answers }) {
+    const run = this.runs.get(autonomyKey(target));
+    if (!requestId || run?.requestId !== requestId || !['configuring', 'confirming'].includes(run.status)) {
+      throw new Error('问题或目标已变化，请重新打开 Ⓐ');
+    }
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) throw new Error('请完成选择');
+    if (run.status === 'confirming' && run.proposal) {
+      const decision = answers.decision?.length === 1 && answers.decision[0];
+      if (!AUTONOMY_DECISIONS.includes(decision) || Object.keys(answers).length !== 1) throw new Error('请选择下一步');
+      if (decision === AUTONOMY_DECISIONS[2]) return this.pause(target);
+      return this.message(target, decision === AUTONOMY_DECISIONS[0] ? '开始' : '请将需要调整的目标或预算做成选择题，确认前不要执行。');
+    }
+    if (!run.questions?.length || Object.keys(answers).length !== run.questions.length) throw new Error('请完成所有问题');
+    const text = run.questions.map(question => {
+      const answer = answers[question.id];
+      if (!Array.isArray(answer) || answer.length !== 1 || !textField(answer[0])) throw new Error(`请回答“${question.header}”`);
+      return `${question.header}：${answer[0].trim()}`;
+    }).join('\n');
+    return this.message(target, text);
   }
   sameSession(run, session, checkPane = true) {
     return session?.name === run.target.tmuxSession && session.agent?.kind === run.target.provider
@@ -250,10 +295,16 @@ export class AutonomyController extends EventEmitter {
     }
     const record = found.record;
     if (exchange.kind === 'config') {
-      if (record.status === 'ask') { run.exchange = null; run.status = 'configuring'; this.changed(run); return; }
+      if (record.status === 'ask') {
+        const questions = validQuestions(record.questions);
+        if (!questions) { this.pause(run.target, '配置选择题无效，请重新提供目标和预算'); return; }
+        run.exchange = null; run.status = 'configuring'; run.questions = questions; run.requestId = exchange.nonce;
+        this.changed(run); return;
+      }
       const proposal = record.status === 'ready' && validPlan(record.plan);
       if (!proposal) { this.pause(run.target, '配置结果无效，请明确目标、预算和偏好'); return; }
-      run.exchange = null; run.proposal = proposal; run.status = 'confirming'; this.changed(run);
+      run.exchange = null; run.proposal = proposal; run.status = 'confirming'; run.requestId = exchange.nonce;
+      this.changed(run);
       if (run.confirmAfterConfig) {
         run.confirmAfterConfig = false;
         // Direction changes may keep or reduce, never implicitly extend, spent budgets.

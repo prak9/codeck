@@ -412,6 +412,13 @@ export class CodexAgentBackend extends EventEmitter {
     });
   }
 
+  dismissSessionMessage({ threadId, commandId }) {
+    this.deliveryRecovery.dismiss(threadId, commandId);
+    for (const cached of this.userMessages.get(threadId)?.values() || []) {
+      cached.items = cached.items.filter(item => !item.delivery || item.id !== `delivery:${commandId}`);
+    }
+  }
+
   interruptTurn({ threadId, turnId }) {
     return this.appServer.request('turn/interrupt', { threadId, turnId });
   }

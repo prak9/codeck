@@ -8,7 +8,8 @@ import { latestAgentOutputText } from '../public/remote-copy.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
 import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
-import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { isProgressPrompt } from '../public/remote-autonomy.js';
+import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
@@ -415,6 +416,7 @@ export class AgentHub {
     this.clients = new Map();
     this.commandReceipts = createCommandReceiptCache();
     this.sessionMessageReceipts = new Map();
+    this.dismissedDeliveries = new Map();
     this.pendingRequests = new Map();
     this.resolvedRequests = new Set();
     registry.on('notification', (message) => this.#broadcastNotification(message));
@@ -537,15 +539,28 @@ export class AgentHub {
 
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
-    if (message.type === 'startAutonomy' || message.type === 'pauseAutonomy') {
+    if (message.type === 'dismissSessionDelivery') {
+      const threadId = cleanId(message.threadId, 'Thread');
+      const commandId = cleanCommandId(message.deliveryId);
+      const target = { provider, threadId, tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
+      const subscribed = this.clients.get(socket)?.threadSubscription?.target;
+      if (!subscribed || subscribed.provider !== provider || subscribed.threadId !== threadId
+        || subscribed.tmuxSession !== target.tmuxSession) throw new Error('回执不属于当前会话');
+      this.#dismissDelivery(provider, threadId, commandId);
+      this.#invalidateThreadSubscription(target);
+      return { dismissedDeliveryIds: [commandId] };
+    }
+    if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(message.type)) {
       if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
       const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
       const subscribed = this.clients.get(socket)?.threadSubscription?.target;
       if (!subscribed || subscribed.provider !== provider || subscribed.threadId !== target.threadId
         || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
       cleanCommandId(message.commandId);
-      return this.#runCommand(message, provider, target, async () => ({ autonomy: message.type === 'startAutonomy'
-        ? await this.autonomy.start(target) : this.autonomy.pause(target) }));
+      const answer = message.type === 'answerAutonomy' ? { requestId: cleanCommandId(message.requestId), answers: message.answers } : {};
+      return this.#runCommand(message, provider, { ...target, ...answer }, async () => ({ autonomy: message.type === 'startAutonomy'
+        ? await this.autonomy.start(target) : message.type === 'answerAutonomy'
+          ? await this.autonomy.respond(target, answer) : this.autonomy.pause(target) }));
     }
     if (message.type === 'subscribeSessions') {
       const client = this.clients.get(socket);
@@ -592,6 +607,9 @@ export class AgentHub {
       // Hints rebuild read-only confirmation state after a service restart. Never
       // trust a client's submitted/confirmed status and never invoke the sender.
       const hints = provider === 'codex' ? message.deliveryReceipts : undefined;
+      const dismissed = message.dismissedDeliveryIds ?? [];
+      if (!Array.isArray(dismissed) || dismissed.length > 512) throw new Error('Invalid dismissed deliveries');
+      const dismissedIds = dismissed.map(cleanCommandId);
       if (hints !== undefined) {
         if (!Array.isArray(hints) || hints.length > 32 || Buffer.byteLength(JSON.stringify(hints)) > 120_000) {
           throw new Error('Invalid delivery receipts');
@@ -604,11 +622,14 @@ export class AgentHub {
           return { threadId, commandId: cleanCommandId(hint.commandId), text, ...baseline,
             restored: true, submissionStatus: 'unconfirmed', confirmationTimedOut: true };
         });
+        for (const id of dismissedIds) this.#dismissDelivery(provider, threadId, id);
         for (const receipt of restored) {
+          if (this.dismissedDeliveries.has(JSON.stringify([provider, threadId, receipt.commandId]))) continue;
           this.registry.recordSessionMessage(provider, receipt);
           this.#recordSessionMessageReceipt(provider, receipt);
         }
       }
+      if (hints === undefined) for (const id of dismissedIds) this.#dismissDelivery(provider, threadId, id);
       const target = {
         provider,
         threadId,
@@ -622,7 +643,8 @@ export class AgentHub {
       try {
         const options = message.readOnly === true ? { readOnly: true } : undefined;
         const resumable = client?.streamVersion === 2 && streamCursor
-          && !hints?.length
+          && !hints?.length && !dismissedIds.length
+          && ![...this.dismissedDeliveries.values()].some(entry => entry.provider === provider && entry.threadId === threadId)
           && (message.readOnly === true || target.tmuxSession)
           && !this.#hasSessionMessageReceipts(provider, threadId)
           && this.threadFeed?.canResume(target, streamCursor);
@@ -665,14 +687,14 @@ export class AgentHub {
       return this.#runCommand(message, provider, payload, async () => {
         const target = { provider, threadId, tmuxSession: sessionName };
         const autonomous = this.autonomy?.snapshot(target);
-        if (autonomous && !['completed', 'limit'].includes(autonomous.status) && text !== AUTONOMY_PROGRESS_PROMPT) {
+        if (autonomous && !['completed', 'limit'].includes(autonomous.status) && !isProgressPrompt(text)) {
           if (!text.startsWith('/')) return { autonomyHandled: true, autonomy: await this.autonomy.message(target, text) };
           this.autonomy.pause(target, '用户正在操作原生命令菜单');
         }
         const deliveryBaseline = provider === 'qodercli'
           ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text,
-          ...(text === AUTONOMY_PROGRESS_PROMPT ? { nonInterrupting: true } : {}),
+          ...(isProgressPrompt(text) ? { nonInterrupting: true } : {}),
         });
         const submission = provider === 'codex' || result?.submissionStatus != null
           ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
@@ -834,6 +856,23 @@ export class AgentHub {
     for (const [commandId, receipt] of this.sessionMessageReceipts) {
       if (receipt.expiresAt <= now) this.sessionMessageReceipts.delete(commandId);
     }
+    for (const [key, entry] of this.dismissedDeliveries) if (entry.expiresAt <= now) this.dismissedDeliveries.delete(key);
+  }
+
+  #dismissDelivery(provider, threadId, commandId) {
+    this.#pruneSessionMessageReceipts();
+    const key = JSON.stringify([provider, threadId, commandId]);
+    this.dismissedDeliveries.set(key, { provider, threadId, commandId, expiresAt: Date.now() + SESSION_MESSAGE_RECEIPT_TTL_MS });
+    while (this.dismissedDeliveries.size > SESSION_MESSAGE_RECEIPT_LIMIT) this.dismissedDeliveries.delete(this.dismissedDeliveries.keys().next().value);
+    const receipt = this.sessionMessageReceipts.get(commandId);
+    if (receipt?.provider === provider && receipt.threadId === threadId) this.sessionMessageReceipts.delete(commandId);
+    this.registry.backend(provider).dismissSessionMessage?.({ threadId, commandId });
+    for (const client of this.clients.values()) {
+      const subscription = client.threadSubscription;
+      if (subscription?.target.provider === provider && subscription.target.threadId === threadId) {
+        subscription.deltaBaseSafe = false; subscription.fullAtSync = true;
+      }
+    }
   }
 
   #hasSessionMessageReceipts(provider, threadId) {
@@ -860,6 +899,9 @@ export class AgentHub {
   }
 
   #restoreSessionMessageReceipts(provider, threadId, result) {
+    const dismissedIds = [...this.dismissedDeliveries.values()]
+      .filter(entry => entry.provider === provider && entry.threadId === threadId).map(entry => entry.commandId);
+    if (dismissedIds.length && result?.thread) result = { ...result, thread: withoutDismissedDeliveries(result.thread, dismissedIds) };
     const thread = result?.thread;
     if (!thread) return result;
     this.#pruneSessionMessageReceipts();
@@ -884,7 +926,7 @@ export class AgentHub {
     for (const receipt of pending) {
       const item = sessionMessageReceiptItem(receipt);
       if (itemIds.has(item.id)) continue;
-      const turnIndex = receipt.inputWasQueued
+      const turnIndex = receipt.inputWasQueued || receipt.restored
         ? sessionMessageReceiptTurnIndex(restoredTurns, receipt)
         : -1;
       if (turnIndex < 0) {

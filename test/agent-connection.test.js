@@ -945,6 +945,65 @@ test('Codex reconnect restores confirmation hints without injecting terminal inp
   backend.close();
 });
 
+test('edited-message receipts restore at their anchor and can be dismissed without confirming or resending', async () => {
+  const app = new EventEmitter(); app.close = () => {};
+  const short = '？按钮不希望干扰agent当前节奏';
+  const turns = [
+    { id: 'before', status: 'completed', items: [{ id: 'anchor', type: 'userMessage', content: 'Previous' },
+      { id: 'output', type: 'agentMessage', text: 'Working' }] },
+    { id: 'after', status: 'completed', items: [{ id: 'actual', type: 'userMessage', content: `${short} A按钮则是进入自主模式` }] },
+  ];
+  app.request = async method => method === 'thread/read' ? { thread: { id: 'thread' } }
+    : method === 'thread/items/list' ? { data: [] } : { data: [...turns].reverse() };
+  const backend = new CodexAgentBackend(app);
+  const registry = new AgentRegistry({ codex: backend }, { sendTmuxMessage: () => assert.fail('must not resend') });
+  const hub = new AgentHub(registry); const socket = new FakeSocket(); hub.handleConnection(socket);
+  const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'work' };
+  const hint = { commandId: 'command-edited', text: short, baselineVersion: 2,
+    baselineUserMessageId: 'anchor', baselineTurnId: 'before', baselineLastItemId: 'output', baselineMatchingTextCount: 0 };
+  const request = async (id, type, payload = {}) => {
+    send(socket, { id, type, ...target, ...payload }); await waitFor(() => socket.sent.some(message => message.id === id));
+    return socket.sent.find(message => message.id === id);
+  };
+  const opened = await request(1, 'openThread', { readOnly: true, deliveryReceipts: [hint] });
+  assert.deepEqual(opened.result.thread.deliveryConfirmations, []);
+  assert.equal(opened.result.thread.turns[0].items.at(-1).id, 'delivery:command-edited');
+  assert.equal(opened.result.thread.turns.at(-1).id, 'after');
+  assert.equal((await request(2, 'dismissSessionDelivery', { deliveryId: hint.commandId, tmuxSession: 'wrong' })).ok, false);
+  assert.equal((await request(3, 'dismissSessionDelivery', { deliveryId: hint.commandId })).ok, true);
+  const reopened = await request(4, 'openThread', { readOnly: true, deliveryReceipts: [hint] });
+  assert.deepEqual(reopened.result.thread.dismissedDeliveryIds, [hint.commandId]);
+  assert.equal(reopened.result.thread.turns.flatMap(turn => turn.items).some(item => item.delivery), false);
+  assert.equal(backend.deliveryRecovery.receipts.size, 0);
+  assert.deepEqual(reopened.result.thread.deliveryConfirmations, []);
+  socket.close(); backend.close();
+});
+
+test('receipt dismissal reaches another V2 subscriber even when the backend snapshot is unchanged', async () => {
+  const feed = new FakeSnapshotFeed();
+  const { hub, backends } = setup({ threadFeed: feed });
+  const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'work' };
+  backends.codex.turns = [{ id: 'turn', items: [{ id: 'anchor', type: 'userMessage', content: 'Start' }] }];
+  const hint = { commandId: 'command-dismiss', text: 'unknown', baselineVersion: 2,
+    baselineUserMessageId: 'anchor', baselineTurnId: 'turn', baselineMatchingTextCount: 0 };
+  const sockets = [new FakeSocket(), new FakeSocket()];
+  for (const socket of sockets) {
+    hub.handleConnection(socket, { streamVersion: 2 });
+    send(socket, { id: 1, type: 'openThread', ...target, readOnly: true, deliveryReceipts: [hint] });
+    await waitFor(() => socket.sent.some(message => message.id === 1));
+  }
+  send(sockets[0], { id: 2, type: 'dismissSessionDelivery', ...target, deliveryId: hint.commandId });
+  await waitFor(() => sockets[0].sent.some(message => message.id === 2));
+  feed.publish(target, { kind: 'synchronized', epoch: 'test-epoch', sequence: 1,
+    snapshot: { thread: { id: 'thread', turns: backends.codex.turns } } });
+  for (const socket of sockets) {
+    const clean = socket.sent.findLast(message => message.type === 'threadSnapshot').thread;
+    assert.deepEqual(clean.dismissedDeliveryIds, [hint.commandId]);
+    assert.equal(clean.turns.flatMap(turn => turn.items).some(item => item.delivery), false);
+    socket.close();
+  }
+});
+
 test('restored Codex hints remain unknown without transcript evidence and reject malformed batches atomically', async () => {
   const app = new EventEmitter();
   app.close = () => {};

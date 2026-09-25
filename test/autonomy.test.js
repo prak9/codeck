@@ -10,16 +10,53 @@ const target = { provider: 'codex', threadId: 'thread-1', tmuxSession: 'work' };
 const plan = { goal: 'Fix the picker', acceptance: 'Regression passes', maxRounds: 3,
   minutes: 30, preferences: 'Minimal changes; do not commit or deploy', advisoryBudget: '' };
 
-test('progress asks for understood goal and gap without resetting scope or budget', () => {
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /你理解的当前目标/);
+test('progress asks concisely for concrete goals, evidence and gaps without changing pace or mode', () => {
+  assert.ok(AUTONOMY_PROGRESS_PROMPT.length <= 120);
+  assert.match(AUTONOMY_PROGRESS_PROMPT, /目标.*子目标/);
   assert.match(AUTONOMY_PROGRESS_PROMPT, /完成标准/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /具体、拆解过的子目标/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /当前状态及证据/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /差距.*gap/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /不扩大范围或重置已有预算/);
+  assert.match(AUTONOMY_PROGRESS_PROMPT, /进展.*证据.*gap/);
   assert.match(AUTONOMY_PROGRESS_PROMPT, /不打断/);
-  assert.match(AUTONOMY_PROGRESS_PROMPT, /不催促续跑/);
+  assert.match(AUTONOMY_PROGRESS_PROMPT, /不续跑.*不改.*预算/);
   assert.doesNotMatch(AUTONOMY_PROGRESS_PROMPT, /汇报后继续/);
+});
+
+test('A configuration provides choices and only the current proposal can authorize a round', async () => {
+  const f = fixture(); await f.manager.start(target); await f.manager.tick();
+  const questions = [{ id: 'goal', header: '目标', question: '这次推进哪项？',
+    options: [{ label: '修复回执', description: '先修复残留' }, { label: '优化弹窗' }] }];
+  f.reply({ status: 'ask', questions }); await f.manager.tick();
+  const requestId = f.state().requestId;
+  assert.ok(requestId); assert.equal(f.state().questions[0].options.length, 2);
+  await assert.rejects(f.manager.respond(target, { requestId: 'old', answers: { goal: ['修复回执'] } }));
+  await assert.rejects(f.manager.respond(target, { requestId, answers: {} }));
+  await f.manager.respond(target, { requestId, answers: { goal: ['修复回执'] } }); await f.manager.tick();
+  assert.match(f.sent.at(-1), /修复回执/); assert.equal(f.state().round, 0);
+  f.reply({ status: 'ready', plan }); await f.manager.tick();
+  const proposalId = f.state().requestId;
+  assert.notEqual(proposalId, requestId);
+  await assert.rejects(f.manager.respond(target, { requestId, answers: { decision: ['按此目标开始'] } }));
+  await f.manager.respond(target, { requestId: proposalId, answers: { decision: ['按此目标开始'] } });
+  await f.manager.tick(); assert.equal(f.state().round, 1);
+  await assert.rejects(f.manager.respond(target, { requestId: proposalId, answers: { decision: ['按此目标开始'] } }));
+});
+
+test('choice rejection and adjustment do not start work or silently accept a revised plan', async () => {
+  const f = fixture(); await f.ready();
+  await f.manager.respond(target, { requestId: f.state().requestId, answers: { decision: ['暂不开始'] } });
+  await f.manager.tick(); assert.equal(f.state().status, 'paused'); assert.equal(f.sent.length, 1);
+  await f.manager.start(target); assert.equal(f.state().status, 'confirming');
+  await f.manager.respond(target, { requestId: f.state().requestId, answers: { decision: ['调整目标或预算'] } });
+  await f.manager.tick(); assert.equal(f.state().round, 0); assert.match(f.sent.at(-1), /选择/);
+});
+
+test('invalid choice protocols pause safely instead of creating an unusable modal', async () => {
+  for (const questions of [undefined, [], [{ id: 'goal', header: '目标', question: '做什么？', options: ['只有一项'] }]]) {
+    const f = fixture(); await f.manager.start(target); await f.manager.tick();
+    f.reply({ status: 'ask', questions }); await f.manager.tick();
+    assert.equal(f.state().status, 'paused'); assert.equal(f.state().round, 0);
+    assert.equal(f.state().requestId, null);
+    await f.manager.tick(); assert.equal(f.sent.length, 1);
+  }
 });
 function fixture(options = {}) {
   const f = { sent: [], thread: { turns: [] }, session: { name: 'work', hasRunningProcess: false,

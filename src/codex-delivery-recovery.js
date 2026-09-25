@@ -130,6 +130,11 @@ export class CodexDeliveryRecovery {
     };
   }
 
+  dismiss(threadId, commandId) {
+    if (this.receipts.get(commandId)?.threadId === threadId) this.receipts.delete(commandId);
+    this.#prune();
+  }
+
   async #recover(threadId, job) {
     let pages = 0;
     let changed = false;

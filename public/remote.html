@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=45">
+  <link rel="stylesheet" href="/remote.css?v=46">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -89,8 +89,10 @@
         <div class="composer-meta" id="composerMeta">
           <span id="composerStatus" role="status" aria-live="polite"><i class="connection-dot"></i>正在连接</span>
           <button id="cwdButton" type="button" title="更改工作目录"><span id="cwdLabel">工作目录</span></button>
-          <button class="progress-button" id="progressButton" type="button" title="询问 Agent 进度" aria-label="询问 Agent 进度" hidden>?</button>
-          <button class="autonomy-button" id="autonomyButton" type="button" aria-label="配置自主迭代" aria-pressed="false" hidden><span class="autonomy-icon" aria-hidden="true">A</span><span id="autonomyStatus" role="status" aria-live="polite"></span></button>
+          <div class="session-controls" role="group" aria-label="会话助手">
+            <button class="progress-button" id="progressButton" type="button" title="询问 Agent 进度" aria-label="询问 Agent 进度" hidden>?</button>
+            <button class="autonomy-button" id="autonomyButton" type="button" aria-label="配置自主迭代" aria-pressed="false" hidden><span class="autonomy-icon" aria-hidden="true">A</span><span id="autonomyStatus" role="status" aria-live="polite"></span></button>
+          </div>
         </div>
         <div class="composer-stack">
           <div class="slash-command-menu" id="slashCommandMenu" role="listbox" aria-label="内置命令" hidden></div>
@@ -162,6 +164,11 @@
     <div id="nativeQuestionContent"></div>
   </dialog>
 
+  <dialog class="sheet command-sheet" id="autonomyDialog" aria-labelledby="autonomyDialogTitle">
+    <div class="sheet-head"><h2 id="autonomyDialogTitle">设置自主目标</h2><button class="close-button" id="autonomyDialogClose" type="button" aria-label="稍后选择">×</button></div>
+    <div id="autonomyDialogContent"></div>
+  </dialog>
+
   <dialog class="sheet settings-sheet" id="newSessionDialog">
     <form method="dialog" id="newSessionForm">
       <div class="sheet-head"><div><p class="eyebrow">SESSION</p><h2>新建会话</h2></div><button class="close-button" value="cancel" formnovalidate aria-label="关闭">×</button></div>
@@ -226,6 +233,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=101"></script>
+  <script type="module" src="/remote.js?v=102"></script>
 </body>
 </html>

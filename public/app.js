@@ -1,5 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=1';
+import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=2';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';

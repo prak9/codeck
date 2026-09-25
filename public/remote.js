@@ -26,13 +26,13 @@ import {
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
-import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt } from './remote-delivery.js?v=4';
+import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=5';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=1';
 import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=5';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=1';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_DECISIONS } from './remote-autonomy.js?v=2';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -144,6 +144,7 @@ const state = {
   autonomySupported: false,
   autonomyRuns: new Map(),
   autonomyPending: false,
+  dismissedAutonomyQuestion: '',
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -321,7 +322,14 @@ function applyRefreshedThread(provider, thread) {
 
 function settleConfirmedDeliveries() {
   let clearedDraft = false;
+  const dismissed = state.thread?.dismissedDeliveryIds || [];
+  if (dismissed.length) {
+    rememberDismissedDeliveries(localStorage, state.thread, dismissed);
+    state.thread = withoutDismissedDeliveries(state.thread, dismissed);
+  }
   for (const [key, attempt] of state.pendingDeliveries) {
+    if (attempt.provider === state.provider && attempt.threadId === state.thread?.id
+      && dismissed.includes(attempt.commandId)) { state.pendingDeliveries.delete(key); continue; }
     if ((composerRequestGate.pending && !attempt.blocked)
       || attempt.provider !== state.provider || attempt.threadId !== state.thread?.id
       || (attempt.tmuxSession || '') !== (state.thread?.tmux?.name || '')
@@ -892,6 +900,10 @@ function agentRequest(type, payload = {}) {
     return Promise.reject(new Error('Agent 尚未连接，请稍后重试'));
   }
   const id = state.nextRequestId++;
+  if (type === 'openThread') {
+    const dismissed = dismissedDeliveryIds(localStorage, payload);
+    if (dismissed.length) payload = { ...payload, dismissedDeliveryIds: dismissed };
+  }
   if (type === 'openThread' && payload.provider === 'codex') {
     const receipts = sessionDeliveryReceipts(state.thread, [...state.pendingDeliveries.values()], payload);
     if (receipts.length) payload = { ...payload, deliveryReceipts: receipts };
@@ -1742,6 +1754,13 @@ function itemNode(item, turn) {
         ? '等待 Agent 确认 · 提交未确认，请检查终端，勿重复发送'
         : '等待 Agent 确认'));
     }
+    if (item.delivery?.status === 'unknown' && item.id?.startsWith('delivery:') && state.thread?.tmux?.name) {
+      const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
+      const button = element('button', 'delivery-dismiss', '清除此提示');
+      button.type = 'button'; button.title = '只清理未知回执，不重发消息、不删除对话记录';
+      button.addEventListener('click', () => dismissDelivery(target, item.id.slice(9), button));
+      node.append(button);
+    }
     return node;
   }
   if (item.type === 'agentMessage') {
@@ -1792,6 +1811,19 @@ function itemNode(item, turn) {
     return toolCard({ id: item.id, icon: '↗', title: item.tool || '子 Agent', body: safeJson(item), status: item.status });
   }
   return toolCard({ id: item.id, icon: '·', title: item.type || 'Agent 事件', body: safeJson(item), status: item.status || 'completed' });
+}
+
+async function dismissDelivery(target, deliveryId, button) {
+  button.disabled = true;
+  try {
+    const result = await agentRequest('dismissSessionDelivery', { ...target, deliveryId });
+    rememberDismissedDeliveries(localStorage, target, result.dismissedDeliveryIds);
+    if (state.provider === target.provider && state.thread?.id === target.threadId) {
+      state.thread = withoutDismissedDeliveries(state.thread, result.dismissedDeliveryIds);
+      settleConfirmedDeliveries(); scheduleThreadRender(false);
+      setLiveMessage('已清理提示，未重发消息。');
+    }
+  } catch (error) { button.disabled = false; setLiveMessage(error.message); }
 }
 
 function agentOutputActions(text) {
@@ -2038,6 +2070,15 @@ function interactionNode(key, entry) {
     element('span', 'question-kicker', `${providerDetails(entry.provider).name} 需要你的回答`),
     element('h3', '', questions.length > 1 ? '继续前请确认以下问题' : questions[0]?.header || '需要补充信息'),
   );
+  if (entry.autonomy && entry.plan) {
+    const details = element('dl', 'autonomy-plan');
+    for (const [label, value] of [
+      ['目标', entry.plan.goal], ['完成标准', entry.plan.acceptance],
+      ['预算', `${entry.plan.maxRounds} 轮${entry.plan.minutes == null ? '' : ` · ${entry.plan.minutes} 分钟`}（已用 ${entry.round} 轮）`],
+      ['偏好与边界', entry.plan.preferences], ['参考预算', entry.plan.advisoryBudget],
+    ]) if (value) details.append(element('dt', '', label), element('dd', '', value));
+    form.append(details);
+  }
 
   for (const [index, question] of questions.entries()) {
     const fieldset = element('fieldset', 'question-field');
@@ -2065,6 +2106,7 @@ function interactionNode(key, entry) {
       other.type = question.isSecret ? 'password' : 'text';
       other.placeholder = question.options.length ? '其他答案…' : '输入回答…';
       other.autocomplete = 'off';
+      other.setAttribute('aria-label', `${question.header}：自定义回答`);
       other.dataset.other = 'true';
       if (!question.multiSelect) {
         other.addEventListener('input', () => {
@@ -2081,7 +2123,7 @@ function interactionNode(key, entry) {
   const error = element('p', 'question-error');
   error.setAttribute('role', 'alert');
   const actions = element('div', 'question-actions');
-  const submit = element('button', 'allow', '回答并继续');
+  const submit = element('button', 'allow', entry.autonomy ? '确认选择' : '回答并继续');
   submit.type = 'submit';
   actions.append(submit);
   form.append(error, actions);
@@ -2111,7 +2153,15 @@ async function resolveInteraction(key, entry, questions, form) {
   form.querySelector('.question-error').textContent = '';
   for (const control of form.querySelectorAll('button, input')) control.disabled = true;
   try {
-    if (entry.native) {
+    if (entry.autonomy) {
+      entry.commandId ||= crypto.randomUUID();
+      const result = await agentRequest('answerAutonomy', {
+        provider: entry.provider, threadId: entry.request.params.threadId, tmuxSession: entry.tmuxSession,
+        requestId: entry.request.id, answers, commandId: entry.commandId,
+      });
+      if (result.autonomy) state.autonomyRuns.set(autonomyKey(result.autonomy.target), result.autonomy);
+      renderComposerState();
+    } else if (entry.native) {
       await agentRequest('answerSessionQuestion', {
         provider: entry.provider, threadId: entry.request.params.threadId, tmuxSession: entry.tmuxSession,
         questionId: entry.request.id, answer: answers.native[0],
@@ -2128,6 +2178,7 @@ async function resolveInteraction(key, entry, questions, form) {
     state.interactions.delete(key);
     scheduleThreadRender(false);
   } catch (error) {
+    if (entry.autonomy && !shouldKeepDeliveryAttempt(error)) entry.commandId = null;
     for (const control of form.querySelectorAll('button, input')) control.disabled = false;
     form.querySelector('.question-error').textContent = error.message;
     if (/already resolved|expired/i.test(error.message)) {
@@ -2207,6 +2258,7 @@ function loadEarlierNode() {
 function resetThreadHistory() {
   const questionDialog = $('#nativeQuestionDialog');
   if (questionDialog?.open) questionDialog.close();
+  if ($('#autonomyDialog')?.open) $('#autonomyDialog').close();
   // Also invalidate queued scroll work when reopening the same target (A → B → A).
   state.historyGeneration += 1;
   const wasLoading = state.loadingEarlier;
@@ -2390,6 +2442,8 @@ function renderComposerState() {
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
   $('#autonomyStatus').textContent = presentation.detail;
+  if (autonomyQuestionEntry()) autonomyButton.setAttribute('aria-label', '确认自主目标');
+  syncAutonomyDialog();
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
@@ -2800,9 +2854,40 @@ function currentAutonomy() {
     threadId: state.thread.id, tmuxSession: state.thread.tmux?.name }));
 }
 
+function autonomyQuestionEntry() {
+  const run = currentAutonomy();
+  if (!run?.requestId || !['configuring', 'confirming'].includes(run.status)) return null;
+  const questions = run.status === 'confirming' && run.proposal ? [{ id: 'decision', header: '下一步',
+    question: '是否按这个目标和预算执行？', options: AUTONOMY_DECISIONS }] : run.questions;
+  if (!questions?.length) return null;
+  return { autonomy: true, provider: run.target.provider, tmuxSession: run.target.tmuxSession,
+    plan: run.status === 'confirming' ? run.proposal : null, round: run.round,
+    request: { id: run.requestId, params: { threadId: run.target.threadId, questions } } };
+}
+
+function syncAutonomyDialog() {
+  const dialog = $('#autonomyDialog');
+  const entry = autonomyQuestionEntry();
+  if (!entry || !state.connected || state.threadOpening) { if (dialog.open) dialog.close(); return; }
+  const key = `${entry.provider}:${entry.tmuxSession}:${entry.request.params.threadId}:${entry.request.id}`;
+  if (dialog.dataset.questionKey !== key) {
+    dialog.dataset.questionKey = key;
+    $('#autonomyDialogTitle').textContent = entry.plan ? '确认自主目标' : '设置自主目标';
+    $('#autonomyDialogContent').replaceChildren(interactionNode(key, entry));
+  }
+  if (!dialog.open && state.dismissedAutonomyQuestion !== key && !document.querySelector('dialog[open]')) dialog.showModal();
+}
+
+function dismissAutonomyDialog() {
+  const dialog = $('#autonomyDialog');
+  state.dismissedAutonomyQuestion = dialog.dataset.questionKey || '';
+  dialog.close();
+}
+
 async function toggleAutonomy() {
   const button = $('#autonomyButton');
   if (button.hidden || button.disabled) return;
+  if (autonomyQuestionEntry()) { state.dismissedAutonomyQuestion = ''; syncAutonomyDialog(); return; }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
   const active = autonomyPresentation(currentAutonomy()).active;
   state.autonomyPending = true; renderComposerState();
@@ -3100,6 +3185,8 @@ $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#progressButton').addEventListener('click', askProgress);
 $('#autonomyButton').addEventListener('click', toggleAutonomy);
+$('#autonomyDialogClose').addEventListener('click', dismissAutonomyDialog);
+$('#autonomyDialog').addEventListener('cancel', event => { event.preventDefault(); dismissAutonomyDialog(); });
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });

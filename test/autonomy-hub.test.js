@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { AutonomyController } from '../src/autonomy.js';
-import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { AUTONOMY_PROGRESS_PROMPT, autonomyKey } from '../public/remote-autonomy.js';
 
 class Socket extends EventEmitter {
   readyState = 1;
@@ -79,4 +79,29 @@ test('permission requests pause autonomy; they are not automatically answered', 
   const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-work' });
   f.registry.emit('serverRequest', { provider: 'codex', id: 42, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread' } });
   assert.equal(f.autonomy.snapshot(target).status, 'paused'); await f.autonomy.tick(); assert.equal(f.sent.length, 0);
+});
+
+test('cached progress buttons remain non-interrupting after the prompt changes', async () => {
+  const f = await fixture();
+  await f.request('startAutonomy', { commandId: 'start-work' }); await f.autonomy.tick();
+  const before = f.autonomy.snapshot(target);
+  const text = '现在进展怎么样？这是一次进度问询，请在不打断当前工作的自然汇报节点简要回答，不改变当前节奏，不催促续跑，也不进入自主模式。请复述你理解的当前目标，必须是具体、拆解过的子目标，不能只给笼统概括。沿用已确认的任务拆解，逐项简要列出：子目标、完成标准、当前状态及证据、距完成的差距（gap）；再说明下一步优先推进哪项、有什么阻塞或需要我决策。目标或边界不明确时标出待确认部分，不把推测当成已确认要求，不扩大范围或重置已有预算。若处于 Codeck 自主轮次中，保持原有轮次和结果协议；本次问询不构成新一轮执行授权。';
+  assert.equal((await f.request('sendSessionMessage', { commandId: 'cached-progress', text })).ok, true);
+  assert.deepEqual(f.autonomy.snapshot(target), before);
+  assert.equal(f.submissions.at(-1).nonInterrupting, true);
+});
+
+test('choice answers bind to the subscribed session and deduplicate before starting work', async () => {
+  const f = await fixture(); await f.request('startAutonomy', { commandId: 'start-work' });
+  const run = f.autonomy.runs.get(autonomyKey(target));
+  Object.assign(run, { status: 'confirming', requestId: 'config-request', pending: null,
+    proposal: { goal: '修复弹窗', acceptance: '回归通过', preferences: '不部署', maxRounds: 3, minutes: null } });
+  const answer = { commandId: 'approve-goal', requestId: run.requestId, answers: { decision: ['按此目标开始'] } };
+  assert.equal((await f.request('answerAutonomy', { ...answer, tmuxSession: 'other' })).ok, false);
+  assert.equal(f.sent.length, 0);
+  assert.equal((await f.request('answerAutonomy', answer)).ok, true);
+  await f.autonomy.tick();
+  assert.equal((await f.request('answerAutonomy', answer)).ok, true);
+  assert.equal((await f.request('answerAutonomy', { ...answer, commandId: 'stale-goal' })).ok, false);
+  await f.autonomy.tick(); assert.equal(f.sent.length, 1); assert.equal(run.round, 1);
 });

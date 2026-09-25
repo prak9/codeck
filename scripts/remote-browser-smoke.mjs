@@ -14,6 +14,7 @@ import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 import { QoderQuestionTracker } from '../src/qoder-question.js';
 import { AUTONOMY_PROGRESS_PROMPT as progressPrompt } from '../public/remote-autonomy.js';
 import { AutonomyController } from '../src/autonomy.js';
+import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -29,7 +30,7 @@ function reset(provider) {
   fixture?.recovery?.close();
   fixture?.autonomy?.close();
   fixture = { provider, turns: Array.from({ length: 80 }, (_, i) => turn(i + 1)),
-    status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [] };
+    status: 'done', liveOutput: '', sequence: 0, epoch: 'fixture-epoch', sent: [], receivedDeliveryIds: [], dismissed: new Set() };
   if (provider === 'codex') fixture.recovery = createFixtureRecovery();
   fixture.autonomySent = [];
   fixture.autonomy = new AutonomyController({
@@ -53,8 +54,11 @@ function reset(provider) {
         fixture.status = 'done'; publishThread(); publishSessions();
       };
       if (text.includes('"phase":"config"')) {
-        fixture.finishAutonomy(fixture.autonomyPlan ? { status: 'ready', plan: fixture.autonomyPlan } : { status: 'ask' },
-          fixture.autonomyPlan ? '目标与预算已整理，请回复“开始”。' : '你希望完成什么具体目标？最多几轮，有哪些预算和偏好？');
+        fixture.finishAutonomy(fixture.autonomyPlan ? { status: 'ready', plan: fixture.autonomyPlan } : { status: 'ask', questions: [
+          { id: 'goal', header: '目标', question: '这次推进哪个目标？', options: ['修复选择器并补回归', '只定位原因'] },
+          { id: 'budget', header: '预算', question: '本次最多执行多少轮？', options: ['3 轮 / 30 分钟', '5 轮 / 60 分钟'] },
+          { id: 'preferences', header: '偏好', question: '采用哪种执行边界？', options: ['最小修改，不提交部署', '先给设计再实施'] },
+        ] }, fixture.autonomyPlan ? '目标与预算已整理，请在弹窗确认。' : '请在弹窗选择目标、预算和偏好。');
       } else { fixture.status = 'working'; publishThread(); publishSessions(); }
       return { submissionStatus: 'submitted' };
     },
@@ -76,12 +80,12 @@ function snapshot() {
       ...(fixture.question ? { question: fixture.question } : {}) } }] };
 }
 function thread() {
-  return { id: 'fixture-thread', provider: fixture.provider, readOnly: true, turns: fixture.turns.slice(-20),
+  return withoutDismissedDeliveries({ id: 'fixture-thread', provider: fixture.provider, readOnly: true, turns: fixture.turns.slice(-20),
     truncated: fixture.turns.length > 20, oldestTurnId: fixture.turns.at(-20)?.id,
     receivedDeliveryIds: fixture.receivedDeliveryIds,
     ...(fixture.recovery ? fixture.holdConfirmation ? fixture.recovery.snapshot('fixture-thread')
       : fixture.recovery.update('fixture-thread', fixture.turns) : {}),
-    ...(fixture.liveOutput ? { liveOutput: fixture.liveOutput } : {}) };
+    ...(fixture.liveOutput ? { liveOutput: fixture.liveOutput } : {}) }, [...fixture.dismissed]);
 }
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
 const server = http.createServer(async (req, res) => {
@@ -139,21 +143,27 @@ sockets.on('connection', socket => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });
     const autonomyTarget = { provider: request.provider, threadId: request.threadId, tmuxSession: request.tmuxSession };
-    if (request.type === 'startAutonomy' || request.type === 'pauseAutonomy') {
+    if (['startAutonomy', 'pauseAutonomy', 'answerAutonomy'].includes(request.type)) {
       if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget);
+      else if (request.type === 'answerAutonomy') await fixture.autonomy.respond(autonomyTarget, request);
       else fixture.autonomy.pause(autonomyTarget);
       await fixture.autonomy.tick(); await fixture.autonomy.tick();
       return reply({ autonomy: fixture.autonomy.snapshot(autonomyTarget) });
     }
     if (request.type === 'openThread') {
+      for (const id of request.dismissedDeliveryIds || []) { fixture.dismissed.add(id); fixture.recovery?.dismiss('fixture-thread', id); }
       for (const receipt of request.deliveryReceipts || []) {
-        fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
+        if (!fixture.dismissed.has(receipt.commandId)) fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
       }
       if (fixture.holdOpenThread) {
         fixture.finishOpening = () => reply({ thread: thread() });
         return;
       }
       return reply({ thread: thread() });
+    }
+    if (request.type === 'dismissSessionDelivery') {
+      fixture.dismissed.add(request.deliveryId); fixture.recovery?.dismiss('fixture-thread', request.deliveryId);
+      reply({ dismissedDeliveryIds: [request.deliveryId] }); publishThread(); return;
     }
     if (request.type === 'answerSessionQuestion') {
       assert.equal(request.questionId, fixture.question.id);
@@ -513,23 +523,60 @@ try {
       assert.ok(Math.abs((await page.locator('[data-turn-id="turn-41"]').boundingBox()).y - readPosition.y) < 3,
         'filling a reconnect gap below the viewport preserves the visible history');
       await page.getByRole('button', { name: '直达最新消息' }).click();
+      // An edited short receipt is not evidence that the longer message was delivered.
+      const sentBeforeDismiss = fixture.sent.length;
+      fixture.turns.push({ id: 'edited-receipt', status: 'completed', items: [
+        { id: 'edited-real', type: 'userMessage', content: [{ type: 'text', text: '问号不打断，A 进入自主模式' }] },
+        { id: 'delivery:edited-command', type: 'userMessage', content: [{ type: 'text', text: '问号不打断' }],
+          delivery: { status: 'unknown', commandId: 'edited-command' } },
+      ] });
+      publishThread();
+      await page.getByRole('button', { name: '清除此提示' }).click();
+      await page.waitForFunction(() => !document.querySelector('.delivery-dismiss'));
+      assert.equal(await page.getByText('问号不打断，A 进入自主模式', { exact: true }).count(), 1);
+      fixture.dismissed.clear(); // Simulate a server restart: browser carries dismissal forward.
+      await page.reload();
+      await page.getByText('问号不打断，A 进入自主模式', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: '清除此提示' }).count(), 0);
+      assert.equal(fixture.sent.length, sentBeforeDismiss, 'clearing a receipt never resends input');
       // Actual controller + real UI; only the Agent's reasoning/results are fixtures.
       const auto = page.locator('#autonomyButton');
       assert.equal(await auto.locator('.autonomy-icon').textContent(), 'A');
       assert.equal(await auto.locator('#autonomyStatus').textContent(), '');
       await page.locator('#composerInput').fill('保留自主配置前的草稿');
       await auto.click();
-      await page.getByText('你希望完成什么具体目标？最多几轮，有哪些预算和偏好？', { exact: true }).waitFor();
+      const dialog = page.locator('#autonomyDialog');
+      await dialog.getByText('这次推进哪个目标？', { exact: true }).waitFor();
       assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
+      await dialog.getByRole('button', { name: '确认选择' }).click();
+      await dialog.getByRole('alert').filter({ hasText: '请回答“目标”' }).waitFor();
+      assert.equal(fixture.autonomySent.length, 1, 'an incomplete form cannot advance configuration');
+      await dialog.getByRole('radio', { name: '修复选择器并补回归' }).check();
+      await dialog.getByRole('radio', { name: '3 轮 / 30 分钟' }).check();
+      await dialog.getByRole('textbox', { name: '偏好：自定义回答' }).fill('最小修改，不提交部署');
+      await page.keyboard.press('Escape');
+      assert.equal(await dialog.evaluate(node => node.open), false);
+      assert.equal(fixture.autonomySent.length, 1, 'closing the modal does not approve execution');
+      await auto.click();
+      assert.equal(await dialog.getByRole('radio', { name: '修复选择器并补回归' }).isChecked(), true);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-choices.png`) });
       fixture.autonomyPlan = { goal: '修复选择器', acceptance: '回归测试通过', maxRounds: 3,
         minutes: 30, preferences: '最小修改，不提交部署', advisoryBudget: '' };
-      await page.locator('#composerInput').fill('修复选择器，最多三轮，不提交部署');
-      await page.locator('#sendButton').click();
+      await dialog.getByRole('button', { name: '确认选择' }).click();
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '0/3 待确认');
-      await page.locator('#composerInput').fill('开始'); await page.locator('#sendButton').click();
+      await dialog.getByRole('heading', { name: '确认自主目标' }).waitFor();
+      assert.match(await dialog.locator('.autonomy-plan').textContent(), /修复选择器.*回归测试通过.*3 轮.*30 分钟.*不提交部署/);
+      assert.equal(fixture.autonomySent.length, 2, 'a proposed plan is not yet authorized work');
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-confirm.png`) });
+      await dialog.getByRole('radio', { name: '按此目标开始', exact: true }).check();
+      await dialog.getByRole('button', { name: '确认选择' }).click();
       await page.waitForFunction(() => document.querySelector('#autonomyStatus').textContent === '1/3');
+      assert.equal(await page.inputValue('#composerInput'), '保留自主配置前的草稿');
       assert.equal(await auto.getAttribute('aria-pressed'), 'true');
       const box = await auto.boundingBox(); assert.ok(box.width >= 44 && box.height >= 44);
+      const groupedProgressBox = await page.locator('#progressButton').boundingBox();
+      assert.ok(groupedProgressBox.width >= 44 && groupedProgressBox.height >= 44);
+      assert.ok(box.x - (groupedProgressBox.x + groupedProgressBox.width) <= 1, 'session controls are adjacent');
       assert.equal(await auto.locator('.autonomy-icon').evaluate(node => getComputedStyle(node).borderRadius), '50%');
       assert.doesNotMatch(await page.locator('#turns').textContent(), /codeck-autonomy|"nonce"/);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-autonomy-running.png`) });

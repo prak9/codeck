@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as deliveryModule from '../public/remote-delivery.js';
 import {
   deliveryAttemptKey,
   prepareDeliveryAttempt,
@@ -13,6 +14,19 @@ const input = {
   draft: '继续检查',
   attachmentIds: ['attachment-1'],
 };
+
+test('dismissed receipt hints survive reload, stay target-scoped, and never claim confirmation', () => {
+  const values = new Map(); const storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
+  deliveryModule.rememberDismissedDeliveries(storage, input, ['command-removed']);
+  assert.deepEqual(deliveryModule.dismissedDeliveryIds(storage, input), ['command-removed']);
+  assert.deepEqual(deliveryModule.dismissedDeliveryIds(storage, { ...input, threadId: 'other' }), []);
+  const thread = { turns: [{ id: 'old', deliveryOnly: true, items: [{ id: 'delivery:command-removed', delivery: { status: 'unknown' } }] },
+    { id: 'real', items: [{ id: 'actual', type: 'userMessage', content: 'A longer accepted message' }] }] };
+  const clean = deliveryModule.withoutDismissedDeliveries(thread, ['command-removed']);
+  assert.deepEqual(clean.turns.map(turn => turn.id), ['real']);
+  assert.equal(clean.deliveryConfirmations, undefined);
+  assert.equal(thread.turns.length, 2);
+});
 
 test('an uncertain retry reuses its command id while the server epoch is unchanged', () => {
   const first = prepareDeliveryAttempt(null, {
