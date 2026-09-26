@@ -128,10 +128,18 @@ try {
       writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'running');
+      await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('自主模式·当前空闲'));
+      if (width < 600) {
+        if (await page.locator('#menuButton').getAttribute('aria-expanded') !== 'true') await page.locator('#menuButton').click();
+        await page.waitForFunction(() => document.querySelector('#sidebar').getBoundingClientRect().left >= -0.5);
+      }
+      await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-autonomy-idle.png') });
+      if (width < 600) await page.locator('[data-session="fixture"]').click();
       assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
       writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过']);
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'completed');
+      await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('已就绪'));
       assert.equal(await a.evaluate(el => el.parentElement.nextElementSibling.id), 'shareButton');
       assert.deepEqual(await a.evaluate(el => [...el.parentElement.children].map(button => button.id)),
         ['terminalProgressButton', 'terminalConfirmButton', 'terminalAutonomyButton']);

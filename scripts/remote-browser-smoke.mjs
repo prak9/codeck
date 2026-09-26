@@ -336,6 +336,9 @@ try {
         writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
         await fixture.autonomy.tick();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'running');
+        await page.waitForFunction(() => document.querySelector('[data-tmux-session="fixture"] small')?.textContent.includes('自主执行中'));
+        fixture.status = 'done'; publishSessions();
+        await page.waitForFunction(() => document.querySelector('[data-tmux-session="fixture"] small')?.textContent.includes('自主模式·当前空闲'));
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#autonomyButton .autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
         writeReceipt(['--receipt', observed.observation.endFile, '--status', 'budget', '--summary', '预算已耗尽', '--next', '交接剩余验证']);
         await fixture.autonomy.tick();

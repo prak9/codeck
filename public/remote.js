@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=12';
+import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=13';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -705,6 +705,7 @@ async function handleReady(message) {
 function handleSocketMessage(message) {
   if (message.type === 'autonomyState' && message.run?.target) {
     state.autonomyRuns.set(autonomyKey(message.run.target), message.run);
+    renderThreadList();
     renderComposerState();
     if (currentAutonomy() === message.run && message.run.status === 'error' && message.run.reason) {
       setLiveMessage(message.run.reason);
@@ -1383,10 +1384,11 @@ function threadRow(thread, index) {
   const title = tmux.name || thread.name || thread.preview || '未命名会话';
   const execution = threadExecutionState(thread);
   const status = execution === 'idle' ? 'done' : execution;
-  const statusText = status === 'working'
+  const run = state.autonomyRuns.get(autonomyKey({ provider: thread.provider, threadId: thread.id, tmuxSession: tmux.name }));
+  const statusText = autonomyExecutionLabel(run, status, Boolean(tmux.question)) || (status === 'working'
     ? '正在干活'
     : status === 'waitingForInput' ? '等待你的回答' : status === 'background' ? '后台运行' : status === 'done' ? '已就绪'
-      : status === 'failed' ? '任务失败' : '状态待确认';
+      : status === 'failed' ? '任务失败' : '状态待确认');
   const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
   copy.append(
     element('b', '', title),

@@ -1,6 +1,6 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=12';
-import { createTerminalAutonomy } from './terminal-autonomy.js?v=13';
+import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=13';
+import { createTerminalAutonomy } from './terminal-autonomy.js?v=14';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -640,9 +640,7 @@ function sessionListEmpty(hiddenCount) {
 
 function sessionEntryHtml(session, index) {
   const status = resolveSessionStatus(session);
-  const statusText = status === 'working'
-    ? '正在干活'
-    : status === 'background' ? '后台运行' : '已就绪';
+  const statusText = sessionExecutionLabel(session);
   const meta = [statusText, timeAgo(session.activityAt)].filter(Boolean).join(' · ');
   return `
     <div class="session-entry">
@@ -654,6 +652,15 @@ function sessionEntryHtml(session, index) {
       </button>
       ${state.canManage ? `<button type="button" class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
     </div>`;
+}
+
+function sessionExecutionLabel(session) {
+  const status = resolveSessionStatus(session);
+  const run = terminalAutonomy.runFor({ provider: session.agent?.kind,
+    threadId: session.agent?.id, tmuxSession: session.name });
+  return autonomyExecutionLabel(run, status, Boolean(session.agent?.question)) || (status === 'working'
+    ? '正在干活'
+    : status === 'background' ? '后台运行' : '已就绪');
 }
 
 function sessionFolderHtml(entry, indexByName) {
@@ -709,7 +716,7 @@ function renderSessions({ force = false } = {}) {
   // 变。侧栏显示的相对时间是分桶的, 多数帧渲染结果完全一样 —— 没变就别重建 DOM,
   // 那是和 xterm 抢主线程、让打字发涩的原因。
   const signature = sessionsRenderSignature(state.sessions, {
-    status: resolveSessionStatus,
+    status: session => `${resolveSessionStatus(session)}:${sessionExecutionLabel(session)}`,
     timeLabel: timeAgo,
     active: state.active || '',
     canManage: state.canManage,
@@ -1063,6 +1070,7 @@ function connectSessionFeed() {
     if (message.type === 'ready') {
       state.sessionFeedReady = true;
       terminalAutonomy.ready(message);
+      renderSessions();
       syncTerminalProgressButton();
       if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) {
         state.sessionStreamCursor = null;
@@ -1078,7 +1086,7 @@ function connectSessionFeed() {
       void refreshActiveAgentOutput({ force: true });
       return;
     }
-    if (message.type === 'autonomyState') { terminalAutonomy.update(message.run); return; }
+    if (message.type === 'autonomyState') { terminalAutonomy.update(message.run); renderSessions(); return; }
     const applyFeedSnapshot = (snapshot, cursor) => {
       state.sessionStreamCursor = cursor;
       state.sessionStreamSnapshot = snapshot;

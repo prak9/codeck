@@ -1,4 +1,4 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=12';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=13';
 
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
@@ -102,6 +102,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   });
   return {
     sync, update,
+    runFor: target => runs.get(keyOf(target)),
     ready(message) {
       generation++; bindingKey = undefined; bound = false;
       connected = true; supported = message.autonomySessionBinding === true;
