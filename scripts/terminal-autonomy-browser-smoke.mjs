@@ -115,7 +115,7 @@ try {
       const confirm = page.locator('#terminalConfirmButton');
       await confirm.focus(); await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('#terminalConfirmButton').getAttribute('aria-busy') === 'false');
-      assert.equal(fixture.inputs.filter(input => input.text === 'OK').length, 1);
+      assert.equal(fixture.inputs.filter(input => input.text === '好的，请按当前目标和约定继续推进。').length, 1);
       assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
       const confirmBox = await confirm.boundingBox();
       assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= width);

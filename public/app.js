@@ -829,7 +829,7 @@ function activeAgentOutputTarget() {
 function syncTerminalProgressButton() {
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
-  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalConfirmButton', '回复 OK']]) {
+  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalConfirmButton', '确认并继续推进']]) {
     const button = $(`#${id}`);
     const label = target?.question ? '处理 Agent 等待的问题' : action;
     button.hidden = !target;
@@ -852,20 +852,20 @@ async function askTerminalProgress({ confirm = false } = {}) {
   const attempt = { key: target.progressKey, commandId: crypto.randomUUID() };
   state.terminalProgressPending = attempt;
   syncTerminalProgressButton();
-  setConnectionMessage(confirm ? '正在回复 OK…' : '正在询问 Agent 进度…', false);
+  setConnectionMessage(confirm ? '正在确认并请求继续推进…' : '正在询问 Agent 进度…', false);
   try {
     const result = await sessionFeedRequest('sendSessionMessage', {
       provider: target.provider,
       threadId: target.threadId,
       tmuxSession: target.tmuxSession,
-      text: confirm ? 'OK' : PROGRESS_PROMPT,
+      text: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT,
       commandId: attempt.commandId,
     });
     if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;
     if (result?.submissionStatus === 'unconfirmed') {
       setConnectionMessage('消息提交未确认；请检查终端，勿重复点击。', false);
     } else {
-      setConnectionMessage(confirm ? '已回复 OK' : '已询问 Agent 进度');
+      setConnectionMessage(confirm ? '已确认并请求继续推进' : '已询问 Agent 进度');
     }
   } catch (error) {
     if (activeAgentSessionTarget()?.progressKey === attempt.key) {

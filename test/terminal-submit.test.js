@@ -93,11 +93,11 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.timers.size, 0);
 });
 
-test('confirmation shortcut sends only OK once, preserving the draft', async () => {
+test('confirmation shortcut confirms and continues once, preserving the draft', async () => {
   const f = progressFixture(); f.context.syncTerminalProgressButton();
   const pending = f.context.askTerminalProgress({ confirm: true });
   await f.context.askTerminalProgress({ confirm: true });
-  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].text, 'OK');
+  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].text, '好的，请按当前目标和约定继续推进。');
   assert.equal(f.confirmButton.disabled, true); assert.equal(f.draft.value, '尚未发送的草稿');
   f.resolveRequest({ submissionStatus: 'submitted' }); await pending;
   assert.equal(f.confirmButton.disabled, false);

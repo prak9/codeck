@@ -323,7 +323,7 @@ try {
         const confirm = page.locator('#confirmButton');
         await confirm.focus(); await page.keyboard.press('Enter');
         await page.waitForFunction(() => !document.querySelector('#confirmButton').disabled);
-        assert.equal(fixture.sent.filter(request => request.text === 'OK').length, 1);
+        assert.equal(fixture.sent.filter(request => request.text === '好的，请按当前目标和约定继续推进。').length, 1);
         assert.equal(await page.locator('#composerInput').inputValue(), '尚未发送的草稿');
         const confirmBox = await confirm.boundingBox();
         assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= viewport.width);

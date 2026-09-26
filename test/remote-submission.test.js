@@ -115,13 +115,13 @@ test('the progress shortcut sends its own prompt without touching the draft or a
   assert.equal(f.input.value, progressPrompt, 'a later shortcut receipt must not clear an identical draft');
 });
 
-test('Remote confirmation replies OK without changing A, drafts or attachments', async () => {
+test('Remote confirmation confirms and continues without changing A, drafts or attachments', async () => {
   const f = fixture(); f.context.currentThreadWaitingForInput = () => false;
   vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nfunction currentAutonomy(')), f.context);
   f.state.attachments = [{ id: 'keep', path: '/uploads/keep.txt' }];
   const runs = f.state.autonomyRuns = new Map([['current', { status: 'running' }]]);
   await f.context.askProgress({ confirm: true });
-  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].text, 'OK');
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].text, '好的，请按当前目标和约定继续推进。');
   assert.equal(f.input.value, draft); assert.equal(f.state.attachments[0].id, 'keep');
   assert.equal(f.state.autonomyRuns, runs); assert.equal(runs.get('current').status, 'running');
 });

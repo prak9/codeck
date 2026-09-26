@@ -2425,7 +2425,7 @@ function renderComposerState() {
   const confirmButton = $('#confirmButton');
   confirmButton.hidden = progressUnavailable;
   confirmButton.disabled = progressButton.disabled;
-  confirmButton.title = waitingForInput ? '处理 Agent 等待的问题' : '回复 OK';
+  confirmButton.title = waitingForInput ? '处理 Agent 等待的问题' : '确认并继续推进';
   confirmButton.setAttribute('aria-label', confirmButton.title);
   const autonomyButton = $('#autonomyButton');
   const autonomy = currentAutonomy();
@@ -2846,7 +2846,7 @@ async function askProgress({ confirm = false } = {}) {
     focusPendingAgentRequest();
     return;
   }
-  await submitComposer({ presetText: confirm ? 'OK' : PROGRESS_PROMPT });
+  await submitComposer({ presetText: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT });
 }
 
 function currentAutonomy() {
