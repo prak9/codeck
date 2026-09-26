@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=14';
+import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=15';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {

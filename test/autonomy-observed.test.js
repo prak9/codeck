@@ -28,6 +28,9 @@ function report(f, status, extra = {}) {
 for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: observed colors require explicit receipts, never schedule work`, async () => {
   const f = fixture(provider); const prepared = await f.manager.preparePlanning(f.target);
   assert.match(prepared.text, /^请基于最近的讨论/); assert.equal(f.state().status, 'planning');
+  assert.match(prepared.text, /只在当前对话中询问/);
+  assert.match(prepared.text, /等待我用普通消息回复/);
+  assert.match(prepared.text, /不要调用原生提问工具/);
   await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, 'idle');
   report(f, 'started'); await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, 'running');
   assert.equal(f.state().plan.goal, '修复输入');
