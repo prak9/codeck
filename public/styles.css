@@ -119,7 +119,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px
 .terminal-header > div:first-child { min-width: 0; }
 .terminal-header .eyebrow { margin-bottom: 4px; }
 .terminal-header h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
-.terminal-actions { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; }
+.terminal-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; color: var(--muted); font-size: 10px; }
 /* Recovery replaces the header in-place: resizing a disconnected alternate screen
    would discard rows that the server can no longer redraw. */
 .terminal-header:has(.terminal-disconnect:not([hidden])) > :not(.terminal-disconnect) { visibility: hidden; }
@@ -317,6 +317,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
   .terminal-header { flex-wrap: wrap; gap: 4px; }
   .terminal-heading { flex-direction: column; align-items: flex-start; gap: 0; }
   .terminal-heading .eyebrow { display: none; }
+  .terminal-actions { flex-wrap: wrap; justify-content: flex-end; }
   .terminal-tool-button, .view-mode-button { min-height: 44px; }
   .desktop-agent-copy { display: none; }
   .mobile-keybar .mobile-agent-copy { flex: 0 0 auto; min-height: 44px; padding-inline: 10px; }

@@ -132,7 +132,12 @@ try {
       writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过']);
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'completed');
-      assert.equal(await a.evaluate(el => el.nextElementSibling.id), 'shareButton');
+      assert.equal(await a.evaluate(el => el.parentElement.nextElementSibling.id), 'shareButton');
+      assert.deepEqual(await a.evaluate(el => [...el.parentElement.children].map(button => button.id)),
+        ['terminalProgressButton', 'terminalConfirmButton', 'terminalAutonomyButton']);
+      const groupBox = await a.locator('..').boundingBox();
+      const titleBox = await page.locator('#terminalTitle').boundingBox();
+      assert.ok(groupBox.x > titleBox.x && groupBox.x + groupBox.width <= width, 'shortcut group is right-aligned without clipping');
       await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-planning-shortcut.png') });
       await page.reload(); await a.waitFor({ state: 'visible' });
       await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);

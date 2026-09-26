@@ -315,7 +315,7 @@ test('remote composer exposes an accessible image and file attachment flow', () 
 });
 
 test('an open Agent session has a labelled touch-sized progress shortcut above the composer', () => {
-  assert.match(html, /id="progressButton"[^>]*type="button"[^>]*aria-label="询问 Agent 进度"[^>]*hidden>\?<\/button>/);
+  assert.match(html, /id="progressButton"[^>]*type="button"[^>]*aria-label="询问 Agent 进度"[^>]*hidden><span class="autonomy-icon" aria-hidden="true">\?<\/span><\/button>/);
   assert.ok(html.indexOf('id="progressButton"') < html.indexOf('id="composerForm"'));
   assert.match(css, /\.progress-button\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px/s);
   assert.match(css, /\.composer\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\) 44px/s);

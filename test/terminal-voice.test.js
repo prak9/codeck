@@ -118,9 +118,18 @@ test('the overview toggle stays reachable on a phone', () => {
 });
 
 test('normal Agent sessions expose one compact progress action', () => {
-  assert.match(html, /id="terminalProgressButton"[^>]*type="button"[^>]*aria-label="询问 Agent 进度"[^>]*hidden[^>]*>\?<\/button>/);
+  assert.match(html, /id="terminalProgressButton"[^>]*aria-label="询问 Agent 进度"[^>]*hidden><span class="terminal-autonomy-symbol" aria-hidden="true">\?<\/span><\/button>/);
   assert.equal((html.match(/id="terminalProgressButton"/g) || []).length, 1);
   assert.match(css, /\.terminal-progress-button\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
   assert.match(appJs, /const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT/);
   assert.match(appJs, /'#terminalProgressButton'\)\.addEventListener\('click', askTerminalProgress\)/);
+});
+
+test('normal session shortcuts share a right-side group before Share', () => {
+  const actions = html.slice(html.indexOf('<div class="terminal-actions">'), html.indexOf('<div class="terminal-disconnect"'));
+  assert.match(actions, /class="terminal-agent-controls" role="group" aria-label="会话助手"/);
+  assert.ok(actions.indexOf('terminalProgressButton') >= 0);
+  assert.ok(actions.indexOf('terminalProgressButton') < actions.indexOf('terminalConfirmButton'));
+  assert.ok(actions.indexOf('terminalConfirmButton') < actions.indexOf('terminalAutonomyButton'));
+  assert.ok(actions.indexOf('terminalAutonomyButton') < actions.indexOf('shareButton'));
 });
