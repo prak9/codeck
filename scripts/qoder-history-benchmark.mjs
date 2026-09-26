@@ -1,5 +1,8 @@
 // Synthetic, content-free workload. Run baseline and candidate in separate
 // processes for comparable RSS: node --expose-gc scripts/qoder-history-benchmark.mjs [baseline|candidate]
+// Optional shape (text|tools) and turn count follow; candidate tools 2310 is ~305MB.
+// "baseline" means direct SDK, not the previous Codeck revision. For before/after
+// comparisons run "candidate" on both revisions with the same shape/count.
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,7 +18,7 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-qoder-bench-'));
 const threadId = '11111111-1111-4111-8111-111111111111';
 const folder = path.join(root, 'projects', '-fixture');
 const file = path.join(folder, `${threadId}.jsonl`);
-const total = 920;
+const total = Number(process.argv[4]) || 920;
 const payload = 'x'.repeat(128 * 1024);
 const entries = index => shape === 'tools' ? [
   { type: 'user', uuid: `u${index}`, parentUuid: index ? `a${index - 1}` : null,
@@ -48,9 +51,11 @@ try {
   const size = (await fs.stat(file)).size;
   assert.ok(size >= 115 * 1024 * 1024);
   let maxGapMs = 0;
+  let peakRssMB = 0;
   let ticks = 0;
   let lastTick = performance.now();
   timer = setInterval(() => {
+    peakRssMB = Math.max(peakRssMB, process.memoryUsage().rss / 1024 / 1024);
     const now = performance.now();
     maxGapMs = Math.max(maxGapMs, now - lastTick);
     lastTick = now;
@@ -72,8 +77,15 @@ try {
   if (backend) {
     assert.equal(first.thread.turns.length, 20);
     assert.equal(first.thread.truncated, true);
-    assert.match(JSON.stringify(first.thread.turns.at(-1)), /question 919/);
+    assert.match(JSON.stringify(first.thread.turns.at(-1)), new RegExp(`question ${total - 1}`));
   } else assert.equal(first.ids.length, total * (shape === 'tools' ? 4 : 2));
+  const unchangedMs = [];
+  for (let index = 0; index < 3; index += 1) {
+    const started = performance.now();
+    const result = await read();
+    unchangedMs.push(performance.now() - started);
+    if (backend) assert.deepEqual(result.thread.turns, first.thread.turns);
+  }
   const before = backend ? await backend.read('stats') : null;
   const appendMs = [];
   for (let index = total; index < total + 3; index += 1) {
@@ -87,6 +99,8 @@ try {
   }
   const after = backend ? await backend.read('stats') : null;
   let sendPreparationMs = null;
+  let afterEvictionMs = null;
+  let afterEvictionParsedRecords = null;
   if (backend) {
     assert.equal(after.parsedRecords - before.parsedRecords, shape === 'tools' ? 12 : 6);
     assert.ok(after.readBytes - before.readBytes < 1024 * 1024);
@@ -99,10 +113,22 @@ try {
     assert.equal(baseline.offset, (await fs.stat(file)).size);
     assert.equal((await backend.read('stats')).parsedRecords, after.parsedRecords,
       'fresh delivery evidence validates bytes without reparsing unchanged JSON records');
+    // A second large-lane history evicts a >160MB transcript's raw cache.
+    const otherId = '33333333-3333-4333-8333-333333333333';
+    await fs.writeFile(path.join(folder, `${otherId}.jsonl`), JSON.stringify({ ...entries(0)[0], sessionId: otherId })
+      + '\n' + JSON.stringify({ padding: 'x'.repeat(17 * 1024 * 1024) }) + '\n');
+    await backend.read('open', { threadId: otherId });
+    const beforeEvictionRead = await backend.read('stats');
+    const started = performance.now();
+    const result = await read();
+    afterEvictionMs = performance.now() - started;
+    afterEvictionParsedRecords = (await backend.read('stats')).parsedRecords - beforeEvictionRead.parsedRecords;
+    assert.match(JSON.stringify(result.thread.turns.at(-1)), new RegExp(`question ${total + 2}`));
   }
   await yieldToIO();
   console.log(JSON.stringify({ mode, shape, bytes: size, libraryFiles: 705, initialResponseMs, firstReadyMs,
-    appendMs, sendPreparationMs, maxTimerGapMs: maxGapMs, timerTicks: ticks, rssMB: process.memoryUsage().rss / 1024 / 1024,
+    unchangedMs, appendMs, afterEvictionMs, afterEvictionParsedRecords, sendPreparationMs,
+    peakRssMB, maxTimerGapMs: maxGapMs, timerTicks: ticks, rssMB: process.memoryUsage().rss / 1024 / 1024,
     incrementalReadBytes: before ? after.readBytes - before.readBytes : null,
     incrementalParsedRecords: before ? after.parsedRecords - before.parsedRecords : null }, null, 2));
 } finally {

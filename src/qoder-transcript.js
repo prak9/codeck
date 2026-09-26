@@ -62,16 +62,32 @@ export class QoderTranscriptCache {
       const start = previous?.bytes.length || 0;
       const added = verified ? verified.subarray(start) : await range(handle, start, stat.size - start);
       if (!verified) this.stats.readBytes += added.length;
-      const bytes = verified || (previous ? Buffer.concat([previous.bytes, added]) : added);
+      let storage = verified || added;
+      let bytes = storage;
+      if (!verified && previous) {
+        // Append outside previous snapshots' byte views; never mutate their
+        // prefix. Bounded spare capacity avoids copying a 300MB buffer for every
+        // tiny live update. Rewrites/fresh delivery proofs always get new storage.
+        storage = previous.storage;
+        if (storage.length < start + added.length) {
+          const spare = Math.min(8 * 1024 * 1024, Math.max(4096, Math.ceil(stat.size / 8)));
+          storage = Buffer.allocUnsafe(start + added.length + spare);
+          previous.bytes.copy(storage);
+        }
+        added.copy(storage, start);
+        bytes = storage.subarray(0, start + added.length);
+      }
       const records = previous ? [...previous.records] : [];
       if (previous?.finalRecord) records.pop();
       let offset = previous?.parsedUntil || 0;
-      const text = bytes.subarray(offset).toString('utf8');
-      const lines = text.split('\n');
       let finalRecord = false;
-      for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index];
-        const final = index === lines.length - 1;
+      // Decode one record at a time. A whole-file string plus split() retains
+      // hundreds of MB of duplicate text and lets short slices pin that string.
+      // Byte positions also stay correct across malformed UTF-8 records.
+      while (offset < bytes.length) {
+        const newline = bytes.indexOf(10, offset);
+        const final = newline === -1;
+        const line = bytes.toString('utf8', offset, final ? bytes.length : newline);
         if (line.trim()) {
           try {
             const entry = JSON.parse(line);
@@ -82,16 +98,17 @@ export class QoderTranscriptCache {
             }
           } catch { /* A malformed completed line loses only itself. */ }
         }
-        if (!final) offset += Buffer.byteLength(line) + 1;
+        if (final) break;
+        offset = newline + 1;
       }
-      const snapshot = { file, identity, bytes, records, parsedUntil: offset, finalRecord,
+      const snapshot = { file, identity, bytes, storage, records, parsedUntil: offset, finalRecord,
         mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
       this.entries.delete(file);
       this.entries.set(file, snapshot);
-      let retained = [...this.entries.values()].reduce((sum, item) => sum + item.bytes.length, 0);
+      let retained = [...this.entries.values()].reduce((sum, item) => sum + item.storage.length, 0);
       while (this.entries.size > 1 && (retained > CACHE_BYTES || this.entries.size > 3)) {
         const first = this.entries.keys().next().value;
-        retained -= this.entries.get(first).bytes.length;
+        retained -= this.entries.get(first).storage.length;
         this.entries.delete(first);
       }
       return snapshot;
@@ -175,7 +192,8 @@ export class QoderSessionCatalog {
       // different session or silently invent a cwd.
       const value = { ...cached?.value, ...parsed, sessionId: threadId,
         ...(cwd ? { cwd } : {}), summary: parsed?.summary || cached?.value?.summary || threadId,
-        fileSize: stat.size, lastModified: Math.max(stat.mtimeMs, stat.ctimeMs) };
+        fileSize: stat.size, lastModified: Math.max(stat.mtimeMs, stat.ctimeMs),
+        transcriptRevision: JSON.stringify([file, revision]) };
       this.files.set(threadId, file);
       if (this.files.size > 128) this.files.delete(this.files.keys().next().value);
       this.info.delete(file);

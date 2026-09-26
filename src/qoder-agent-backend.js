@@ -36,7 +36,10 @@ export class QoderAgentBackend extends SdkAgentBackend {
     if (method === 'stats' && this.largeReader) {
       return Promise.all(['reader', 'largeReader'].map(lane => this.#read(lane, method, params)))
         .then(stats => ({ readBytes: stats.reduce((sum, value) => sum + value.readBytes, 0),
-          parsedRecords: stats.reduce((sum, value) => sum + value.parsedRecords, 0) }));
+          parsedRecords: stats.reduce((sum, value) => sum + value.parsedRecords, 0),
+          windowHits: stats.reduce((sum, value) => sum + value.windowHits, 0),
+          windowMisses: stats.reduce((sum, value) => sum + value.windowMisses, 0),
+          windowBytes: stats.reduce((sum, value) => sum + value.windowBytes, 0) }));
     }
     return this.#read(method === 'prepare' ? 'preparer' : 'reader', method, params);
   }

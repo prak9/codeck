@@ -35,6 +35,38 @@ test('Qoder retains a valid final line without newline across later appends', as
   assert.deepEqual((await cache.load(file)).records.map(r => r.entry.uuid), ['one', 'two']);
 });
 
+test('Qoder byte offsets survive malformed UTF-8 lines before valid appended records', async t => {
+  const { file } = await fixture(t, []);
+  const cache = new QoderTranscriptCache();
+  await fs.writeFile(file, Buffer.concat([Buffer.from([0xff, 10]), Buffer.from(JSON.stringify(user('中文')) + '\r\n')]));
+  const first = await cache.load(file);
+  assert.equal(first.records[0].offset, 2);
+  assert.equal(first.parsedUntil, (await fs.stat(file)).size);
+  await fs.appendFile(file, JSON.stringify(user('next', '中文')) + '\n');
+  assert.deepEqual((await cache.load(file)).records.map(record => record.entry.uuid), ['中文', 'next']);
+});
+
+test('Qoder small appends reuse bounded byte capacity without mutating prior snapshots', async t => {
+  const { file } = await fixture(t, [{ ...user('one'), message: { role: 'user', content: 'x'.repeat(16 * 1024) } }]);
+  const cache = new QoderTranscriptCache();
+  const first = await cache.load(file);
+  const original = Buffer.from(first.bytes);
+  await fs.appendFile(file, JSON.stringify(user('two', 'one')) + '\n');
+  const second = await cache.load(file);
+  const savedSecond = Buffer.from(second.bytes);
+  await fs.appendFile(file, JSON.stringify(user('three', 'two')) + '\n');
+  const third = await cache.load(file);
+  assert.ok(third.bytes.buffer === second.bytes.buffer, 'each small append must not copy the full transcript');
+  assert.equal(third.bytes.byteOffset, second.bytes.byteOffset);
+  assert.deepEqual(first.bytes, original);
+  assert.deepEqual(second.bytes, savedSecond);
+  assert.deepEqual(first.records.map(record => record.entry.uuid), ['one']);
+  assert.deepEqual(third.records.map(record => record.entry.uuid), ['one', 'two', 'three']);
+  await fs.writeFile(file, JSON.stringify(user('rewrite')) + '\n');
+  assert.deepEqual((await cache.load(file)).records.map(record => record.entry.uuid), ['rewrite']);
+  assert.deepEqual(second.bytes, savedSecond, 'rewrites must not mutate retained restoration snapshots');
+});
+
 test('Qoder worker reads the exact discovered file when bounded metadata has no cwd', async t => {
   const entry = user('one');
   delete entry.cwd;
@@ -42,6 +74,84 @@ test('Qoder worker reads the exact discovered file when bounded metadata has no 
   const result = await backend.read('open', { threadId });
   assert.equal(result.thread.turns.length, 1);
   assert.match(JSON.stringify(result.thread.turns), /one/);
+});
+
+test('Qoder live windows survive raw-cache eviction without parsing unchanged history again', async t => {
+  const { backend, root } = await fixture(t, [user('one'), user('two', 'one')]);
+  const first = await backend.read('open', { threadId, limit: 1 });
+  for (let index = 2; index <= 4; index += 1) {
+    const id = `${index}`.repeat(8) + '-2222-4222-8222-222222222222';
+    await fs.writeFile(path.join(root, 'projects', '-fixture', `${id}.jsonl`),
+      JSON.stringify({ ...user(`other-${index}`), sessionId: id }) + '\n');
+    await backend.read('open', { threadId: id });
+  }
+  const before = await backend.read('stats');
+  assert.deepEqual(await backend.read('open', { threadId, limit: 1 }), first);
+  const after = await backend.read('stats');
+  assert.equal(after.parsedRecords, before.parsedRecords, 'polling must not resurrect an evicted full transcript');
+  const page = await backend.loadThreadHistory(threadId, { beforeTurnId: first.thread.oldestTurnId });
+  assert.deepEqual(page.turns.map(turn => turn.id), ['turn-one'], 'window reuse must not discard pageable history');
+});
+
+test('Qoder cached windows invalidate on append, rewrite, replacement, missing file and limit changes', async t => {
+  const { backend, file } = await fixture(t, [user('one')]);
+  const open = limit => backend.read('open', { threadId, limit });
+  assert.equal((await open(1)).thread.turns[0].id, 'turn-one');
+  await fs.appendFile(file, JSON.stringify(user('two', 'one')) + '\n');
+  assert.equal((await open(1)).thread.turns[0].id, 'turn-two');
+  assert.deepEqual((await open(2)).thread.turns.map(turn => turn.id), ['turn-one', 'turn-two']);
+  // Same-length rewrite, then inode replacement with the same-length payload.
+  await fs.writeFile(file, JSON.stringify(user('six')) + '\n');
+  assert.equal((await open(1)).thread.turns[0].id, 'turn-six');
+  await fs.rename(file, `${file}.old`);
+  await fs.writeFile(file, JSON.stringify(user('new')) + '\n');
+  assert.equal((await open(1)).thread.turns[0].id, 'turn-new');
+  await fs.unlink(file);
+  await assert.rejects(open(1), /not found/);
+});
+
+test('Qoder window hits still observe input logs and new receipts invalidate same-revision windows', async t => {
+  const { backend, file, root } = await fixture(t, [user('one')]);
+  await backend.read('open', { threadId });
+  const command = { threadId, commandId: 'late-registration', text: 'two',
+    deliveryBaseline: await backend.prepareSessionMessage({ threadId, commandId: 'late-registration', text: 'two' }) };
+  await fs.appendFile(file, JSON.stringify(user('two', 'one')) + '\n');
+  await backend.read('open', { threadId }); // Display saw input before RPC registered the receipt.
+  const confirmed = await backend.read('open', { threadId, receipts: [command] });
+  assert.deepEqual(confirmed.thread.deliveryConfirmations, [{ commandId: command.commandId, itemId: 'two' }]);
+
+  const queued = { threadId, commandId: 'queued', text: 'three',
+    deliveryBaseline: await backend.prepareSessionMessage({ threadId, commandId: 'queued', text: 'three' }) };
+  await backend.read('open', { threadId, receipts: [queued] });
+  const before = await backend.read('stats');
+  const logFile = path.join(root, 'tmp', '-fixture', 'logs.json');
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+  await fs.writeFile(logFile, JSON.stringify([{ sessionId: threadId, messageId: 1, type: 'user',
+    timestamp: new Date().toISOString(), message: 'three' }]));
+  const received = await backend.read('open', { threadId, receipts: [queued] });
+  assert.deepEqual(received.thread.receivedDeliveryIds, ['queued']);
+  assert.deepEqual(received.thread.deliveryConfirmations, confirmed.thread.deliveryConfirmations);
+  const after = await backend.read('stats');
+  assert.equal(after.windowHits, before.windowHits + 1);
+  assert.equal(after.readBytes, before.readBytes, 'input-log ACK does not re-read history');
+});
+
+test('Qoder window cache never freezes deferred compaction at an unchanged revision', async t => {
+  const { backend } = await fixture(t, [user('old'),
+    { type: 'system', subtype: 'compact_boundary', uuid: 'boundary', sessionId: threadId,
+      parentUuid: null, logicalParentUuid: 'old', message: { role: 'system', content: '' } },
+    { ...user('summary', 'boundary'), isCompactSummary: true }, user('latest', 'summary')]);
+  await backend.read('open', { threadId });
+  // Full-history read awaits restoration. The following open must see it even
+  // though neither file metadata nor the active tail changed.
+  const full = await backend.loadThreadHistory(threadId);
+  assert.deepEqual(full.turns.map(turn => turn.id), ['turn-old', 'turn-latest']);
+  const open = await backend.read('open', { threadId });
+  assert.deepEqual(open.thread.turns, full.turns);
+  assert.equal(open.thread.truncated, false);
+  const before = await backend.read('stats');
+  assert.deepEqual(await backend.read('open', { threadId }), open);
+  assert.equal((await backend.read('stats')).windowHits, before.windowHits + 1);
 });
 
 test('Qoder worker settles timeout, restarts cleanly, and preserves runtime list entries', async t => {

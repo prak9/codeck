@@ -64,6 +64,9 @@ function sessionToThread(info, turns = []) {
 }
 
 function transcriptRevision(info) {
+  // Qoder supplies file identity as well as size/timestamps, so replacing a
+  // transcript cannot reuse the old graph even if its public metadata matches.
+  if (typeof info?.transcriptRevision === 'string') return info.transcriptRevision;
   const modified = typeof info?.lastModified === 'number'
     ? info.lastModified
     : Date.parse(info?.lastModified);

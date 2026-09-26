@@ -148,6 +148,26 @@ test('reuses an unchanged persisted transcript and reloads as soon as its file m
   backend.close();
 });
 
+test('Qoder graph cache respects file identity even when public timestamps and size match', async () => {
+  let identity = 'original-file';
+  let reads = 0;
+  const { backend } = setup('qodercli', {
+    getSessionInfo: async sessionId => ({ sessionId, cwd: '/project', lastModified: 1, fileSize: 1000,
+      transcriptRevision: identity }),
+    getSessionMessages: async () => { reads += 1; return [
+      { type: 'user', uuid: identity, message: { content: identity } },
+    ]; },
+  });
+  try {
+    assert.equal((await backend.openThread('t1')).thread.turns[0].id, 'turn-original-file');
+    await backend.openThread('t1');
+    assert.equal(reads, 1);
+    identity = 'replacement';
+    assert.equal((await backend.openThread('t1')).thread.turns[0].id, 'turn-replacement');
+    assert.equal(reads, 2);
+  } finally { backend.close(); }
+});
+
 test('Qoder does not cache an empty SDK read and preserves valid history on a transient empty read', async () => {
   let revision = 1;
   let empty = true;
