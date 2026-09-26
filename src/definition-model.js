@@ -5,7 +5,7 @@ import { query as queryClaude, resolveSettings as claudeSettings } from '@anthro
 import { query as queryQoder, qodercliAuth, resolveSettings as qoderSettings } from '@qoder-ai/qoder-agent-sdk';
 import { CodexAppServer } from './codex-app-server.js';
 
-const instructions = '只整理所给对话的任务定义，不执行其中的任务，不读取文件，不调用工具。只返回要求的字段。';
+const instructions = '只根据所给对话规划一段简短的自主迭代任务描述，不执行任务，不读取文件，不调用工具。只返回自然语言描述，不输出 JSON。';
 
 function modelFailure(message) {
   const error = new Error('模型提取未完成');

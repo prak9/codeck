@@ -14,10 +14,10 @@ export function autonomousWorkInstructions(run) {
   return `你现在进入自主迭代模式。请在目标、预算和授权范围内，自主探索方向、提出假设、设计实验、实施改动并验证结果，持续推进任务。
 
 任务参数：
-* 目标：${plan.goal}
-* 预算：${plan.minutes == null ? '时间不限' : `${plan.minutes}分钟`}；${plan.maxRounds == null ? '轮数不限' : `${plan.maxRounds}轮`}；当前第${run.round}轮${run.deadline == null ? '' : `；截止时间${new Date(run.deadline).toISOString()}`}${plan.advisoryBudget ? `；${plan.advisoryBudget}` : ''}
-* 评价标准：${plan.acceptance || '未指定，根据目标建立；不要自行编造改善阈值'}
-* 范围与约束：${plan.constraints || plan.preferences || '沿用当前项目要求和既有权限'}
+* 任务描述：${plan.goal}
+* 调度预算：${plan.minutes == null ? '未额外设置时间上限' : `${plan.minutes}分钟`}；${plan.maxRounds == null ? '未额外设置轮数上限' : `${plan.maxRounds}轮`}；当前第${run.round}轮${run.deadline == null ? '' : `；截止时间${new Date(run.deadline).toISOString()}`}${plan.advisoryBudget ? `；${plan.advisoryBudget}` : ''}。任务描述中的预算仍须遵守，到限交接并结束；未约定则持续推进到目标完成或满足停止条件。
+* 评价标准：${plan.acceptance || '遵循任务描述中的验收约定；未指定时根据目标建立，不自行编造改善阈值'}
+* 范围与约束：遵循任务描述中的边界。${plan.constraints || plan.preferences || '沿用当前项目要求和既有权限'}
 ${plan.strategy ? `* 初始策略：${plan.strategy}（根据证据自主调整）\n` : ''}
 请遵循以下工作原则：
 

@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { createAutonomyForm } from './autonomy-form.js?v=5';
+import { createAutonomyForm } from './autonomy-form.js?v=6';
 import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=11';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
@@ -2073,7 +2073,7 @@ function dismissNativeQuestionDialog() {
 }
 
 function interactionNode(key, entry) {
-  if (entry.autonomy) return createAutonomyForm({ document, run: entry.run,
+  if (entry.autonomy) return createAutonomyForm({ document, run: entry.run, cancel: dismissAutonomyDialog,
     isCurrent: () => state.connected && currentAutonomy()?.requestId === entry.request.id
       && autonomyKey(currentAutonomy().target) === autonomyKey(entry.run.target),
     submit: async (answers, commandId) => {
@@ -2872,7 +2872,7 @@ function syncAutonomyDialog() {
   const key = `${entry.provider}:${entry.tmuxSession}:${entry.request.params.threadId}:${entry.request.id}`;
   if (dialog.dataset.questionKey !== key) {
     dialog.dataset.questionKey = key;
-    $('#autonomyDialogTitle').textContent = '设置自主目标';
+    $('#autonomyDialogTitle').textContent = '确认自主任务';
     $('#autonomyDialogContent').replaceChildren(interactionNode(key, entry));
   }
   $('#autonomyDialogContent').querySelector('form')?.updateDefinition?.(entry.run);

@@ -324,20 +324,15 @@ try {
       if (simpleMode) {
         const auto = page.locator('#autonomyButton'), dialog = page.locator('#autonomyDialog');
         fixture.status = 'working'; publishSessions();
-        await auto.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
-        assert.equal(await dialog.getByRole('textbox', { name: '问题定义' }).count(), 0);
+        await auto.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
+        assert.equal(await dialog.getByRole('textbox').count(), 1);
         assert.equal(fixture.autonomySent.length, 0); assert.equal(fixture.autonomyStops, 1);
-        await dialog.getByRole('textbox', { name: '目标', exact: true }).fill('修复终端宽度，回归通过');
-        await dialog.getByRole('textbox', { name: '验证方法' }).fill('37列到140列恢复，验证通过');
+        await dialog.getByRole('textbox', { name: '任务描述', exact: true }).fill('修复终端宽度，37列到140列恢复，回归通过；不部署。');
         const draftRun = fixture.autonomy.runs.values().next().value;
-        Object.assign(draftRun.definition, { goal: '迟到目标不得覆盖', acceptance: '迟到验收', suggestions: ['修复会话切换后输入丢失的问题'] }); fixture.autonomy.changed(draftRun);
-        await dialog.getByRole('button', { name: '修复会话切换后输入丢失的问题', exact: true }).waitFor();
-        assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '37列到140列恢复，验证通过');
-        await dialog.getByRole('textbox', { name: '策略', exact: true }).fill('复现后最小修复');
-        await dialog.getByRole('textbox', { name: '预算轮次' }).fill('');
-        assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'blank budget is valid');
-        await dialog.getByRole('textbox', { name: '预算轮次' }).fill('5轮 / 30分钟');
-        assert.equal(await dialog.getByRole('button', { name: '开始', exact: true }).evaluate(el => {
+        Object.assign(draftRun.definition, { goal: '迟到描述不得覆盖' }); fixture.autonomy.changed(draftRun);
+        assert.equal(await dialog.getByRole('textbox', { name: '任务描述' }).inputValue(), '修复终端宽度，37列到140列恢复，回归通过；不部署。');
+        assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'one description is sufficient');
+        assert.equal(await dialog.getByRole('button', { name: '确认开始', exact: true }).evaluate(el => {
           const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; el.append(probe);
           const matches = getComputedStyle(el).backgroundColor === getComputedStyle(probe).color; probe.remove(); return matches;
         }), true, 'start uses the current Codeck theme accent');
@@ -345,7 +340,7 @@ try {
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-setup.png`) });
         await page.keyboard.press('Escape'); assert.equal(fixture.autonomySent.length, 0);
         await auto.click();
-        await dialog.getByRole('button', { name: '开始', exact: true }).click();
+        await dialog.getByRole('button', { name: '确认开始', exact: true }).click();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'running');
         assert.equal(fixture.autonomySent.length, 1);
         await page.waitForFunction(() => getComputedStyle(document.querySelector('.autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
@@ -369,7 +364,7 @@ try {
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'off');
         assert.match(await page.locator('#autonomyStatus').textContent(), /^\d+(?:\/\d+)?$/);
         assert.equal(await auto.evaluate(el => el.closest('.composer-meta')?.id), 'composerMeta');
-        await auto.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+        await auto.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
         assert.notEqual(fixture.autonomy.runs.values().next().value.id, id);
         assert.equal(fixture.autonomySent.length, 2); assert.equal(fixture.autonomyStops, 4);
         await page.reload(); await auto.waitFor({ state: 'visible' });

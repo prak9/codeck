@@ -54,8 +54,8 @@ ${humanOutputRequirements}
   const instruction = kind === 'summary'
     ? `自主执行已中断。${handoffRequirements}\n下一步仅作为建议，不续跑、不开始新工作、不停止后台任务。${receiptInstructions(receiptFile, true)}`
     : `${autonomousWorkInstructions(run)}
-执行第 ${run.round}/${run.plan.maxRounds ?? '∞'} 轮。在已确认目标和边界内主动推进，不等待用户逐步派活。每轮完成一段有验证价值的工作，可连续使用工具、验证和调整，再交回结果，由 Codeck 调度下一轮。不要创建另一套自动续跑或原生 Goal。
-目标、完成标准和权限边界保持不变，步骤与探索方向可根据证据自主调整；预算中的费用/token仅是参考，无法精确计量时说明。轮数和截止时间由 Codeck 控制。
+执行第 ${run.round} 轮${run.plan.maxRounds == null ? '' : `，调度上限 ${run.plan.maxRounds} 轮`}。在已确认目标和边界内主动推进，不等待用户逐步派活。每轮完成一段有验证价值的工作，可连续使用工具、验证和调整，再交回结果，由 Codeck 调度下一轮。不要创建另一套自动续跑或原生 Goal。
+目标、完成标准和权限边界保持不变，步骤与探索方向可根据证据自主调整；预算中的费用/token仅是参考，无法精确计量时说明。Codeck 只控制明确设置的调度上限；任务描述中的其他预算由你跟踪并遵守，到限交接而非继续。
 ${receiptInstructions(receiptFile)}
 正常实验失败不等于error：先诊断并尝试替代方法，用continue交回下一步。wait仅用于后台任务；缺少必要条件且无法自行解决时用blocked，可安全恢复的错误不要报error。达标、预算结束、受阻、出错或退出时必须向用户输出交接。${handoffRequirements}
 先复现或建立基线，分开记录原有失败与本次引入的问题。每轮只解决一个关键问题，说明假设、预期观察和实际结果；否定假设也可以是进展。
@@ -195,7 +195,7 @@ export class AutonomyController extends EventEmitter {
     if (!answers || Object.keys(answers).length !== keys.length || keys.some(key => !Array.isArray(answers[key])
       || answers[key].length !== 1 || typeof answers[key][0] !== 'string' || answers[key][0].length > 4000)) throw new Error('任务定义格式无效');
     const values = Object.fromEntries(keys.map(key => [key, answers[key][0].trim()]));
-    if (!values.goal || !values.strategy || !values.acceptance) throw new Error('请填写目标、策略和验证方法');
+    if (!values.goal) throw new Error('请填写任务描述');
     const match = /^(?:(\d+)\s*轮)?\s*(?:[/／,，]\s*)?(?:(\d+)\s*分钟)?$/u.exec(values.budget);
     if (values.budget && values.budget !== '不限' && (!match || (!match[1] && !match[2]))) throw new Error('预算请填写正整数轮数或分钟，留空表示不限');
     const maxRounds = match?.[1] ? Number(match[1]) : null, minutes = match?.[2] ? Number(match[2]) : null;

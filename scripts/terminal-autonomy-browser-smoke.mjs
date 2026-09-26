@@ -26,8 +26,7 @@ function reset(provider) {
   const thread = () => ({ thread: { id: target.threadId, turns: f.turns } });
   const backend = new EventEmitter(); backend.openThread = async () => thread();
   f.autonomy = new AutonomyController({ schedule: () => 1, cancel() {},
-    suggestDefinition: async () => ({ fieldsVersion: 5, goal: '修复终端宽度恢复并验证回归。', strategy: '先复现切换，再修复尺寸同步。',
-      acceptance: '在手机和桌面间切换，宽度恢复。', budget: '5轮 / 30分钟', constraints: '不重启真实会话。', suggestions: [] }),
+    suggestDefinition: async () => ({ fieldsVersion: 5, goal: '修复终端宽度恢复并验证回归。先复现切换，再修复尺寸同步，在手机和桌面间验证；不重启真实会话。' }),
     readSession: async t => sessions.find(s => s.name === t.tmuxSession), readThread: async () => thread(),
     stop: async () => { f.stops++; sessions[0].hasRunningProcess = false; },
     send: async (_target, text) => {
@@ -105,34 +104,26 @@ try {
         { type: 'userMessage', content: '制定下一阶段目标' },
         { type: 'agentMessage', text: '## 问题定义\n桌面保留了手机宽度。\n## 下一阶段目标\n\n修复终端宽度恢复并验证回归。\n\n### 策略\n先复现切换，再修复尺寸同步。\n### 验收方法\n在手机和桌面间切换，宽度恢复。\n### 预算轮次\n5轮 / 30分钟\n### 其他\n不重启真实会话。' },
       ] });
-      await a.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
-      assert.equal(await dialog.getByRole('textbox', { name: '问题定义' }).count(), 0);
-      await page.waitForFunction(() => [...document.querySelectorAll('.autonomy-definition input[type="text"]')].some(input => input.value === '修复终端宽度恢复并验证回归。'));
-      assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '在手机和桌面间切换，宽度恢复。');
-      assert.equal(await dialog.getByRole('textbox', { name: '策略', exact: true }).inputValue(), '先复现切换，再修复尺寸同步。');
-      assert.equal(await dialog.getByRole('textbox', { name: '预算轮次' }).inputValue(), '5轮 / 30分钟');
-      assert.equal(await dialog.getByRole('textbox', { name: '其他（可选）' }).inputValue(), '不重启真实会话。');
+      await a.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
+      assert.equal(await dialog.getByRole('textbox').count(), 1);
+      await page.waitForFunction(() => document.querySelector('.autonomy-definition textarea')?.value.includes('修复终端宽度恢复'));
       assert.equal(fixture.sent.length, 0); assert.equal(fixture.stops, 1);
       assert.ok(width > 720 ? fixture.grids[0] > 80 : fixture.grids[0] < 60, 'grid follows this viewport, not saved mobile width');
-      await dialog.getByRole('textbox', { name: '目标', exact: true }).fill('修复终端宽度，回归通过');
-      await dialog.getByRole('textbox', { name: '验证方法' }).fill('37列到140列恢复，验证通过');
+      await dialog.getByRole('textbox', { name: '任务描述', exact: true }).fill('修复终端宽度，37列到140列恢复，回归通过；最多5轮，不部署。');
       const draftRun = fixture.autonomy.runs.values().next().value;
-      Object.assign(draftRun.definition, { goal: '迟到目标不得覆盖', acceptance: '迟到验收', suggestions: ['修复会话切换后输入丢失的问题'] }); fixture.autonomy.changed(draftRun);
-      await dialog.getByRole('button', { name: '修复会话切换后输入丢失的问题', exact: true }).waitFor();
-      assert.equal(await dialog.getByRole('textbox', { name: '验证方法' }).inputValue(), '37列到140列恢复，验证通过');
-      await dialog.getByRole('textbox', { name: '策略', exact: true }).fill('复现后最小修复');
-      await dialog.getByRole('textbox', { name: '预算轮次' }).fill('');
-      assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'blank budget is valid');
-      await dialog.getByRole('textbox', { name: '预算轮次' }).fill('5轮 / 30分钟');
-      assert.equal(await dialog.getByRole('button', { name: '开始', exact: true }).evaluate(el => {
+      Object.assign(draftRun.definition, { goal: '迟到描述不得覆盖' }); fixture.autonomy.changed(draftRun);
+      assert.equal(await dialog.getByRole('textbox', { name: '任务描述' }).inputValue(), '修复终端宽度，37列到140列恢复，回归通过；最多5轮，不部署。');
+      assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'one description is sufficient');
+      assert.equal(await dialog.getByRole('button', { name: '确认开始', exact: true }).evaluate(el => {
         const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; el.append(probe);
         const matches = getComputedStyle(el).backgroundColor === getComputedStyle(probe).color; probe.remove(); return matches;
       }), true, 'start uses the current Codeck theme accent');
       assert.equal(await dialog.locator('form').evaluate(el => el.scrollWidth <= el.clientWidth), true);
       await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-setup.png`) });
-      await page.keyboard.press('Escape'); assert.equal(fixture.sent.length, 0);
-      await a.click(); assert.equal(await dialog.getByRole('textbox', { name: '目标', exact: true }).inputValue(), '修复终端宽度，回归通过');
-      await dialog.getByRole('button', { name: '开始', exact: true }).click();
+      await dialog.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(fixture.sent.length, 0);
+      assert.equal(await dialog.isVisible(), false);
+      await a.click(); assert.equal(await dialog.getByRole('textbox', { name: '任务描述', exact: true }).inputValue(), '修复终端宽度，37列到140列恢复，回归通过；最多5轮，不部署。');
+      await dialog.getByRole('button', { name: '确认开始', exact: true }).click();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'running');
       await fixture.autonomy.tick(); assert.equal(fixture.sent.length, 1);
       assert.equal(await page.locator('#terminalStopButton').isVisible(), false);
@@ -170,9 +161,9 @@ try {
       await handoff.locator('summary').click();
       fixture.autonomy.changed(old);
       assert.equal(await handoff.evaluate(el => el.open), false, 'updates preserve manual collapse');
-      assert.equal(await page.locator('#terminalAutonomyStatus').textContent(), '1/5');
+      assert.equal(await page.locator('#terminalAutonomyStatus').textContent(), '1');
       assert.equal(await a.evaluate(el => el.nextElementSibling.id), 'shareButton');
-      await a.click(); await dialog.getByRole('heading', { name: '设置自主目标' }).waitFor();
+      await a.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
       assert.notEqual(fixture.autonomy.snapshot(fixture.target).id, id);
       assert.equal(fixture.autonomy.snapshot(fixture.target).round, 0); assert.equal(fixture.sent.length, 2);
       assert.equal(fixture.stops, 4);

@@ -1,5 +1,5 @@
 import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=11';
-import { createAutonomyForm } from './autonomy-form.js?v=5';
+import { createAutonomyForm } from './autonomy-form.js?v=6';
 
 export function createTerminalAutonomy({ getTarget, request, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
@@ -89,9 +89,9 @@ export function createTerminalAutonomy({ getTarget, request, document = globalTh
     }
     const nextKey = `${key}:${run.requestId}`;
     if (formKey !== nextKey) {
-      formKey = nextKey; $('terminalAutonomyTitle').textContent = '设置自主目标';
+      formKey = nextKey; $('terminalAutonomyTitle').textContent = '确认自主任务';
       const epoch = generation;
-      content.replaceChildren(createAutonomyForm({ document, run,
+      content.replaceChildren(createAutonomyForm({ document, run, cancel: dismiss,
         isCurrent: () => epoch === generation && current()?.requestId === run.requestId && bound && connected,
         submit: async (answers, commandId) => {
           if (!await act('answerAutonomy', { requestId: run.requestId, answers, commandId })) throw new Error('连接或会话已变化，未提交');

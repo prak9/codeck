@@ -2,6 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, answers } from '../test-support/autonomy-fixture.js';
 
+test('one confirmed task description is enough; planning itself never starts work', async () => {
+  const f = fixture(); await f.manager.start(f.target);
+  assert.equal(f.sent.length, 0);
+  const description = '修复输入丢失，复现后做最小改动，跑回归；最多3轮，不部署。';
+  await f.manager.respond(f.target, { requestId: f.state().requestId,
+    answers: { goal: [description], strategy: [''], acceptance: [''], budget: [''], constraints: [''] } });
+  assert.equal(f.sent.length, 0); assert.equal(f.state().plan.goal, description);
+  await f.manager.tick(); assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0], /任务描述中的预算/);
+  f.manager.close();
+});
+
 for (const [budget, rounds, minutes] of [['', null, null], ['  ', null, null], ['不限', null, null], ['5轮 / 30分钟', 5, 30],
   ['10001轮', 10001, null], ['10001分钟', null, 10001]]) test(`five-field definition accepts budget ${JSON.stringify(budget)}`, async () => {
   const f = fixture(); await f.manager.start(f.target); await f.approve(budget);

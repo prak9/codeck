@@ -15,7 +15,7 @@ test('model sees only the latest dialogue round, not tools, controls or older ta
   let calls = 0;
   const result = await extractDefinition({ provider: 'codex', thread }, { generate: async input => {
     calls++; assert.equal(input.provider, 'codex'); assert.match(input.prompt, /先不做自适应/);
-    assert.doesNotMatch(input.prompt, /比较标签|五组实验|旧任务|secret tool log/); return JSON.stringify(definition);
+    assert.doesNotMatch(input.prompt, /比较标签|五组实验|旧任务|secret tool log/); return definition.goal;
   } });
   assert.equal(calls, 1); assert.equal(result.goal, definition.goal); assert.equal(result.budget, ''); assert.equal(result.fieldsVersion, 5);
 });
@@ -51,10 +51,22 @@ test('model timeout aborts extraction and ignores a late result without leaving 
   assert.equal(manager.snapshot(target).setup, true); manager.close();
 });
 
-test('empty context makes no model request and malformed output never becomes defaults', async () => {
+test('empty context makes no model request; empty or protocol output never becomes a task', async () => {
   const empty = await extractDefinition({ provider: 'claude', thread: { turns: [] } }, { generate: () => { throw Error('must not call'); } });
   assert.equal(empty.goal, '');
-  await assert.rejects(extractDefinition({ provider: 'claude', thread: { turns: [turn('继续研究', '下一步比较')] } }, { generate: async () => '不是有效结果' }));
+  for (const text of ['', '   ', JSON.stringify(definition), '```json\n{}\n```']) {
+    await assert.rejects(extractDefinition({ provider: 'claude', thread: { turns: [turn('继续研究', '下一步比较')] } }, { generate: async () => text }));
+  }
+});
+
+test('one plain task description preserves the budget and constraints without a second extraction', async () => {
+  const description = '比较五种固定标签；统一成交条件验证净收益和跨周稳定性。最多 3 轮，不做自适应，不部署。';
+  let calls = 0;
+  const result = await extractDefinition({ provider: 'qodercli', thread: { turns: [turn('比较固定标签，最多3轮，不部署', '按净收益和跨周稳定性验证')] } }, {
+    generate: async ({ prompt }) => { calls++; assert.match(prompt, /任务描述/); return description; },
+  });
+  assert.equal(result.goal, description); assert.equal(calls, 1);
+  assert.equal(result.strategy, ''); assert.equal(result.acceptance, '');
 });
 
 for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: A extracts once; stale results cannot replace confirmation; empty budget stays unlimited`, async () => {
