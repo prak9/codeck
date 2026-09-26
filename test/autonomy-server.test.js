@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 
-test('server forwards phase-specific send guards and verified task cancellation to the tmux adapter', async () => {
+test('server summary delivery keeps identity guards, input receipts and foreground-only cancellation', async () => {
   const source = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   let options; const sends = []; const stops = []; const reads = [];
   const agentRegistry = {
@@ -27,16 +27,11 @@ test('server forwards phase-specific send guards and verified task cancellation 
   });
   const target = { provider: 'codex', tmuxSession: 'research', threadId: 'thread-1', paneId: '%7' };
   const guard = () => true;
-  const signal = new AbortController().signal;
-  await options.readThread(target, undefined, { waitForReady: true, turnLimit: 1, definitionOnly: true, signal });
-  await options.readThread(target);
-  assert.equal(reads[0].turnLimit, 1); assert.equal(reads[0].definitionOnly, true);
-  assert.equal(reads[0].signal, signal); assert.equal(reads[0].waitForReady, true);
-  assert.equal(reads[1].turnLimit, 20); assert.equal(reads[1].definitionOnly, undefined);
-  await options.send(target, 'Setup', guard, { requireIdle: false, nonInterrupting: true });
-  await options.send(target, 'Round', guard, { requireIdle: true, nonInterrupting: true });
+  assert.equal(options.readThread, undefined); assert.equal(options.suggestDefinition, undefined);
+  await options.send(target, '总结', guard, { commandId: 'summary-command' });
   await options.stop(target, guard);
-  assert.deepEqual(sends.map(value => value.requireIdle), [false, true]);
+  assert.deepEqual(sends.map(value => value.requireIdle), [true]);
+  assert.equal(sends[0].replaceDraft, true); assert.equal(reads.length, 0);
   for (const value of [...sends, ...stops]) {
     assert.equal(value.provider, 'codex'); assert.equal(value.sessionName, 'research');
     assert.equal(value.threadId, 'thread-1'); assert.equal(value.expectedPaneId, '%7');
@@ -44,10 +39,10 @@ test('server forwards phase-specific send guards and verified task cancellation 
   }
   assert.equal(sends.every(value => value.nonInterrupting), true);
   assert.equal(stops[0].waitForIdle, true);
-  assert.equal(stops[0].stopBackground, true);
+  assert.equal(stops[0].stopBackground, false);
 });
 
-test('isolated server restores autonomy off and exposes it only to the owner API', { timeout: 15_000 }, async t => {
+test('isolated server ignores legacy autonomy, requires owner authentication and serves new controls', { timeout: 15_000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-autonomy-server-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const target = { provider: 'codex', threadId: 'fixture-thread', tmuxSession: 'fixture-missing' };
@@ -80,10 +75,8 @@ test('isolated server restores autonomy off and exposes it only to the owner API
     [`codeck.${Buffer.from('isolated-autonomy-test').toString('base64url')}`], { rejectUnauthorized: false });
   t.after(() => socket.terminate());
   const [raw] = await once(socket, 'message'); const ready = JSON.parse(raw);
-  assert.equal(ready.type, 'ready'); assert.equal(ready.autonomy[0].status, 'off');
-  assert.equal(ready.autonomy[0].round, 2); assert.equal(ready.autonomy[0].exchange, undefined);
-  const stored = JSON.parse(fs.readFileSync(path.join(dir, 'autonomy.json'))).runs[0];
-  assert.equal(stored.exchange, null); assert.equal(stored.pending, null);
+  assert.equal(ready.type, 'ready'); assert.deepEqual(ready.autonomy, []);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'autonomy.json'))).version, 1, 'legacy data is not loaded or rewritten on startup');
   const html = await new Promise((resolve, reject) => {
     https.get(`https://127.0.0.1:${port}/remote.html`, { rejectUnauthorized: false }, response => {
       let body = ''; response.on('data', chunk => { body += chunk; }); response.on('end', () => resolve(body));

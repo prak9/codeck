@@ -33,8 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { createAutonomyForm } from './autonomy-form.js?v=6';
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT } from './remote-autonomy.js?v=11';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=12';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -147,8 +146,6 @@ const state = {
   scopedSessionStop: false,
   autonomyRuns: new Map(),
   autonomyPending: false,
-  dismissedAutonomyQuestion: '',
-  autonomyDialogIntent: '',
 };
 const composerRequestGate = createComposerRequestGate(() => renderComposerState());
 let speechBaseDraft = '';
@@ -655,7 +652,6 @@ async function handleReady(message) {
   }
   state.protocolEpoch = nextEpoch;
   state.autonomySupported = Array.isArray(message.autonomy);
-  state.autonomyDialogIntent = '';
   state.scopedSessionStop = message.scopedSessionStop === true;
   state.autonomyRuns = new Map((message.autonomy || []).map(run => [autonomyKey(run.target), run]));
   state.streamVersion = message.protocol?.version === 2 ? 2 : 1;
@@ -1089,7 +1085,6 @@ async function loadThreads({ quiet = false } = {}) {
 async function openThread(threadId, {
   provider = state.provider, quiet = false, readOnly = false, tmuxSession = null,
 } = {}) {
-  if (!quiet || threadId !== state.thread?.id || provider !== state.provider) state.autonomyDialogIntent = '';
   resetThreadHistory();
   state.threadHandoff = null;
   const opening = {};
@@ -2073,16 +2068,6 @@ function dismissNativeQuestionDialog() {
 }
 
 function interactionNode(key, entry) {
-  if (entry.autonomy) return createAutonomyForm({ document, run: entry.run, cancel: dismissAutonomyDialog,
-    isCurrent: () => state.connected && currentAutonomy()?.requestId === entry.request.id
-      && autonomyKey(currentAutonomy().target) === autonomyKey(entry.run.target),
-    submit: async (answers, commandId) => {
-      const before = currentAutonomy();
-      const result = await agentRequest('answerAutonomy', { ...entry.run.target, requestId: entry.request.id, answers, commandId });
-      const targetKey = autonomyKey(entry.run.target);
-      if (result.autonomy && state.autonomyRuns.get(targetKey) === before) state.autonomyRuns.set(targetKey, result.autonomy);
-      renderComposerState();
-    } });
   const questions = normalizeInteractionQuestions(entry.request.params);
   const form = element('form', 'question-card');
   form.dataset.requestKey = key;
@@ -2260,7 +2245,6 @@ function loadEarlierNode() {
 function resetThreadHistory() {
   const questionDialog = $('#nativeQuestionDialog');
   if (questionDialog?.open) questionDialog.close();
-  if ($('#autonomyDialog')?.open) $('#autonomyDialog').close();
   // Also invalidate queued scroll work when reopening the same target (A → B → A).
   state.historyGeneration += 1;
   const wasLoading = state.loadingEarlier;
@@ -2441,17 +2425,14 @@ function renderComposerState() {
   const presentation = autonomyPresentation(autonomy, { hasRunningProcess: active,
     agent: { hasBackgroundProcess: background, question: waitingForInput } });
   autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
-  autonomyButton.disabled = opening || closing || !state.connected;
+  autonomyButton.disabled = opening || closing || !state.connected || (pending && !presentation.active);
   autonomyButton.classList.toggle('running', autonomy?.status === 'running');
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
   autonomyButton.dataset.state = autonomy?.status || 'off';
   autonomyButton.dataset.tone = presentation.tone;
   $('#autonomyStatus').textContent = presentation.progress;
-  const autonomyQuestion = autonomyQuestionEntry();
-  if (autonomyQuestion) autonomyButton.setAttribute('aria-label', '设置自主目标');
   autonomyButton.title = autonomyButton.getAttribute('aria-label');
-  syncAutonomyDialog();
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
@@ -2682,8 +2663,16 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
         || (state.thread?.id || null) !== targetThreadId
         || (state.thread?.tmux?.name || null) !== targetSessionName
       ) throw new Error('会话已切换，附件未发送');
-      const message = attachmentMessage({ provider: targetProvider, text, paths });
+      let message = attachmentMessage({ provider: targetProvider, text, paths });
       if (!message) throw new Error('请输入要发送的内容');
+      if (text === AUTONOMY_PLANNING_PROMPT && sessionName) {
+        delivery.planning ??= await agentRequest('prepareAutonomyPlanning', {
+          provider: targetProvider, threadId: targetThreadId, tmuxSession: targetSessionName,
+          commandId: `${delivery.commandId}:plan`,
+        });
+        if (state.provider !== targetProvider || state.thread?.id !== targetThreadId || state.thread?.tmux?.name !== targetSessionName) throw new Error('会话已切换，规划未发送');
+        message = delivery.planning.text;
+      }
       delivery.text = message;
       const unconfirmedItem = state.thread.turns?.flatMap((turn) => turn.items || []).find((item) => (
         (item.delivery?.submissionStatus === 'unconfirmed' || item.delivery?.status === 'unknown')
@@ -2712,6 +2701,7 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
           tmuxSession: sessionName,
           text: message,
           commandId: delivery.commandId,
+          ...(delivery.planning ? { planningId: delivery.planning.planningId } : {}),
           mode: delivery.mode,
           turnId: delivery.turnId || undefined,
           baselineVersion: delivery.baselineVersion,
@@ -2857,56 +2847,26 @@ function currentAutonomy() {
     threadId: state.thread.id, tmuxSession: state.thread.tmux?.name }));
 }
 
-function autonomyQuestionEntry() {
-  const run = currentAutonomy();
-  if (!run?.setup || !run.requestId || run.status !== 'configuring') return null;
-  return { autonomy: true, run, provider: run.target.provider, tmuxSession: run.target.tmuxSession,
-    request: { id: run.requestId, params: { threadId: run.target.threadId } } };
-}
-
-function syncAutonomyDialog() {
-  const dialog = $('#autonomyDialog');
-  const entry = autonomyQuestionEntry();
-  if (!entry || !state.connected || state.threadOpening
-    || state.autonomyDialogIntent !== autonomyKey(entry.run.target)) { if (dialog.open) dialog.close(); return; }
-  const key = `${entry.provider}:${entry.tmuxSession}:${entry.request.params.threadId}:${entry.request.id}`;
-  if (dialog.dataset.questionKey !== key) {
-    dialog.dataset.questionKey = key;
-    $('#autonomyDialogTitle').textContent = '确认自主任务';
-    $('#autonomyDialogContent').replaceChildren(interactionNode(key, entry));
-  }
-  $('#autonomyDialogContent').querySelector('form')?.updateDefinition?.(entry.run);
-  if (!dialog.open && state.dismissedAutonomyQuestion !== key && !document.querySelector('dialog[open]')) dialog.showModal();
-}
-
-function dismissAutonomyDialog() {
-  const dialog = $('#autonomyDialog');
-  state.dismissedAutonomyQuestion = dialog.dataset.questionKey || '';
-  dialog.close();
-}
-
 async function toggleAutonomy() {
   const button = $('#autonomyButton');
   if (button.hidden || button.disabled) return;
-  state.autonomyDialogIntent = autonomyKey({ provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name });
-  const question = autonomyQuestionEntry();
-  if (question) {
-    state.dismissedAutonomyQuestion = ''; syncAutonomyDialog();
+  if (!autonomyPresentation(currentAutonomy()).resettable) {
+    if (currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
+    await submitComposer({ presetText: AUTONOMY_PLANNING_PROMPT });
+    return;
   }
   const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
-  const active = autonomyPresentation(currentAutonomy()).active;
   const before = currentAutonomy();
   const action = state.autonomyAction = (state.autonomyAction || 0) + 1;
   state.autonomyPending = true; renderComposerState();
   try {
-    const result = await agentRequest(active ? 'finishAutonomy' : 'startAutonomy', {
+    const result = await agentRequest('resetAutonomy', {
       ...target, commandId: crypto.randomUUID(),
     });
     if (action !== state.autonomyAction) return;
     if (result.autonomy && state.autonomyRuns.get(autonomyKey(target)) === before) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
     if (state.provider === target.provider && state.thread?.id === target.threadId && state.thread?.tmux?.name === target.tmuxSession) {
       setLiveMessage(result.autonomy?.status === 'error' ? result.autonomy.reason : '');
-      if (!active) $('#composerInput').focus({ preventScroll: true });
     }
   } catch (error) { if (action === state.autonomyAction) setLiveMessage(error.message); }
   finally { if (action === state.autonomyAction) { state.autonomyPending = false; renderComposerState(); } }
@@ -3195,8 +3155,6 @@ $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#progressButton').addEventListener('click', askProgress);
 $('#autonomyButton').addEventListener('click', toggleAutonomy);
-$('#autonomyDialogClose').addEventListener('click', dismissAutonomyDialog);
-$('#autonomyDialog').addEventListener('cancel', event => { event.preventDefault(); dismissAutonomyDialog(); });
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });

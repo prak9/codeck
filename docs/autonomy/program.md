@@ -1,6 +1,18 @@
 # Program: Session autonomous iteration
 
-> Single-file current-state plan for direct, independently verifiable work.
+> Current contract is documented in README.md. The sections below the current release record are historical and do not specify supported behavior.
+
+## Current release — 2026-09-26
+
+- Status: `完成` — implementation, isolated verification and authorized local deployment verified.
+- Contract: A sends the approved planning prompt into the existing conversation. No separate extraction or configuration form; the Agent asks for confirmation. Started receipts turn A yellow, verified completion reports green, errors red; other endings remain yellow. Only explicit A resets the color; the next click plans again. No server-dispatched work rounds.
+- Compatibility: old configuration/scheduler APIs, model extraction, forms, old receipts and persistence migration are removed. Only version 3 observation state is loaded. No old task is replayed, and no live Agent is interrupted by deployment.
+- Acceptance: 1109 tests pass, including real receipt CLI, bound RPC/deduplication, Qoder adapter delivery, stale-result and restart tests. All 12 normal/Remote journeys at 390/1365 for Codex, Claude and Qoder pass. Final logs: `/tmp/codeck-release-final-tests.log`, `/tmp/codeck-release-final-normal.log`, `/tmp/codeck-release-final-remote.log`.
+- Release: codeck.service restarted at 09:02:56 +08:00; authenticated health and pages return 200, all four updated JS assets match disk, owner WebSocket is ready with no legacy runs loaded. All 10 tmux pane/PID identities are unchanged. No live planning, task input or cancellation was sent. Old state backup: `/home/x/.codeck/release-backup-w1Gown/autonomy.json`. Git records the release revision and upstream push.
+- Limitation: browser/Agent replies are isolated fixtures; actual long-running Agent compliance with the status instructions is not independently verified. Green reports Agent-supplied evidence, not Codeck independent acceptance.
+- Clean: retired runtime contracts are explicitly historical below; deleted source/tests remain recoverable through Git.
+
+## Historical plan (superseded)
 
 - Overall status: `完成`
 - Profile: `Lite`

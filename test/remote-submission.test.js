@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { autonomyDisplayText, autonomyKey, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { autonomyDisplayText, autonomyKey, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
 import * as model from '../public/agent-model.js';
 import * as composer from '../public/remote-composer.js';
 import * as delivery from '../public/remote-delivery.js';
@@ -26,7 +26,7 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
   const sent = [];
   let liveMessage = '';
   const context = vm.createContext({
-    autonomyDisplayText, autonomyKey,
+    autonomyDisplayText, autonomyKey, AUTONOMY_PLANNING_PROMPT,
     chooseStopScope: async () => 'foreground',
     ...model, ...composer, ...delivery, ...commands,
     state, crypto: { randomUUID: () => `command-${sent.length + 1}` },

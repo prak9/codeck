@@ -1,13 +1,12 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=11';
-import { createAutonomyForm } from './autonomy-form.js?v=6';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=12';
 
-export function createTerminalAutonomy({ getTarget, request, document = globalThis.document }) {
+export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
   const button = $('terminalAutonomyButton'), status = $('terminalAutonomyStatus');
-  const dialog = $('terminalAutonomyDialog'), content = $('terminalAutonomyContent'), notice = $('terminalAutonomyNotice');
+  const notice = $('terminalAutonomyNotice');
   const runs = new Map();
   let supported = false, connected = false, bindingKey, bound = false, generation = 0;
-  let pending = false, actionSequence = 0, dismissed = '', formKey = '', lastReason = '', setupOpened = false;
+  let pending = false, actionSequence = 0, lastReason = '';
   let lastSummaryRun, summaryFingerprint = '';
   const keyOf = target => target ? autonomyKey(target) : '';
   const targetNow = () => supported && connected ? getTarget() : null;
@@ -17,16 +16,15 @@ export function createTerminalAutonomy({ getTarget, request, document = globalTh
   function element(tag, text) { const el = document.createElement(tag); el.textContent = text; return el; }
   function syncSummary(run, key) {
     const panel = $('terminalAutonomySummary'), body = $('terminalAutonomySummaryContent');
-    const ended = ['completed', 'off', 'error'].includes(run?.status);
-    panel.hidden = !(bound && ended && run?.plan && run.round > 0);
+    const ended = ['completed', 'off', 'error', 'ended'].includes(run?.status);
+    panel.hidden = !(bound && ended && run?.plan);
     if (!panel.hidden) {
       const rows = [
         ['结束原因', run.reason || ({ completed: '目标完成', off: '已退出', error: '执行出错' })[run.status]],
         ['目标', run.plan.goal],
         ['进展与结果', run.summary || '尚未收到完整总结；请核对终端，以下仅列出已保存的信息。'],
-        ['验证与证据', [run.best?.version, run.best?.evidence || run.checkpoint?.verification, run.best?.artifact].filter(Boolean).join('\n')],
-        ['未完成事项', run.checkpoint?.current], ['下一步', run.next || run.handoff?.next],
-        ['预算使用', `已用 ${run.round} 轮${run.plan.maxRounds == null ? '，轮数不限' : `，上限 ${run.plan.maxRounds} 轮`}`],
+        ['验证与证据', [run.checkpoint?.version, run.checkpoint?.verification, run.evidence].filter(Boolean).join('\n')],
+        ['下一步', run.next],
       ].filter(([, value]) => value);
       const fingerprint = JSON.stringify([key, run.id, rows]);
       if (summaryFingerprint !== fingerprint) {
@@ -46,13 +44,20 @@ export function createTerminalAutonomy({ getTarget, request, document = globalTh
   }
   async function act(type, extra = {}) {
     const target = targetNow();
-    if (!target || !bound || (pending && !['startAutonomy', 'finishAutonomy'].includes(type)) || keyOf(target) !== bindingKey) return false;
+    if (!target || !bound || (pending && type !== 'resetAutonomy') || keyOf(target) !== bindingKey) return false;
     const epoch = generation, before = current(), action = ++actionSequence;
     pending = true; message(); sync();
     try {
-      const result = await request(type, { ...fields(target), commandId: crypto.randomUUID(), ...extra });
+      const commandId = crypto.randomUUID();
+      if (type === 'sendSessionMessage' && extra.text === AUTONOMY_PLANNING_PROMPT) {
+        const planning = await request('prepareAutonomyPlanning', { ...fields(target), commandId: `${commandId}:plan` });
+        if (epoch !== generation || action !== actionSequence || keyOf(targetNow()) !== bindingKey) return false;
+        extra = { ...extra, text: planning.text, planningId: planning.planningId };
+      }
+      const result = await request(type, { ...fields(target), commandId, ...extra });
       if (epoch !== generation || action !== actionSequence || keyOf(targetNow()) !== bindingKey) return false;
       if (current() === before && result?.autonomy) runs.set(bindingKey, result.autonomy);
+      if (type === 'sendSessionMessage' && result?.submissionStatus === 'unconfirmed') message('规划请求提交未确认，请检查终端，勿重复点击。');
       return true;
     } catch (error) {
       if (epoch === generation && action === actionSequence) { message(error.message); throw error; }
@@ -62,9 +67,8 @@ export function createTerminalAutonomy({ getTarget, request, document = globalTh
   function sync() {
     const target = targetNow(), key = keyOf(target);
     if (key !== bindingKey) {
-      bindingKey = key; bound = false; generation++; pending = false; dismissed = ''; formKey = ''; setupOpened = false;
-      lastSummaryRun = null; summaryFingerprint = ''; content.replaceChildren();
-      if (dialog.open) dialog.close(); lastReason = ''; message();
+      bindingKey = key; bound = false; generation++; pending = false;
+      lastSummaryRun = null; summaryFingerprint = ''; lastReason = ''; message();
       if (connected && supported) {
         const epoch = generation, before = runs.get(key);
         request('bindAutonomySession', target ? fields(target) : { threadId: null, tmuxSession: null }).then(result => {
@@ -77,49 +81,36 @@ export function createTerminalAutonomy({ getTarget, request, document = globalTh
     }
     const run = current(), view = autonomyPresentation(run);
     button.hidden = !supported || !getTarget();
-    button.disabled = !target || !bound;
+    button.disabled = !target || !bound || (pending && !view.active);
     button.title = [view.label, run?.reason].filter(Boolean).join('：');
     button.setAttribute('aria-label', view.label); button.setAttribute('aria-pressed', String(view.active));
     button.setAttribute('aria-busy', String(pending)); button.dataset.state = run?.status || 'off'; button.dataset.tone = view.tone;
     status.textContent = view.progress; syncSummary(run, key);
     const reason = bound && run?.status === 'error' ? run.reason : '';
     if (reason !== lastReason) { lastReason = reason; message(reason); }
-    if (!target || !bound || !setupOpened || !run?.setup || run.status !== 'configuring' || !run.requestId) {
-      if (dialog.open) dialog.close(); return;
-    }
-    const nextKey = `${key}:${run.requestId}`;
-    if (formKey !== nextKey) {
-      formKey = nextKey; $('terminalAutonomyTitle').textContent = '确认自主任务';
-      const epoch = generation;
-      content.replaceChildren(createAutonomyForm({ document, run, cancel: dismiss,
-        isCurrent: () => epoch === generation && current()?.requestId === run.requestId && bound && connected,
-        submit: async (answers, commandId) => {
-          if (!await act('answerAutonomy', { requestId: run.requestId, answers, commandId })) throw new Error('连接或会话已变化，未提交');
-        } }));
-    }
-    const form = content.querySelector('form'); form?.setPending(pending); form?.updateDefinition(run);
-    if (!dialog.open && dismissed !== nextKey && !document.querySelector('dialog[open]')) dialog.showModal();
   }
   button.addEventListener('click', async () => {
     if (button.disabled || button.hidden) return;
-    setupOpened = true; dismissed = '';
-    try { await act(autonomyPresentation(current()).active ? 'finishAutonomy' : 'startAutonomy'); }
+    if (!autonomyPresentation(current()).resettable && targetNow()?.question) {
+      focusTerminal?.(); message('Agent 正在等待回答，请先处理当前问题。'); return;
+    }
+    try {
+      if (autonomyPresentation(current()).resettable) await act('resetAutonomy');
+      else await act('sendSessionMessage', { text: AUTONOMY_PLANNING_PROMPT });
+    }
     catch { /* The scoped notice describes the failure. */ }
   });
-  function dismiss() { dismissed = formKey; dialog.close(); }
-  $('closeTerminalAutonomy').addEventListener('click', dismiss);
-  dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
   return {
     sync, update,
     ready(message) {
-      setupOpened = false; generation++; bindingKey = undefined; bound = false;
+      generation++; bindingKey = undefined; bound = false;
       connected = true; supported = message.autonomySessionBinding === true;
       runs.clear(); for (const run of message.autonomy || []) runs.set(autonomyKey(run.target), run); sync();
     },
     disconnect() { connected = false; sync(); },
     sendDirection(text) {
       const run = current();
-      if (!supported || !run || !['configuring', 'running', 'exiting'].includes(run.status)
+      if (!supported || !run || !['planning', 'running', 'exiting'].includes(run.status)
         || (text.startsWith('/') && !isAutonomyObservation(text)) || isProgressPrompt(text) || getTarget()?.question) return null;
       const target = targetNow();
       if (!target || !bound) return null;

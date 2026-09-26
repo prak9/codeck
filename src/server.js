@@ -12,7 +12,6 @@ import { createAgentBackends } from './agent-backends.js';
 import { createAgentImages } from './agent-images.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
 import { AutonomyController } from './autonomy.js';
-import { extractDefinition } from './autonomy-definition.js';
 import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { createTerminalHistoryLinkReader } from './terminal-history-links.js';
@@ -350,33 +349,20 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
   interruptTmuxSession: interruptSession,
 });
 const autonomy = new AutonomyController({
-  suggestDefinition: extractDefinition,
   file: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'autonomy.json'),
   readSession: async target => (await listSessions({ refreshAgentIdentities: true, refreshPaneSession: target.tmuxSession }))
     .find(session => session.name === target.tmuxSession),
-  readThread: (target, exchange, { waitForReady = false, turnLimit = 20, definitionOnly = false, signal } = {}) => {
-    // Rehydrate the same receipt after a service/worker restart, never resend text.
-    if (exchange?.commandId) agentRegistry.recordSessionMessage(target.provider, {
-      threadId: target.threadId, text: exchange.text, commandId: exchange.commandId,
-      deliveryBaseline: exchange.deliveryBaseline,
-    });
-    return agentRegistry.openThread(target.provider, target.threadId, {
-      readOnly: true, turnLimit, deferCompactionRestore: target.provider === 'qodercli',
-      ...(definitionOnly ? { definitionOnly: true, signal } : {}),
-      ...(waitForReady ? { waitForReady: true } : {}),
-    });
-  },
-  prepare: (target, text, commandId) => agentRegistry.prepareSessionMessage(target.provider, {
-    threadId: target.threadId, text, commandId,
-  }),
-  stop: (target, isCurrent, { stopBackground = true, replaceDraft = false } = {}) => agentRegistry.interruptSession(target.provider, {
+  stop: (target, isCurrent) => agentRegistry.interruptSession(target.provider, {
     sessionName: target.tmuxSession, threadId: target.threadId,
-    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground, replaceDraft,
+    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: false,
   }),
-  send: async (target, text, isCurrent, { requireIdle = true, nonInterrupting = true, replaceDraft = false, deferDraft = false, commandId, deliveryBaseline } = {}) => {
+  send: async (target, text, isCurrent, { commandId } = {}) => {
+    const deliveryBaseline = await agentRegistry.prepareSessionMessage(target.provider, {
+      threadId: target.threadId, text, commandId,
+    });
     const result = await agentRegistry.sendSessionMessage(target.provider, {
       sessionName: target.tmuxSession, threadId: target.threadId, text, isCurrent,
-      expectedPaneId: target.paneId, requireIdle, nonInterrupting, replaceDraft, deferDraft,
+      expectedPaneId: target.paneId, requireIdle: true, nonInterrupting: true, replaceDraft: true,
     });
     if (!['not-sent', 'deferred'].includes(result?.submissionStatus)) agentRegistry.recordSessionMessage(target.provider, {
       threadId: target.threadId, text, commandId, deliveryBaseline,

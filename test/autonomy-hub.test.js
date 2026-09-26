@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { AutonomyController } from '../src/autonomy.js';
-import { AUTONOMY_PROGRESS_PROMPT, autonomyKey } from '../public/remote-autonomy.js';
+import { writeReceipt } from '../src/autonomy-receipt.js';
+import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT, autonomyKey } from '../public/remote-autonomy.js';
 
 class Socket extends EventEmitter {
   readyState = 1;
@@ -20,7 +21,7 @@ async function fixture({ openThread = true } = {}) {
   });
   const autonomy = new AutonomyController({
     readSession: async () => ({ name: 'work', agent: { id: 'thread', kind: 'codex', paneId: '%7' } }),
-    readThread: () => backend.openThread(), send: async (_target, text) => { sent.push(text); return {}; },
+    send: async (_target, text) => { sent.push(text); return {}; },
     schedule: () => 1, cancel() {},
   });
   const hub = new AgentHub(registry, { autonomy }); const socket = new Socket(); hub.handleConnection(socket);
@@ -41,15 +42,48 @@ async function fixture({ openThread = true } = {}) {
 }
 
 
-const answers = { goal: ['修复输入'], strategy: ['复现修复'], acceptance: ['回归通过'], budget: [''], constraints: [''] };
-const start = f => f.request('startAutonomy', { commandId: 'start' });
-const approve = f => f.request('answerAutonomy', { commandId: 'approve', requestId: f.autonomy.snapshot(target).requestId, answers });
+const start = f => f.request('prepareAutonomyPlanning', { commandId: 'start' });
+const approve = async f => {
+  const run = [...f.autonomy.runs.values()][0];
+  writeReceipt(['--receipt', run.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认']);
+  await f.autonomy.tick();
+};
+
+test('planning shortcut sends once without stopping, extracting or starting managed autonomy', async () => {
+  const f = await fixture({ openThread: false }); await f.request('bindAutonomySession');
+  const params = { commandId: 'plan-once', text: AUTONOMY_PLANNING_PROMPT };
+  assert.equal((await f.request('sendSessionMessage', params)).ok, true);
+  assert.equal((await f.request('sendSessionMessage', params)).ok, true);
+  assert.equal(f.sent.length, 1); assert.equal(f.interrupted.length, 0);
+  assert.equal(f.submissions[0].nonInterrupting, true);
+  assert.equal(f.autonomy.snapshot(target), null);
+  assert.match(AUTONOMY_PLANNING_PROMPT, /确认前.*不执行/);
+  assert.match(AUTONOMY_PLANNING_PROMPT, /按此计划开始.*调整计划.*取消/);
+  f.autonomy.close();
+});
+
+test('prepared planning keeps exact delivery text, tracks only receipts and rejects stale targets', async () => {
+  const f = await fixture({ openThread: false }); await f.request('bindAutonomySession');
+  const prepared = await f.request('prepareAutonomyPlanning', { commandId: 'prep-observed' });
+  assert.equal(prepared.ok, true);
+  const { text, planningId } = prepared.result;
+  assert.match(text, /^请基于最近的讨论/); assert.match(text, /--status started/);
+  assert.equal(f.autonomy.snapshot(target).status, 'planning'); assert.equal(f.sent.length, 0);
+  const params = { commandId: 'send-observed', text, planningId };
+  assert.equal((await f.request('sendSessionMessage', params)).ok, true);
+  assert.equal((await f.request('sendSessionMessage', params)).ok, true);
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0], text); assert.equal(f.submissions[0].nonInterrupting, true);
+  assert.equal((await f.request('prepareAutonomyPlanning', { commandId: 'foreign-prep', tmuxSession: 'other' })).ok, false);
+  await f.request('resetAutonomy', { commandId: 'reset-observed' });
+  assert.equal((await f.request('sendSessionMessage', { ...params, commandId: 'late-observed' })).ok, false);
+  f.autonomy.close();
+});
 
 test('binding is scoped and setup never injects configuration into a terminal', async () => {
   const f = await fixture({ openThread: false });
   assert.equal((await start(f)).ok, false);
   await f.request('bindAutonomySession');
-  assert.equal((await f.request('startAutonomy', { commandId: 'foreign', tmuxSession: 'other' })).ok, false);
+  assert.equal((await f.request('prepareAutonomyPlanning', { commandId: 'foreign', tmuxSession: 'other' })).ok, false);
   assert.equal((await start(f)).ok, true);
   await f.autonomy.tick(); assert.equal(f.sent.length, 0);
   await f.request('sendSessionMessage', { commandId: 'progress', text: AUTONOMY_PROGRESS_PROMPT });
@@ -58,23 +92,20 @@ test('binding is scoped and setup never injects configuration into a terminal', 
   f.autonomy.close();
 });
 
-test('setup and approval deduplicate; foreign and stale answers never start work', async () => {
-  const f = await fixture(); let stops = 0; f.autonomy.stop = async () => { stops++; };
-  await start(f); await start(f); assert.equal(stops, 1); assert.equal(f.sent.length, 0);
-  const requestId = f.autonomy.snapshot(target).requestId;
-  assert.equal((await f.request('answerAutonomy', { commandId: 'foreign', requestId, answers, tmuxSession: 'other' })).ok, false);
-  assert.equal((await approve(f)).ok, true); await f.autonomy.tick();
-  await approve(f); await f.autonomy.tick(); assert.equal(f.sent.length, 1);
-  assert.equal((await f.request('answerAutonomy', { commandId: 'stale', requestId, answers })).ok, false);
-  f.autonomy.close();
+test('old configuration and scheduler APIs are rejected even for a bound owner', async () => {
+  const f = await fixture();
+  for (const type of ['startAutonomy', 'answerAutonomy', 'finishAutonomy', 'pauseAutonomy']) {
+    assert.equal((await f.request(type, { commandId: type })).ok, false);
+  }
+  assert.equal(f.sent.length, 0); assert.equal(f.autonomy.snapshot(target), null); f.autonomy.close();
 });
 
 test('normal and Remote share the run; repeated exit sends one summary', async () => {
   const f = await fixture(); await start(f); await approve(f);
   const other = new Socket(); f.hub.handleConnection(other);
   assert.equal(other.sent[0].autonomy[0].id, f.autonomy.snapshot(target).id);
-  await f.request('finishAutonomy', { commandId: 'finish' }); await f.request('finishAutonomy', { commandId: 'again' });
-  assert.equal(other.sent.at(-1).run.status, 'exiting'); await f.autonomy.tick(); assert.equal(f.sent.length, 1);
+  await f.request('resetAutonomy', { commandId: 'finish' }); await f.request('resetAutonomy', { commandId: 'again' });
+  assert.equal(other.sent.at(-1).run.status, 'off'); await f.autonomy.tick(); assert.equal(f.sent.length, 1);
   f.autonomy.close();
 });
 
@@ -87,7 +118,7 @@ test('progress and manual input are ordinary messages and preserve autonomy', as
   }
   const reply = await f.request('sendSessionMessage', { commandId: 'direction', text: '只改后端' });
   assert.equal(reply.ok, true); assert.equal(reply.result.autonomyHandled, undefined);
-  assert.equal(f.autonomy.snapshot(target).status, 'configuring'); assert.equal(f.sent.at(-1), '只改后端');
+  assert.equal(f.autonomy.snapshot(target).status, 'planning'); assert.equal(f.sent.at(-1), '只改后端');
   assert.equal(f.submissions.at(-1).replaceDraft, true); f.autonomy.close();
 });
 
@@ -95,20 +126,6 @@ test('permission requests remain part of execution without automatic approval', 
   const f = await fixture(); await start(f); await approve(f);
   f.registry.emit('serverRequest', { provider: 'codex', id: 42, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread' } });
   assert.equal(f.autonomy.snapshot(target).status, 'running'); assert.equal(f.sent.length, 0); f.autonomy.close();
-});
-
-test('A can open setup during an actual stop, but approval cannot race its completion', async () => {
-  const f = await fixture(); await start(f); let finish;
-  f.registry.interruptSession = async (_provider, params) => {
-    assert.equal(params.waitForIdle, true); assert.equal(params.stopBackground, true);
-    return new Promise(resolve => { finish = resolve; });
-  };
-  const stopping = f.request('interruptSession', { scope: 'all', commandId: 'stop' });
-  await new Promise(resolve => setImmediate(resolve)); assert.equal(f.autonomy.snapshot(target).status, 'off');
-  assert.equal((await f.request('startAutonomy', { commandId: 'new' })).ok, true);
-  assert.equal((await approve(f)).ok, false);
-  finish(); assert.equal((await stopping).ok, true);
-  assert.equal(f.autonomy.snapshot(target).status, 'configuring'); assert.equal(f.sent.length, 0); f.autonomy.close();
 });
 
 test('failed stop reports error, not success', async () => {
@@ -122,8 +139,8 @@ test('unbinding rejects stale actions; old pause API is absent', async () => {
   const f = await fixture(); await f.request('bindAutonomySession'); await start(f);
   assert.equal((await f.request('pauseAutonomy', { commandId: 'old' })).ok, false);
   await f.request('bindAutonomySession', { threadId: null, tmuxSession: null });
-  assert.equal((await f.request('finishAutonomy', { commandId: 'stale' })).ok, false);
-  assert.equal(f.autonomy.snapshot(target).status, 'configuring'); f.autonomy.close();
+  assert.equal((await f.request('resetAutonomy', { commandId: 'stale' })).ok, false);
+  assert.equal(f.autonomy.snapshot(target).status, 'planning'); f.autonomy.close();
 });
 
 for (const method of ['openThread', 'bindAutonomySession']) test(method + ' cannot reconstruct an old protocol popup', async () => {

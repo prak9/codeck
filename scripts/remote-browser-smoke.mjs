@@ -12,7 +12,7 @@ import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../pu
 import { encodeHistoryCursor, decodeHistoryCursor } from '../src/thread-history-cursor.js';
 import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 import { QoderQuestionTracker } from '../src/qoder-question.js';
-import { AUTONOMY_PROGRESS_PROMPT as progressPrompt } from '../public/remote-autonomy.js';
+import { AUTONOMY_PROGRESS_PROMPT as progressPrompt, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
 import { AutonomyController } from '../src/autonomy.js';
 import { writeReceipt } from '../src/autonomy-receipt.js';
 import { interruptSession } from '../src/tmux.js';
@@ -58,12 +58,10 @@ function reset(provider) {
     fixture.background = background; fixture.status = background ? 'background' : 'done';
   };
   fixture.autonomy = new AutonomyController({
-    suggestDefinition: async () => ({ fieldsVersion: 5, suggestions: [] }),
     schedule: () => 1, cancel() {},
     readSession: async () => ({ name: 'fixture', hasRunningProcess: fixture.status === 'working',
       agent: { kind: provider, id: 'fixture-thread', paneId: '%7', question: fixture.question,
         hasBackgroundProcess: fixture.status === 'background' } }),
-    readThread: async () => ({ thread: thread() }),
     stop: async (target, guard) => {
       assert.equal(guard(), true); fixture.autonomyStops++;
       if (fixture.holdAutonomyStop) await new Promise(resolve => { fixture.finishStop = resolve; });
@@ -101,15 +99,6 @@ function reset(provider) {
         { id: `${turnId}-user`, type: 'userMessage', content: [{ type: 'text', text }] },
       ] };
       fixture.turns.push(entry);
-      const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
-      fixture.finishAutonomy = (record, prose = '本轮检查已完成。') => {
-        entry.status = 'completed';
-        if (record.status === 'summary') writeReceipt(['--receipt', [...fixture.autonomy.runs.values()][0].exchange.receiptFile,
-          '--status', 'summary', '--summary', record.summary, '--next', record.next]);
-        entry.items.push({ id: `${turnId}-answer`, type: 'agentMessage',
-          text: `${record.summary || prose}\n\n下一步：${record.next || ''}` });
-        fixture.status = 'done'; publishThread(); publishSessions();
-      };
       fixture.status = 'working'; publishThread(); publishSessions();
       return { submissionStatus: 'submitted' };
     },
@@ -196,6 +185,8 @@ sockets.on('connection', socket => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });
     const autonomyTarget = { provider: request.provider, threadId: request.threadId, tmuxSession: request.tmuxSession };
+    if (request.type === 'prepareAutonomyPlanning') return reply(await fixture.autonomy.preparePlanning(autonomyTarget));
+    if (request.type === 'resetAutonomy') return reply({ autonomy: await fixture.autonomy.resetObserved(autonomyTarget) });
     if (request.type === 'interruptSession') {
       fixture.scopedStops.push(request);
       await fixture.autonomy.interrupt(autonomyTarget, async () => {
@@ -206,13 +197,6 @@ sockets.on('connection', socket => {
         if (request.scope === 'all') fixture.background = false;
       });
       publishThread(); publishSessions(); return reply({});
-    }
-    if (['startAutonomy', 'finishAutonomy', 'answerAutonomy'].includes(request.type)) {
-      if (request.type === 'startAutonomy') await fixture.autonomy.start(autonomyTarget);
-      else if (request.type === 'answerAutonomy') await fixture.autonomy.respond(autonomyTarget, request);
-      else await fixture.autonomy.finish(autonomyTarget);
-      await fixture.autonomy.tick(); await fixture.autonomy.tick();
-      return reply({ autonomy: fixture.autonomy.snapshot(autonomyTarget) });
     }
     if (request.type === 'openThread') {
       for (const id of request.dismissedDeliveryIds || []) { fixture.dismissed.add(id); fixture.recovery?.dismiss('fixture-thread', id); }
@@ -322,60 +306,48 @@ try {
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
       if (simpleMode) {
-        const auto = page.locator('#autonomyButton'), dialog = page.locator('#autonomyDialog');
+        const auto = page.locator('#autonomyButton');
         fixture.status = 'working'; publishSessions();
-        await auto.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
-        assert.equal(await dialog.getByRole('textbox').count(), 1);
-        assert.equal(fixture.autonomySent.length, 0); assert.equal(fixture.autonomyStops, 1);
-        await dialog.getByRole('textbox', { name: '任务描述', exact: true }).fill('修复终端宽度，37列到140列恢复，回归通过；不部署。');
-        const draftRun = fixture.autonomy.runs.values().next().value;
-        Object.assign(draftRun.definition, { goal: '迟到描述不得覆盖' }); fixture.autonomy.changed(draftRun);
-        assert.equal(await dialog.getByRole('textbox', { name: '任务描述' }).inputValue(), '修复终端宽度，37列到140列恢复，回归通过；不部署。');
-        assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'one description is sufficient');
-        assert.equal(await dialog.getByRole('button', { name: '确认开始', exact: true }).evaluate(el => {
-          const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; el.append(probe);
-          const matches = getComputedStyle(el).backgroundColor === getComputedStyle(probe).color; probe.remove(); return matches;
-        }), true, 'start uses the current Codeck theme accent');
-        assert.equal(await dialog.locator('form').evaluate(el => el.scrollWidth <= el.clientWidth), true);
-        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-setup.png`) });
-        await page.keyboard.press('Escape'); assert.equal(fixture.autonomySent.length, 0);
+        await page.locator('#composerInput').fill('尚未发送的草稿');
         await auto.click();
-        await dialog.getByRole('button', { name: '确认开始', exact: true }).click();
-        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'running');
-        assert.equal(fixture.autonomySent.length, 1);
-        await page.waitForFunction(() => getComputedStyle(document.querySelector('.autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
-        assert.equal(await auto.locator('.autonomy-icon').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
-        assert.deepEqual(await auto.locator('.autonomy-icon').evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).boxShadow]), ['rgba(0, 0, 0, 0)', 'none']);
-        assert.equal(await page.locator('#sendButton').evaluate(el => el.classList.contains('stop-mode')), false);
-        await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-simple-active.png`) });
+        await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
+        assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1);
+        assert.equal(fixture.autonomySent.length, 0); assert.equal(fixture.autonomyStops, 0);
+        assert.equal(fixture.autonomy.snapshot({ provider, threadId: 'fixture-thread', tmuxSession: 'fixture' }).status, 'planning');
+        assert.equal(await page.locator('#autonomyDialog').count(), 0);
+        assert.equal(await page.locator('#composerInput').inputValue(), '尚未发送的草稿');
+        assert.equal(await auto.getAttribute('aria-pressed'), 'false', 'planning is not execution');
         await page.locator('#progressButton').click();
-        await page.waitForFunction(() => document.querySelector('#progressButton').disabled === false);
-        await page.locator('#composerInput').fill('请补充说明当前缓存证据');
+        await page.waitForFunction(() => !document.querySelector('#progressButton').disabled);
+        assert.ok(fixture.sent.some(request => request.text === progressPrompt));
+        await page.locator('#composerInput').fill('按此计划开始');
         await page.locator('#sendButton').click();
         await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
-        assert.equal(fixture.autonomy.snapshot({ provider, threadId: 'fixture-thread', tmuxSession: 'fixture' }).status, 'running');
-        assert.equal(fixture.autonomySent.length, 1, 'ordinary conversation does not reset or exit A');
-        const run = fixture.autonomy.runs.values().next().value, id = run.id;
-        await auto.click();
-        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'exiting');
-        assert.equal(await dialog.isVisible(), false, 'exit must not open another choice dialog');
-        assert.equal(fixture.autonomySent.length, 2); assert.match(fixture.autonomySent[1], /"phase":"summary"/);
-        fixture.finishAutonomy({ status: 'summary', summary: '已修复宽度，剩余验证。', next: '补手机与桌面切换回归。' }); await fixture.autonomy.tick();
-        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'off');
-        assert.match(await page.locator('#autonomyStatus').textContent(), /^\d+(?:\/\d+)?$/);
+        assert.ok(fixture.sent.some(request => request.text === '按此计划开始'));
+        assert.equal(fixture.autonomySent.length, 0, 'confirmation stays in the Agent conversation');
+        const observed = fixture.autonomy.runs.values().next().value;
+        writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
+        await fixture.autonomy.tick();
+        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'running');
+        await page.waitForFunction(() => getComputedStyle(document.querySelector('#autonomyButton .autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
+        writeReceipt(['--receipt', observed.observation.endFile, '--status', 'budget', '--summary', '预算已耗尽', '--next', '交接剩余验证']);
+        await fixture.autonomy.tick();
+        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'ended');
+        assert.equal(await auto.getAttribute('data-tone'), 'running', 'budget stop stays yellow');
         assert.equal(await auto.evaluate(el => el.closest('.composer-meta')?.id), 'composerMeta');
-        await auto.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
-        assert.notEqual(fixture.autonomy.runs.values().next().value.id, id);
-        assert.equal(fixture.autonomySent.length, 2); assert.equal(fixture.autonomyStops, 4);
+        await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-planning-shortcut.png') });
         await page.reload(); await auto.waitFor({ state: 'visible' });
         await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
-        assert.equal(await dialog.isVisible(), false, 'enter/reconnect must not open saved setup');
-        assert.equal(await auto.getAttribute('aria-pressed'), 'false');
-        await auto.click(); await dialog.waitFor({ state: 'visible' });
-        assert.equal(fixture.autonomySent.length, 2);
+        assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
+        assert.equal(await auto.getAttribute('data-tone'), 'running', 'yellow outcome survives reconnect');
+        await auto.click(); await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'idle');
+        assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
+        await auto.click(); await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
+        assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'next click plans again');
+        assert.equal(await page.locator('dialog[open]').count(), 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
         assert.deepEqual(errors, []);
-        results.push({ provider, viewport: viewport.width, journeys: 'simple-setup/approval/interrupt/summary/exit/fresh-setup', errors: 0 });
+        results.push({ provider, viewport: viewport.width, journeys: 'planning-shortcut/draft/confirmation/progress/reconnect', errors: 0 });
         await context.close(); continue;
       }
       if (viewport.width < 720) await page.click('#drawerButton');

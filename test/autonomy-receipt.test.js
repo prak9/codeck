@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { AutonomyController } from '../src/autonomy.js';
 import { readReceipt, writeReceipt } from '../src/autonomy-receipt.js';
 
-for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: silent receipts wait for prose completion and never replay on restart`, async t => {
+for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: silent start receipts persist without sending any work on restart`, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-receipts-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const target = { provider, threadId: 'thread', tmuxSession: 'work' };
@@ -18,35 +18,25 @@ for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: silen
     send: async (_, text) => { sent.push(text); turns.push({ status: 'inProgress', items: [{ type: 'userMessage', content: text }] }); },
   };
   const controller = new AutonomyController(options);
-  await controller.start(target, { simple: true });
-  await controller.respond(target, { requestId: controller.snapshot(target).requestId, answers: {
-    goal: ['修复输入'], strategy: ['先复现后修复'], acceptance: ['回归通过'], budget: ['不限'], constraints: [''],
-  } });
-  await controller.tick();
-  const exchange = [...controller.runs.values()][0].exchange;
-  assert.ok(exchange.receiptFile);
-  assert.match(sent[0], /不要在对话中输出协议 JSON/);
-  assert.doesNotMatch(sent[0], /输出.*fenced JSON|输出 \{"nonce"/);
-  const args = ['src/autonomy-receipt.js', '--receipt', exchange.receiptFile, '--status', 'continue', '--summary', '8项测试通过', '--next', '扩大回归', '--progress', 'true',
-    '--baseline', '输入丢失', '--version', 'abc123', '--verification', '8项测试通过', '--current', '窄屏待验证'];
+  await controller.preparePlanning(target);
+  const run = [...controller.runs.values()][0];
+  const args = ['src/autonomy-receipt.js', '--receipt', run.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户已确认'];
   assert.equal(execFileSync(process.execPath, args, { encoding: 'utf8' }), '');
   assert.equal(execFileSync(process.execPath, args, { encoding: 'utf8' }), '', 'same receipt is idempotent');
-  assert.equal(readReceipt(exchange.receiptFile, exchange.nonce).summary, '8项测试通过');
-  await controller.tick(); assert.equal(controller.snapshot(target).status, 'running', 'receipt alone cannot cut off final prose');
-  turns[0].status = 'completed'; turns[0].items.push({ type: 'agentMessage', text: '8项测试通过，下一步扩大回归。' });
-  await controller.tick(); assert.equal(controller.snapshot(target).status, 'running'); assert.equal(sent.length, 1);
-  controller.close();
+  assert.equal(readReceipt(run.observation.startFile, run.observation.startNonce).summary, '用户已确认');
+  await controller.tick(); assert.equal(controller.snapshot(target).status, 'running');
+  assert.equal(sent.length, 0); controller.close();
   const restored = new AutonomyController(options); await restored.tick();
-  assert.equal(restored.snapshot(target).status, 'off'); assert.equal(sent.length, 1); restored.close();
+  assert.equal(restored.snapshot(target).status, 'running'); assert.equal(sent.length, 0); restored.close();
 });
 
 test('invalid receipt parameters can be corrected, but an accepted receipt cannot be changed', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-receipt-validation-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, '00000000-0000-0000-0000-000000000001.json');
-  const incomplete = ['--receipt', file, '--status', 'continue', '--summary', '验证通过', '--next', '继续', '--progress', 'true'];
-  assert.throws(() => writeReceipt(incomplete), /baseline/); assert.equal(fs.existsSync(file), false);
-  const complete = [...incomplete, '--baseline', '原有失败', '--version', 'abc', '--verification', '测试通过', '--current', '尚待覆盖'];
+  const incomplete = ['--receipt', file, '--status', 'completed', '--summary', '验证通过', '--next', '无需后续'];
+  assert.throws(() => writeReceipt(incomplete), /验证证据/); assert.equal(fs.existsSync(file), false);
+  const complete = [...incomplete, '--evidence', '测试日志', '--version', 'abc', '--verification', '测试通过'];
   writeReceipt(complete); writeReceipt(complete);
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   const changed = complete.map(value => value === '验证通过' ? '不同总结' : value);

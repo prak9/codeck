@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
+import { EventEmitter } from 'node:events';
 import { AutonomyController } from '../src/autonomy.js';
-import { AgentRegistry } from '../src/agent-connection.js';
+import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { QoderAgentBackend } from '../src/qoder-agent-backend.js';
 import { sendSessionMessage } from '../src/tmux.js';
 
@@ -35,8 +35,6 @@ async function fixture(t) {
     sendTmuxMessage: params => sendSessionMessage(params, {
       listTmuxSessions: async () => [session], capturePane: async () => composer,
       loadBuffer: async (_name, text) => {
-        const reserved = f.stored().exchange;
-        assert.ok(reserved.commandId); assert.ok(reserved.deliveryBaseline.inputLog);
         f.writes.push(text);
       }, execTmux: async args => {
         if (args.includes('paste-buffer')) composer = screen.replace(' > \x1b[7m \x1b[0m Type your message or @path/to/file',
@@ -47,69 +45,57 @@ async function fixture(t) {
     }),
   });
   f.registry = agentRegistry;
-  let options;
-  const code = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
-  vm.runInNewContext(code.slice(code.indexOf('const autonomy = new AutonomyController('), code.indexOf('const sessionFeed =')), {
-    AutonomyController: function (value) { options = value; }, path, os,
-    extractDefinition: async () => ({ fieldsVersion: 5 }),
-    process: { env: { CODECK_DATA_DIR: root } }, agentRegistry,
-    listSessions: async () => [session], invalidateSessionSnapshots: async () => {},
-  });
-  f.options = { ...options, now: () => f.now, schedule: () => 1, cancel() {} };
-  f.manager = new AutonomyController(f.options);
-  t.after(() => f.manager.close());
+  f.options = { file: path.join(root, 'autonomy.json'), now: () => f.now, schedule: () => 1, cancel() {},
+    readSession: async () => session, stop: async () => { throw Error('planning must not interrupt'); },
+    send: async () => { throw Error('no automatic dispatch'); } };
+  f.manager = new AutonomyController(f.options); t.after(() => f.manager.close());
   f.state = () => f.manager.snapshot(target);
-  f.stored = () => JSON.parse(fs.readFileSync(path.join(root, 'autonomy.json'))).runs[0];
+  const hub = new AgentHub(agentRegistry, { autonomy: f.manager });
+  const socket = new EventEmitter(); socket.readyState = 1; const replies = [];
+  socket.send = raw => replies.push(JSON.parse(raw)); hub.handleConnection(socket);
+  let id = 0;
+  f.request = async (type, params = {}) => {
+    const requestId = ++id;
+    socket.emit('message', JSON.stringify({ id: requestId, type, ...target, ...params }));
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const reply = replies.find(message => message.id === requestId);
+      if (reply) return reply;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    throw Error('missing RPC response');
+  };
+  t.after(() => socket.emit('close'));
+  await f.request('bindAutonomySession');
   return f;
 }
 
 
-const answers = { goal: ['修复输入'], strategy: ['复现修复'], acceptance: ['测试通过'], budget: [''], constraints: [''] };
-async function startWork(f) {
-  await f.manager.start(target);
-  await f.manager.respond(target, { requestId: f.state().requestId, answers });
-  await f.manager.tick();
-  assert.equal(f.state().status, 'running', JSON.stringify(f.state()));
-}
-async function poll(f) {
-  await f.manager.tick();
-  await Promise.all([...f.backend.openReads.values()]);
-  await f.manager.tick();
+async function sendPlan(f) {
+  const preparation = await f.request('prepareAutonomyPlanning', { commandId: 'qoder-plan-prepare' });
+  assert.equal(preparation.ok, true);
+  const { text, planningId } = preparation.result;
+  const params = { commandId: 'qoder-plan-submit', text, planningId };
+  const response = await f.request('sendSessionMessage', params);
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return { response, params };
 }
 
-test('real Qoder adapter requires receipt, not an empty composer; A creates fresh setup after failure', async t => {
-  const f = await fixture(t); await startWork(f);
-  assert.equal(f.writes.length, 1);
-  const saved = f.stored().exchange;
-  assert.equal(saved.commandId, saved.nonce); assert.ok(saved.deliveryBaseline.inputLog);
-  f.now += 30001; await poll(f);
-  assert.equal(f.state().status, 'error'); assert.match(f.state().reason, /未确认送达/);
-  await Promise.all([f.manager.start(target), f.manager.start(target)]); await poll(f);
-  assert.equal(f.state().status, 'configuring'); assert.equal(f.state().setup, true);
-  assert.equal(f.writes.length, 1, 'opening fresh setup never replays old work');
-  const requestId = f.state().requestId;
-  await f.manager.respond(target, { requestId, answers });
-  await assert.rejects(f.manager.respond(target, { requestId, answers }));
-  await poll(f); assert.equal(f.writes.length, 2); assert.notEqual(f.stored().exchange.nonce, saved.nonce);
+test('Qoder A uses ordinary delivery and never equates an empty composer with received input', async t => {
+  const f = await fixture(t); const { response, params } = await sendPlan(f);
+  assert.equal(response.result.submissionStatus, 'attempted');
+  assert.equal(f.writes.length, 1); assert.equal(f.state().status, 'planning');
+  assert.equal((await f.request('sendSessionMessage', params)).ok, true);
+  f.now += 30001; await f.manager.tick();
+  assert.equal(f.writes.length, 1, 'neither cached RPC retry nor polling replays the plan');
+  assert.equal(f.state().status, 'planning', 'delivery is not a started receipt');
+  const receipt = f.backend.readReceipts.get(params.commandId);
+  assert.equal(receipt.text, params.text); assert.equal(receipt.submissionStatus, 'unconfirmed');
+  assert.ok(receipt.deliveryBaseline.inputLog);
 });
 
-test('Qoder input-log receipt acknowledges delivery while foreground work remains busy', async t => {
-  const f = await fixture(t); await startWork(f);
-  const saved = f.stored().exchange;
-  fs.mkdirSync(path.dirname(saved.deliveryBaseline.inputLog.file), { recursive: true });
-  fs.writeFileSync(saved.deliveryBaseline.inputLog.file, JSON.stringify([
-    { sessionId: threadId, type: 'user', messageId: 1, timestamp: new Date().toISOString(), message: saved.text },
-  ]));
-  f.session.hasRunningProcess = true; f.now += 30001; await poll(f);
-  assert.equal(f.state().status, 'running'); assert.ok(f.stored().exchange.receivedAt);
-  assert.equal(f.writes.length, 1);
-});
-
-test('Qoder restart discards active exchange and requires a new explicit setup and approval', async t => {
-  const f = await fixture(t); await startWork(f); const saved = f.stored().exchange;
+test('Qoder observation restart sends no input and keeps the pending plan', async t => {
+  const f = await fixture(t); await sendPlan(f); const id = f.state().id;
   f.manager.close(); f.manager = new AutonomyController(f.options);
-  await poll(f); assert.equal(f.state().status, 'off'); assert.equal(f.writes.length, 1);
-  assert.equal(f.stored().exchange, null);
-  await f.manager.start(target); await poll(f); assert.equal(f.writes.length, 1);
-  assert.equal(f.state().setup, true); assert.notEqual(f.state().requestId, saved.nonce);
+  await f.manager.tick(); assert.equal(f.state().status, 'planning'); assert.equal(f.state().id, id);
+  assert.equal(f.writes.length, 1);
 });

@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { AutonomyController } from '../src/autonomy.js';
 import { writeReceipt } from '../src/autonomy-receipt.js';
+import { AUTONOMY_PLANNING_PROMPT, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-terminal-autonomy-'));
@@ -26,12 +27,10 @@ function reset(provider) {
   const thread = () => ({ thread: { id: target.threadId, turns: f.turns } });
   const backend = new EventEmitter(); backend.openThread = async () => thread();
   f.autonomy = new AutonomyController({ schedule: () => 1, cancel() {},
-    suggestDefinition: async () => ({ fieldsVersion: 5, goal: '修复终端宽度恢复并验证回归。先复现切换，再修复尺寸同步，在手机和桌面间验证；不重启真实会话。' }),
-    readSession: async t => sessions.find(s => s.name === t.tmuxSession), readThread: async () => thread(),
+    readSession: async t => sessions.find(s => s.name === t.tmuxSession),
     stop: async () => { f.stops++; sessions[0].hasRunningProcess = false; },
     send: async (_target, text) => {
       f.sent.push(text);
-      const nonce = /"nonce":"([^"]+)"/.exec(text)[1];
       const turn = { status: 'inProgress', items: [{ type: 'userMessage', content: text }] };
       f.turns.push(turn);
       return { submissionStatus: 'submitted' };
@@ -98,84 +97,48 @@ try {
     try { await a.waitFor({ state: 'visible' }); }
     catch (error) { console.error(await page.locator('body').innerText(), fixture.requests); throw error; }
     if (simpleMode) {
-      const dialog = page.locator('#terminalAutonomyDialog');
       fixture.sessions[0].hasRunningProcess = true;
-      fixture.turns.push({ status: 'completed', items: [
-        { type: 'userMessage', content: '制定下一阶段目标' },
-        { type: 'agentMessage', text: '## 问题定义\n桌面保留了手机宽度。\n## 下一阶段目标\n\n修复终端宽度恢复并验证回归。\n\n### 策略\n先复现切换，再修复尺寸同步。\n### 验收方法\n在手机和桌面间切换，宽度恢复。\n### 预算轮次\n5轮 / 30分钟\n### 其他\n不重启真实会话。' },
-      ] });
-      await a.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
-      assert.equal(await dialog.getByRole('textbox').count(), 1);
-      await page.waitForFunction(() => document.querySelector('.autonomy-definition textarea')?.value.includes('修复终端宽度恢复'));
-      assert.equal(fixture.sent.length, 0); assert.equal(fixture.stops, 1);
-      assert.ok(width > 720 ? fixture.grids[0] > 80 : fixture.grids[0] < 60, 'grid follows this viewport, not saved mobile width');
-      await dialog.getByRole('textbox', { name: '任务描述', exact: true }).fill('修复终端宽度，37列到140列恢复，回归通过；最多5轮，不部署。');
-      const draftRun = fixture.autonomy.runs.values().next().value;
-      Object.assign(draftRun.definition, { goal: '迟到描述不得覆盖' }); fixture.autonomy.changed(draftRun);
-      assert.equal(await dialog.getByRole('textbox', { name: '任务描述' }).inputValue(), '修复终端宽度，37列到140列恢复，回归通过；最多5轮，不部署。');
-      assert.equal(await dialog.locator('form').evaluate(el => el.checkValidity()), true, 'one description is sufficient');
-      assert.equal(await dialog.getByRole('button', { name: '确认开始', exact: true }).evaluate(el => {
-        const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; el.append(probe);
-        const matches = getComputedStyle(el).backgroundColor === getComputedStyle(probe).color; probe.remove(); return matches;
-      }), true, 'start uses the current Codeck theme accent');
-      assert.equal(await dialog.locator('form').evaluate(el => el.scrollWidth <= el.clientWidth), true);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-setup.png`) });
-      await dialog.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(fixture.sent.length, 0);
-      assert.equal(await dialog.isVisible(), false);
-      await a.click(); assert.equal(await dialog.getByRole('textbox', { name: '任务描述', exact: true }).inputValue(), '修复终端宽度，37列到140列恢复，回归通过；最多5轮，不部署。');
-      await dialog.getByRole('button', { name: '确认开始', exact: true }).click();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'running');
-      await fixture.autonomy.tick(); assert.equal(fixture.sent.length, 1);
-      assert.equal(await page.locator('#terminalStopButton').isVisible(), false);
-      assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
-      assert.deepEqual(await a.locator('.terminal-autonomy-symbol').evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).boxShadow]), ['rgba(0, 0, 0, 0)', 'none']);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-active.png`) });
+      await page.locator('#terminalVoiceDraft').fill('尚未发送的草稿');
+      await a.click();
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
+      const planned = fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT));
+      assert.equal(planned.length, 1); assert.equal(planned[0].nonInterrupting, true);
+      assert.equal(fixture.stops, 0); assert.equal(fixture.sent.length, 0);
+      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'planning');
+      assert.equal(await page.locator('#terminalAutonomyDialog').count(), 0);
+      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
+      assert.ok(width > 720 ? fixture.grids[0] > 80 : fixture.grids[0] < 60, 'grid follows the viewport');
+      assert.equal(await a.getAttribute('aria-pressed'), 'false', 'planning is not execution');
       await page.locator('#terminalProgressButton').click();
       await page.waitForFunction(() => document.querySelector('#terminalProgressButton').getAttribute('aria-busy') === 'false');
-      await page.locator('#terminalVoiceDraft').fill('请补充说明当前缓存证据');
+      assert.ok(fixture.inputs.some(input => input.text === AUTONOMY_PROGRESS_PROMPT));
+      await page.locator('#terminalVoiceDraft').fill('按此计划开始');
       await page.locator('#sendTerminalVoiceButton').click();
       await page.waitForFunction(() => document.querySelector('#terminalVoiceDraft').value === '');
-      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'running');
-      assert.equal(fixture.sent.length, 1, 'normal conversation cannot reset or exit A');
-      const id = fixture.autonomy.snapshot(fixture.target).id;
-      const old = fixture.autonomy.runs.values().next().value;
-      fixture.sessions[0].hasRunningProcess = true;
-      await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'exiting');
-      assert.equal(await dialog.isVisible(), false, 'exit must not open another choice dialog');
-      await fixture.autonomy.tick(); assert.equal(fixture.sent.length, 2);
-      assert.match(fixture.sent[1], /"phase":"summary"/);
-      const nonce = /"nonce":"([^"]+)"/.exec(fixture.sent[1])[1];
-      const turn = fixture.turns.at(-1); turn.status = 'completed';
-      writeReceipt(['--receipt', old.exchange.receiptFile, '--status', 'summary', '--summary', '已完成宽度修复，验证待补。', '--next', '补手机与桌面切换回归。']);
-      turn.items.push({ type: 'agentMessage', text: '已完成宽度修复，验证待补。下一步：补手机与桌面切换回归。' });
+      assert.ok(fixture.inputs.some(input => input.text === '按此计划开始'));
+      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'planning', 'confirmation text alone does not turn A yellow');
+      const observed = fixture.autonomy.runs.values().next().value;
+      writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
       await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'off');
-      const handoff = page.locator('#terminalAutonomySummary');
-      await handoff.waitFor({ state: 'visible' });
-      assert.equal(await handoff.evaluate(el => el.open), true);
-      assert.match(await handoff.innerText(), /已完成宽度修复.*补手机与桌面切换回归/s);
-      assert.doesNotMatch(await handoff.innerText(), /codeck-autonomy|nonce|"status"/);
-      assert.equal(await page.locator('#terminal').isVisible(), true);
-      assert.equal(await dialog.isVisible(), false);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-handoff.png`) });
-      await handoff.locator('summary').click();
-      fixture.autonomy.changed(old);
-      assert.equal(await handoff.evaluate(el => el.open), false, 'updates preserve manual collapse');
-      assert.equal(await page.locator('#terminalAutonomyStatus').textContent(), '1');
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'running');
+      assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
+      writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过']);
+      await fixture.autonomy.tick();
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'completed');
       assert.equal(await a.evaluate(el => el.nextElementSibling.id), 'shareButton');
-      await a.click(); await dialog.getByRole('heading', { name: '确认自主任务' }).waitFor();
-      assert.notEqual(fixture.autonomy.snapshot(fixture.target).id, id);
-      assert.equal(fixture.autonomy.snapshot(fixture.target).round, 0); assert.equal(fixture.sent.length, 2);
-      assert.equal(fixture.stops, 4);
-      await page.screenshot({ path: path.join(artifacts, `${provider}-${width}-simple-reenter.png`) });
+      await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-planning-shortcut.png') });
       await page.reload(); await a.waitFor({ state: 'visible' });
       await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
-      assert.equal(await dialog.isVisible(), false, 'enter/reconnect must not open saved setup');
-      assert.equal(await a.getAttribute('aria-pressed'), 'false');
-      await a.click(); await dialog.waitFor({ state: 'visible' });
-      assert.equal(fixture.sent.length, 2, 'opening saved setup cannot start work');
+      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
+      assert.equal(await a.getAttribute('data-tone'), 'completed', 'green survives reconnect');
+      await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
+      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
+      await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
+      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'next click plans again');
+      assert.equal(await page.locator('dialog[open]').count(), 0);
+      assert.equal(fixture.requests.some(request => ['startAutonomy', 'answerAutonomy'].includes(request.type)), false);
       assert.deepEqual(errors, []); await context.close();
-      console.log(`PASS simple ${provider} ${width}: viewport, interrupt/setup, approval, interrupt/summary/exit, fresh setup`);
+      console.log('PASS planning shortcut ' + provider + ' ' + width + ': send once, draft, confirmation, progress, reconnect');
       continue;
     }
 

@@ -4,14 +4,18 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ownFile = fileURLToPath(import.meta.url);
-const fields = ['status', 'summary', 'next', 'evidence', 'progress', 'baseline', 'version', 'verification', 'current', 'best-version', 'best-evidence', 'best-artifact'];
+const fields = ['status', 'goal', 'summary', 'next', 'evidence', 'version', 'verification'];
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
-export function receiptInstructions(file, summary = false) {
-  return `不要在对话中输出协议 JSON。结束本轮前，用命令工具调用以下静默回执程序，之后只向用户输出自然语言${summary ? '交接总结' : '进展或交接总结'}：
-${quote(process.execPath)} ${quote(ownFile)} --receipt ${quote(file)} --status ${summary ? 'summary' : 'continue'} --summary '本轮具体进展、结果或结束原因' --next '下一步或恢复建议'
-${summary ? '本次只允许 summary，不开始新工作。' : 'status 选择 continue、complete、wait、blocked、error；continue/wait 加 --progress true 或 false，complete 加 --evidence。continue/wait/complete 加 --baseline、--version、--verification、--current（未完成尝试，完成可为空）。有新的可靠成果时加 --best-version、--best-evidence、--best-artifact。'}
-每个参数值用正确的 shell 引号包裹。参数必须如实填写，不使用示例占位文字。程序成功时没有输出；若失败，只修复回执参数或报告原因，不重做本轮工作，不将 JSON 粘贴到回复中。`;
+export function observedStatusInstructions(startFile, endFile) {
+  const command = `${quote(process.execPath)} ${quote(ownFile)} --receipt`;
+  return `以下静默回执只更新 A 的颜色，不启动续跑，不改变权限。不要向用户展示协议或命令。
+规划和等待确认时不要写 started。仅在用户明确确认后、开始执行前调用：
+${command} ${quote(startFile)} --status started --goal '用户确认的具体目标' --summary '已确认，开始执行'
+结束时调用一次，随后向用户输出自然语言总结：
+${command} ${quote(endFile)} --status completed --summary '已验证的具体成果' --evidence '验证证据位置与结果' --version '对应代码版本或资料标识' --verification '实际验证方法和结果' --next '下一步或无需后续工作'
+completed 仅用于目标已验证完成；出错改为 error，用户中止用 stopped，预算耗尽用 budget，受阻用 blocked，并如实填写 summary 和 next，不能把这些情况报告为 completed。
+每个值都用正确的 shell 引号包裹。不得照抄占位文字。没有写回执的能力时明确说明，不以普通回复结束冒充完成。现在仍只规划并等待用户确认。`;
 }
 
 export function readReceipt(file, nonce) {
@@ -37,21 +41,14 @@ export function writeReceipt(args) {
   }
   const file = values.receipt;
   if (!file || !path.isAbsolute(file) || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}\.json$/u.test(path.basename(file))) throw new Error('回执路径无效');
-  if (!['continue', 'complete', 'wait', 'blocked', 'error', 'summary'].includes(values.status) || !values.summary?.trim()) throw new Error('请填写状态和具体总结');
-  if (values.progress != null && !['true', 'false'].includes(values.progress)) throw new Error('progress 必须为 true 或 false');
-  if (['continue', 'wait'].includes(values.status) && (!values.next?.trim() || values.progress == null)) throw new Error('继续执行须提供 next 和 progress');
-  if (values.status === 'complete' && !values.evidence?.trim()) throw new Error('完成须提供 evidence');
-  if (['summary', 'complete', 'blocked', 'error'].includes(values.status) && !values.next?.trim()) throw new Error('交接须提供 next，可说明无需后续工作');
-  if (['continue', 'wait', 'complete'].includes(values.status) && (!['baseline', 'version', 'verification'].every(key => values[key]?.trim())
-    || values.current == null)) throw new Error('请填写 baseline、version、verification 和 current');
-  if (['best-version', 'best-evidence', 'best-artifact'].some(key => values[key] != null)
-    && !['best-version', 'best-evidence', 'best-artifact'].every(key => values[key]?.trim())) throw new Error('最佳成果须包含版本、证据和位置');
+  if (!['blocked', 'error', 'started', 'completed', 'stopped', 'budget'].includes(values.status) || !values.summary?.trim()) throw new Error('请填写状态和具体总结');
+  if (values.status === 'started' && !values.goal?.trim()) throw new Error('开始执行须提供确认的目标');
+  if (values.status === 'completed' && !['evidence', 'version', 'verification'].every(key => values[key]?.trim())) throw new Error('完成须提供版本和验证证据');
+  if (values.status !== 'started' && !values.next?.trim()) throw new Error('交接须提供 next，可说明无需后续工作');
   const record = { nonce: path.basename(file, '.json'), status: values.status, summary: values.summary };
-  for (const key of ['next', 'evidence']) if (values[key] != null) record[key] = values[key];
-  if (values.progress != null) record.progress = values.progress === 'true';
-  const checkpoint = ['baseline', 'version', 'verification', 'current'];
+  for (const key of ['goal', 'next', 'evidence']) if (values[key] != null) record[key] = values[key];
+  const checkpoint = ['version', 'verification'];
   if (checkpoint.some(key => values[key] != null)) record.checkpoint = Object.fromEntries(checkpoint.map(key => [key, values[key] || '']));
-  if (fields.some(key => key.startsWith('best-') && values[key] != null)) record.best = Object.fromEntries(['version', 'evidence', 'artifact'].map(key => [key, values[`best-${key}`] || '']));
   const encoded = JSON.stringify(record);
   const existing = readReceipt(file, record.nonce);
   if (existing) {

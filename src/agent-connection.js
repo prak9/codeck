@@ -8,7 +8,7 @@ import { latestAgentOutputText } from '../public/remote-copy.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
 import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
 import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
-import { isAutonomyObservation } from '../public/remote-autonomy.js';
+import { isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const SESSION_START_MATCH_MS = 120_000;
@@ -542,7 +542,7 @@ export class AgentHub {
   async #dispatch(socket, message) {
     const provider = cleanProvider(message.provider);
     const stopKey = JSON.stringify([provider, message.threadId, message.tmuxSession]);
-    if (this.sessionStops.has(stopKey) && ['answerAutonomy', 'sendSessionMessage'].includes(message.type)) {
+    if (this.sessionStops.has(stopKey) && message.type === 'sendSessionMessage') {
       throw new Error('正在停止任务，请等待结果后操作');
     }
     if (message.type === 'dismissSessionDelivery') {
@@ -568,7 +568,7 @@ export class AgentHub {
       client.autonomyTarget = target;
       return { autonomy: this.autonomy.snapshot(target) };
     }
-    if (['startAutonomy', 'finishAutonomy', 'answerAutonomy'].includes(message.type)) {
+    if (['prepareAutonomyPlanning', 'resetAutonomy'].includes(message.type)) {
       if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
       const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
       const client = this.clients.get(socket);
@@ -576,10 +576,8 @@ export class AgentHub {
       if (!subscribed || subscribed.provider !== provider || subscribed.threadId !== target.threadId
         || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
       cleanCommandId(message.commandId);
-      const answer = message.type === 'answerAutonomy' ? { requestId: cleanCommandId(message.requestId), answers: message.answers } : {};
-      return this.#runCommand(message, provider, { ...target, ...answer }, async () => ({ autonomy: message.type === 'startAutonomy'
-        ? await this.autonomy.start(target) : message.type === 'answerAutonomy'
-          ? await this.autonomy.respond(target, answer) : await this.autonomy.finish(target) }));
+      if (message.type === 'prepareAutonomyPlanning') return this.#runCommand(message, provider, target, () => this.autonomy.preparePlanning(target));
+      return this.#runCommand(message, provider, target, async () => ({ autonomy: await this.autonomy.resetObserved(target) }));
     }
     if (message.type === 'subscribeSessions') {
       const client = this.clients.get(socket);
@@ -702,15 +700,20 @@ export class AgentHub {
       }
       const payload = {
         threadId, sessionName, text,
+        ...(message.planningId ? { planningId: cleanCommandId(message.planningId) } : {}),
         ...(turnId ? { turnId, mode: message.mode === 'steer' ? 'steer' : 'followUp' } : {}),
         ...baseline,
       };
       return this.#runCommand(message, provider, payload, async () => {
         const target = { provider, threadId, tmuxSession: sessionName };
+        const planning = Boolean(payload.planningId);
+        const isCurrent = planning ? () => this.autonomy?.planningIsCurrent(target, payload.planningId, text) : undefined;
+        if (planning && !isCurrent()) throw new Error('规划请求已失效，请重新按 A');
         const deliveryBaseline = provider === 'qodercli'
           ? await this.registry.prepareSessionMessage(provider, { threadId, text, commandId }) : undefined;
         const result = await this.registry.sendSessionMessage(provider, { threadId, sessionName, text, replaceDraft: true,
-          ...(isAutonomyObservation(text) ? { nonInterrupting: true } : {}),
+          ...(isAutonomyObservation(text) || text === AUTONOMY_PLANNING_PROMPT || planning ? { nonInterrupting: true } : {}),
+          ...(planning ? { isCurrent } : {}),
         });
         if (result?.submissionStatus === 'not-sent') throw new Error('输入框未就绪，消息未注入；请先处理草稿或弹窗');
         const submission = provider === 'codex' || result?.submissionStatus != null
