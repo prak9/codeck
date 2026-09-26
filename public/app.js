@@ -820,19 +820,21 @@ function activeAgentOutputTarget() {
 }
 
 function syncTerminalProgressButton() {
-  const button = $('#terminalProgressButton');
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
-  const label = target?.question ? '处理 Agent 等待的问题' : '询问 Agent 进度';
-  button.hidden = !target;
-  button.disabled = !target || pending || (!target.question && !state.sessionFeedReady);
-  button.setAttribute('aria-label', label);
-  button.setAttribute('aria-busy', String(pending));
-  button.title = label;
+  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalConfirmButton', '回复 OK']]) {
+    const button = $(`#${id}`);
+    const label = target?.question ? '处理 Agent 等待的问题' : action;
+    button.hidden = !target;
+    button.disabled = !target || pending || (!target.question && !state.sessionFeedReady);
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-busy', String(pending));
+    button.title = label;
+  }
 }
 
-async function askTerminalProgress() {
-  const button = $('#terminalProgressButton');
+async function askTerminalProgress({ confirm = false } = {}) {
+  const button = $(confirm ? '#terminalConfirmButton' : '#terminalProgressButton');
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   if (!target || button.hidden || button.disabled) return;
   if (target.question) {
@@ -843,24 +845,24 @@ async function askTerminalProgress() {
   const attempt = { key: target.progressKey, commandId: crypto.randomUUID() };
   state.terminalProgressPending = attempt;
   syncTerminalProgressButton();
-  setConnectionMessage('正在询问 Agent 进度…', false);
+  setConnectionMessage(confirm ? '正在回复 OK…' : '正在询问 Agent 进度…', false);
   try {
     const result = await sessionFeedRequest('sendSessionMessage', {
       provider: target.provider,
       threadId: target.threadId,
       tmuxSession: target.tmuxSession,
-      text: PROGRESS_PROMPT,
+      text: confirm ? 'OK' : PROGRESS_PROMPT,
       commandId: attempt.commandId,
     });
     if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;
     if (result?.submissionStatus === 'unconfirmed') {
-      setConnectionMessage('询问已送达，但终端未确认提交；请检查终端，勿重复点击。', false);
+      setConnectionMessage('消息提交未确认；请检查终端，勿重复点击。', false);
     } else {
-      setConnectionMessage('已询问 Agent 进度');
+      setConnectionMessage(confirm ? '已回复 OK' : '已询问 Agent 进度');
     }
   } catch (error) {
     if (activeAgentSessionTarget()?.progressKey === attempt.key) {
-      setConnectionMessage(`进度询问未确认：${error.message}。请检查终端后再试。`, false);
+      setConnectionMessage(`${confirm ? '确认回复' : '进度询问'}未确认：${error.message}。请检查终端后再试。`, false);
     }
   } finally {
     if (state.terminalProgressPending === attempt) state.terminalProgressPending = null;
@@ -1772,6 +1774,7 @@ $('#reconnectTerminalButton').addEventListener('click', () => {
 });
 
 $('#terminalProgressButton').addEventListener('click', askTerminalProgress);
+$('#terminalConfirmButton').addEventListener('click', () => askTerminalProgress({ confirm: true }));
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
   button.addEventListener('click', copyLatestAgentOutput);

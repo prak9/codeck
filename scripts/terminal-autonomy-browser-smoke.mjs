@@ -112,6 +112,13 @@ try {
       await page.locator('#terminalProgressButton').click();
       await page.waitForFunction(() => document.querySelector('#terminalProgressButton').getAttribute('aria-busy') === 'false');
       assert.ok(fixture.inputs.some(input => input.text === AUTONOMY_PROGRESS_PROMPT));
+      const confirm = page.locator('#terminalConfirmButton');
+      await confirm.focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.querySelector('#terminalConfirmButton').getAttribute('aria-busy') === 'false');
+      assert.equal(fixture.inputs.filter(input => input.text === 'OK').length, 1);
+      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
+      const confirmBox = await confirm.boundingBox();
+      assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= width);
       await page.locator('#terminalVoiceDraft').fill('按此计划开始');
       await page.locator('#sendTerminalVoiceButton').click();
       await page.waitForFunction(() => document.querySelector('#terminalVoiceDraft').value === '');

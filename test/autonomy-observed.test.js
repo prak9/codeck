@@ -66,13 +66,15 @@ test('a final receipt without a confirmed start cannot turn A green', async () =
   assert.equal(f.sent.length, 0); f.manager.close();
 });
 
-test('concurrent A resets stop once, preserve background work and request one summary', async () => {
-  const f = fixture('qodercli'); await f.manager.preparePlanning(f.target); report(f, 'started'); await f.manager.tick();
+for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: concurrent A resets stop once, preserve background work and request one summary`, async () => {
+  const f = fixture(provider); await f.manager.preparePlanning(f.target); report(f, 'started'); await f.manager.tick();
   f.session.hasRunningProcess = true; f.session.agent.hasBackgroundProcess = true;
   await Promise.all([f.manager.resetObserved(f.target), f.manager.resetObserved(f.target)]);
   assert.equal(f.stops.length, 1); assert.equal(f.stops[0].stopBackground, false);
   assert.equal(f.session.agent.hasBackgroundProcess, true); assert.equal(f.sent.length, 1);
-  assert.match(f.sent[0], /只总结.*下一步/); assert.equal(f.state().status, 'off'); f.manager.close();
+  assert.match(f.sent[0], /只总结.*进展.*结果.*下一步/); assert.match(f.sent[0], /不要续跑/);
+  assert.equal(f.state().status, 'off'); await f.manager.resetObserved(f.target);
+  assert.equal(f.sent.length, 1); f.manager.close();
 });
 
 for (const failure of ['identity', 'stop', 'delivery']) test(`${failure} cannot falsely report a successful reset`, async () => {

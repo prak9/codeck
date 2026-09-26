@@ -47,6 +47,7 @@ function progressFixture({
     hidden: true, disabled: false, title: '', attributes: {},
     setAttribute(name, value) { this.attributes[name] = String(value); },
   };
+  const confirmButton = { ...button, attributes: {} };
   let terminalFocuses = 0;
   let resolveRequest;
   const request = new Promise((resolve) => { resolveRequest = resolve; });
@@ -60,7 +61,7 @@ function progressFixture({
   };
   const context = vm.createContext({
     state,
-    $: (selector) => selector === '#terminalProgressButton' ? button : draft,
+    $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalConfirmButton' ? confirmButton : draft,
     crypto: { randomUUID: () => 'progress-command' },
     sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
     setConnectionMessage: (message, restore) => feedback.push({ message, restore }),
@@ -70,7 +71,7 @@ function progressFixture({
     vm.runInContext(functionSource(source, name), context);
   }
   return {
-    context, state, draft, button, requests, feedback,
+    context, state, draft, button, confirmButton, requests, feedback,
     resolveRequest, terminalFocuses: () => terminalFocuses,
   };
 }
@@ -90,6 +91,25 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.draft.value, '');
   assert.equal(f.state.terminalSubmitPending, null);
   assert.equal(f.timers.size, 0);
+});
+
+test('confirmation shortcut sends only OK once, preserving the draft', async () => {
+  const f = progressFixture(); f.context.syncTerminalProgressButton();
+  const pending = f.context.askTerminalProgress({ confirm: true });
+  await f.context.askTerminalProgress({ confirm: true });
+  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].text, 'OK');
+  assert.equal(f.confirmButton.disabled, true); assert.equal(f.draft.value, '尚未发送的草稿');
+  f.resolveRequest({ submissionStatus: 'submitted' }); await pending;
+  assert.equal(f.confirmButton.disabled, false);
+});
+
+test('confirmation shortcut respects native questions and disconnection', async () => {
+  const waiting = progressFixture({ question: { prompt: '批准权限？' } });
+  waiting.context.syncTerminalProgressButton(); await waiting.context.askTerminalProgress({ confirm: true });
+  assert.equal(waiting.requests.length, 0); assert.equal(waiting.terminalFocuses(), 1);
+  const disconnected = progressFixture({ sessionFeedReady: false });
+  disconnected.context.syncTerminalProgressButton(); await disconnected.context.askTerminalProgress({ confirm: true });
+  assert.equal(disconnected.requests.length, 0); assert.equal(disconnected.confirmButton.disabled, true);
 });
 
 test('explicit composer handoff preserves bytes and asks the server to leave copy mode', () => {

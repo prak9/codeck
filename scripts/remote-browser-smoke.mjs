@@ -320,6 +320,13 @@ try {
         await page.locator('#progressButton').click();
         await page.waitForFunction(() => !document.querySelector('#progressButton').disabled);
         assert.ok(fixture.sent.some(request => request.text === progressPrompt));
+        const confirm = page.locator('#confirmButton');
+        await confirm.focus(); await page.keyboard.press('Enter');
+        await page.waitForFunction(() => !document.querySelector('#confirmButton').disabled);
+        assert.equal(fixture.sent.filter(request => request.text === 'OK').length, 1);
+        assert.equal(await page.locator('#composerInput').inputValue(), '尚未发送的草稿');
+        const confirmBox = await confirm.boundingBox();
+        assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= viewport.width);
         await page.locator('#composerInput').fill('按此计划开始');
         await page.locator('#sendButton').click();
         await page.waitForFunction(() => document.querySelector('#composerInput').value === '');

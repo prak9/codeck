@@ -127,7 +127,7 @@ export class AutonomyController extends EventEmitter {
       const session = await this.readSession(target);
       if (!current()) return this.snapshot(target);
       if (!this.sameSession(run, session) || session.hasRunningProcess || session.agent.question) throw new Error('中断未确认，请检查终端');
-      const delivery = await this.send({ ...target, paneId: run.paneId }, `用户已按 A 中止自主任务。停止新实验，只总结目标、进展、验证证据、未完成事项和下一步，然后退出。不要续跑。`, current,
+      const delivery = await this.send({ ...target, paneId: run.paneId }, `用户已按 A 退出自主模式。停止新实验，只总结当前目标、进展、已完成结果、验证证据、未完成事项和下一步，然后退出。用简洁清晰的自然语言输出，不要续跑。`, current,
         { nonInterrupting: true, commandId: crypto.randomUUID() });
       if (['not-sent', 'unconfirmed'].includes(delivery?.submissionStatus)) throw new Error('总结请求提交未确认，请检查终端；不会自动重发');
       if (current()) this.end(target, 'off', '用户已中止并恢复默认状态；总结将在对话中输出');

@@ -115,6 +115,27 @@ test('the progress shortcut sends its own prompt without touching the draft or a
   assert.equal(f.input.value, progressPrompt, 'a later shortcut receipt must not clear an identical draft');
 });
 
+test('Remote confirmation replies OK without changing A, drafts or attachments', async () => {
+  const f = fixture(); f.context.currentThreadWaitingForInput = () => false;
+  vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nfunction currentAutonomy(')), f.context);
+  f.state.attachments = [{ id: 'keep', path: '/uploads/keep.txt' }];
+  const runs = f.state.autonomyRuns = new Map([['current', { status: 'running' }]]);
+  await f.context.askProgress({ confirm: true });
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].text, 'OK');
+  assert.equal(f.input.value, draft); assert.equal(f.state.attachments[0].id, 'keep');
+  assert.equal(f.state.autonomyRuns, runs); assert.equal(runs.get('current').status, 'running');
+});
+
+test('Remote confirmation cannot approve a native question or bypass disabled controls', async () => {
+  const f = fixture(); let focused = 0;
+  f.context.currentThreadWaitingForInput = () => true;
+  f.context.focusPendingAgentRequest = () => focused++;
+  vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nfunction currentAutonomy(')), f.context);
+  await f.context.askProgress({ confirm: true }); assert.equal(focused, 1); assert.equal(f.sent.length, 0);
+  f.input.disabled = true; f.context.currentThreadWaitingForInput = () => false;
+  await f.context.askProgress({ confirm: true }); assert.equal(f.sent.length, 0);
+});
+
 for (const provider of ['codex', 'claude', 'qodercli']) {
   test(`${provider} composer captures send-time order before a delayed response`, async () => {
     const f = fixture(() => {

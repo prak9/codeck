@@ -2420,6 +2420,11 @@ function renderComposerState() {
   progressButton.disabled = progressUnavailable || opening || closing || pending || !state.connected;
   progressButton.setAttribute('aria-label', progressHint);
   progressButton.title = progressHint;
+  const confirmButton = $('#confirmButton');
+  confirmButton.hidden = progressUnavailable;
+  confirmButton.disabled = progressButton.disabled;
+  confirmButton.title = waitingForInput ? '处理 Agent 等待的问题' : '回复 OK';
+  confirmButton.setAttribute('aria-label', confirmButton.title);
   const autonomyButton = $('#autonomyButton');
   const autonomy = currentAutonomy();
   const presentation = autonomyPresentation(autonomy, { hasRunningProcess: active,
@@ -2832,14 +2837,14 @@ function focusPendingAgentRequest() {
   request.querySelector('input:not(:disabled), button:not(:disabled)')?.focus({ preventScroll: true });
 }
 
-async function askProgress() {
-  const button = $('#progressButton');
+async function askProgress({ confirm = false } = {}) {
+  const button = $(confirm ? '#confirmButton' : '#progressButton');
   if (button.hidden || button.disabled) return;
   if (currentThreadWaitingForInput()) {
     focusPendingAgentRequest();
     return;
   }
-  await submitComposer({ presetText: PROGRESS_PROMPT });
+  await submitComposer({ presetText: confirm ? 'OK' : PROGRESS_PROMPT });
 }
 
 function currentAutonomy() {
@@ -3154,6 +3159,7 @@ $('#settingsButton').addEventListener('click', openSettings);
 $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#progressButton').addEventListener('click', askProgress);
+$('#confirmButton').addEventListener('click', () => askProgress({ confirm: true }));
 $('#autonomyButton').addEventListener('click', toggleAutonomy);
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
