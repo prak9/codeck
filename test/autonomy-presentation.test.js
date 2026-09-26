@@ -18,9 +18,12 @@ test('autonomy labels distinguish actual work, background work, questions and id
   assert.equal(autonomyExecutionLabel({ status: 'exiting' }, 'done'), '自主模式·当前空闲');
 });
 
-test('planning prompt preserves confirmation while carrying exploration, evidence, budget and handoff requirements', () => {
-  for (const text of ['确认前不执行任务', '预算未指定就不设默认值', '评价标准', '替代解释', '机制不同',
-    '可回退', '否定这个想法', '对照或消融', '必要时复测', '不能降低验收标准', '剩余预算',
-    '恢复方式', '遗留运行任务', '相关 Skill']) assert.ok(AUTONOMY_PLANNING_PROMPT.includes(text), text);
+test('planning prompt delegates iteration to its skill while preserving confirmation and conversation controls', () => {
+  for (const text of ['使用 iterate skill', '先读取该 Skill', '相关领域 Skill', '确认前不执行任务',
+    '预算未指定就不设默认值', '评价标准', '不输出 JSON', '原生提问工具', '我确认后',
+    '进度问询不代表停止，也不重置预算', '无论自主结束还是用户中止', '不只更新状态']) {
+    assert.ok(AUTONOMY_PLANNING_PROMPT.includes(text), text);
+  }
+  assert.doesNotMatch(AUTONOMY_PLANNING_PROMPT, /^\d+\. /m, 'iteration rules belong to the skill, not a duplicated checklist');
   assert.ok(AUTONOMY_PLANNING_PROMPT.endsWith('现在只给出简短计划，并等待我确认。'));
 });

@@ -32,7 +32,7 @@ test('terminal A sends the approved prompt once while pending, without configura
   await new Promise(resolve => setImmediate(resolve));
   const sends = f.calls.filter(call => call.type === 'sendSessionMessage');
   assert.equal(sends.length, 1); assert.equal(sends[0].args.text, AUTONOMY_PLANNING_PROMPT);
-  assert.match(sends[0].args.text, /^请基于最近的讨论，为我规划一个自主迭代任务。/);
+  assert.match(sends[0].args.text, /^请基于最近的讨论，使用 iterate skill，为我规划一个自主迭代任务。/);
   assert.equal(f.calls.some(call => ['startAutonomy', 'answerAutonomy'].includes(call.type)), false);
   assert.equal(sends[0].args.planningId, 'planning-id');
   release({ submissionStatus: 'submitted' }); await first;
