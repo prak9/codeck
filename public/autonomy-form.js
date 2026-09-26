@@ -33,7 +33,7 @@ export function createAutonomyForm({ document, run, submit, isCurrent }) {
   const seen = new Set();
   function update(next) {
     const definition = next.definition;
-    preparation.textContent = definition?.loading ? '正在从最近 3 轮对话提取…' : definition?.error || '';
+    preparation.textContent = definition?.loading ? '正在从最近一轮对话提取…' : definition?.error || '';
     preparation.hidden = !preparation.textContent;
     if (!busy && definition) {
       for (const [key, input] of Object.entries(fields)) {

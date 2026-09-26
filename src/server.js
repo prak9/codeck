@@ -354,14 +354,15 @@ const autonomy = new AutonomyController({
   file: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'autonomy.json'),
   readSession: async target => (await listSessions({ refreshAgentIdentities: true, refreshPaneSession: target.tmuxSession }))
     .find(session => session.name === target.tmuxSession),
-  readThread: (target, exchange, { waitForReady = false } = {}) => {
+  readThread: (target, exchange, { waitForReady = false, turnLimit = 20, definitionOnly = false, signal } = {}) => {
     // Rehydrate the same receipt after a service/worker restart, never resend text.
     if (exchange?.commandId) agentRegistry.recordSessionMessage(target.provider, {
       threadId: target.threadId, text: exchange.text, commandId: exchange.commandId,
       deliveryBaseline: exchange.deliveryBaseline,
     });
     return agentRegistry.openThread(target.provider, target.threadId, {
-      readOnly: true, turnLimit: 20, deferCompactionRestore: target.provider === 'qodercli',
+      readOnly: true, turnLimit, deferCompactionRestore: target.provider === 'qodercli',
+      ...(definitionOnly ? { definitionOnly: true, signal } : {}),
       ...(waitForReady ? { waitForReady: true } : {}),
     });
   },

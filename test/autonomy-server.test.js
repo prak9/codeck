@@ -12,9 +12,10 @@ import { WebSocket } from 'ws';
 
 test('server forwards phase-specific send guards and verified task cancellation to the tmux adapter', async () => {
   const source = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
-  let options; const sends = []; const stops = [];
+  let options; const sends = []; const stops = []; const reads = [];
   const agentRegistry = {
     prepareSessionMessage: async () => ({}), recordSessionMessage() {},
+    openThread: async (provider, threadId, options) => { reads.push({ provider, threadId, ...options }); },
     sendSessionMessage: async (provider, params) => { sends.push({ provider, ...params }); return { submissionStatus: 'submitted' }; },
     interruptSession: async (provider, params) => { stops.push({ provider, ...params }); },
   };
@@ -26,6 +27,12 @@ test('server forwards phase-specific send guards and verified task cancellation 
   });
   const target = { provider: 'codex', tmuxSession: 'research', threadId: 'thread-1', paneId: '%7' };
   const guard = () => true;
+  const signal = new AbortController().signal;
+  await options.readThread(target, undefined, { waitForReady: true, turnLimit: 1, definitionOnly: true, signal });
+  await options.readThread(target);
+  assert.equal(reads[0].turnLimit, 1); assert.equal(reads[0].definitionOnly, true);
+  assert.equal(reads[0].signal, signal); assert.equal(reads[0].waitForReady, true);
+  assert.equal(reads[1].turnLimit, 20); assert.equal(reads[1].definitionOnly, undefined);
   await options.send(target, 'Setup', guard, { requireIdle: false, nonInterrupting: true });
   await options.send(target, 'Round', guard, { requireIdle: true, nonInterrupting: true });
   await options.stop(target, guard);

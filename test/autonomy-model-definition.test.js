@@ -7,17 +7,48 @@ const target = { provider: 'codex', threadId: 'thread', tmuxSession: 'work' };
 const definition = { goal: '比较五种标签的净收益', strategy: '统一成交条件，分组对照', acceptance: '报告净收益及跨周稳定性', budget: '', constraints: '暂不做自适应选择' };
 const turn = (user, answer) => ({ items: [{ type: 'userMessage', content: user }, { type: 'agentMessage', text: answer }] });
 
-test('model sees the last three dialogue rounds, not tools, controls or older tasks', async () => {
+test('model sees only the latest dialogue round, not tools, controls or older tasks', async () => {
   const thread = { turns: [turn('旧任务', '旧结果'), turn('比较标签', '五组实验'), turn('怎么验收？', '看净收益和稳定性'), turn('先不做自适应', '限定为固定方案'),
     { items: [{ type: 'commandExecution', text: 'secret tool log' }] }] };
   const dialogue = recentDialogue(thread);
-  assert.equal(dialogue.length, 3);
+  assert.equal(dialogue.length, 1);
   let calls = 0;
   const result = await extractDefinition({ provider: 'codex', thread }, { generate: async input => {
-    calls++; assert.equal(input.provider, 'codex'); assert.match(input.prompt, /比较标签/); assert.match(input.prompt, /先不做自适应/);
-    assert.doesNotMatch(input.prompt, /旧任务|secret tool log/); return JSON.stringify(definition);
+    calls++; assert.equal(input.provider, 'codex'); assert.match(input.prompt, /先不做自适应/);
+    assert.doesNotMatch(input.prompt, /比较标签|五组实验|旧任务|secret tool log/); return JSON.stringify(definition);
   } });
   assert.equal(calls, 1); assert.equal(result.goal, definition.goal); assert.equal(result.budget, ''); assert.equal(result.fieldsVersion, 5);
+});
+
+test('setup reads only one turn and a stalled history read cannot leave extraction loading', async () => {
+  let options, generated = false;
+  const manager = new AutonomyController({ definitionTimeoutMs: 20, schedule: () => 1, cancel() {},
+    readSession: async () => ({ name: 'work', agent: { kind: 'codex', id: 'thread', paneId: '%1' } }),
+    readThread: async (_target, _exchange, opts) => { options = opts; return new Promise(() => {}); },
+    suggestDefinition: async () => { generated = true; }, stop: async () => {} });
+  await manager.start(target);
+  assert.equal(options.turnLimit, 1); assert.equal(options.definitionOnly, true);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(manager.snapshot(target).definition.loading, false);
+  assert.match(manager.snapshot(target).definition.error, /超时/);
+  assert.equal(manager.snapshot(target).setup, true); assert.equal(generated, false); manager.close();
+});
+
+test('model timeout aborts extraction and ignores a late result without leaving setup', async () => {
+  let release, signal;
+  const manager = new AutonomyController({ definitionTimeoutMs: 20, schedule: () => 1, cancel() {},
+    readSession: async () => ({ name: 'work', agent: { kind: 'codex', id: 'thread', paneId: '%1' } }),
+    readThread: async () => ({ thread: { turns: [turn('目标', '结果')] } }),
+    suggestDefinition: async input => { signal = input.signal; return new Promise(resolve => { release = resolve; }); },
+    stop: async () => {} });
+  await manager.start(target);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(signal.aborted, true);
+  assert.equal(manager.snapshot(target).definition.loading, false);
+  assert.match(manager.snapshot(target).definition.error, /超时/);
+  release(definition); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(manager.snapshot(target).definition.goal, undefined);
+  assert.equal(manager.snapshot(target).setup, true); manager.close();
 });
 
 test('empty context makes no model request and malformed output never becomes defaults', async () => {

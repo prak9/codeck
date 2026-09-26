@@ -1,5 +1,5 @@
 import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation } from './remote-autonomy.js?v=11';
-import { createAutonomyForm } from './autonomy-form.js?v=4';
+import { createAutonomyForm } from './autonomy-form.js?v=5';
 
 export function createTerminalAutonomy({ getTarget, request, document = globalThis.document }) {
   const $ = id => document.getElementById(id);

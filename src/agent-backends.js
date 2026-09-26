@@ -314,7 +314,15 @@ export class CodexAgentBackend extends EventEmitter {
     return { turns, truncated, oldestTurnId: turns[0]?.id || null };
   }
 
-  async openThread(threadId, { readOnly = false, progressive = false, turnLimit = 80 } = {}) {
+  async openThread(threadId, { readOnly = false, progressive = false, turnLimit = 80, definitionOnly = false, signal } = {}) {
+    if (definitionOnly) {
+      // Setup needs one conversation, not display reconciliation or hydration of
+      // every historical user message/interrupted turn. Never resume the writer.
+      const page = await this.appServer.request('thread/turns/list', {
+        threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
+      }, { signal });
+      return { thread: { id: threadId, turns: [...(page.data || [])].reverse(), readOnly: true } };
+    }
     if (!readOnly) {
       try {
         await this.appServer.request('thread/resume', { threadId });

@@ -65,9 +65,10 @@ ${receiptInstructions(receiptFile)}
 }
 
 export class AutonomyController extends EventEmitter {
-  constructor({ readSession, readThread, suggestDefinition, prepare, send, stop, file, now = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ readSession, readThread, suggestDefinition, prepare, send, stop, file, now = Date.now, schedule = setTimeout, cancel = clearTimeout, definitionTimeoutMs = 20_000 }) {
     super();
     Object.assign(this, { readSession, readThread, suggestDefinition, prepare, send, stop, file, now, schedule, cancel });
+    this.definitionTimeoutMs = definitionTimeoutMs;
     this.receiptDirectory = file ? path.join(path.dirname(file), 'autonomy-results') : path.join(os.tmpdir(), `codeck-autonomy-results-${process.pid}`);
     this.runs = new Map(); this.polls = new Map(); this.definitionLoads = new Map(); this.timer = null; this.closed = false;
     if (file && fs.existsSync(file)) {
@@ -158,17 +159,33 @@ export class AutonomyController extends EventEmitter {
     const requestId = run.requestId, key = autonomyKey(run.target), abort = new AbortController();
     this.definitionLoads.get(key)?.abort.abort(); this.definitionLoads.set(key, { requestId, abort });
     const current = () => !this.closed && this.runs.get(key) === run && run.setup && run.requestId === requestId;
+    const timeout = setTimeout(() => abort.abort(new DOMException('任务提取超时', 'TimeoutError')), this.definitionTimeoutMs);
+    let onAbort;
+    const cancelled = new Promise((_, reject) => {
+      onAbort = () => reject(abort.signal.reason);
+      abort.signal.addEventListener('abort', onAbort, { once: true });
+    });
     try {
-      const result = await this.readThread(run.target, undefined, { waitForReady: true });
-      if (!current()) return;
-      if (!this.suggestDefinition || result?.thread?.historyLoading || result?.thread?.historyError) throw new Error('任务提取不可用');
-      const definition = await this.suggestDefinition({ provider: run.target.provider, thread: result?.thread, signal: abort.signal });
+      const extraction = (async () => {
+        const result = await this.readThread(run.target, undefined, {
+          waitForReady: true, turnLimit: 1, definitionOnly: true, signal: abort.signal,
+        });
+        abort.signal.throwIfAborted();
+        if (!current()) return;
+        if (!this.suggestDefinition || result?.thread?.historyLoading || result?.thread?.historyError) throw new Error('任务提取不可用');
+        return this.suggestDefinition({ provider: run.target.provider, thread: result.thread, signal: abort.signal });
+      })();
+      const definition = await Promise.race([extraction, cancelled]);
       if (!current()) return;
       Object.assign(run.definition, definition, { error: '' });
     } catch (error) {
       if (current()) run.definition.error = error.code === 'MODEL_AUTH_REQUIRED'
-        ? '模型登录已失效，请重新登录；也可手动填写。' : '暂未提取成功，可手动填写。';
-    } finally { if (this.definitionLoads.get(key)?.abort === abort) this.definitionLoads.delete(key); }
+        ? '模型登录已失效，请重新登录；也可手动填写。'
+        : error.name === 'TimeoutError' ? '提取超时，可直接手动填写。' : '暂未提取成功，可手动填写。';
+    } finally {
+      clearTimeout(timeout); abort.signal.removeEventListener('abort', onAbort);
+      if (this.definitionLoads.get(key)?.abort === abort) this.definitionLoads.delete(key);
+    }
     if (current()) { run.definition.loading = false; this.changed(run); }
   }
   async respond(target, { requestId, answers }) {

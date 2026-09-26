@@ -21,6 +21,18 @@ class FakeAppServer extends EventEmitter {
   close() {}
 }
 
+test('definition-only Codex read loads exactly one full turn without whole-history hydration or resume', async () => {
+  const calls = [];
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    calls.push({ method, params });
+    assert.equal(method, 'thread/turns/list');
+    return { data: [{ id: 'latest', status: 'completed', items: [{ type: 'userMessage', content: '目标' }, { type: 'agentMessage', text: '下一步' }] }] };
+  }));
+  const result = await backend.openThread('thread', { readOnly: true, definitionOnly: true, turnLimit: 1 });
+  assert.equal(calls.length, 1); assert.equal(calls[0].params.limit, 1); assert.equal(calls[0].params.itemsView, 'full');
+  assert.equal(result.thread.turns[0].items.length, 2); backend.close();
+});
+
 test('Claude transcript lookup honors CLAUDE_CONFIG_DIR instead of falling back to compacted SDK history', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-claude-config-'));
   const previous = process.env.CLAUDE_CONFIG_DIR;
