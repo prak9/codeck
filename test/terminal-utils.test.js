@@ -272,6 +272,36 @@ test('terminal render watchdog debounces parser bursts and forces at most one re
   assert.deepEqual(refreshes, [[0, 23]], 'a normal xterm render needs no duplicate redraw');
 });
 
+test('returning to a visible terminal rearms a stalled render watchdog without input or resizing', () => {
+  const page = new EventTarget(), window = new EventTarget();
+  let visible = true, parsed, rendered;
+  const timers = new Map(), refreshes = []; let sequence = 0;
+  const terminal = { rows: 24,
+    onWriteParsed(fn) { parsed = fn; return { dispose() {} }; },
+    onRender(fn) { rendered = fn; return { dispose() {} }; },
+    refresh(...args) { refreshes.push(args); },
+  };
+  const dispose = bindTerminalRenderWatchdog(terminal, {
+    page, window, isVisible: () => visible,
+    schedule: fn => { timers.set(++sequence, fn); return sequence; }, cancel: id => timers.delete(id),
+  });
+  const tick = () => { const [id, fn] = timers.entries().next().value; timers.delete(id); fn(); };
+  parsed(); tick(); // A forced frame can be lost while the browser is being suspended.
+  assert.equal(refreshes.length, 1);
+  visible = false; page.dispatchEvent(new Event('visibilitychange'));
+  parsed();
+  visible = true; page.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(refreshes.length, 2, 'returning must not retain the old one-shot latch');
+  rendered();
+  window.dispatchEvent(new Event('focus'));
+  assert.equal(refreshes.length, 3, 'window focus also restores a frame without a visibility event');
+  rendered();
+  visible = false; window.dispatchEvent(new Event('pageshow'));
+  assert.equal(refreshes.length, 3, 'hidden terminals are not repainted');
+  dispose(); visible = true; window.dispatchEvent(new Event('focus'));
+  assert.equal(refreshes.length, 3, 'disposal removes recovery listeners');
+});
+
 test('terminal resize gate sends only changed grids and can mark an attach size as synchronized', () => {
   const sent = [];
   const gate = createTerminalResizeGate((cols, rows) => sent.push([cols, rows]));

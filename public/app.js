@@ -19,7 +19,7 @@ import {
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=17';
+} from './terminal-utils.js?v=18';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
@@ -1374,7 +1374,7 @@ function ensureTerminal() {
     }),
   });
   activateTerminalWebgl(terminal, globalThis.WebglAddon?.WebglAddon);
-  bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden });
+  bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden && $('#terminal').getClientRects().length > 0 });
   // 桌面上滚轮原本滚的是 xterm 自己的缓冲, 而那对全屏 TUI 只是一帧帧重绘的残片:
   // 往上翻是碎片, 翻回来只剩当前一帧, 看着就像"历史没了"。会话历史在 tmux 手里,
   // 所以滚轮和触摸走同一条路 —— 交给 tmux 的 copy-mode。
@@ -2015,7 +2015,6 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && voiceInput.abort()) setTerminalVoiceState(false, '语音输入已暂停，草稿仍保留在这里。');
   if (!document.hidden && state.canManage) connectSessionFeed();
-  if (!document.hidden && state.terminal) state.terminal.refresh(0, state.terminal.rows - 1);
 });
 window.addEventListener('pagehide', () => voiceInput.abort());
 window.addEventListener('storage', (event) => {

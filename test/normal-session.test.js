@@ -162,8 +162,7 @@ test('normal mode suppresses Codex shared-daemon background counts', () => {
 });
 
 test('normal terminal output does not wait for input focus to repaint', () => {
-  assert.match(appJs, /bindTerminalRenderWatchdog\(terminal, \{ isVisible: \(\) => !document\.hidden \}\)/);
-  assert.match(appJs, /if \(!document\.hidden && state\.terminal\) state\.terminal\.refresh\(0, state\.terminal\.rows - 1\)/);
+  assert.match(appJs, /bindTerminalRenderWatchdog\(terminal, \{ isVisible: \(\) => !document\.hidden && \$\('#terminal'\)\.getClientRects\(\)\.length > 0 \}\)/);
 });
 
 test('normal mode exposes one-click copy for the latest completed model reply', () => {

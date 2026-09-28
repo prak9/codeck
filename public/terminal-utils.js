@@ -112,6 +112,8 @@ export function bindTerminalRenderWatchdog(terminal, {
   schedule = setTimeout,
   cancel = clearTimeout,
   isVisible = () => true,
+  page = globalThis.document,
+  window = globalThis.window,
 } = {}) {
   let settleTimer = null;
   let maxWaitTimer = null;
@@ -160,12 +162,28 @@ export function bindTerminalRenderWatchdog(terminal, {
     forcedSinceRender = false;
     clearTimers();
   });
+  const resume = () => {
+    if (disposed) return;
+    clearTimers();
+    if (!isVisible()) return;
+    // Suspension can discard the single requested frame. A new foreground period
+    // gets a fresh attempt, even with no new PTY output and a healthy WebSocket.
+    forcedSinceRender = false;
+    pendingRender = true;
+    forceRender();
+  };
+  page?.addEventListener('visibilitychange', resume);
+  window?.addEventListener('focus', resume);
+  window?.addEventListener('pageshow', resume);
 
   return () => {
     disposed = true;
     clearTimers();
     parsed.dispose?.();
     rendered.dispose?.();
+    page?.removeEventListener('visibilitychange', resume);
+    window?.removeEventListener('focus', resume);
+    window?.removeEventListener('pageshow', resume);
   };
 }
 

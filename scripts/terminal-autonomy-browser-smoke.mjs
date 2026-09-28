@@ -166,6 +166,32 @@ try {
       assert.equal(await page.locator('dialog[open]').count(), 0);
       assert.equal(fixture.requests.some(request => ['startAutonomy', 'answerAutonomy'].includes(request.type)), false);
       if (provider === 'codex' && width === 1365) {
+        const beforeResume = { inputs: fixture.inputs.length, attachments: fixture.terminals.length, scrolls: fixture.scrolls || 0 };
+        await page.locator('#terminalVoiceDraft').fill('离开窗口后保留草稿');
+        await page.evaluate(() => {
+          window.resumeRenders = 0;
+          const refresh = Terminal.prototype.refresh;
+          Terminal.prototype.refresh = function (...args) {
+            if (!this.resumeObserved) {
+              this.resumeObserved = true;
+              this.onRender(() => window.resumeRenders++);
+            }
+            return refresh.apply(this, args);
+          };
+        });
+        const away = await context.newPage(); await away.goto('about:blank');
+        await away.bringToFront(); await page.bringToFront();
+        // Headless window focus is platform-dependent; exercise the same event explicitly.
+        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await page.waitForFunction(() => window.resumeRenders > 0);
+        await page.locator('#terminal').hover(); await page.mouse.wheel(0, -160);
+        await page.waitForTimeout(100);
+        assert.ok(fixture.scrolls > beforeResume.scrolls);
+        assert.equal(fixture.inputs.length, beforeResume.inputs, 'foreground recovery sends no Agent input');
+        assert.equal(fixture.terminals.length, beforeResume.attachments, 'foreground recovery keeps the existing connection');
+        assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '离开窗口后保留草稿');
+        await away.close();
+        console.log('PASS foreground rendering and scroll recovery without reload, reconnect or draft replay');
         await page.locator('#terminalVoiceDraft').fill('断线时保留草稿');
         const inputs = fixture.inputs.length;
         const attachments = fixture.terminals.length;
