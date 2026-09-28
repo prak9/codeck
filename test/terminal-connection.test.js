@@ -73,6 +73,21 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const inputResults = (ws) => ws.sent.filter(Buffer.isBuffer).map((data) => JSON.parse(data.toString()));
 const sendFrame = (ws, message) => ws.emit('message', Buffer.from(JSON.stringify(message)), false);
 
+test('native bracketed paste uses pane negotiation both before and after raw input ownership', async () => {
+  const ws = new FakeSocket(), submitted = [], raw = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    submitTerminalInput: async (_session, data, options) => submitted.push({ data, paste: options.bracketedPaste }),
+    writeTerminalInput: async (_session, data) => raw.push(data),
+  }));
+  const data = '\x1b[200~hello\rworld\x1b[201~';
+  sendFrame(ws, { type: 'input', data }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: 'x' }); await nextTurn();
+  sendFrame(ws, { type: 'input', data }); await nextTurn();
+  assert.deepEqual(submitted, [{ data, paste: true }, { data, paste: true }]);
+  assert.deepEqual(raw, ['x']);
+  ws.close();
+});
+
 test('heartbeat responds outside terminal operations without input or output flow accounting', async () => {
   const ws = new FakeSocket();
   const terminal = fakeTerminal();

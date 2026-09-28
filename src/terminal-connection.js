@@ -43,6 +43,8 @@ const TERMINAL_OUTPUT_HIGH_WATERMARK = 256 * 1024;
 // xterm answers terminal queries on the same channel as keystrokes. Merely
 // opening a terminal must not be mistaken for taking over an autonomous task.
 const TERMINAL_REPLY = /^(?:\x1b\[[>?]?[\d;]*[cnR]|\x1b\]\d+;rgb:[\da-f/]+(?:\x07|\x1b\\))+$/iu;
+const isNativePaste = message => message.type === 'input' && message.submit !== true && message.resume !== true
+  && typeof message.data === 'string' && message.data.startsWith('\x1b[200~') && message.data.endsWith('\x1b[201~');
 
 function validOutputFlowId(value) {
   return typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value);
@@ -183,6 +185,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         isCurrent,
         separateFinalEnter: message.separateFinalEnter === true,
         replaceDraft: message.replaceDraft === true,
+        bracketedPaste: isNativePaste(message),
       });
       if (isCurrent() && attachment === attachSequence) inputMode = 'live';
     }).then(() => { if (message.type === 'input') sendInputResult(message); }, (error) => {
@@ -312,7 +315,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       }
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
         if (message.data && !TERMINAL_REPLY.test(message.data)) dependencies.onHumanInput?.(activeSession);
-        if (explicitInput || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
+        if (explicitInput || isNativePaste(message) || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
         else if (message.data && !protocolReply) queueTerminalOperation(message, true);
         else {
           terminal.write(message.data);

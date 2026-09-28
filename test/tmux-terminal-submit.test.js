@@ -45,6 +45,27 @@ test('local Qoder slash commands let the composer apply text before pressing Ent
   ]);
 });
 
+test('xterm paste envelopes are negotiated by tmux, not injected as literal CLI input', async () => {
+  const deps = submissionDependencies({ bracketedPaste: true });
+  await submitTerminalInput('work', '\x1b[200~hello\r世界\x1b[201~', deps);
+  assert.deepEqual(deps.calls[1], ['load', 'codeck-local-test', 'hello\r世界']);
+  assert.deepEqual(deps.calls.at(-1), ['copy-mode', '-q', '-t', '%17', ';', 'paste-buffer', '-p', '-r', '-d', '-b', 'codeck-local-test', '-t', '%17']);
+  assert.equal(deps.calls.some(args => args.includes('Enter')), false);
+});
+
+test('ordinary drafts and literal caret notation are preserved, not stripped as paste protocol', async () => {
+  for (const [data, bracketedPaste] of [
+    ['^[[200~用户正文^[[201~', true],
+    ['\x1b[200~explicit draft\x1b[201~', false],
+    ['正文包含 \x1b[200~ 字样', true],
+  ]) {
+    const deps = submissionDependencies({ bracketedPaste });
+    await submitTerminalInput('work', data, deps);
+    assert.equal(deps.calls[1][2], data);
+    assert.equal(deps.calls.at(-1).includes('-p'), false);
+  }
+});
+
 test('local submissions reject unsafe or stale target panes before any input', async () => {
   for (const target of ['other\t%17\n', 'work\twork:0.0\n', 'work\t%17\nwork\t%18\n']) {
     const deps = submissionDependencies({ execTmux: async () => ({ stdout: target }) });

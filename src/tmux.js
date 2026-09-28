@@ -1302,7 +1302,10 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
     }
     const separateFinalEnter = overrides.separateFinalEnter === true && data.length > 1
       && !/[\r\n]/u.test(data.slice(0, -1)) && data.endsWith('\r');
-    const bufferData = separateFinalEnter ? data.slice(0, -1) : data;
+    // xterm brackets a native paste for the outer tmux client. When bypassing that
+    // client through paste-buffer, unwrap once and let tmux consult the pane's mode.
+    const bracketedPaste = overrides.bracketedPaste === true && data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~');
+    const bufferData = bracketedPaste ? data.slice(6, -6) : separateFinalEnter ? data.slice(0, -1) : data;
     const bufferName = overrides.bufferName || `codeck_local_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;
     const waitForInputSettle = overrides.waitForInputSettle
@@ -1312,7 +1315,7 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
       if (await currentPane() !== paneId) throw new Error('终端会话 pane 已变化，输入未发送');
       checkConnection();
       await execTmux(exitPaneModeThen(paneId, [
-        'paste-buffer', '-r', '-d', '-b', bufferName, '-t', paneId,
+        'paste-buffer', ...(bracketedPaste ? ['-p'] : []), '-r', '-d', '-b', bufferName, '-t', paneId,
       ]));
       if (separateFinalEnter) {
         await waitForInputSettle();
