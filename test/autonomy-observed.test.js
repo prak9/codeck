@@ -58,8 +58,31 @@ test('restart preserves observed state without resending; reset retires old rece
   assert.equal(f.state().status, 'running'); await f.manager.tick(); assert.equal(f.sent.length, 0);
   await f.manager.resetObserved(f.target); assert.equal(f.state().status, 'off'); assert.equal(f.sent.length, 1, 'only the explicit reset asks for a summary');
   await f.manager.preparePlanning(f.target);
-  writeReceipt(['--receipt', old.endFile, '--status', 'completed', '--summary', '旧结果', '--next', '无', '--evidence', '旧日志', '--version', 'old', '--verification', 'old']);
+  assert.equal(fs.existsSync(old.startFile), false);
+  assert.throws(() => writeReceipt(['--receipt', old.endFile, '--status', 'completed', '--summary', '旧结果', '--next', '无', '--evidence', '旧日志', '--version', 'old', '--verification', 'old']), { code: 'ENOENT' });
   await f.manager.tick(); assert.equal(f.state().status, 'planning'); assert.equal(f.sent.length, 1); f.manager.close();
+});
+
+test('a new task reclaims prior receipts and result fields without touching another task', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-reclaim-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const f = fixture('codex', path.join(dir, 'autonomy.json')); t.after(() => f.manager.close());
+  await f.manager.preparePlanning(f.target);
+  report(f, 'started'); await f.manager.tick();
+  report(f, 'completed', { evidence: '日志', version: 'abc', verification: '测试' }); await f.manager.tick();
+  const old = f.run();
+  const unrelated = path.join(f.manager.receiptDirectory, 'keep.json'); fs.writeFileSync(unrelated, 'keep');
+  await f.manager.resetObserved(f.target);
+  await f.manager.preparePlanning(f.target);
+  assert.equal(fs.existsSync(old.observation.startFile), false);
+  assert.equal(fs.existsSync(old.observation.endFile), false);
+  assert.equal(fs.existsSync(path.dirname(old.observation.endFile)), false);
+  assert.equal(fs.readFileSync(unrelated, 'utf8'), 'keep');
+  const current = f.state();
+  assert.notEqual(current.id, old.id); assert.equal(current.plan, null); assert.equal(current.summary, '');
+  for (const key of ['next', 'checkpoint', 'evidence', 'startedAt', 'stoppedAt']) assert.equal(current[key], undefined);
+  f.restart();
+  assert.equal(f.state().id, current.id); assert.equal(f.state().status, 'planning');
+  report(f, 'started'); await f.manager.tick(); assert.equal(f.state().status, 'running');
 });
 
 test('a final receipt without a confirmed start cannot turn A green', async () => {
@@ -67,6 +90,40 @@ test('a final receipt without a confirmed start cannot turn A green', async () =
   report(f, 'completed', { evidence: '日志', version: 'abc', verification: '测试' });
   await f.manager.tick(); assert.equal(f.state().status, 'planning');
   assert.equal(f.sent.length, 0); f.manager.close();
+});
+
+test('a retired slow poll neither blocks nor overwrites the new task', async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  await f.manager.preparePlanning(f.target); report(f, 'started');
+  const read = f.manager.readSession; let resolve;
+  f.manager.readSession = () => new Promise(done => { resolve = done; });
+  const oldPoll = f.manager.tick();
+  f.manager.readSession = read;
+  const prepared = await f.manager.preparePlanning(f.target);
+  report(f, 'started');
+  await f.manager.tick();
+  assert.equal(f.state().status, 'running'); assert.equal(f.state().id, prepared.planningId);
+  resolve(f.session); await oldPoll;
+  assert.equal(f.state().status, 'running'); assert.equal(f.state().id, prepared.planningId);
+});
+
+test('new tasks reclaim flat stored receipts without following arbitrary saved paths', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-flat-receipts-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const f = fixture('qodercli', path.join(dir, 'autonomy.json')); t.after(() => f.manager.close());
+  await f.manager.preparePlanning(f.target);
+  const old = f.run().observation;
+  fs.rmdirSync(path.dirname(old.startFile));
+  old.startFile = path.join(f.manager.receiptDirectory, `${old.startNonce}.json`);
+  const unrelated = path.join(dir, `${old.endNonce}.json`);
+  old.endFile = unrelated; fs.writeFileSync(unrelated, 'keep');
+  report(f, 'started');
+  await f.manager.resetObserved(f.target); f.restart();
+  await f.manager.preparePlanning(f.target);
+  assert.equal(fs.existsSync(old.startFile), false);
+  assert.equal(fs.readFileSync(unrelated, 'utf8'), 'keep');
+  // A late flat-layout receipt is no longer observed by the new task.
+  writeReceipt(['--receipt', old.startFile, '--status', 'started', '--goal', '旧目标', '--summary', '旧任务']);
+  await f.manager.tick(); assert.equal(f.state().status, 'planning');
 });
 
 for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: concurrent A resets stop once, preserve background work and request one summary`, async () => {

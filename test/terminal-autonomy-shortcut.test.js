@@ -20,10 +20,20 @@ function fixture() {
     } });
   f.button = document.getElementById('terminalAutonomyButton');
   f.notice = document.getElementById('terminalAutonomyNotice');
+  f.summary = document.getElementById('terminalAutonomySummary');
   f.click = () => f.button.listeners.click();
   f.ready = async () => { f.ui.ready({ autonomySessionBinding: true }); await new Promise(resolve => setImmediate(resolve)); };
   return f;
 }
+
+test('terminal never shows old blocked, stopped or error results as a completed summary', async () => {
+  const f = fixture(); await f.ready();
+  for (const status of ['ended', 'error', 'off', 'planning', 'running', 'exiting']) {
+    f.ui.update({ id: 'old-run', target: f.target, status, reason: '任务受阻',
+      plan: { goal: '尚未完成的实验' }, summary: '后台任务继续运行', next: '等待结果' });
+    assert.equal(f.summary.hidden, true, status);
+  }
+});
 
 test('terminal A sends the approved prompt once while pending, without configuration or extraction', async () => {
   const f = fixture(); await f.ready(); let release;

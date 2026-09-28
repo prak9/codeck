@@ -158,6 +158,8 @@ try {
       assert.equal(await a.getAttribute('data-tone'), 'completed', 'green survives reconnect');
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => !el.open && !el.hidden), true, 'reconnect retains a collapsed report');
       await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
+      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.hidden), true);
+      assert.equal(await page.locator('#terminalAutonomySummaryContent').textContent(), '');
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
       await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'next click plans again');

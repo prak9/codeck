@@ -8,6 +8,7 @@ import { readReceipt, observedStatusInstructions } from './autonomy-receipt.js';
 
 const ACTIVE = new Set(['planning', 'running', 'exiting']);
 const TERMINAL = new Set(['completed', 'error', 'off', 'ended']);
+const UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u;
 const needsPoll = run => ['planning', 'running'].includes(run.status) && run.observation && run.paneId;
 const textField = (value, max = 4000) => typeof value === 'string' && value.trim() && value.length <= max ? value.trim() : null;
 function targetIsValid(target) {
@@ -67,10 +68,14 @@ export class AutonomyController extends EventEmitter {
     if (!targetIsValid(target)) throw new Error('规划需要已绑定的 Agent 会话');
     const key = autonomyKey(target), old = this.runs.get(key);
     if (old && ['running', 'exiting', 'ended', 'completed', 'error'].includes(old.status)) throw new Error('请先按 A 恢复默认状态');
+    this.retireReceipts(old);
+    this.polls.delete(key); // A slow poll for the retired run must not hold up the new task.
+    const id = crypto.randomUUID();
     const startNonce = crypto.randomUUID(), endNonce = crypto.randomUUID();
-    fs.mkdirSync(this.receiptDirectory, { recursive: true, mode: 0o700 });
-    const observation = { startNonce, endNonce, startFile: path.join(this.receiptDirectory, `${startNonce}.json`), endFile: path.join(this.receiptDirectory, `${endNonce}.json`) };
-    const run = { id: crypto.randomUUID(), target: { ...target }, mode: 'observed', status: 'planning',
+    const directory = path.join(this.receiptDirectory, id);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const observation = { startNonce, endNonce, startFile: path.join(directory, `${startNonce}.json`), endFile: path.join(directory, `${endNonce}.json`) };
+    const run = { id, target: { ...target }, mode: 'observed', status: 'planning',
       generation: 0, plan: null, summary: '', reason: '等待用户确认', observation };
     this.runs.set(key, run); this.changed(run);
     try {
@@ -84,6 +89,18 @@ export class AutonomyController extends EventEmitter {
     } catch (error) {
       if (!this.closed && this.runs.get(key) === run && run.status === 'planning') this.fail(target, error.message);
       throw error;
+    }
+  }
+  retireReceipts(run) {
+    if (!run?.observation || !UUID.test(run.id)) return;
+    const directory = path.join(this.receiptDirectory, run.id);
+    // Delete only this run's owned paths, never paths supplied by a saved record.
+    fs.rmSync(directory, { recursive: true, force: true });
+    for (const kind of ['start', 'end']) {
+      const nonce = run.observation[`${kind}Nonce`];
+      if (!UUID.test(nonce)) continue;
+      const file = path.join(this.receiptDirectory, `${nonce}.json`);
+      if (run.observation[`${kind}File`] === file) fs.rmSync(file, { force: true });
     }
   }
   planningIsCurrent(target, id, text) {

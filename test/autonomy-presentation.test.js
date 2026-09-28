@@ -26,6 +26,15 @@ test('completed autonomy has a readable final report independent of the final ch
   assert.deepEqual(autonomySummaryRows(null), []);
 });
 
+test('only the current completed run gets a summary, even if other states retain old results', () => {
+  const finished = { plan: { goal: '旧目标' }, summary: '旧成果', next: '下一步',
+    evidence: 'test.log', checkpoint: { version: 'abc', verification: '通过' } };
+  for (const status of ['planning', 'running', 'exiting', 'ended', 'off', 'error', 'blocked', 'stopped', 'budget']) {
+    assert.deepEqual(autonomySummaryRows({ ...finished, status }), [], status);
+  }
+  assert.ok(autonomySummaryRows({ ...finished, status: 'completed' }).length);
+});
+
 test('autonomy labels distinguish actual work, background work, questions and idle without changing the run', () => {
   const run = Object.freeze({ status: 'running' });
   assert.equal(autonomyExecutionLabel(run, 'working'), '自主执行中');

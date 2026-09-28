@@ -350,13 +350,15 @@ try {
         await fixture.autonomy.tick();
         await page.waitForFunction(status => document.querySelector('#autonomyButton').dataset.state === status, completed ? 'completed' : 'ended');
         assert.equal(await auto.getAttribute('data-tone'), completed ? 'completed' : 'running');
-        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open && !el.hidden), true);
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open && !el.hidden), completed);
         await page.waitForFunction(id => document.querySelector('#autonomySummary').previousElementSibling?.dataset.turnId === id, receiptTurn.id);
-        assert.match(await page.locator('#autonomySummaryContent').innerText(), /修复输入/);
-        await page.locator('#autonomySummary').scrollIntoViewIfNeeded();
+        if (completed) {
+          assert.match(await page.locator('#autonomySummaryContent').innerText(), /修复输入/);
+          await page.locator('#autonomySummary').scrollIntoViewIfNeeded();
+        } else assert.equal(await page.locator('#autonomySummaryContent').textContent(), '', 'unfinished run has no summary content');
         assert.equal(await auto.evaluate(el => el.closest('.composer-meta')?.id), 'composerMeta');
         await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-planning-shortcut.png') });
-        await page.locator('#autonomySummary > summary').click();
+        if (completed) await page.locator('#autonomySummary > summary').click();
         await page.locator('#composerInput').fill('总结之后的新消息');
         await page.locator('#sendButton').click();
         await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
@@ -370,14 +372,17 @@ try {
         await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
         assert.equal(await auto.getAttribute('data-tone'), completed ? 'completed' : 'running', 'outcome survives reconnect');
-        assert.equal(await page.locator('#autonomySummary').evaluate(el => !el.open && !el.hidden), true, 'report survives reconnect without expanding');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => !el.open && !el.hidden), completed, 'only completed report survives reconnect');
         assert.equal(await page.locator('#autonomySummary').evaluate(el => el.previousElementSibling?.dataset.turnId), receiptTurn.id, 'receipt turn is the stable anchor');
         assert.equal(await page.locator('#autonomySummary').evaluate(el => [...el.parentElement.children]
           .slice([...el.parentElement.children].indexOf(el) + 1).some(node => node.textContent.includes('总结之后的新消息'))), true, 'reload preserves report order');
         await auto.click(); await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'idle');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.hidden), true, 'reset retires completed report');
+        assert.equal(await page.locator('#autonomySummaryContent').textContent(), '');
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
         await auto.click(); await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'next click plans again');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.hidden), true, 'new task cannot inherit old report');
         assert.equal(await page.locator('dialog[open]').count(), 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
         assert.deepEqual(errors, []);

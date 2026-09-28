@@ -1,4 +1,4 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=17';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=18';
 
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
@@ -16,10 +16,13 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
   function element(tag, text) { const el = document.createElement(tag); el.textContent = text; return el; }
   function syncSummary(run, key) {
     const panel = $('terminalAutonomySummary'), body = $('terminalAutonomySummaryContent');
-    const ended = ['completed', 'off', 'error', 'ended'].includes(run?.status);
-    panel.hidden = !(bound && ended && run?.plan);
+    const rows = autonomySummaryRows(run);
+    const ended = run?.status === 'completed';
+    panel.hidden = !bound || !rows.length;
+    if (panel.hidden && summaryFingerprint) {
+      body.replaceChildren(); panel.open = false; summaryFingerprint = '';
+    }
     if (!panel.hidden) {
-      const rows = autonomySummaryRows(run);
       const fingerprint = JSON.stringify([key, run.id, rows]);
       if (summaryFingerprint !== fingerprint) {
         body.replaceChildren();
