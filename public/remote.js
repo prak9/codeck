@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=15';
+import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, autonomySummaryRows, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=16';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -2429,6 +2429,7 @@ function renderComposerState() {
   confirmButton.setAttribute('aria-label', confirmButton.title);
   const autonomyButton = $('#autonomyButton');
   const autonomy = currentAutonomy();
+  renderAutonomySummary(autonomy);
   const presentation = autonomyPresentation(autonomy, { hasRunningProcess: active,
     agent: { hasBackgroundProcess: background, question: waitingForInput } });
   autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
@@ -2847,6 +2848,28 @@ async function askProgress({ confirm = false } = {}) {
     return;
   }
   await submitComposer({ presetText: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT });
+}
+
+function renderAutonomySummary(run) {
+  const panel = $('#autonomySummary');
+  const transcript = $('#transcript');
+  const nearBottom = transcriptNearLatest(transcript);
+  const scrollRevision = transcriptScrollRevision;
+  const rows = autonomySummaryRows(run);
+  panel.hidden = !rows.length || Boolean(state.threadOpening);
+  if (panel.hidden) { delete panel.dataset.report; return; }
+  const fingerprint = JSON.stringify([run.target, run.id, rows]);
+  if (panel.dataset.report === fingerprint) return;
+  panel.dataset.report = fingerprint;
+  const body = $('#autonomySummaryContent');
+  body.replaceChildren();
+  for (const [label, value] of rows) body.append(element('dt', '', label), element('dd', '', value));
+  panel.open = true;
+  requestAnimationFrame(() => {
+    if (panel.dataset.report !== fingerprint) return;
+    if (nearBottom && transcriptScrollRevision === scrollRevision) transcript.scrollTop = transcript.scrollHeight;
+    syncTranscriptLatestButton();
+  });
 }
 
 function currentAutonomy() {

@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autonomyExecutionLabel, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+import { autonomyExecutionLabel, autonomySummaryRows, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+
+test('completed autonomy has a readable final report independent of the final chat reply', () => {
+  const run = { status: 'completed', plan: { goal: '修复发送' }, summary: '已修复竞态',
+    evidence: 'test.log', checkpoint: { version: 'abc123', verification: '回归通过' }, next: '部署验证' };
+  assert.deepEqual(autonomySummaryRows(run), [
+    ['结束原因', '目标完成'], ['目标', '修复发送'], ['进展与结果', '已修复竞态'],
+    ['版本与验证', 'abc123\n回归通过'], ['证据位置', 'test.log'], ['下一步', '部署验证'],
+  ]);
+  assert.deepEqual(autonomySummaryRows({ ...run, status: 'running' }), []);
+  assert.deepEqual(autonomySummaryRows(null), []);
+});
 
 test('autonomy labels distinguish actual work, background work, questions and idle without changing the run', () => {
   const run = Object.freeze({ status: 'running' });

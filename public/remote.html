@@ -17,7 +17,7 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=50">
+  <link rel="stylesheet" href="/remote.css?v=51">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -78,6 +78,10 @@
           <div class="welcome-providers" id="welcomeProviders"></div>
         </section>
         <div class="turns" id="turns"></div>
+        <details id="autonomySummary" class="autonomy-summary" hidden>
+          <summary>自主任务总结</summary>
+          <dl id="autonomySummaryContent"></dl>
+        </details>
         <div class="approval-stack" id="approvalStack"></div>
         <p class="live-status" id="liveStatus" role="status" aria-live="polite"></p>
       </main>
@@ -229,6 +233,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=123"></script>
+  <script type="module" src="/remote.js?v=124"></script>
 </body>
 </html>

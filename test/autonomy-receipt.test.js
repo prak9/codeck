@@ -5,7 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { AutonomyController } from '../src/autonomy.js';
-import { readReceipt, writeReceipt } from '../src/autonomy-receipt.js';
+import { readReceipt, writeReceipt, observedStatusInstructions } from '../src/autonomy-receipt.js';
+
+test('end receipts require a substantive report and do not replace the final human reply', () => {
+  const instructions = observedStatusInstructions('/tmp/start.json', '/tmp/end.json');
+  for (const text of ['结束前先整理正式总结', '不得只写“已完成”', 'Codeck 会据此单独展示总结',
+    '自然语言最终答复', '不要只写回执或以变绿代替最终答复']) assert.ok(instructions.includes(text), text);
+});
 
 for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: silent start receipts persist without sending any work on restart`, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-receipts-'));

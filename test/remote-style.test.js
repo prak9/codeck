@@ -109,8 +109,8 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.tool-card\s*\{[^}]*background:\s*#f7f7f8;/s);
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
-  assert.match(html, /\/remote\.css\?v=50/);
-  assert.match(html, /\/remote\.js\?v=123/);
+  assert.match(html, /\/remote\.css\?v=51/);
+  assert.match(html, /\/remote\.js\?v=124/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -322,8 +322,8 @@ test('an open Agent session has a labelled touch-sized progress shortcut above t
   assert.doesNotMatch(css, /progress-enabled/);
   assert.match(remoteJs, /const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT/);
   assert.match(remoteJs, /progressButton'\)\.addEventListener\('click', askProgress\)/);
-  assert.match(html, /remote\.css\?v=50/);
-  assert.match(html, /remote\.js\?v=123/);
+  assert.match(html, /remote\.css\?v=51/);
+  assert.match(html, /remote\.js\?v=124/);
 });
 
 test('the load-earlier control is styled', () => {

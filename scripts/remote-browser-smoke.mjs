@@ -340,16 +340,23 @@ try {
         fixture.status = 'done'; publishSessions();
         await page.waitForFunction(() => document.querySelector('[data-tmux-session="fixture"] small')?.textContent.includes('自主模式·当前空闲'));
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#autonomyButton .autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
-        writeReceipt(['--receipt', observed.observation.endFile, '--status', 'budget', '--summary', '预算已耗尽', '--next', '交接剩余验证']);
+        const completed = viewport.width > 600;
+        writeReceipt(['--receipt', observed.observation.endFile, '--status', completed ? 'completed' : 'budget',
+          '--summary', completed ? '已修复输入并验证通过' : '预算已耗尽', '--next', '交接剩余验证',
+          ...(completed ? ['--evidence', 'test.log', '--version', 'abc123', '--verification', '回归通过'] : [])]);
         await fixture.autonomy.tick();
-        await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'ended');
-        assert.equal(await auto.getAttribute('data-tone'), 'running', 'budget stop stays yellow');
+        await page.waitForFunction(status => document.querySelector('#autonomyButton').dataset.state === status, completed ? 'completed' : 'ended');
+        assert.equal(await auto.getAttribute('data-tone'), completed ? 'completed' : 'running');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open && !el.hidden), true);
+        assert.match(await page.locator('#autonomySummaryContent').innerText(), /修复输入/);
+        await page.locator('#autonomySummary').scrollIntoViewIfNeeded();
         assert.equal(await auto.evaluate(el => el.closest('.composer-meta')?.id), 'composerMeta');
         await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-planning-shortcut.png') });
         await page.reload(); await auto.waitFor({ state: 'visible' });
         await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
-        assert.equal(await auto.getAttribute('data-tone'), 'running', 'yellow outcome survives reconnect');
+        assert.equal(await auto.getAttribute('data-tone'), completed ? 'completed' : 'running', 'outcome survives reconnect');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open && !el.hidden), true, 'report survives reconnect');
         await auto.click(); await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'idle');
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
         await auto.click(); await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);

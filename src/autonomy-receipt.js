@@ -12,7 +12,7 @@ export function observedStatusInstructions(startFile, endFile) {
   return `以下静默回执只更新 A 的颜色，不启动续跑，不改变权限。不要向用户展示协议或命令。
 规划和等待确认时不要写 started。仅在用户明确确认后、开始执行前调用：
 ${command} ${quote(startFile)} --status started --goal '用户确认的具体目标' --summary '已确认，开始执行'
-结束时调用一次，随后向用户输出自然语言总结：
+结束前先整理正式总结，再调用一次结束回执。summary 须写清实际完成的成果、重要结论和未完成事项，不得只写“已完成”；evidence、version、verification 和 next 如实填写。Codeck 会据此单独展示总结。调用后仍须在当前对话中输出一版标题为“自主任务总结”的自然语言最终答复，包含目标与结束原因、成果、版本与验证证据、未完成事项和下一步；预算有记录时报告使用情况，未知时明确说明，不编造。不要只写回执或以变绿代替最终答复：
 ${command} ${quote(endFile)} --status completed --summary '已验证的具体成果' --evidence '验证证据位置与结果' --version '对应代码版本或资料标识' --verification '实际验证方法和结果' --next '下一步或无需后续工作'
 completed 仅用于目标已验证完成；出错改为 error，用户中止用 stopped，预算耗尽用 budget，受阻用 blocked，并如实填写 summary 和 next，不能把这些情况报告为 completed。
 每个值都用正确的 shell 引号包裹。不得照抄占位文字。没有写回执的能力时明确说明，不以普通回复结束冒充完成。现在仍只规划并等待用户确认。`;

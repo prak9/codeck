@@ -23,6 +23,20 @@ export function autonomyKey({ provider, threadId, tmuxSession }) {
   return JSON.stringify([provider, threadId, tmuxSession]);
 }
 
+// Render from persisted receipt data, not from a final chat reply that may never
+// arrive. Both views show the same report and never invent missing evidence.
+export function autonomySummaryRows(run) {
+  if (!['completed', 'off', 'error', 'ended'].includes(run?.status) || !run.plan) return [];
+  return [
+    ['结束原因', run.reason || ({ completed: '目标完成', off: '已退出', error: '执行出错', ended: '执行结束，未确认完成' })[run.status]],
+    ['目标', run.plan.goal],
+    ['进展与结果', run.summary || '尚未收到完整总结，请核对终端。'],
+    ['版本与验证', [run.checkpoint?.version, run.checkpoint?.verification].filter(Boolean).join('\n')],
+    ['证据位置', run.evidence],
+    ['下一步', run.next],
+  ].filter(([, value]) => value).map(([label, value]) => [label, autonomyDisplayText(value)]);
+}
+
 // A tracks the task lifecycle, not whether the CLI is currently busy. Keep this
 // presentation separate from execution/stop controls and the latched A colors.
 export function autonomyExecutionLabel(run, execution, waitingForInput = false) {

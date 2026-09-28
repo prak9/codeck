@@ -1,4 +1,4 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=15';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=16';
 
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
@@ -19,13 +19,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
     const ended = ['completed', 'off', 'error', 'ended'].includes(run?.status);
     panel.hidden = !(bound && ended && run?.plan);
     if (!panel.hidden) {
-      const rows = [
-        ['结束原因', run.reason || ({ completed: '目标完成', off: '已退出', error: '执行出错' })[run.status]],
-        ['目标', run.plan.goal],
-        ['进展与结果', run.summary || '尚未收到完整总结；请核对终端，以下仅列出已保存的信息。'],
-        ['验证与证据', [run.checkpoint?.version, run.checkpoint?.verification, run.evidence].filter(Boolean).join('\n')],
-        ['下一步', run.next],
-      ].filter(([, value]) => value);
+      const rows = autonomySummaryRows(run);
       const fingerprint = JSON.stringify([key, run.id, rows]);
       if (summaryFingerprint !== fingerprint) {
         body.replaceChildren();
@@ -33,7 +27,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
         summaryFingerprint = fingerprint;
       }
       if (lastSummaryRun?.key === key && lastSummaryRun.id === run.id && !lastSummaryRun.ended) panel.open = true;
-      else if (lastSummaryRun?.key !== key || lastSummaryRun?.id !== run.id) panel.open = false;
+      else if (lastSummaryRun?.key !== key || lastSummaryRun?.id !== run.id) panel.open = run.status === 'completed';
     }
     if (bound) lastSummaryRun = run ? { key, id: run.id, ended } : null;
   }

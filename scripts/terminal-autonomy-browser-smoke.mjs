@@ -141,6 +141,9 @@ try {
       writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过']);
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'completed');
+      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.open && !el.hidden), true);
+      assert.match(await page.locator('#terminalAutonomySummaryContent').innerText(), /目标已验证完成/);
+      assert.match(await page.locator('#terminalAutonomySummaryContent').innerText(), /abc123/);
       await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('已就绪'));
       assert.equal(await a.evaluate(el => el.parentElement.nextElementSibling.id), 'shareButton');
       assert.deepEqual(await a.evaluate(el => [...el.parentElement.children].map(button => button.id)),
@@ -153,6 +156,7 @@ try {
       await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
       assert.equal(await a.getAttribute('data-tone'), 'completed', 'green survives reconnect');
+      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.open && !el.hidden), true, 'completed report is visible after reconnect');
       await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
       await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
