@@ -156,7 +156,7 @@ try {
       await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
       assert.equal(await a.getAttribute('data-tone'), 'completed', 'green survives reconnect');
-      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.open && !el.hidden), true, 'completed report is visible after reconnect');
+      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => !el.open && !el.hidden), true, 'reconnect retains a collapsed report');
       await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
       await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');

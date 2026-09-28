@@ -37,6 +37,27 @@ export function autonomySummaryRows(run) {
   ].filter(([, value]) => value).map(([label, value]) => [label, autonomyDisplayText(value)]);
 }
 
+export function autonomySummaryIndex(run, turns = []) {
+  if (run?.summaryReceiptId) {
+    const index = turns.findLastIndex(turn => (turn.items || []).some(item => {
+      const command = item.type === 'commandExecution' ? item.command
+        : item.type === 'mcpToolCall' ? item.arguments : null;
+      return command != null && JSON.stringify(command).includes(run.summaryReceiptId);
+    }));
+    if (index >= 0) return index + 1;
+  }
+  if (Number.isFinite(run?.stoppedAt)) {
+    const index = turns.findIndex(turn => {
+      const time = Number(turn.startedAt);
+      return Number.isFinite(time) && time * 1000 > run.stoppedAt;
+    });
+    if (index >= 0) return index;
+  }
+  // A truncated/older transcript cannot establish the completion position.
+  // Keep its collapsed report before visible history, never after new messages.
+  return 0;
+}
+
 // A tracks the task lifecycle, not whether the CLI is currently busy. Keep this
 // presentation separate from execution/stop controls and the latched A colors.
 export function autonomyExecutionLabel(run, execution, waitingForInput = false) {

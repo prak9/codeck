@@ -41,6 +41,7 @@ export class AutonomyController extends EventEmitter {
     const run = this.runs.get(autonomyKey(target));
     if (!run) return null;
     const { generation, paneId, observation, planningText, ...view } = run;
+    if (observation?.endNonce) view.summaryReceiptId = observation.endNonce;
     return structuredClone(view);
   }
   snapshots() { return [...this.runs.values()].map(run => this.snapshot(run.target)); }

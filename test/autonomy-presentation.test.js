@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autonomyExecutionLabel, autonomySummaryRows, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+import { autonomyExecutionLabel, autonomySummaryRows, autonomySummaryIndex, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+
+test('summary stays after its receipt turn, before subsequent messages and after history reload', () => {
+  const run = { summaryReceiptId: 'receipt-123', stoppedAt: 5000 };
+  const turns = [
+    { items: [{ type: 'userMessage', text: 'instructions receipt-123' }] },
+    { items: [{ type: 'commandExecution', command: 'receipt-123.json --status completed' }] },
+    { items: [{ type: 'userMessage', text: 'next task' }] },
+  ];
+  assert.equal(autonomySummaryIndex(run, turns), 2);
+  assert.equal(autonomySummaryIndex(run, structuredClone(turns)), 2);
+  assert.equal(autonomySummaryIndex(run, turns.slice(2)), 0, 'missing history cannot put an old summary at the bottom');
+  assert.equal(autonomySummaryIndex({ stoppedAt: 5000 }, [{ startedAt: 1 }, { startedAt: 6 }]), 1);
+});
 
 test('completed autonomy has a readable final report independent of the final chat reply', () => {
   const run = { status: 'completed', plan: { goal: '修复发送' }, summary: '已修复竞态',

@@ -341,6 +341,9 @@ try {
         await page.waitForFunction(() => document.querySelector('[data-tmux-session="fixture"] small')?.textContent.includes('自主模式·当前空闲'));
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#autonomyButton .autonomy-icon')).borderTopColor === 'rgb(234, 179, 8)');
         const completed = viewport.width > 600;
+        const receiptTurn = fixture.turns.at(-1);
+        receiptTurn.items.push({ id: 'receipt-tool', type: 'commandExecution', command: `${observed.observation.endFile} --status completed`, status: 'completed' });
+        publishEvent('item/completed', { turnId: receiptTurn.id, item: receiptTurn.items.at(-1) });
         writeReceipt(['--receipt', observed.observation.endFile, '--status', completed ? 'completed' : 'budget',
           '--summary', completed ? '已修复输入并验证通过' : '预算已耗尽', '--next', '交接剩余验证',
           ...(completed ? ['--evidence', 'test.log', '--version', 'abc123', '--verification', '回归通过'] : [])]);
@@ -348,15 +351,29 @@ try {
         await page.waitForFunction(status => document.querySelector('#autonomyButton').dataset.state === status, completed ? 'completed' : 'ended');
         assert.equal(await auto.getAttribute('data-tone'), completed ? 'completed' : 'running');
         assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open && !el.hidden), true);
+        await page.waitForFunction(id => document.querySelector('#autonomySummary').previousElementSibling?.dataset.turnId === id, receiptTurn.id);
         assert.match(await page.locator('#autonomySummaryContent').innerText(), /修复输入/);
         await page.locator('#autonomySummary').scrollIntoViewIfNeeded();
         assert.equal(await auto.evaluate(el => el.closest('.composer-meta')?.id), 'composerMeta');
         await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-planning-shortcut.png') });
+        await page.locator('#autonomySummary > summary').click();
+        await page.locator('#composerInput').fill('总结之后的新消息');
+        await page.locator('#sendButton').click();
+        await page.waitForFunction(() => document.querySelector('#composerInput').value === '');
+        await page.waitForFunction(() => {
+          const panel = document.querySelector('#autonomySummary');
+          return panel.parentElement.id === 'turns' && [...panel.parentElement.children]
+            .slice([...panel.parentElement.children].indexOf(panel) + 1).some(node => node.textContent.includes('总结之后的新消息'));
+        });
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open), false, 'new messages do not reopen the report');
         await page.reload(); await auto.waitFor({ state: 'visible' });
         await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
         assert.equal(await auto.getAttribute('data-tone'), completed ? 'completed' : 'running', 'outcome survives reconnect');
-        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.open && !el.hidden), true, 'report survives reconnect');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => !el.open && !el.hidden), true, 'report survives reconnect without expanding');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => el.previousElementSibling?.dataset.turnId), receiptTurn.id, 'receipt turn is the stable anchor');
+        assert.equal(await page.locator('#autonomySummary').evaluate(el => [...el.parentElement.children]
+          .slice([...el.parentElement.children].indexOf(el) + 1).some(node => node.textContent.includes('总结之后的新消息'))), true, 'reload preserves report order');
         await auto.click(); await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'idle');
         assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
         await auto.click(); await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);

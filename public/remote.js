@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, autonomySummaryRows, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=16';
+import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, autonomySummaryRows, autonomySummaryIndex, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=17';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -2330,6 +2330,7 @@ function renderThread() {
     const node = existingTurnNodes.get(turn.id);
     return node?._codeckTurn === turn ? node : renderTurn(turn);
   });
+  nodes.splice(autonomySummaryIndex(currentAutonomy(), state.thread?.turns), 0, $('#autonomySummary'));
   // 首帧只带尾部若干轮 (打开 1.2MB 的会话原本要 73ms), 更早的按需再取。
   // 用显式按钮而不是滚动到顶自动加载: 后者要处理滚动位置补偿, 出错的方式更隐蔽。
   if (state.thread?.truncated) nodes.unshift(loadEarlierNode());
@@ -2852,24 +2853,26 @@ async function askProgress({ confirm = false } = {}) {
 
 function renderAutonomySummary(run) {
   const panel = $('#autonomySummary');
-  const transcript = $('#transcript');
-  const nearBottom = transcriptNearLatest(transcript);
-  const scrollRevision = transcriptScrollRevision;
+  const previous = panel._codeckSummaryRun;
+  panel._codeckSummaryRun = run ? { id: run.id, status: run.status } : null;
   const rows = autonomySummaryRows(run);
+  const wasHidden = panel.hidden;
   panel.hidden = !rows.length || Boolean(state.threadOpening);
-  if (panel.hidden) { delete panel.dataset.report; return; }
+  if (panel.hidden) {
+    delete panel.dataset.report;
+    if (!wasHidden) scheduleThreadRender(false);
+    return;
+  }
   const fingerprint = JSON.stringify([run.target, run.id, rows]);
   if (panel.dataset.report === fingerprint) return;
   panel.dataset.report = fingerprint;
+  panel.dataset.itemId = `autonomy-summary:${run.id}`;
   const body = $('#autonomySummaryContent');
   body.replaceChildren();
   for (const [label, value] of rows) body.append(element('dt', '', label), element('dd', '', value));
-  panel.open = true;
-  requestAnimationFrame(() => {
-    if (panel.dataset.report !== fingerprint) return;
-    if (nearBottom && transcriptScrollRevision === scrollRevision) transcript.scrollTop = transcript.scrollHeight;
-    syncTranscriptLatestButton();
-  });
+  if (previous?.id !== run.id) panel.open = false;
+  else if (['planning', 'running', 'exiting'].includes(previous.status)) panel.open = true;
+  scheduleThreadRender(false);
 }
 
 function currentAutonomy() {

@@ -1,4 +1,4 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=16';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=17';
 
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
@@ -27,7 +27,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
         summaryFingerprint = fingerprint;
       }
       if (lastSummaryRun?.key === key && lastSummaryRun.id === run.id && !lastSummaryRun.ended) panel.open = true;
-      else if (lastSummaryRun?.key !== key || lastSummaryRun?.id !== run.id) panel.open = run.status === 'completed';
+      else if (lastSummaryRun?.key !== key || lastSummaryRun?.id !== run.id) panel.open = false;
     }
     if (bound) lastSummaryRun = run ? { key, id: run.id, ended } : null;
   }
