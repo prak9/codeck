@@ -1,4 +1,5 @@
 import pty from 'node-pty';
+import { terminalDiagnostics } from './terminal-diagnostics.js';
 import {
   clampViewport,
   getLinkedWindowSessions,
@@ -225,6 +226,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       // only this tmux client leaves the session and its history alive; once the browser
       // parses what it already received, a fresh attach redraws the current screen.
       resyncPending = true;
+      terminalDiagnostics.record(activeSession, 'output-backpressure', { chars: unacknowledgedOutput });
       killTerminal();
     }
     return true;
@@ -233,6 +235,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   // Register cancellation before the first await. A closed setup must never reach the
   // side-effectful attach-session, where an exclusive owner attach could evict a newer connection.
   ws.on('close', () => {
+    terminalDiagnostics.record(activeSession, 'disconnected');
     closed = true;
     attachSequence += 1;
     inputGeneration += 1;
@@ -243,6 +246,12 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
 
   const handleMessage = (message) => {
     try {
+      if (message.type === 'ping') {
+        if (isOpen() && Number.isSafeInteger(message.id) && message.id > 0) {
+          ws.send(Buffer.from(JSON.stringify({ type: 'pong', id: message.id })));
+        }
+        return;
+      }
       if (message.type === 'outputAck') {
         acknowledgeOutput(message);
         return;
@@ -315,6 +324,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         activeViewport = { width: cols, height: rows };
         const nextGrid = `${cols}x${rows}`;
         if (nextGrid !== terminalGrid) {
+          terminalDiagnostics.record(activeSession, 'resize', { from: terminalGrid, to: nextGrid });
           terminalGrid = nextGrid;
           terminal.resize(cols, rows);
         }
@@ -331,6 +341,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   });
 
   async function attachTerminal(nextSession, nextViewport, resetScreen = false) {
+    terminalDiagnostics.record(nextSession, 'attach-request', { cols: nextViewport?.width, rows: nextViewport?.height, resetScreen });
     const sequence = ++attachSequence;
     inputMode = 'unknown';
     activeSession = nextSession;
@@ -376,6 +387,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     terminal = attached;
     activeViewport = attachSize;
     terminalGrid = `${attachSize.width}x${attachSize.height}`;
+    terminalDiagnostics.record(nextSession, 'attached', { grid: terminalGrid });
     terminalOutput = createTerminalOutputBatcher((data) => {
       sendOutput(data, attached);
     });
@@ -390,6 +402,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     });
     attached.onExit(({ exitCode }) => {
       if (terminal !== attached) return;
+      terminalDiagnostics.record(activeSession, 'pty-exit', { exitCode });
       terminalOutput?.flush();
       terminalOutput?.cancel();
       terminalOutput = null;

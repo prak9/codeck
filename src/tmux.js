@@ -5,6 +5,8 @@ import { detectPaneAgents } from './agents.js';
 import { clampTerminalGrid } from '../public/terminal-utils.js';
 import { parseQoderQuestion, QoderQuestionTracker } from './qoder-question.js';
 import { qoderTaskPanel, stopQoderTasks } from './qoder-stop.js';
+import { redrawTerminalPane } from './terminal-redraw.js';
+import { terminalDiagnostics } from './terminal-diagnostics.js';
 export { parseQoderQuestion } from './qoder-question.js';
 
 const exec = promisify(execFile);
@@ -1374,6 +1376,26 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
+    if (provider === 'codex' && nonInterrupting && replaceDraft && !requireIdle && !session.agent?.question) {
+      const screen = await captureInputPane(paneId, { joinWrapped: true });
+      if (agentComposerState(screen, '') === 'unknown' && !hasCodexInputModal(screen)) {
+        if (!await verifyPane()) throw new Error('终端会话已变化，消息未发送');
+        // Capture the events preceding recovery: the redraw itself destroys the
+        // stale-layout evidence. Deliberately exclude conversation text.
+        console.warn('[terminal-layout-recovery]', JSON.stringify({ sessionName, paneId,
+          events: terminalDiagnostics.read(sessionName) }));
+        const redraw = overrides.redrawCodexPane || (() => redrawTerminalPane(paneId, {
+          execTmux, execStty: args => exec('stty', args, { timeout: 1000 }), wait: () => waitForPaste(pasteDelay),
+        }));
+        try { await redraw(); } catch {
+          throw new Error('终端输入区域恢复失败，消息未发送；请重新连接终端后重试');
+        }
+        if (!await verifyPane()) throw new Error('终端会话已变化，消息未发送');
+        if (agentComposerState(await captureInputPane(paneId, { joinWrapped: true }), '') === 'unknown') {
+          throw new Error('终端输入区域尚未恢复，消息未发送；请重新连接终端后重试');
+        }
+      }
+    }
     // An explicit submission owns the composer: replace its old draft, never append
     // to it. Keep this in the same pane queue as paste/Enter and scrolling. Automated
     // follow-up rounds do not inherit permission to erase later human input.

@@ -54,6 +54,7 @@ function fixture() {
       },
     },
     ...terminalUtils,
+    bindTerminalHeartbeat: () => () => {},
     ensureTerminal: () => state.terminal,
     resetTerminalInput: async () => {},
     closeTerminalVoiceComposer() {}, markActiveSession() {}, refreshActiveAgentOutput() {},
@@ -74,6 +75,34 @@ function fixture() {
 const imageEvent = () => ({
   clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => ({ type: 'image/png' }) }] },
   preventDefault() {}, stopImmediatePropagation() {},
+});
+
+test('heartbeat failure disables silent input and exposes reconnect without replay or takeover', async () => {
+  const f = fixture();
+  let timeout;
+  f.context.bindTerminalHeartbeat = (_socket, onTimeout) => { timeout = onTimeout; return () => {}; };
+  await f.context.connect('b');
+  f.state.terminalInputReady = true;
+  const sent = f.sent.length;
+  timeout();
+  assert.equal(f.state.terminalInputReady, false);
+  assert.equal(f.$('#terminalDisconnect').hidden, false);
+  assert.match(f.$('#terminalDisconnectMessage').textContent, /重新连接/);
+  assert.equal(f.$('#terminalVoiceDraft').value, 'unsent draft');
+  assert.equal(f.sent.length, sent);
+  assert.equal(f.socket.readyState, 3);
+});
+
+test('a stale heartbeat cannot disconnect a newer terminal connection', async () => {
+  const f = fixture();
+  let timeout;
+  f.context.bindTerminalHeartbeat = (_socket, onTimeout) => { timeout = onTimeout; return () => {}; };
+  await f.context.connect('b');
+  f.state.connectionId++;
+  f.state.terminalInputReady = true;
+  timeout();
+  assert.equal(f.state.terminalInputReady, true);
+  assert.equal(f.socket.readyState, 1);
 });
 
 test('mobile selection entry is available readonly and never writes terminal input', async () => {

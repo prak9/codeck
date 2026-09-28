@@ -73,6 +73,33 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const inputResults = (ws) => ws.sent.filter(Buffer.isBuffer).map((data) => JSON.parse(data.toString()));
 const sendFrame = (ws, message) => ws.emit('message', Buffer.from(JSON.stringify(message)), false);
 
+test('heartbeat responds outside terminal operations without input or output flow accounting', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal, readOnly: true,
+  }));
+  sendFrame(ws, { type: 'ping', id: 7 });
+  assert.deepEqual(inputResults(ws), [{ type: 'pong', id: 7 }]);
+  assert.deepEqual(terminal.writes, []);
+  ws.close();
+});
+
+test('heartbeat still replies while terminal output is backpressured', async () => {
+  const ws = new FakeSocket();
+  const terminal = fakeTerminal();
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal, outputFlowControl: true, outputFlowId: '1', outputHighWaterMark: 1,
+  }));
+  terminal.dataCallback('busy output');
+  await waitForTerminalOutput();
+  assert.equal(terminal.killed, true);
+  sendFrame(ws, { type: 'ping', id: 9 });
+  assert.deepEqual(inputResults(ws), [{ type: 'pong', id: 9 }]);
+  assert.deepEqual(terminal.writes, []);
+  ws.close();
+});
+
 test('human terminal input pauses autonomy before writing; resize and scroll do not', async () => {
   const ws = new FakeSocket(); const events = []; const terminal = fakeTerminal();
   terminal.write = data => events.push(['write', data]);

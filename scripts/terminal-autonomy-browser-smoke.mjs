@@ -77,6 +77,8 @@ sockets.on('connection', (socket, req) => {
     socket.send('› fixture terminal\r\n');
     socket.on('message', raw => {
       const m = JSON.parse(raw);
+      if (m.type === 'ping' && !f.dropPongs) socket.send(Buffer.from(JSON.stringify({ type: 'pong', id: m.id })));
+      if (m.type === 'scroll') f.scrolls = (f.scrolls || 0) + 1;
       if (m.type === 'input') { f.inputs.push(m); if (m.inputId) socket.send(Buffer.from(JSON.stringify({ type: 'inputResult', inputId: m.inputId, ok: true }))); }
     });
   }
@@ -157,6 +159,28 @@ try {
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'next click plans again');
       assert.equal(await page.locator('dialog[open]').count(), 0);
       assert.equal(fixture.requests.some(request => ['startAutonomy', 'answerAutonomy'].includes(request.type)), false);
+      if (provider === 'codex' && width === 1365) {
+        await page.locator('#terminalVoiceDraft').fill('断线时保留草稿');
+        const inputs = fixture.inputs.length;
+        const attachments = fixture.terminals.length;
+        fixture.dropPongs = true;
+        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        await page.locator('#terminalDisconnect').waitFor({ state: 'visible', timeout: 12_000 });
+        assert.equal(fixture.terminals.length, attachments, 'timeout never steals back a detached pane');
+        assert.equal(fixture.inputs.length, inputs, 'heartbeat never sends Agent input');
+        assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '断线时保留草稿');
+        fixture.dropPongs = false;
+        await page.locator('#reconnectTerminalButton').click();
+        await page.locator('#terminalDisconnect').waitFor({ state: 'hidden' });
+        await page.waitForFunction(() => !document.querySelector('#sendTerminalVoiceButton').disabled);
+        await page.locator('#terminal').hover();
+        await page.mouse.wheel(0, -160);
+        await page.waitForTimeout(100);
+        assert.ok(fixture.scrolls > 0, 'scroll reaches the server after reconnect, without reload');
+        assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '断线时保留草稿');
+        assert.equal(fixture.inputs.length, inputs, 'reconnect does not replay drafts');
+        console.log('PASS silent connection timeout, preserved draft, reconnect and scroll without page reload');
+      }
       assert.deepEqual(errors, []); await context.close();
       console.log('PASS planning shortcut ' + provider + ' ' + width + ': send once, draft, confirmation, progress, reconnect');
       continue;

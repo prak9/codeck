@@ -1,4 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=1';
 import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=15';
 import { createTerminalAutonomy } from './terminal-autonomy.js?v=16';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
@@ -1493,6 +1494,7 @@ async function connect(session) {
   const needsReset = Boolean(state.terminal);
   const reuseSocket = state.canSwitchSession && state.socket?.readyState === WebSocket.OPEN;
   const currentSocket = state.socket;
+  state.cancelTerminalHeartbeat?.();
   state.cancelTerminalReveal?.();
   state.cancelTerminalReveal = null;
   state.cancelTerminalOutputAck?.();
@@ -1651,6 +1653,18 @@ async function connect(session) {
     showTerminalDisconnect('连接失败，请检查网络或访问令牌后重试');
     syncTerminalAccess();
   };
+
+  state.cancelTerminalHeartbeat = bindTerminalHeartbeat(socket, () => {
+    if (state.connectionId !== connectionId || state.socket !== socket) return;
+    disconnected = true;
+    state.terminalInputReady = false;
+    rejectTerminalSubmit('连接无响应，发送结果未确认；请检查终端，勿重复发送');
+    outputAcks.cancel();
+    state.cancelTerminalWheel?.();
+    showTerminalDisconnect('终端连接无响应，请点击重新连接；未发送的草稿仍保留');
+    syncTerminalAccess();
+    socket.close(4000, '终端连接无响应，请重新连接');
+  });
 
   if (reuseSocket) {
     try {

@@ -6,6 +6,54 @@ import { AGENT_SCREEN_MARKERS, dismissSessionCommand, ensureAgentInputSubmitted,
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
 
+test('explicit noninterrupting Codex progress redraws a hidden composer before sending', async () => {
+  const commands = []; let pasted = false, redrawn = false;
+  const screen = '› Earlier progress question\n\n• Current progress: workers are still running.\n────────────────\n\n';
+  const result = await sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+    text: 'Status?', replaceDraft: true, nonInterrupting: true }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => redrawn ? EMPTY_CODEX_COMPOSER : screen,
+    redrawCodexPane: async () => { redrawn = true; },
+    execTmux: async args => { commands.push(args); if (args.includes('paste-buffer')) pasted = true; },
+    loadBuffer: async () => {}, waitForPaste: async () => {}, waitForSubmit: async () => {},
+  });
+  assert.equal(pasted, true);
+  assert.equal(result.submissionStatus, 'submitted');
+  assert.equal(commands.filter(args => args.includes('paste-buffer')).length, 1);
+  assert.equal(commands.filter(args => args.includes('Enter')).length, 1);
+  assert.equal(commands.some(args => args.includes('Escape') || args.includes('C-c')), false);
+});
+
+test('failed Codex redraw stays fail-closed and does not falsely report a modal', async () => {
+  const commands = []; let redraws = 0;
+  await assert.rejects(sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+    text: 'Status?', replaceDraft: true, nonInterrupting: true }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => '• finished response\n────\n',
+    redrawCodexPane: async () => { redraws++; },
+    execTmux: async args => commands.push(args),
+  }), /输入区域.*恢复.*未发送/);
+  assert.equal(redraws, 1);
+  assert.deepEqual(commands, []);
+});
+
+test('Codex redraw cannot send into a new approval or changed session', async () => {
+  for (const changedPane of [false, true]) {
+    const commands = []; let redrawn = false;
+    await assert.rejects(sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
+      text: 'Status?', replaceDraft: true, nonInterrupting: true }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1',
+        paneId: redrawn && changedPane ? '%8' : '%7' } }],
+      capturePane: async () => redrawn
+        ? 'Select Model and Effort\n› 1. model\nPress enter to confirm or esc to go back'
+        : '• final answer\n────\n',
+      redrawCodexPane: async () => { redrawn = true; },
+      execTmux: async args => commands.push(args),
+    }), /消息未发送/);
+    assert.deepEqual(commands, []);
+  }
+});
+
 test('an automatic loop yields to a human draft without clearing or submitting it', async () => {
   const commands = [];
   const result = await sendSessionMessage({ provider: 'codex', sessionName: 'work', threadId: 'thread-1',
