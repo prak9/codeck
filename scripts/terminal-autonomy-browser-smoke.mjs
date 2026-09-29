@@ -157,7 +157,7 @@ try {
       await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('已就绪'));
       assert.equal(await a.evaluate(el => el.parentElement.nextElementSibling.id), 'shareButton');
       assert.deepEqual(await a.evaluate(el => [...el.parentElement.children].map(button => button.id)),
-        ['terminalProgressButton', 'terminalConfirmButton', 'terminalCancelButton', 'terminalAutonomyButton']);
+        ['terminalProgressButton', 'terminalContinueButton', 'terminalConfirmButton', 'terminalCancelButton', 'terminalAutonomyButton']);
       const groupBox = await a.locator('..').boundingBox();
       const titleBox = await page.locator('#terminalTitle').boundingBox();
       assert.ok(groupBox.x > titleBox.x && groupBox.x + groupBox.width <= width, 'shortcut group is right-aligned without clipping');
@@ -236,6 +236,13 @@ try {
         assert.equal(fixture.inputs.length, inputs, 'reconnect does not replay drafts');
         console.log('PASS silent connection timeout, preserved draft, reconnect and scroll without page reload');
       }
+      const continueButton = page.locator('#terminalContinueButton');
+      await continueButton.waitFor({ state: 'visible' });
+      await page.locator('#terminalVoiceDraft').fill('保留我的草稿');
+      await continueButton.click();
+      await page.waitForFunction(() => document.querySelector('#terminalContinueButton').getAttribute('aria-busy') === 'false');
+      assert.equal(fixture.inputs.at(-1).text, '好的，请按当前目标和约定继续推进。');
+      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '保留我的草稿');
       assert.deepEqual(errors, []); await context.close();
       console.log('PASS planning shortcut ' + provider + ' ' + width + ': send once, draft, confirmation, progress, reconnect');
       continue;

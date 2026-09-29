@@ -62,7 +62,7 @@ function progressFixture({
   const context = vm.createContext({
     state,
     terminalAutonomy: { runFor: () => null },
-    $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalConfirmButton' ? confirmButton : draft,
+    $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalContinueButton' ? confirmButton : draft,
     crypto: { randomUUID: () => 'progress-command' },
     sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
     setConnectionMessage: (message, restore) => feedback.push({ message, restore }),
@@ -100,6 +100,7 @@ test('progress shortcut is hidden throughout planning and execution', () => {
     f.context.terminalAutonomy.runFor = () => ({ status });
     f.context.syncTerminalProgressButton();
     assert.equal(f.button.hidden, true);
+    assert.equal(f.confirmButton.hidden, false, 'conversation confirmation remains independent of A state');
   }
 });
 

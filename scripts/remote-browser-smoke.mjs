@@ -416,6 +416,11 @@ try {
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'off');
         assert.match(fixture.autonomySent.at(-1), /只总结.*不要续跑/);
         assert.equal(await page.locator('#autonomySummary').evaluate(el => el.hidden), true, 'new task cannot inherit old report');
+        await page.locator('#composerInput').fill('保留我的草稿');
+        await page.locator('#continueButton').click();
+        await page.waitForFunction(() => !document.querySelector('#continueButton').disabled);
+        assert.equal(fixture.sent.at(-1).text, '好的，请按当前目标和约定继续推进。');
+        assert.equal(await page.locator('#composerInput').inputValue(), '保留我的草稿');
         assert.equal(await page.locator('dialog[open]').count(), 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
         assert.deepEqual(errors, []);
