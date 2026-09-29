@@ -1263,7 +1263,10 @@ export function writeTerminalInput(sessionName, data, { write, isCurrent, execTm
 // Unlike individual keys, they must not be interpreted by tmux's copy-mode key table.
 export async function submitTerminalInput(sessionName, data, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('无效的会话名');
-  if (typeof data !== 'string' || !data.length || data.length > 100_001) {
+  const bracketedPaste = overrides.bracketedPaste === true && typeof data === 'string'
+    && data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~');
+  // Native clipboard input is not constrained by the local textarea's size limit.
+  if (typeof data !== 'string' || !data.length || (!bracketedPaste && data.length > 100_001)) {
     throw new Error('输入内容为空或过长');
   }
   return queueSessionInput(sessionName, async () => {
@@ -1304,7 +1307,6 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
       && !/[\r\n]/u.test(data.slice(0, -1)) && data.endsWith('\r');
     // xterm brackets a native paste for the outer tmux client. When bypassing that
     // client through paste-buffer, unwrap once and let tmux consult the pane's mode.
-    const bracketedPaste = overrides.bracketedPaste === true && data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~');
     const bufferData = bracketedPaste ? data.slice(6, -6) : separateFinalEnter ? data.slice(0, -1) : data;
     const bufferName = overrides.bufferName || `codeck_local_${process.pid}_${++inputBufferSequence}`;
     const loadBuffer = overrides.loadBuffer || loadTmuxBuffer;

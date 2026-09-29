@@ -117,6 +117,26 @@ test('heartbeat responds outside terminal operations without input or output flo
   ws.close();
 });
 
+test('large native pastes survive the real submission adapter without disconnecting or pressing Enter', async () => {
+  for (const length of [99_990, 100_000, 300_000]) {
+    const ws = new FakeSocket(), loaded = [], commands = [];
+    await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+      submitTerminalInput: (session, data, options) => submitTerminalInput(session, data, {
+        ...options, loadBuffer: async (_name, text) => loaded.push(text),
+        execTmux: async args => { commands.push(args); return { stdout: 'work\t%17\n' }; },
+      }),
+    }));
+    const text = '长文\n🙂'.repeat(Math.ceil(length / 5)).slice(0, length);
+    sendFrame(ws, { type: 'input', data: `\x1b[200~${text}\x1b[201~` });
+    await nextTurn();
+    assert.deepEqual(ws.closes, []);
+    assert.deepEqual(loaded, [text]);
+    assert.equal(commands.filter(args => args.includes('paste-buffer')).length, 1);
+    assert.equal(commands.some(args => args.includes('Enter')), false);
+    ws.close();
+  }
+});
+
 test('heartbeat still replies while terminal output is backpressured', async () => {
   const ws = new FakeSocket();
   const terminal = fakeTerminal();
