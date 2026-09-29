@@ -33,7 +33,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, autonomySummaryRows, autonomySummaryIndex, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=18';
+import { autonomyKey, autonomyPresentation, autonomyExecutionLabel, autonomyDisplayText, autonomySummaryRows, autonomySummaryIndex, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=19';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -2417,24 +2417,24 @@ function renderComposerState() {
   sendButton.setAttribute('aria-label', shellAttachmentOnly ? '请先输入 Shell 命令' : controls.ariaLabel);
   $('#composerPlus').disabled = readOnly || opening || closing || pending || !state.connected || !attachmentsSupported;
   const progressButton = $('#progressButton');
+  const autonomy = currentAutonomy();
+  const presentation = autonomyPresentation(autonomy);
   const progressUnavailable = !state.thread || state.provider === 'shell' || readOnly;
   const progressHint = waitingForInput ? '处理 Agent 等待的问题' : '询问目标与进度，不打断当前任务';
-  progressButton.hidden = progressUnavailable;
+  progressButton.hidden = progressUnavailable || presentation.active || presentation.planning;
   progressButton.disabled = progressUnavailable || opening || closing || pending || !state.connected;
   progressButton.setAttribute('aria-label', progressHint);
   progressButton.title = progressHint;
   const confirmButton = $('#confirmButton');
-  confirmButton.hidden = progressUnavailable;
-  confirmButton.disabled = progressButton.disabled;
-  confirmButton.title = waitingForInput ? '处理 Agent 等待的问题' : '确认并继续推进';
-  confirmButton.setAttribute('aria-label', confirmButton.title);
+  confirmButton.hidden = progressUnavailable || !presentation.planning;
+  confirmButton.disabled = progressButton.disabled || !autonomy?.planReady || active || waitingForInput || state.autonomyPending;
+  const cancelButton = $('#cancelAutonomyButton');
+  cancelButton.hidden = confirmButton.hidden;
+  cancelButton.disabled = opening || closing || !state.connected || state.autonomyPending;
   const autonomyButton = $('#autonomyButton');
-  const autonomy = currentAutonomy();
   renderAutonomySummary(autonomy);
-  const presentation = autonomyPresentation(autonomy, { hasRunningProcess: active,
-    agent: { hasBackgroundProcess: background, question: waitingForInput } });
-  autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
-  autonomyButton.disabled = opening || closing || !state.connected || (pending && !presentation.active);
+  autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false || presentation.planning;
+  autonomyButton.disabled = opening || closing || !state.connected || state.autonomyPending || autonomy?.status === 'exiting' || (pending && !presentation.active);
   autonomyButton.classList.toggle('running', autonomy?.status === 'running');
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));
   autonomyButton.setAttribute('aria-pressed', String(presentation.active));
@@ -2841,14 +2841,14 @@ function focusPendingAgentRequest() {
   request.querySelector('input:not(:disabled), button:not(:disabled)')?.focus({ preventScroll: true });
 }
 
-async function askProgress({ confirm = false } = {}) {
-  const button = $(confirm ? '#confirmButton' : '#progressButton');
+async function askProgress() {
+  const button = $('#progressButton');
   if (button.hidden || button.disabled) return;
   if (currentThreadWaitingForInput()) {
     focusPendingAgentRequest();
     return;
   }
-  await submitComposer({ presetText: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT });
+  await submitComposer({ presetText: PROGRESS_PROMPT });
 }
 
 function renderAutonomySummary(run) {
@@ -2882,10 +2882,10 @@ function currentAutonomy() {
     threadId: state.thread.id, tmuxSession: state.thread.tmux?.name }));
 }
 
-async function toggleAutonomy() {
-  const button = $('#autonomyButton');
+async function toggleAutonomy({ confirm = false, cancel = false } = {}) {
+  const button = $(confirm ? '#confirmButton' : cancel ? '#cancelAutonomyButton' : '#autonomyButton');
   if (button.hidden || button.disabled) return;
-  if (!autonomyPresentation(currentAutonomy()).resettable) {
+  if (!confirm && !cancel && !autonomyPresentation(currentAutonomy()).resettable) {
     if (currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
     await submitComposer({ presetText: AUTONOMY_PLANNING_PROMPT });
     return;
@@ -2895,8 +2895,8 @@ async function toggleAutonomy() {
   const action = state.autonomyAction = (state.autonomyAction || 0) + 1;
   state.autonomyPending = true; renderComposerState();
   try {
-    const result = await agentRequest('resetAutonomy', {
-      ...target, commandId: crypto.randomUUID(),
+    const result = await agentRequest(confirm ? 'confirmAutonomy' : 'resetAutonomy', {
+      ...target, ...(confirm ? { planningId: before?.id } : { runId: before?.id }), commandId: crypto.randomUUID(),
     });
     if (action !== state.autonomyAction) return;
     if (result.autonomy && state.autonomyRuns.get(autonomyKey(target)) === before) state.autonomyRuns.set(autonomyKey(target), result.autonomy);
@@ -3189,8 +3189,9 @@ $('#settingsButton').addEventListener('click', openSettings);
 $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#progressButton').addEventListener('click', askProgress);
-$('#confirmButton').addEventListener('click', () => askProgress({ confirm: true }));
-$('#autonomyButton').addEventListener('click', toggleAutonomy);
+$('#confirmButton').addEventListener('click', () => toggleAutonomy({ confirm: true }));
+$('#cancelAutonomyButton').addEventListener('click', () => toggleAutonomy({ cancel: true }));
+$('#autonomyButton').addEventListener('click', () => toggleAutonomy());
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });

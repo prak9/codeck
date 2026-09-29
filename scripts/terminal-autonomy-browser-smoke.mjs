@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { AutonomyController } from '../src/autonomy.js';
 import { writeReceipt } from '../src/autonomy-receipt.js';
-import { AUTONOMY_PLANNING_PROMPT, AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { AUTONOMY_PLANNING_PROMPT, AUTONOMY_CONFIRM_PROMPT } from '../public/remote-autonomy.js';
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-terminal-autonomy-'));
@@ -48,6 +48,11 @@ function reset(provider) {
   }), { autonomy: f.autonomy });
 }
 const snapshot = () => ({ sessions: fixture.sessions, capabilities: { canManage: true, canWrite: !fixture.readOnly, terminalSubmit: true } });
+async function readyPlan() {
+  const run = [...fixture.autonomy.runs.values()][0];
+  writeReceipt(['--receipt', run.observation.planFile, '--status', 'planned', '--goal', '修复输入', '--summary', '验证输入']);
+  await fixture.autonomy.tick();
+}
 const vendor = { '/vendor/xterm/xterm.js': '@xterm/xterm/lib/xterm.js', '/vendor/xterm.css': '@xterm/xterm/css/xterm.css',
   '/vendor/fit/addon-fit.js': '@xterm/addon-fit/lib/addon-fit.js',
   '/vendor/web-links/addon-web-links.js': '@xterm/addon-web-links/lib/addon-web-links.js',
@@ -99,7 +104,7 @@ try {
     try { await a.waitFor({ state: 'visible' }); }
     catch (error) { console.error(await page.locator('body').innerText(), fixture.requests); throw error; }
     if (simpleMode) {
-      fixture.sessions[0].hasRunningProcess = true;
+      fixture.sessions[0].hasRunningProcess = false;
       await page.locator('#terminalVoiceDraft').fill('尚未发送的草稿');
       await a.click();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
@@ -111,21 +116,24 @@ try {
       assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
       assert.ok(width > 720 ? fixture.grids[0] > 80 : fixture.grids[0] < 60, 'grid follows the viewport');
       assert.equal(await a.getAttribute('aria-pressed'), 'false', 'planning is not execution');
-      await page.locator('#terminalProgressButton').click();
-      await page.waitForFunction(() => document.querySelector('#terminalProgressButton').getAttribute('aria-busy') === 'false');
-      assert.ok(fixture.inputs.some(input => input.text === AUTONOMY_PROGRESS_PROMPT));
       const confirm = page.locator('#terminalConfirmButton');
-      await confirm.focus(); await page.keyboard.press('Enter');
-      await page.waitForFunction(() => document.querySelector('#terminalConfirmButton').getAttribute('aria-busy') === 'false');
-      assert.equal(fixture.inputs.filter(input => input.text === '好的，请按当前目标和约定继续推进。').length, 1);
-      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
+      await confirm.waitFor({ state: 'visible' });
+      assert.equal(await confirm.isDisabled(), true, 'confirmation waits for an actual plan');
+      await readyPlan();
+      await page.waitForFunction(() => !document.querySelector('#terminalConfirmButton').disabled);
+      assert.equal(await a.isVisible(), false);
+      assert.equal(await page.locator('#terminalCancelButton').isVisible(), true);
+      assert.equal(await page.locator('#terminalProgressButton').isVisible(), false);
       const confirmBox = await confirm.boundingBox();
       assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= width);
-      await page.locator('#terminalVoiceDraft').fill('按此计划开始');
-      await page.locator('#sendTerminalVoiceButton').click();
-      await page.waitForFunction(() => document.querySelector('#terminalVoiceDraft').value === '');
-      assert.ok(fixture.inputs.some(input => input.text === '按此计划开始'));
-      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'planning', 'confirmation text alone does not turn A yellow');
+      await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-confirm.png') });
+      await confirm.focus(); await page.keyboard.press('Enter');
+      await a.waitFor({ state: 'visible' });
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
+      assert.equal(fixture.sent.filter(text => text === AUTONOMY_CONFIRM_PROMPT).length, 1);
+      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
+      assert.equal(await confirm.isVisible(), false);
+      assert.equal(await page.locator('#terminalCancelButton').isVisible(), false);
       const observed = fixture.autonomy.runs.values().next().value;
       writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
       await fixture.autonomy.tick();
@@ -140,14 +148,14 @@ try {
       assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
       writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过']);
       await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'completed');
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.open && !el.hidden), true);
       assert.match(await page.locator('#terminalAutonomySummaryContent').innerText(), /目标已验证完成/);
       assert.match(await page.locator('#terminalAutonomySummaryContent').innerText(), /abc123/);
       await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('已就绪'));
       assert.equal(await a.evaluate(el => el.parentElement.nextElementSibling.id), 'shareButton');
       assert.deepEqual(await a.evaluate(el => [...el.parentElement.children].map(button => button.id)),
-        ['terminalProgressButton', 'terminalConfirmButton', 'terminalAutonomyButton']);
+        ['terminalProgressButton', 'terminalConfirmButton', 'terminalCancelButton', 'terminalAutonomyButton']);
       const groupBox = await a.locator('..').boundingBox();
       const titleBox = await page.locator('#terminalTitle').boundingBox();
       assert.ok(groupBox.x > titleBox.x && groupBox.x + groupBox.width <= width, 'shortcut group is right-aligned without clipping');
@@ -155,14 +163,24 @@ try {
       await page.reload(); await a.waitFor({ state: 'visible' });
       await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
-      assert.equal(await a.getAttribute('data-tone'), 'completed', 'green survives reconnect');
+      assert.equal(await a.getAttribute('data-tone'), 'idle', 'completion restores default');
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => !el.open && !el.hidden), true, 'reconnect retains a collapsed report');
-      await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
+      await a.click(); await confirm.waitFor({ state: 'visible' });
+      await page.waitForFunction(() => !document.querySelector('#terminalCancelButton').disabled);
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.hidden), true);
       assert.equal(await page.locator('#terminalAutonomySummaryContent').textContent(), '');
-      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'first click only resets');
-      await a.click(); await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
-      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'next click plans again');
+      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'first click plans again');
+      await page.locator('#terminalCancelButton').click(); await a.waitFor({ state: 'visible' });
+      await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
+      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'off');
+      await a.click(); await confirm.waitFor({ state: 'visible' });
+      await readyPlan();
+      await page.waitForFunction(() => !document.querySelector('#terminalConfirmButton').disabled);
+      await confirm.click(); await a.waitFor({ state: 'visible' });
+      await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
+      await a.click();
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'off');
+      assert.match(fixture.sent.at(-1), /只总结.*不要续跑/);
       assert.equal(await page.locator('dialog[open]').count(), 0);
       assert.equal(fixture.requests.some(request => ['startAutonomy', 'answerAutonomy'].includes(request.type)), false);
       if (provider === 'codex' && width === 1365) {

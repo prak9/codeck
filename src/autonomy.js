@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
-import { autonomyKey, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+import { autonomyKey, AUTONOMY_PLANNING_PROMPT, AUTONOMY_CONFIRM_PROMPT } from '../public/remote-autonomy.js';
 import { readReceipt, observedStatusInstructions } from './autonomy-receipt.js';
 
 const ACTIVE = new Set(['planning', 'running', 'exiting']);
@@ -31,7 +31,7 @@ export class AutonomyController extends EventEmitter {
       for (const old of saved.runs) {
         if (!targetIsValid(old.target) || old.mode !== 'observed' || ![...ACTIVE, ...TERMINAL].includes(old.status)) continue;
         const run = { ...old, generation: 0 };
-        if (run.status === 'exiting') { run.status = 'ended'; run.reason = '服务重启，中断结果未确认；请检查终端。'; }
+        if (run.status === 'exiting') { run.status = 'error'; run.exitFailed = true; run.reason = '服务重启，中断结果未确认；请按 A 重试退出。'; }
         this.runs.set(autonomyKey(run.target), run);
       }
       this.persist();
@@ -67,7 +67,7 @@ export class AutonomyController extends EventEmitter {
   async preparePlanning(target) {
     if (!targetIsValid(target)) throw new Error('规划需要已绑定的 Agent 会话');
     const key = autonomyKey(target), old = this.runs.get(key);
-    if (old && ['running', 'exiting', 'ended', 'completed', 'error'].includes(old.status)) throw new Error('请先按 A 恢复默认状态');
+    if (old && (['running', 'exiting'].includes(old.status) || old.exitFailed)) throw new Error('请先按 A 退出自主执行');
     this.retireReceipts(old);
     this.polls.delete(key); // A slow poll for the retired run must not hold up the new task.
     const id = crypto.randomUUID();
@@ -75,6 +75,8 @@ export class AutonomyController extends EventEmitter {
     const directory = path.join(this.receiptDirectory, id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const observation = { startNonce, endNonce, startFile: path.join(directory, `${startNonce}.json`), endFile: path.join(directory, `${endNonce}.json`) };
+    observation.planNonce = crypto.randomUUID();
+    observation.planFile = path.join(directory, `${observation.planNonce}.json`);
     const run = { id, target: { ...target }, mode: 'observed', status: 'planning',
       generation: 0, plan: null, summary: '', reason: '等待用户确认', observation };
     this.runs.set(key, run); this.changed(run);
@@ -83,7 +85,7 @@ export class AutonomyController extends EventEmitter {
       if (this.runs.get(key) !== run || this.closed) throw new Error('规划请求已失效');
       if (!this.sameSession(run, session, false)) throw new Error('会话身份已变化');
       run.paneId = session.agent.paneId;
-      run.planningText = `${AUTONOMY_PLANNING_PROMPT}\n\n<codeck-autonomy-context>\n${observedStatusInstructions(observation.startFile, observation.endFile)}\n</codeck-autonomy-context>`;
+      run.planningText = `${AUTONOMY_PLANNING_PROMPT}\n\n<codeck-autonomy-context>\n${observedStatusInstructions(observation.startFile, observation.endFile, observation.planFile)}\n</codeck-autonomy-context>`;
       this.changed(run);
       return { planningId: run.id, text: run.planningText, autonomy: this.snapshot(target) };
     } catch (error) {
@@ -107,16 +109,47 @@ export class AutonomyController extends EventEmitter {
     const run = this.runs.get(autonomyKey(target));
     return !this.closed && run?.mode === 'observed' && run.status === 'planning' && run.id === id && run.planningText === text;
   }
+  async confirmPlanning(target, planningId) {
+    const key = autonomyKey(target), run = this.runs.get(key);
+    if (!run || run.id !== planningId) throw new Error('规划已失效，请核对当前计划');
+    if (run.status === 'running') return this.snapshot(target);
+    if (run.status !== 'planning') throw new Error('规划已失效，请重新按 A');
+    if (!run.planReady) throw new Error('请等待 Agent 整理好规划后确认');
+    const session = await this.readSession(target);
+    if (this.closed || this.runs.get(key) !== run) throw new Error('规划已失效');
+    if (run.status === 'running') return this.snapshot(target);
+    if (run.status !== 'planning') throw new Error('规划已失效');
+    if (!this.sameSession(run, session)) throw new Error('会话身份已变化');
+    if (session.hasRunningProcess || session.agent.question) throw new Error('请等待规划完成并处理当前问题后确认');
+    run.status = 'running'; run.reason = '已确认，正在启动'; this.changed(run);
+    const current = () => !this.closed && this.runs.get(key) === run && run.status === 'running';
+    try {
+      const delivery = await this.send({ ...target, paneId: run.paneId }, AUTONOMY_CONFIRM_PROMPT, current,
+        { nonInterrupting: true, commandId: crypto.randomUUID() });
+      if (['not-sent', 'deferred', 'unconfirmed'].includes(delivery?.submissionStatus)) throw new Error('确认提交未确认，请检查终端；不会自动重发');
+    } catch (error) {
+      if (current()) { run.exitFailed = true; this.fail(target, error.message); }
+      throw error;
+    }
+    return this.snapshot(target);
+  }
   async pollObserved(run) {
     const current = () => !this.closed && this.runs.get(autonomyKey(run.target)) === run && ['planning', 'running'].includes(run.status);
     const source = run.observation;
+    if (run.status === 'planning' && !run.planReady && source.planFile) {
+      const planned = readReceipt(source.planFile, source.planNonce);
+      if (planned) {
+        if (planned.status !== 'planned' || !textField(planned.goal) || !textField(planned.summary)) throw new Error('规划就绪回执无效');
+        run.planReady = true; run.plan = { goal: planned.goal }; this.changed(run);
+      }
+    }
     const started = readReceipt(source.startFile, source.startNonce);
     const ended = readReceipt(source.endFile, source.endNonce);
-    if (!ended && (run.status === 'running' || !started)) return;
+    if (!ended && (run.startedAt || !started)) return;
     const session = await this.readSession(run.target);
     if (!current()) return;
     if (!this.sameSession(run, session)) { this.end(run.target, 'ended', '会话身份已变化，停止跟踪；请检查终端。'); return; }
-    if (run.status === 'planning' && started) {
+    if (!run.startedAt && started) {
       if (started.status !== 'started' || !textField(started.goal) || !textField(started.summary)) throw new Error('开始状态回执无效');
       run.plan = { goal: started.goal }; run.startedAt = this.now();
       run.status = 'running'; run.reason = 'Agent 已确认开始执行'; run.summary = started.summary; this.changed(run);
@@ -132,30 +165,35 @@ export class AutonomyController extends EventEmitter {
     this.end(run.target, ended.status === 'completed' ? 'completed' : ended.status === 'error' ? 'error' : 'ended',
       ({ completed: 'Agent 报告目标已验证完成', stopped: '任务已中止', budget: '预算已耗尽', blocked: '任务受阻', error: '执行出错' })[ended.status]);
   }
-  async resetObserved(target) {
+  async resetObserved(target, runId) {
     const run = this.runs.get(autonomyKey(target));
+    if (runId && run?.id !== runId) throw new Error('自主任务已变化，请核对当前任务');
     if (!run || run.status === 'off') return this.snapshot(target);
     if (run.status === 'exiting') return this.snapshot(target);
-    if (run.status !== 'running') return this.end(target, 'off', '用户已恢复默认状态');
+    if (!['planning', 'running'].includes(run.status) && !run.exitFailed) return this.end(target, 'off', '用户已恢复默认状态');
+    const planning = run.exitPlanning ?? (run.status === 'planning');
+    run.exitPlanning = planning;
     run.status = 'exiting'; run.generation++; this.changed(run);
     const current = () => !this.closed && this.runs.get(autonomyKey(target)) === run && run.status === 'exiting';
     try {
-      await this.stop?.({ ...target, paneId: run.paneId }, current, { stopBackground: false });
+      await this.stop?.({ ...target, paneId: run.paneId }, current, { stopBackground: false, stopGoal: !planning });
       if (!current()) return this.snapshot(target);
       const session = await this.readSession(target);
       if (!current()) return this.snapshot(target);
       if (!this.sameSession(run, session) || session.hasRunningProcess || session.agent.question) throw new Error('中断未确认，请检查终端');
+      if (planning) return this.end(target, 'off', '用户已取消规划');
       const delivery = await this.send({ ...target, paneId: run.paneId }, `用户已按 A 退出自主模式。停止新实验，只总结当前目标、进展、已完成结果、验证证据、未完成事项和下一步，然后退出。用简洁清晰的自然语言输出，不要续跑。`, current,
         { nonInterrupting: true, commandId: crypto.randomUUID() });
-      if (['not-sent', 'unconfirmed'].includes(delivery?.submissionStatus)) throw new Error('总结请求提交未确认，请检查终端；不会自动重发');
+      if (['not-sent', 'deferred', 'unconfirmed'].includes(delivery?.submissionStatus)) throw new Error('总结请求提交未确认，请检查终端；不会自动重发');
       if (current()) this.end(target, 'off', '用户已中止并恢复默认状态；总结将在对话中输出');
-    } catch (error) { if (current()) { this.fail(target, error.message); throw error; } }
+    } catch (error) { if (current()) { run.exitFailed = true; this.fail(target, error.message); throw error; } }
     return this.snapshot(target);
   }
   end(target, status, reason) {
     const run = this.runs.get(autonomyKey(target));
     if (!run) return null;
     run.generation++; run.status = status; run.reason = reason;
+    if (status === 'off') { delete run.exitFailed; delete run.exitPlanning; }
     this.changed(run); return this.snapshot(target);
   }
   fail(target, reason) { return this.end(target, 'error', reason); }

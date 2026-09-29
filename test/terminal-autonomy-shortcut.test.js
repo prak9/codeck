@@ -21,6 +21,8 @@ function fixture() {
   f.button = document.getElementById('terminalAutonomyButton');
   f.notice = document.getElementById('terminalAutonomyNotice');
   f.summary = document.getElementById('terminalAutonomySummary');
+  f.confirm = document.getElementById('terminalConfirmButton');
+  f.cancel = document.getElementById('terminalCancelButton');
   f.click = () => f.button.listeners.click();
   f.ready = async () => { f.ui.ready({ autonomySessionBinding: true }); await new Promise(resolve => setImmediate(resolve)); };
   return f;
@@ -67,12 +69,27 @@ test('uncertain planning delivery warns without resending; stale errors cannot a
   assert.notEqual(f.notice.textContent, 'old failure');
 });
 
-test('yellow ended, red and green A reset once instead of sending another planning prompt', async () => {
+test('finished runs start a new plan on the first click', async () => {
   for (const status of ['ended', 'error', 'completed']) {
     const f = fixture(); await f.ready();
     f.ui.update({ id: 'run', target: f.target, mode: 'observed', status, round: 0 });
     await f.click();
-    assert.equal(f.calls.at(-1).type, 'resetAutonomy');
-    assert.equal(f.calls.some(call => call.type === 'sendSessionMessage'), false);
+    assert.equal(f.calls.at(-1).type, 'sendSessionMessage');
+    assert.equal(f.calls.some(call => call.type === 'resetAutonomy'), false);
   }
+});
+
+test('planning offers confirm and cancel; running offers only yellow A', async () => {
+  const f = fixture(); await f.ready();
+  f.ui.update({ id: 'plan', target: f.target, status: 'planning', planReady: true });
+  assert.equal(f.button.hidden, true);
+  assert.equal(f.confirm.hidden, false); assert.equal(f.cancel.hidden, false);
+  await f.confirm.listeners.click();
+  assert.equal(f.calls.at(-1).type, 'confirmAutonomy');
+  assert.equal(f.calls.at(-1).args.planningId, 'plan');
+  await f.cancel.listeners.click(); assert.equal(f.calls.at(-1).type, 'resetAutonomy');
+  f.ui.update({ id: 'plan', target: f.target, status: 'running' });
+  assert.equal(f.button.hidden, false); assert.equal(f.button.dataset.tone, 'running');
+  assert.equal(f.confirm.hidden, true); assert.equal(f.cancel.hidden, true);
+  await f.click(); assert.equal(f.calls.at(-1).type, 'resetAutonomy');
 });

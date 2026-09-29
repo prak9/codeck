@@ -626,7 +626,7 @@ a.header-button { text-decoration: none; }
   .conversation-header { padding-top: env(safe-area-inset-top); }
   .conversation-heading h2 { margin-bottom: 0; }
   .provider-trigger { display: none; }
-  .composer-meta:not(:has(.progress-button:not([hidden]))) { display: none; }
+  .composer-meta:not(:has(.session-controls button:not([hidden]))) { display: none; }
   .composer-area { padding-top: 5px; padding-bottom: max(5px, env(safe-area-inset-bottom)); }
   .composer { min-height: 56px; }
   .composer textarea { min-height: 44px; padding-block: 8px; }

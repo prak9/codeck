@@ -45,6 +45,10 @@ const TERMINAL_OUTPUT_HIGH_WATERMARK = 256 * 1024;
 const TERMINAL_REPLY = /^(?:\x1b\[[>?]?[\d;]*[cnR]|\x1b\]\d+;rgb:[\da-f/]+(?:\x07|\x1b\\))+$/iu;
 const isNativePaste = message => message.type === 'input' && message.submit !== true && message.resume !== true
   && typeof message.data === 'string' && message.data.startsWith('\x1b[200~') && message.data.endsWith('\x1b[201~');
+// xterm speaks the outer tmux client's cursor mode (e.g. SS3 Up = ESC O A).
+// Only tmux can translate that key to the pane's current mode; paste-buffer cannot.
+const isCursorKey = message => message.submit !== true && typeof message.data === 'string'
+  && /^\x1b(?:O[ABCDHF]|\[[\d;]*[ABCDHF~])$/u.test(message.data);
 
 function validOutputFlowId(value) {
   return typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value);
@@ -176,6 +180,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
             terminal.write(data);
           },
         });
+        if (isCurrent() && attachment === attachSequence) inputMode = 'live';
         if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
         return;
       }
@@ -315,7 +320,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       }
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
         if (message.data && !TERMINAL_REPLY.test(message.data)) dependencies.onHumanInput?.(activeSession);
-        if (explicitInput || isNativePaste(message) || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
+        if (isCursorKey(message)) queueTerminalOperation(message, true);
+        else if (explicitInput || isNativePaste(message) || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
         else if (message.data && !protocolReply) queueTerminalOperation(message, true);
         else {
           terminal.write(message.data);

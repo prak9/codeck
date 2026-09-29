@@ -568,7 +568,7 @@ export class AgentHub {
       client.autonomyTarget = target;
       return { autonomy: this.autonomy.snapshot(target) };
     }
-    if (['prepareAutonomyPlanning', 'resetAutonomy'].includes(message.type)) {
+    if (['prepareAutonomyPlanning', 'confirmAutonomy', 'resetAutonomy'].includes(message.type)) {
       if (!this.autonomy) throw new Error('当前服务不支持自主迭代');
       const target = { provider, threadId: cleanId(message.threadId, 'Thread'), tmuxSession: cleanId(message.tmuxSession, 'tmux session') };
       const client = this.clients.get(socket);
@@ -577,7 +577,12 @@ export class AgentHub {
         || subscribed.tmuxSession !== target.tmuxSession) throw new Error('自主任务不属于当前会话');
       cleanCommandId(message.commandId);
       if (message.type === 'prepareAutonomyPlanning') return this.#runCommand(message, provider, target, () => this.autonomy.preparePlanning(target));
-      return this.#runCommand(message, provider, target, async () => ({ autonomy: await this.autonomy.resetObserved(target) }));
+      if (message.type === 'confirmAutonomy') {
+        const planningId = cleanCommandId(message.planningId);
+        return this.#runCommand(message, provider, { ...target, planningId }, async () => ({ autonomy: await this.autonomy.confirmPlanning(target, planningId) }));
+      }
+      const runId = message.runId ? cleanCommandId(message.runId) : undefined;
+      return this.#runCommand(message, provider, { ...target, runId }, async () => ({ autonomy: await this.autonomy.resetObserved(target, runId) }));
     }
     if (message.type === 'subscribeSessions') {
       const client = this.clients.get(socket);

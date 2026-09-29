@@ -1,4 +1,5 @@
 import { AutonomyController } from '../src/autonomy.js';
+import { writeReceipt } from '../src/autonomy-receipt.js';
 
 export function fixture(provider = 'codex', file) {
   const target = { provider, threadId: 'thread', tmuxSession: 'work' };
@@ -14,6 +15,10 @@ export function fixture(provider = 'codex', file) {
   f.manager = new AutonomyController(options);
   f.state = () => f.manager.snapshot(target);
   f.run = () => f.manager.runs.values().next().value;
+  f.readyPlan = async () => {
+    writeReceipt(['--receipt', f.run().observation.planFile, '--status', 'planned', '--goal', '修复输入', '--summary', '验证输入行为']);
+    await f.manager.tick();
+  };
   f.restart = () => { f.manager.close(); f.manager = new AutonomyController(options); };
   return f;
 }

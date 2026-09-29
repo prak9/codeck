@@ -1597,6 +1597,16 @@ test('confirmed Codex replacement stops foreground, native Goal and session back
   }
 });
 
+test('autonomy exit clears the native Goal even when idle, leaving background terminals alone', async () => {
+  for (const busy of [false, true]) {
+    const f = codexStopFixture({ busy });
+    await interruptSession({ ...f.params, stopBackground: false, stopGoal: true, allowBackground: true }, f.options);
+    assert.equal(f.goal, false);
+    assert.equal(f.background, true);
+    assert.deepEqual(f.commands.filter(args => args.includes('-l')).map(args => args.at(-1).trim()), ['/goal clear']);
+  }
+});
+
 test('background stop protects drafts and checks pause, identity and input before Enter', async () => {
   for (const scenario of ['draft', 'modal', 'pause', 'replacement', 'edited']) {
     const f = codexStopFixture({ goal: false });

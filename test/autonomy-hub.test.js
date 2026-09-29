@@ -92,6 +92,21 @@ test('binding is scoped and setup never injects configuration into a terminal', 
   f.autonomy.close();
 });
 
+test('confirmation validates binding and plan identity, and cannot launch twice', async () => {
+  const f = await fixture();
+  const planned = await start(f);
+  const planningId = planned.result.planningId;
+  const run = [...f.autonomy.runs.values()][0];
+  writeReceipt(['--receipt', run.observation.planFile, '--status', 'planned', '--goal', '修复输入', '--summary', '验证输入']);
+  await f.autonomy.tick();
+  assert.equal((await f.request('confirmAutonomy', { commandId: 'foreign-confirm', planningId, tmuxSession: 'other' })).ok, false);
+  assert.equal((await f.request('confirmAutonomy', { commandId: 'stale-confirm', planningId: 'stale-plan-identifier' })).ok, false);
+  assert.equal((await f.request('confirmAutonomy', { commandId: 'confirm-first', planningId })).ok, true);
+  assert.equal((await f.request('confirmAutonomy', { commandId: 'confirm-second', planningId })).ok, true);
+  assert.equal(f.sent.length, 1); assert.match(f.sent[0], /create_goal/);
+  f.autonomy.close();
+});
+
 test('old configuration and scheduler APIs are rejected even for a bound owner', async () => {
   const f = await fixture();
   for (const type of ['startAutonomy', 'answerAutonomy', 'finishAutonomy', 'pauseAutonomy']) {

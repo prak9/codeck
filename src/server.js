@@ -352,9 +352,9 @@ const autonomy = new AutonomyController({
   file: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'autonomy.json'),
   readSession: async target => (await listSessions({ refreshAgentIdentities: true, refreshPaneSession: target.tmuxSession }))
     .find(session => session.name === target.tmuxSession),
-  stop: (target, isCurrent) => agentRegistry.interruptSession(target.provider, {
+  stop: (target, isCurrent, { stopGoal = false } = {}) => agentRegistry.interruptSession(target.provider, {
     sessionName: target.tmuxSession, threadId: target.threadId,
-    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: false,
+    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: false, allowBackground: true, stopGoal,
   }),
   send: async (target, text, isCurrent, { commandId } = {}) => {
     const deliveryBaseline = await agentRegistry.prepareSessionMessage(target.provider, {

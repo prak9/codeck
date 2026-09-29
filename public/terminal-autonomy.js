@@ -1,8 +1,9 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=18';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=19';
 
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);
   const button = $('terminalAutonomyButton'), status = $('terminalAutonomyStatus');
+  const confirm = $('terminalConfirmButton'), cancel = $('terminalCancelButton');
   const notice = $('terminalAutonomyNotice');
   const runs = new Map();
   let supported = false, connected = false, bindingKey, bound = false, generation = 0;
@@ -51,7 +52,8 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
         if (epoch !== generation || action !== actionSequence || keyOf(targetNow()) !== bindingKey) return false;
         extra = { ...extra, text: planning.text, planningId: planning.planningId };
       }
-      const result = await request(type, { ...fields(target), commandId, ...extra });
+      const result = await request(type, { ...fields(target), commandId,
+        ...(type === 'resetAutonomy' ? { runId: before?.id } : {}), ...extra });
       if (epoch !== generation || action !== actionSequence || keyOf(targetNow()) !== bindingKey) return false;
       if (current() === before && result?.autonomy) runs.set(bindingKey, result.autonomy);
       if (type === 'sendSessionMessage' && result?.submissionStatus === 'unconfirmed') message('规划请求提交未确认，请检查终端，勿重复点击。');
@@ -77,8 +79,13 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       }
     }
     const run = current(), view = autonomyPresentation(run);
-    button.hidden = !supported || !getTarget();
-    button.disabled = !target || !bound || (pending && !view.active);
+    $('terminalProgressButton').hidden = !getTarget() || view.planning || view.active;
+    button.hidden = !supported || !getTarget() || view.planning;
+    button.disabled = !target || !bound || pending || run?.status === 'exiting';
+    confirm.hidden = cancel.hidden = !supported || !getTarget() || !view.planning;
+    confirm.disabled = !target || !bound || pending || !run?.planReady || Boolean(target.question || target.session?.hasRunningProcess);
+    cancel.disabled = !target || !bound || pending;
+    confirm.setAttribute('aria-busy', String(pending));
     button.title = [view.label, run?.reason].filter(Boolean).join('：');
     button.setAttribute('aria-label', view.label); button.setAttribute('aria-pressed', String(view.active));
     button.setAttribute('aria-busy', String(pending)); button.dataset.state = run?.status || 'off'; button.dataset.tone = view.tone;
@@ -96,6 +103,14 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       else await act('sendSessionMessage', { text: AUTONOMY_PLANNING_PROMPT });
     }
     catch { /* The scoped notice describes the failure. */ }
+  });
+  confirm.addEventListener('click', async () => {
+    if (confirm.hidden || confirm.disabled) return;
+    try { await act('confirmAutonomy', { planningId: current()?.id }); } catch { /* Shown by act. */ }
+  });
+  cancel.addEventListener('click', async () => {
+    if (cancel.hidden || cancel.disabled) return;
+    try { await act('resetAutonomy'); } catch { /* Shown by act. */ }
   });
   return {
     sync, update,

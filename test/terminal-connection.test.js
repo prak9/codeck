@@ -73,6 +73,23 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const inputResults = (ws) => ws.sent.filter(Buffer.isBuffer).map((data) => JSON.parse(data.toString()));
 const sendFrame = (ws, message) => ws.emit('message', Buffer.from(JSON.stringify(message)), false);
 
+test('cursor keys pass through the tmux client after attach, scroll and explicit handoff', async () => {
+  const ws = new FakeSocket(), keys = [], submissions = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    writeTerminalInput: async (_session, data) => keys.push(data),
+    submitTerminalInput: async (_session, data) => submissions.push(data),
+  }));
+  sendFrame(ws, { type: 'input', data: '\x1bOA' }); await nextTurn();
+  sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: '\x1b[A', resume: true }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: '\x1b[1;5D' }); await nextTurn();
+  assert.deepEqual(keys, ['\x1bOA', '\x1b[A', '\x1b[1;5D']);
+  assert.deepEqual(submissions, []);
+  sendFrame(ws, { type: 'input', data: '\x1bOA', submit: true }); await nextTurn();
+  assert.deepEqual(submissions, ['\x1bOA'], 'explicit text submissions remain literal');
+  ws.close();
+});
+
 test('native bracketed paste uses pane negotiation both before and after raw input ownership', async () => {
   const ws = new FakeSocket(), submitted = [], raw = [];
   await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
@@ -187,14 +204,14 @@ test('first human key restores CLI input but terminal replies and scrolling do n
   assert.deepEqual(human, []);
   sendFrame(ws, { type: 'input', data: '\x1b[A' });
   await nextTurn();
-  assert.deepEqual(resumed, ['\x1b[A']);
+  assert.deepEqual(resumed, [], 'cursor keys must not be pasted as literal text');
   sendFrame(ws, { type: 'input', data: 'x' });
   await nextTurn();
-  assert.deepEqual(terminal.writes, ['\x1b[>0;276;0c', 'x']);
+  assert.deepEqual(terminal.writes, ['\x1b[>0;276;0c', '\x1b[A', 'x']);
   sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
-  assert.deepEqual(resumed, ['\x1b[A']);
+  assert.deepEqual(resumed, []);
   sendFrame(ws, { type: 'input', data: 'y' }); await nextTurn();
-  assert.deepEqual(resumed, ['\x1b[A', 'y']);
+  assert.deepEqual(resumed, ['y']);
   assert.deepEqual(human, ['work', 'work', 'work']); ws.close();
 });
 

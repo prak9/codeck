@@ -25,15 +25,23 @@ function fixture(status, question) {
 
 
 test('A sends planning as ordinary input from inactive states and can exit an existing managed run', async () => {
-  for (const status of ['off', 'planning']) {
+  for (const status of ['off', 'ended', 'completed', 'error']) {
     const f = fixture(status, null); await f.context.toggleAutonomy();
     assert.equal(f.calls[0].type, 'send-preset');
     assert.equal(f.calls[0].payload.presetText, AUTONOMY_PLANNING_PROMPT);
   }
-  for (const status of ['running', 'exiting', 'ended', 'completed', 'error']) {
+  for (const status of ['running', 'planning']) {
     const f = fixture(status, null); await f.context.toggleAutonomy();
     assert.equal(f.calls[0].type, 'resetAutonomy');
   }
+});
+
+test('confirmation and cancellation use scoped actions rather than a generic continue message', async () => {
+  const f = fixture('planning', null);
+  await f.context.toggleAutonomy({ confirm: true });
+  assert.equal(f.calls[0].type, 'confirmAutonomy');
+  await f.context.toggleAutonomy({ cancel: true });
+  assert.equal(f.calls[1].type, 'resetAutonomy');
 });
 
 test('an existing managed run can exit without stale errors overwriting the latest intent', async () => {

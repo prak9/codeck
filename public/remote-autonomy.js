@@ -1,12 +1,17 @@
 export const AUTONOMY_PROGRESS_PROMPT = '现在进展怎么样？请简要说明你理解的目标、当前进展、剩余事项和阻塞。不打断当前节奏，不续跑、不改方向、模式或预算。';
 
+export const AUTONOMY_CONFIRM_PROMPT = `确认当前对话中最新的自主任务计划，请开始执行。
+先检查原生 goal：若支持 get_goal / create_goal，复用与本计划一致的已有目标，或用已确认的目标、验收和边界创建目标。预算未指定就不设默认值，也不重置已有预算。若已有不同的未完成目标，先说明冲突，不覆盖它。
+原生 goal 不可用或创建失败时，说明跨回合续跑可能受限，仍在已授权范围内按 iterate skill 执行。实际成功前不要声称已经启用原生 goal。
+按规划中的回执记录开始和结束。阶段性结果不是完成；仍有已授权必做事项就继续。目标经过验证完成后，才将原生 goal 标记完成，再输出自主任务总结。用户中止、预算耗尽或受阻时按工具支持的生命周期交接，不冒报完成。`;
+
 export const AUTONOMY_PLANNING_PROMPT = `请基于最近的讨论，使用 iterate skill，为我规划一个自主迭代任务。先读取该 Skill，并结合项目指令及相关领域 Skill。
 
 简要整理目标、预算、评价标准、范围与约束，以及第一步。区分已完成事项和待推进工作；预算未指定就不设默认值，评价标准未指定时根据目标建立，范围与权限沿用当前项目要求，不自行扩大。
 
 规划保持简短，用自然语言表达，不输出 JSON，不要求我逐项填写。完成后只在当前对话中询问：“按此计划开始、调整计划，还是取消？”然后等待我用普通消息回复。此次规划确认不要调用原生提问工具，也不要发起选择弹窗或 Plan 模式审批；不要替我确认。确认前不执行任务。此约定仅用于自主任务的规划确认，不绕过实际执行所需的权限审批。
 
-我确认后，按照 iterate skill，在约定的目标、预算和授权范围内自主推进，并执行其探索、验证、成果保留、预算管理和交接要求。
+我确认后，尝试使用原生 goal 设定目标，并按照 iterate skill，在约定的目标、预算和授权范围内自主推进，并执行其探索、验证、成果保留、预算管理和交接要求。原生 goal 不可用时明确说明，预算未指定就不设默认值。
 
 正常回应我的提问和方向调整；进度问询不代表停止，也不重置预算。收到停止要求后，按 Skill 保存状态并交接。无论自主结束还是用户中止，都在对话中输出简洁清晰的进展、结果和下一步，不只更新状态。
 
@@ -69,16 +74,17 @@ export function autonomyExecutionLabel(run, execution, waitingForInput = false) 
 
 export function autonomyPresentation(run) {
   const active = ['running', 'exiting'].includes(run?.status);
-  const resettable = active || ['ended', 'completed', 'error'].includes(run?.status);
+  const planning = run?.status === 'planning';
+  const resettable = active || planning || (run?.status === 'error' && run?.exitFailed);
   const phase = ({ running: '执行中', exiting: '总结退出中',
     planning: '等待确认', ended: '执行已结束，未报告完成', completed: '目标完成', error: '执行出错', off: '已退出' })[run?.status] || '';
   return {
     text: ['Ⓐ', phase].filter(Boolean).join(' '),
     detail: phase,
     progress: '',
-    active, resettable,
-    tone: run?.status === 'completed' ? 'completed' : run?.status === 'error' ? 'error' : active || run?.status === 'ended' ? 'running' : 'idle',
-    label: active ? '中断并恢复默认状态' : resettable ? '恢复默认状态' : '请 Agent 规划自主任务',
+    active, planning, resettable,
+    tone: active ? 'running' : 'idle',
+    label: run?.status === 'exiting' ? '正在退出并总结' : active ? '退出自主执行并总结' : planning ? '取消规划' : run?.exitFailed ? '重试退出自主执行' : '请 Agent 规划自主任务',
   };
 }
 

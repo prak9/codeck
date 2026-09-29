@@ -29,7 +29,7 @@ test('server summary delivery keeps identity guards, input receipts and foregrou
   const guard = () => true;
   assert.equal(options.readThread, undefined); assert.equal(options.suggestDefinition, undefined);
   await options.send(target, '总结', guard, { commandId: 'summary-command' });
-  await options.stop(target, guard);
+  await options.stop(target, guard, { stopGoal: true });
   assert.deepEqual(sends.map(value => value.requireIdle), [true]);
   assert.equal(sends[0].replaceDraft, true); assert.equal(reads.length, 0);
   for (const value of [...sends, ...stops]) {
@@ -40,6 +40,8 @@ test('server summary delivery keeps identity guards, input receipts and foregrou
   assert.equal(sends.every(value => value.nonInterrupting), true);
   assert.equal(stops[0].waitForIdle, true);
   assert.equal(stops[0].stopBackground, false);
+  assert.equal(stops[0].stopGoal, true);
+  assert.equal(stops[0].allowBackground, true);
 });
 
 test('isolated server ignores legacy autonomy, requires owner authentication and serves new controls', { timeout: 15_000 }, async t => {

@@ -1,7 +1,7 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=18';
-import { createTerminalAutonomy } from './terminal-autonomy.js?v=19';
+import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=19';
+import { createTerminalAutonomy } from './terminal-autonomy.js?v=20';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -830,10 +830,11 @@ function activeAgentOutputTarget() {
 function syncTerminalProgressButton() {
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
-  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalConfirmButton', '确认并继续推进']]) {
+  const run = target && terminalAutonomy.runFor(target);
+  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度']]) {
     const button = $(`#${id}`);
     const label = target?.question ? '处理 Agent 等待的问题' : action;
-    button.hidden = !target;
+    button.hidden = !target || ['planning', 'running', 'exiting'].includes(run?.status);
     button.disabled = !target || pending || (!target.question && !state.sessionFeedReady);
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-busy', String(pending));
@@ -841,8 +842,8 @@ function syncTerminalProgressButton() {
   }
 }
 
-async function askTerminalProgress({ confirm = false } = {}) {
-  const button = $(confirm ? '#terminalConfirmButton' : '#terminalProgressButton');
+async function askTerminalProgress() {
+  const button = $('#terminalProgressButton');
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   if (!target || button.hidden || button.disabled) return;
   if (target.question) {
@@ -853,24 +854,24 @@ async function askTerminalProgress({ confirm = false } = {}) {
   const attempt = { key: target.progressKey, commandId: crypto.randomUUID() };
   state.terminalProgressPending = attempt;
   syncTerminalProgressButton();
-  setConnectionMessage(confirm ? '正在确认并请求继续推进…' : '正在询问 Agent 进度…', false);
+  setConnectionMessage('正在询问 Agent 进度…', false);
   try {
     const result = await sessionFeedRequest('sendSessionMessage', {
       provider: target.provider,
       threadId: target.threadId,
       tmuxSession: target.tmuxSession,
-      text: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT,
+      text: PROGRESS_PROMPT,
       commandId: attempt.commandId,
     });
     if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;
     if (result?.submissionStatus === 'unconfirmed') {
       setConnectionMessage('消息提交未确认；请检查终端，勿重复点击。', false);
     } else {
-      setConnectionMessage(confirm ? '已确认并请求继续推进' : '已询问 Agent 进度');
+      setConnectionMessage('已询问 Agent 进度');
     }
   } catch (error) {
     if (activeAgentSessionTarget()?.progressKey === attempt.key) {
-      setConnectionMessage(`${confirm ? '确认回复' : '进度询问'}未确认：${error.message}。请检查终端后再试。`, false);
+      setConnectionMessage(`进度询问未确认：${error.message}。请检查终端后再试。`, false);
     }
   } finally {
     if (state.terminalProgressPending === attempt) state.terminalProgressPending = null;
@@ -1796,7 +1797,6 @@ $('#reconnectTerminalButton').addEventListener('click', () => {
 });
 
 $('#terminalProgressButton').addEventListener('click', askTerminalProgress);
-$('#terminalConfirmButton').addEventListener('click', () => askTerminalProgress({ confirm: true }));
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
   button.addEventListener('click', copyLatestAgentOutput);

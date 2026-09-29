@@ -1832,7 +1832,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   });
 }
 
-export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, allowBackground = false, replaceDraft = false }, overrides = {}) {
+export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, stopGoal = false, allowBackground = false, replaceDraft = false }, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未取消旧任务');
@@ -1876,7 +1876,7 @@ export async function interruptSession({ provider, sessionName, threadId, expect
         throw new Error('终端输入框未就绪，请先处理草稿或弹窗；未发送中断键');
       }
     }
-    if (waitForIdle && idle && !interruptForeground && !(stopBackground && ['codex', 'qodercli'].includes(provider))) return;
+    if (waitForIdle && idle && !interruptForeground && !(stopBackground && ['codex', 'qodercli'].includes(provider)) && !(stopGoal && provider === 'codex')) return;
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));
     invalidatePaneSnapshot(sessionName);
@@ -1937,7 +1937,7 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       }
       throw new Error('Qoder 后台任务仍未停止，新目标未启动');
     }
-    if (!stopBackground || provider !== 'codex') return;
+    if ((!stopBackground && !stopGoal) || provider !== 'codex') return;
 
     // Native commands scope cancellation to this Codex session. Never kill process
     // trees, clear drafts, replay a command, or approve an unexpected native dialog.
@@ -1989,7 +1989,7 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       await command('/goal clear');
       await waitUntil(state => !state.goal);
     }
-    if ((await readState()).background) {
+    if (stopBackground && (await readState()).background) {
       await command('/stop');
       await waitUntil(state => !state.background);
     }

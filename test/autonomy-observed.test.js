@@ -37,13 +37,13 @@ for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: obser
   f.now += 1_000_000; await f.manager.tick(); assert.equal(f.state().status, 'running', 'quiet time is not completion');
   assert.throws(() => report(f, 'completed'), /验证证据/);
   report(f, 'completed', { evidence: '日志地址，回归通过', version: 'abc123', verification: '实际回归测试通过' });
-  await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, 'completed');
+  await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, 'idle');
   assert.equal(f.sent.length, 0); assert.equal(f.stops.length, 0);
   await f.manager.resetObserved(f.target); assert.equal(autonomyPresentation(f.state()).tone, 'idle');
   assert.equal(f.sent.length, 0); f.manager.close();
 });
 
-for (const [status, tone] of [['stopped', 'running'], ['budget', 'running'], ['blocked', 'running'], ['error', 'error']]) test(`${status} stays colored until a user reset`, async () => {
+for (const [status, tone] of [['stopped', 'idle'], ['budget', 'idle'], ['blocked', 'idle'], ['error', 'idle']]) test(`${status} returns to default while retaining the result`, async () => {
   const f = fixture(); await f.manager.preparePlanning(f.target); report(f, 'started'); await f.manager.tick();
   report(f, status); await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, tone);
   await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, tone);
@@ -144,7 +144,8 @@ for (const failure of ['identity', 'stop', 'delivery']) test(`${failure} cannot 
   if (failure === 'delivery') f.manager.send = async () => ({ submissionStatus: 'unconfirmed' });
   await assert.rejects(f.manager.resetObserved(f.target)); assert.equal(f.state().status, 'error');
   await f.manager.tick(); assert.equal(f.sent.length, 0);
-  await f.manager.resetObserved(f.target); assert.equal(f.state().status, 'off'); f.manager.close();
+  await assert.rejects(f.manager.resetObserved(f.target));
+  assert.equal(f.state().exitFailed, true, 'failed exit cannot be dismissed as success'); f.manager.close();
 });
 
 test('a superseded planning read cannot overwrite the newer plan on late failure', async () => {
@@ -165,7 +166,7 @@ test('a failed planning preparation is red until explicitly reset', async () => 
   assert.equal(f.sent.length, 0); f.manager.close();
 });
 
-for (const [status, tone] of [['budget', 'running'], ['error', 'error'], ['completed', 'completed']]) test(`${status} survives restart until reset`, async t => {
+for (const [status, tone] of [['budget', 'idle'], ['error', 'idle'], ['completed', 'idle']]) test(`${status} result survives restart with an idle button`, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-observed-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const f = fixture('qodercli', path.join(dir, 'autonomy.json')); await f.manager.preparePlanning(f.target);
   report(f, 'started'); await f.manager.tick();

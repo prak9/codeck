@@ -61,6 +61,7 @@ function progressFixture({
   };
   const context = vm.createContext({
     state,
+    terminalAutonomy: { runFor: () => null },
     $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalConfirmButton' ? confirmButton : draft,
     crypto: { randomUUID: () => 'progress-command' },
     sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
@@ -93,23 +94,22 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.timers.size, 0);
 });
 
-test('confirmation shortcut confirms and continues once, preserving the draft', async () => {
-  const f = progressFixture(); f.context.syncTerminalProgressButton();
-  const pending = f.context.askTerminalProgress({ confirm: true });
-  await f.context.askTerminalProgress({ confirm: true });
-  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].text, '好的，请按当前目标和约定继续推进。');
-  assert.equal(f.confirmButton.disabled, true); assert.equal(f.draft.value, '尚未发送的草稿');
-  f.resolveRequest({ submissionStatus: 'submitted' }); await pending;
-  assert.equal(f.confirmButton.disabled, false);
+test('progress shortcut is hidden throughout planning and execution', () => {
+  const f = progressFixture();
+  for (const status of ['planning', 'running', 'exiting']) {
+    f.context.terminalAutonomy.runFor = () => ({ status });
+    f.context.syncTerminalProgressButton();
+    assert.equal(f.button.hidden, true);
+  }
 });
 
-test('confirmation shortcut respects native questions and disconnection', async () => {
+test('progress shortcut respects native questions and disconnection', async () => {
   const waiting = progressFixture({ question: { prompt: '批准权限？' } });
-  waiting.context.syncTerminalProgressButton(); await waiting.context.askTerminalProgress({ confirm: true });
+  waiting.context.syncTerminalProgressButton(); await waiting.context.askTerminalProgress();
   assert.equal(waiting.requests.length, 0); assert.equal(waiting.terminalFocuses(), 1);
   const disconnected = progressFixture({ sessionFeedReady: false });
-  disconnected.context.syncTerminalProgressButton(); await disconnected.context.askTerminalProgress({ confirm: true });
-  assert.equal(disconnected.requests.length, 0); assert.equal(disconnected.confirmButton.disabled, true);
+  disconnected.context.syncTerminalProgressButton(); await disconnected.context.askTerminalProgress();
+  assert.equal(disconnected.requests.length, 0); assert.equal(disconnected.button.disabled, true);
 });
 
 test('explicit composer handoff preserves bytes and asks the server to leave copy mode', () => {
