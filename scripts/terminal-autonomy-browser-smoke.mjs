@@ -31,6 +31,8 @@ function reset(provider) {
     stop: async () => { f.stops++; sessions[0].hasRunningProcess = false; },
     send: async (_target, text) => {
       f.sent.push(text);
+      const run = [...f.autonomy.runs.values()][0];
+      if (run?.cleanupPending) writeReceipt(['--receipt', run.cleanupFile, '--status', 'stopped', '--summary', 'cleaned', '--evidence', 'verified resources', '--next', 'none']);
       const turn = { status: 'inProgress', items: [{ type: 'userMessage', content: text }] };
       f.turns.push(turn);
       return { submissionStatus: 'submitted' };
@@ -146,7 +148,7 @@ try {
       await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-autonomy-idle.png') });
       if (width < 600) await page.locator('[data-session="fixture"]').click();
       assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
-      writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过']);
+      writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过', '--cleanup', 'verified resources']);
       await fixture.autonomy.tick();
       await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.open && !el.hidden), true);
@@ -165,6 +167,9 @@ try {
       assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
       assert.equal(await a.getAttribute('data-tone'), 'idle', 'completion restores default');
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => !el.open && !el.hidden), true, 'reconnect retains a collapsed report');
+      await a.click();
+      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'off');
+      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'completed click only exits');
       await a.click(); await confirm.waitFor({ state: 'visible' });
       await page.waitForFunction(() => !document.querySelector('#terminalCancelButton').disabled);
       assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.hidden), true);

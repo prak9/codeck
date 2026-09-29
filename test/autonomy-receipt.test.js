@@ -9,7 +9,7 @@ import { readReceipt, writeReceipt, observedStatusInstructions } from '../src/au
 
 test('end receipts require a substantive report and do not replace the final human reply', () => {
   const instructions = observedStatusInstructions('/tmp/start.json', '/tmp/end.json');
-  for (const text of ['结束前先整理正式总结', '不得只写“已完成”', 'Codeck 会据此单独展示总结',
+  for (const text of ['清理本任务创建且能够确认归属', '随后整理正式总结', '不得只写“已完成”', 'Codeck 会据此单独展示总结',
     '自然语言最终答复', '不要只写回执或以变绿代替最终答复']) assert.ok(instructions.includes(text), text);
 });
 

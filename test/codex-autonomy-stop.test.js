@@ -4,6 +4,18 @@ import { interruptSession } from '../src/tmux.js';
 
 const empty = '› \n\n  gpt-6-astra medium · /project';
 const params = { provider: 'codex', sessionName: 'work', threadId: 'thread', waitForIdle: true, expectedPaneId: '%7' };
+test('natural cleanup defers when a new turn has started and sends no interrupt keys', async () => {
+  for (const cachedBusy of [false, true]) {
+    const keys = [];
+    const result = await interruptSession({ ...params, onlyIfIdle: true, stopGoal: true }, {
+      listTmuxSessions: async () => [{ name: 'work', hasRunningProcess: cachedBusy, agent: { kind: 'codex', id: 'thread', paneId: '%7' } }],
+      capturePane: async () => `• Working (1s • esc to interrupt)\n${empty}`,
+      execTmux: async args => keys.push(args),
+    });
+    assert.equal(result.deferred, true);
+    assert.deepEqual(keys, []);
+  }
+});
 test('A never sends Escape for cached working state with a fresh empty Codex composer', async () => {
   const keys = []; let reads = 0;
   await interruptSession(params, {

@@ -25,12 +25,12 @@ function fixture(status, question) {
 
 
 test('A sends planning as ordinary input from inactive states and can exit an existing managed run', async () => {
-  for (const status of ['off', 'ended', 'completed', 'error']) {
+  for (const status of ['off', 'ended', 'error']) {
     const f = fixture(status, null); await f.context.toggleAutonomy();
     assert.equal(f.calls[0].type, 'send-preset');
     assert.equal(f.calls[0].payload.presetText, AUTONOMY_PLANNING_PROMPT);
   }
-  for (const status of ['running', 'planning']) {
+  for (const status of ['running', 'planning', 'completed']) {
     const f = fixture(status, null); await f.context.toggleAutonomy();
     assert.equal(f.calls[0].type, 'resetAutonomy');
   }

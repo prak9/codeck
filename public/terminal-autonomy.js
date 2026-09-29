@@ -1,4 +1,4 @@
-import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=19';
+import { autonomyKey, autonomyPresentation, autonomyDisplayText, autonomySummaryRows, isProgressPrompt, isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=20';
 
 export function createTerminalAutonomy({ getTarget, request, focusTerminal, document = globalThis.document }) {
   const $ = id => document.getElementById(id);

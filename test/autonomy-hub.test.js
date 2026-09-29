@@ -21,7 +21,12 @@ async function fixture({ openThread = true } = {}) {
   });
   const autonomy = new AutonomyController({
     readSession: async () => ({ name: 'work', agent: { id: 'thread', kind: 'codex', paneId: '%7' } }),
-    send: async (_target, text) => { sent.push(text); return {}; },
+    send: async (_target, text) => {
+      sent.push(text);
+      const run = [...autonomy.runs.values()][0];
+      if (run?.cleanupPending) writeReceipt(['--receipt', run.cleanupFile, '--status', 'stopped', '--summary', 'cleaned', '--evidence', 'verified resources', '--next', 'none']);
+      return {};
+    },
     schedule: () => 1, cancel() {},
   });
   const hub = new AgentHub(registry, { autonomy }); const socket = new Socket(); hub.handleConnection(socket);

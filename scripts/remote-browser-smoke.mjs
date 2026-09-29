@@ -100,6 +100,11 @@ function reset(provider) {
       ] };
       fixture.turns.push(entry);
       fixture.status = 'working'; publishThread(); publishSessions();
+      const run = [...fixture.autonomy.runs.values()][0];
+      if (run?.cleanupPending) {
+        writeReceipt(['--receipt', run.cleanupFile, '--status', 'stopped', '--summary', 'cleaned', '--evidence', 'verified resources', '--next', 'none']);
+        entry.status = 'completed'; fixture.status = 'done'; publishThread(); publishSessions();
+      }
       return { submissionStatus: 'submitted' };
     },
   });
@@ -353,7 +358,7 @@ try {
         const receiptTurn = fixture.turns.at(-1);
         receiptTurn.items.push({ id: 'receipt-tool', type: 'commandExecution', command: `${observed.observation.endFile} --status completed`, status: 'completed' });
         publishEvent('item/completed', { turnId: receiptTurn.id, item: receiptTurn.items.at(-1) });
-        writeReceipt(['--receipt', observed.observation.endFile, '--status', completed ? 'completed' : 'budget',
+        writeReceipt(['--receipt', observed.observation.endFile, '--status', completed ? 'completed' : 'budget', '--cleanup', 'verified resources',
           '--summary', completed ? '已修复输入并验证通过' : '预算已耗尽', '--next', '交接剩余验证',
           ...(completed ? ['--evidence', 'test.log', '--version', 'abc123', '--verification', '回归通过'] : [])]);
         await fixture.autonomy.tick();
@@ -385,6 +390,11 @@ try {
         assert.equal(await page.locator('#autonomySummary').evaluate(el => el.previousElementSibling?.dataset.turnId), receiptTurn.id, 'receipt turn is the stable anchor');
         assert.equal(await page.locator('#autonomySummary').evaluate(el => [...el.parentElement.children]
           .slice([...el.parentElement.children].indexOf(el) + 1).some(node => node.textContent.includes('总结之后的新消息'))), true, 'reload preserves report order');
+        if (completed) {
+          await auto.click();
+          await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'off');
+          assert.equal(fixture.sent.filter(request => request.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'completed click only exits');
+        }
         await auto.click(); await confirm.waitFor({ state: 'visible' });
         await page.waitForFunction(() => !document.querySelector('#cancelAutonomyButton').disabled);
         assert.equal(await page.locator('#autonomySummary').evaluate(el => el.hidden), true, 'reset retires completed report');

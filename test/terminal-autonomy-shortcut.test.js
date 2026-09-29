@@ -70,13 +70,21 @@ test('uncertain planning delivery warns without resending; stale errors cannot a
 });
 
 test('finished runs start a new plan on the first click', async () => {
-  for (const status of ['ended', 'error', 'completed']) {
+  for (const status of ['ended', 'error']) {
     const f = fixture(); await f.ready();
     f.ui.update({ id: 'run', target: f.target, mode: 'observed', status, round: 0 });
     await f.click();
     assert.equal(f.calls.at(-1).type, 'sendSessionMessage');
     assert.equal(f.calls.some(call => call.type === 'resetAutonomy'), false);
   }
+});
+
+test('completed A exits without sending a new planning message', async () => {
+  const f = fixture(); await f.ready();
+  f.ui.update({ id: 'done', target: f.target, status: 'completed' });
+  await f.click();
+  assert.equal(f.calls.at(-1).type, 'resetAutonomy');
+  assert.equal(f.calls.some(call => call.type === 'prepareAutonomyPlanning' || call.type === 'sendSessionMessage'), false);
 });
 
 test('planning offers confirm and cancel; running offers only yellow A', async () => {

@@ -21,7 +21,7 @@ test('legacy controller methods and stored runs are not supported', async t => {
 function report(f, status, extra = {}) {
   const observation = f.run().observation;
   const file = status === 'started' ? observation.startFile : observation.endFile;
-  const values = { summary: status, ...(status === 'started' ? { goal: '修复输入' } : { next: '交接后续事项' }), ...extra };
+  const values = { summary: status, ...(status === 'started' ? { goal: '修复输入' } : { next: '交接后续事项', cleanup: '任务资源已逐项核验回收' }), ...extra };
   writeReceipt(['--receipt', file, '--status', status, ...Object.entries(values).flatMap(([k, v]) => [`--${k}`, v])]);
 }
 
@@ -38,7 +38,7 @@ for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: obser
   assert.throws(() => report(f, 'completed'), /验证证据/);
   report(f, 'completed', { evidence: '日志地址，回归通过', version: 'abc123', verification: '实际回归测试通过' });
   await f.manager.tick(); assert.equal(autonomyPresentation(f.state()).tone, 'idle');
-  assert.equal(f.sent.length, 0); assert.equal(f.stops.length, 0);
+  assert.equal(f.sent.length, 0); assert.equal(f.stops.length, 1);
   await f.manager.resetObserved(f.target); assert.equal(autonomyPresentation(f.state()).tone, 'idle');
   assert.equal(f.sent.length, 0); f.manager.close();
 });
@@ -92,19 +92,16 @@ test('a final receipt without a confirmed start cannot turn A green', async () =
   assert.equal(f.sent.length, 0); f.manager.close();
 });
 
-test('a retired slow poll neither blocks nor overwrites the new task', async t => {
+test('a slow planning poll cannot be bypassed by starting another task', async t => {
   const f = fixture(); t.after(() => f.manager.close());
   await f.manager.preparePlanning(f.target); report(f, 'started');
   const read = f.manager.readSession; let resolve;
   f.manager.readSession = () => new Promise(done => { resolve = done; });
   const oldPoll = f.manager.tick();
   f.manager.readSession = read;
-  const prepared = await f.manager.preparePlanning(f.target);
-  report(f, 'started');
-  await f.manager.tick();
-  assert.equal(f.state().status, 'running'); assert.equal(f.state().id, prepared.planningId);
+  await assert.rejects(f.manager.preparePlanning(f.target), /退出/);
   resolve(f.session); await oldPoll;
-  assert.equal(f.state().status, 'running'); assert.equal(f.state().id, prepared.planningId);
+  assert.equal(f.state().status, 'running');
 });
 
 test('new tasks reclaim flat stored receipts without following arbitrary saved paths', async t => {
@@ -126,12 +123,12 @@ test('new tasks reclaim flat stored receipts without following arbitrary saved p
   await f.manager.tick(); assert.equal(f.state().status, 'planning');
 });
 
-for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: concurrent A resets stop once, preserve background work and request one summary`, async () => {
+for (const provider of ['codex', 'claude', 'qodercli']) test(`${provider}: concurrent A resets request one cleanup and verify its result`, async () => {
   const f = fixture(provider); await f.manager.preparePlanning(f.target); report(f, 'started'); await f.manager.tick();
   f.session.hasRunningProcess = true; f.session.agent.hasBackgroundProcess = true;
   await Promise.all([f.manager.resetObserved(f.target), f.manager.resetObserved(f.target)]);
-  assert.equal(f.stops.length, 1); assert.equal(f.stops[0].stopBackground, false);
-  assert.equal(f.session.agent.hasBackgroundProcess, true); assert.equal(f.sent.length, 1);
+  assert.equal(f.stops.length, 2); assert.equal(f.stops.every(scope => scope.stopBackground === false), true);
+  assert.equal(f.session.agent.hasBackgroundProcess, false); assert.equal(f.sent.length, 1);
   assert.match(f.sent[0], /只总结.*进展.*结果.*下一步/); assert.match(f.sent[0], /不要续跑/);
   assert.equal(f.state().status, 'off'); await f.manager.resetObserved(f.target);
   assert.equal(f.sent.length, 1); f.manager.close();
@@ -148,12 +145,14 @@ for (const failure of ['identity', 'stop', 'delivery']) test(`${failure} cannot 
   assert.equal(f.state().exitFailed, true, 'failed exit cannot be dismissed as success'); f.manager.close();
 });
 
-test('a superseded planning read cannot overwrite the newer plan on late failure', async () => {
+test('a pending planning preparation cannot be replaced before cleanup', async () => {
   const f = fixture(); const read = f.manager.readSession; let reject;
   f.manager.readSession = () => new Promise((_resolve, fail) => { reject = fail; });
   const first = f.manager.preparePlanning(f.target); f.manager.readSession = read;
-  const second = await f.manager.preparePlanning(f.target);
+  await assert.rejects(f.manager.preparePlanning(f.target), /退出/);
   reject(Error('旧请求失败')); await assert.rejects(first);
+  await f.manager.resetObserved(f.target);
+  const second = await f.manager.preparePlanning(f.target);
   assert.equal(f.state().id, second.planningId); assert.equal(f.state().status, 'planning');
   assert.equal(f.sent.length, 0); f.manager.close();
 });

@@ -1832,7 +1832,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
   });
 }
 
-export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, stopGoal = false, allowBackground = false, replaceDraft = false }, overrides = {}) {
+export async function interruptSession({ provider, sessionName, threadId, expectedPaneId, isCurrent, waitForIdle = false, stopBackground = false, stopGoal = false, allowBackground = false, replaceDraft = false, onlyIfIdle = false }, overrides = {}) {
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
   return queueSessionInput(sessionName, async () => {
     if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，未取消旧任务');
@@ -1848,6 +1848,7 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       return !currentSession.hasRunningProcess && !currentSession.agent?.question;
     };
     const idle = check(paneId, session);
+    if (onlyIfIdle && !idle) return { deferred: true };
     if (replaceDraft && provider !== 'shell') {
       const capture = overrides.capturePane || (pane => capturePane(pane, exec, true, true));
       await replaceComposerDraft({ provider, paneId, question: session.agent?.question,
@@ -1876,6 +1877,7 @@ export async function interruptSession({ provider, sessionName, threadId, expect
         throw new Error('终端输入框未就绪，请先处理草稿或弹窗；未发送中断键');
       }
     }
+    if (onlyIfIdle && interruptForeground) return { deferred: true };
     if (waitForIdle && idle && !interruptForeground && !(stopBackground && ['codex', 'qodercli'].includes(provider)) && !(stopGoal && provider === 'codex')) return;
     const invalidatePaneSnapshot = overrides.invalidatePaneSnapshot
       || ((name) => paneScreenCache.delete(name));

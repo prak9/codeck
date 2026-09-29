@@ -75,7 +75,8 @@ export function autonomyExecutionLabel(run, execution, waitingForInput = false) 
 export function autonomyPresentation(run) {
   const active = ['running', 'exiting'].includes(run?.status);
   const planning = run?.status === 'planning';
-  const resettable = active || planning || (run?.status === 'error' && run?.exitFailed);
+  const completed = run?.status === 'completed';
+  const resettable = active || planning || completed || (run?.status === 'error' && run?.exitFailed);
   const phase = ({ running: '执行中', exiting: '总结退出中',
     planning: '等待确认', ended: '执行已结束，未报告完成', completed: '目标完成', error: '执行出错', off: '已退出' })[run?.status] || '';
   return {
@@ -84,7 +85,7 @@ export function autonomyPresentation(run) {
     progress: '',
     active, planning, resettable,
     tone: active ? 'running' : 'idle',
-    label: run?.status === 'exiting' ? '正在退出并总结' : active ? '退出自主执行并总结' : planning ? '取消规划' : run?.exitFailed ? '重试退出自主执行' : '请 Agent 规划自主任务',
+    label: run?.status === 'exiting' ? '正在退出并总结' : active ? '退出自主执行并总结' : planning ? '取消规划' : completed ? '任务已完成，退出自主模式' : run?.exitFailed ? '重试退出自主执行' : '请 Agent 规划自主任务',
   };
 }
 
