@@ -2421,7 +2421,7 @@ function renderComposerState() {
   const presentation = autonomyPresentation(autonomy);
   const progressUnavailable = !state.thread || state.provider === 'shell' || readOnly;
   const progressHint = waitingForInput ? '处理 Agent 等待的问题' : '询问目标与进度，不打断当前任务';
-  progressButton.hidden = progressUnavailable || presentation.active || presentation.planning;
+  progressButton.hidden = progressUnavailable;
   progressButton.disabled = progressUnavailable || opening || closing || pending || !state.connected;
   progressButton.setAttribute('aria-label', progressHint);
   progressButton.title = progressHint;
@@ -2436,7 +2436,7 @@ function renderComposerState() {
   cancelButton.disabled = opening || closing || !state.connected || state.autonomyPending;
   const autonomyButton = $('#autonomyButton');
   renderAutonomySummary(autonomy);
-  autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false || presentation.planning;
+  autonomyButton.hidden = !state.autonomySupported || progressUnavailable || !sessionName || state.thread?.tmux?.available === false;
   autonomyButton.disabled = opening || closing || !state.connected || state.autonomyPending || autonomy?.status === 'exiting' || (pending && !presentation.active);
   autonomyButton.classList.toggle('running', autonomy?.status === 'running');
   autonomyButton.setAttribute('aria-label', [presentation.label, presentation.detail, autonomy?.reason].filter(Boolean).join('，'));

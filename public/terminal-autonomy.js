@@ -79,8 +79,7 @@ export function createTerminalAutonomy({ getTarget, request, focusTerminal, docu
       }
     }
     const run = current(), view = autonomyPresentation(run);
-    $('terminalProgressButton').hidden = !getTarget() || view.planning || view.active;
-    button.hidden = !supported || !getTarget() || view.planning;
+    button.hidden = !supported || !getTarget();
     button.disabled = !target || !bound || pending || run?.status === 'exiting';
     confirm.hidden = cancel.hidden = !supported || !getTarget() || !view.planning;
     confirm.disabled = !target || !bound || pending || !run?.planReady || Boolean(target.question || target.session?.hasRunningProcess);

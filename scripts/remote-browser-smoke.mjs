@@ -330,9 +330,9 @@ try {
         assert.equal(await page.locator('#composerInput').inputValue(), '尚未发送的草稿');
         assert.equal(await auto.getAttribute('aria-pressed'), 'false', 'planning is not execution');
         const confirm = page.locator('#confirmButton');
-        assert.equal(await auto.isVisible(), false);
+        assert.equal(await auto.isVisible(), true);
         assert.equal(await page.locator('#cancelAutonomyButton').isVisible(), true);
-        assert.equal(await page.locator('#progressButton').isVisible(), false);
+        assert.equal(await page.locator('#progressButton').isVisible(), true);
         assert.equal(await confirm.isDisabled(), true, 'confirmation waits for an actual plan');
         await readyPlan();
         fixture.status = 'done'; publishSessions();
@@ -410,7 +410,7 @@ try {
         await page.waitForFunction(() => !document.querySelector('#confirmButton').disabled);
         await confirm.click(); await auto.waitFor({ state: 'visible' });
         await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
-        assert.equal(await page.locator('#progressButton').isVisible(), false);
+        assert.equal(await page.locator('#progressButton').isVisible(), true);
         assert.equal(await page.locator('#cancelAutonomyButton').isVisible(), false);
         await auto.click();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.state === 'off');

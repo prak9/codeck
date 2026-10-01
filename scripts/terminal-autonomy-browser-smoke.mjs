@@ -123,9 +123,9 @@ try {
       assert.equal(await confirm.isDisabled(), true, 'confirmation waits for an actual plan');
       await readyPlan();
       await page.waitForFunction(() => !document.querySelector('#terminalConfirmButton').disabled);
-      assert.equal(await a.isVisible(), false);
+      assert.equal(await a.isVisible(), true);
       assert.equal(await page.locator('#terminalCancelButton').isVisible(), true);
-      assert.equal(await page.locator('#terminalProgressButton').isVisible(), false);
+      assert.equal(await page.locator('#terminalProgressButton').isVisible(), true);
       const confirmBox = await confirm.boundingBox();
       assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= width);
       await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-confirm.png') });

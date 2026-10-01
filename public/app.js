@@ -1,7 +1,7 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=1';
 import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=20';
-import { createTerminalAutonomy } from './terminal-autonomy.js?v=21';
+import { createTerminalAutonomy } from './terminal-autonomy.js?v=22';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -830,11 +830,10 @@ function activeAgentOutputTarget() {
 function syncTerminalProgressButton() {
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
-  const run = target && terminalAutonomy.runFor(target);
   for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalContinueButton', '确认并继续推进']]) {
     const button = $(`#${id}`);
     const label = target?.question ? '处理 Agent 等待的问题' : action;
-    button.hidden = !target || (id === 'terminalProgressButton' && ['planning', 'running', 'exiting'].includes(run?.status));
+    button.hidden = !target;
     button.disabled = !target || pending || (!target.question && !state.sessionFeedReady);
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-busy', String(pending));

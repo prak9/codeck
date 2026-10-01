@@ -94,12 +94,12 @@ test('whole draft submission waits for server receipt and does not send twice wh
   assert.equal(f.timers.size, 0);
 });
 
-test('progress shortcut is hidden throughout planning and execution', () => {
+test('progress shortcut remains available throughout planning and execution', () => {
   const f = progressFixture();
   for (const status of ['planning', 'running', 'exiting']) {
     f.context.terminalAutonomy.runFor = () => ({ status });
     f.context.syncTerminalProgressButton();
-    assert.equal(f.button.hidden, true);
+    assert.equal(f.button.hidden, false);
     assert.equal(f.confirmButton.hidden, false, 'conversation confirmation remains independent of A state');
   }
 });

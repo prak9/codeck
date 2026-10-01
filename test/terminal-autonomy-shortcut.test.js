@@ -37,6 +37,14 @@ test('terminal never shows old blocked, stopped or error results as a completed 
   }
 });
 
+test('A remains visible through planning, execution and exit', async () => {
+  const f = fixture(); await f.ready();
+  for (const status of ['planning', 'running', 'exiting', 'completed', 'off']) {
+    f.ui.update({ id: 'run', target: f.target, status });
+    assert.equal(f.button.hidden, false, status);
+  }
+});
+
 test('terminal A sends the approved prompt once while pending, without configuration or extraction', async () => {
   const f = fixture(); await f.ready(); let release;
   f.send = () => new Promise(resolve => { release = resolve; });
@@ -87,10 +95,10 @@ test('completed A exits without sending a new planning message', async () => {
   assert.equal(f.calls.some(call => call.type === 'prepareAutonomyPlanning' || call.type === 'sendSessionMessage'), false);
 });
 
-test('planning offers confirm and cancel; running offers only yellow A', async () => {
+test('planning offers confirm and cancel alongside A; running retains yellow A', async () => {
   const f = fixture(); await f.ready();
   f.ui.update({ id: 'plan', target: f.target, status: 'planning', planReady: true });
-  assert.equal(f.button.hidden, true);
+  assert.equal(f.button.hidden, false);
   assert.equal(f.confirm.hidden, false); assert.equal(f.cancel.hidden, false);
   await f.confirm.listeners.click();
   assert.equal(f.calls.at(-1).type, 'confirmAutonomy');
