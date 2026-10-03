@@ -315,6 +315,13 @@ try {
       console.log(`Journey: ${provider} ${viewport.width}`);
       const errors = [];
       page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
+      await page.goto(`http://127.0.0.1:${server.address().port}/remote`);
+      await page.locator('#composerInput').fill('未选择会话时保留的草稿');
+      await page.waitForFunction(() => !document.querySelector('#sendButton').disabled);
+      await page.locator('#sendButton').click();
+      assert.equal(await page.locator('#newSessionDialog').evaluate(el => el.open), false);
+      assert.equal(await page.locator('#composerInput').inputValue(), '未选择会话时保留的草稿');
+      assert.equal(fixture.sent.length, 0);
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
       if (simpleMode) {
@@ -350,6 +357,12 @@ try {
         writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
         await fixture.autonomy.tick();
         await page.waitForFunction(() => document.querySelector('#autonomyButton').dataset.tone === 'running');
+        await page.locator('#composerInput').fill('');
+        await page.waitForFunction(() => document.querySelector('#sendButton').classList.contains('stop-mode'));
+        assert.equal(await page.locator('#sendButton').isEnabled(), true);
+        assert.equal(await page.locator('#sendButton').getAttribute('aria-label'), '停止当前任务');
+        await page.locator('#composerInput').fill('尚未发送的草稿');
+        assert.equal(await page.locator('#sendButton').evaluate(el => el.classList.contains('stop-mode')), false);
         await page.waitForFunction(() => document.querySelector('[data-tmux-session="fixture"] small')?.textContent.includes('自主执行中'));
         fixture.status = 'done'; publishSessions();
         await page.waitForFunction(() => document.querySelector('[data-tmux-session="fixture"] small')?.textContent.includes('自主模式·当前空闲'));

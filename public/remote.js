@@ -2405,8 +2405,7 @@ function renderComposerState() {
   const opening = Boolean(state.threadOpening);
   const closing = state.sessionClosePending;
   const controls = composerControlState({
-    active: !(state.autonomySupported && sessionName && state.provider !== 'shell')
-      && (active || (background && state.scopedSessionStop)), connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
+    active: active || (background && state.scopedSessionStop), connected: state.connected, hasText: hasContent, opening: opening || closing, pending, readOnly,
   });
   const composer = $('.composer');
   sendButton.classList.toggle('stop-mode', controls.stopMode && !shellAttachmentOnly);
@@ -2622,8 +2621,7 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
   }
   if (submitAction === 'none') return;
   if (!state.thread) {
-    setLiveMessage('请先为新的 tmux 会话命名。');
-    openNewSession();
+    setLiveMessage('尚未选择会话，请从会话列表选择后发送；草稿已保留。');
     return;
   }
   await composerRequestGate.run(async () => {
