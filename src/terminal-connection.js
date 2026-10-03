@@ -119,6 +119,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     outputFlowControl = false,
     outputFlowId = null,
     outputHighWaterMark = TERMINAL_OUTPUT_HIGH_WATERMARK,
+    outputDrainTimeoutMs = 10_000,
     ...dependencyOverrides
   } = overrides;
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
@@ -134,6 +135,11 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   let terminalGrid = '';
   let unacknowledgedOutput = 0;
   let resyncPending = false;
+  let outputDrainTimer = null;
+  const cancelOutputDrainTimer = () => {
+    clearTimeout(outputDrainTimer);
+    outputDrainTimer = null;
+  };
   let closed = ws.readyState !== ws.OPEN;
   let attachSequence = 0;
   let awaitingSessionActivity = false;
@@ -213,6 +219,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   };
   const reattachAfterDrain = () => {
     if (!resyncPending || unacknowledgedOutput || !isOpen()) return;
+    cancelOutputDrainTimer();
     resyncPending = false;
     attachTerminal(activeSession, activeViewport, true).catch((error) => {
       if (isOpen()) ws.close(1011, error.message || 'tmux resynchronization failed');
@@ -236,6 +243,19 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       resyncPending = true;
       terminalDiagnostics.record(activeSession, 'output-backpressure', { chars: unacknowledgedOutput });
       killTerminal();
+      // A responsive WebSocket is not proof that xterm is parsing output. Bound
+      // this wait instead of retaining invisible keystrokes indefinitely. Closing
+      // uses the existing client reconnect UI; never replay input or steal an attach.
+      outputDrainTimer = setTimeout(() => {
+        outputDrainTimer = null;
+        if (!resyncPending || !isOpen()) return;
+        terminalDiagnostics.record(activeSession, 'output-drain-timeout', { chars: unacknowledgedOutput });
+        inputGeneration += 1;
+        inputOperation = null;
+        pending.length = 0;
+        ws.close(1011, '终端显示同步超时，排队输入已取消；请重新连接');
+      }, outputDrainTimeoutMs);
+      outputDrainTimer.unref?.();
     }
     return true;
   };
@@ -243,6 +263,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
   // Register cancellation before the first await. A closed setup must never reach the
   // side-effectful attach-session, where an exclusive owner attach could evict a newer connection.
   ws.on('close', () => {
+    cancelOutputDrainTimer();
     terminalDiagnostics.record(activeSession, 'disconnected');
     closed = true;
     attachSequence += 1;
@@ -278,6 +299,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
           ws.close(1008, '无效的终端流控标识');
           return;
         }
+        cancelOutputDrainTimer();
         inputGeneration += 1;
         inputOperation = null;
         for (const queued of pending) {

@@ -694,6 +694,54 @@ test('a closed socket discards pending terminal output instead of flushing it', 
   assert.deepEqual(ws.closes, [{ code: 1000, reason: 'browser left' }]);
 });
 
+test('missing output acknowledgement closes the stalled connection without replaying queued input', async () => {
+  const ws = new FakeSocket();
+  const created = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    outputFlowControl: true, outputFlowId: '1', outputHighWaterMark: 5, outputDrainTimeoutMs: 30,
+    createTerminal: () => { const terminal = fakeTerminal(); created.push(terminal); return terminal; },
+  }));
+  created[0].dataCallback('123456');
+  await waitForTerminalOutput();
+  sendFrame(ws, { type: 'input', data: 'must not replay' });
+  sendFrame(ws, { type: 'ping', id: 1 });
+  assert.equal(inputResults(ws).at(-1).type, 'pong');
+  sendFrame(ws, { type: 'outputAck', flowId: 'stale', chars: 6 });
+  sendFrame(ws, { type: 'outputAck', flowId: '1', chars: 1 });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(ws.closes.length, 1);
+  assert.match(ws.closes[0].reason, /重新连接/);
+  sendFrame(ws, { type: 'outputAck', flowId: '1', chars: 6 });
+  await nextTurn();
+  assert.equal(created.length, 1);
+  assert.deepEqual(created[0].writes, []);
+});
+
+test('output drain watchdog is cancelled by acknowledgement, session switch or close', async () => {
+  for (const action of ['ack', 'switch', 'close']) {
+    const ws = new FakeSocket();
+    const created = [];
+    await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+      canSwitchSession: true,
+      outputFlowControl: true, outputFlowId: '1', outputHighWaterMark: 5, outputDrainTimeoutMs: 40,
+      createTerminal: () => { const terminal = fakeTerminal(); created.push(terminal); return terminal; },
+    }));
+    created[0].dataCallback('123456');
+    await waitForTerminalOutput();
+    if (action === 'ack') sendFrame(ws, { type: 'outputAck', flowId: '1', chars: 6 });
+    if (action === 'switch') sendFrame(ws, { type: 'switch', session: 'other', cols: 80, rows: 24, flowId: '2' });
+    if (action === 'close') ws.close(1000, 'done');
+    await new Promise(resolve => setTimeout(resolve, 70));
+    assert.equal(ws.closes.length, action === 'close' ? 1 : 0, action);
+    if (action !== 'close') {
+      sendFrame(ws, { type: 'input', data: 'new input' });
+      await nextTurn();
+      assert.deepEqual(created[1].writes, ['new input']);
+      ws.close();
+    }
+  }
+});
+
 test('a slow browser bounds stale output and reattaches at the current tmux screen', async () => {
   const ws = new FakeSocket();
   const created = [];
