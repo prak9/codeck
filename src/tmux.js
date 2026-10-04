@@ -86,7 +86,7 @@ export const AGENT_SCREEN_MARKERS = {
 // hop: an agent running on the far side of a jump host leaves no local descendant, so
 // detectPaneAgents sees nothing and the session falls back to its foreground command.
 // These markers name the agent from what it draws instead. Keep them narrow: Codex must
-// own the final pane row, so a completed transcript followed by a shell prompt does not
+// own the final pane footer, so a completed transcript followed by a shell prompt does not
 // keep the pane classified as an Agent.
 export const AGENT_SCREEN_IDENTITY = {
   codex: [/^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*\s·\s(?:~(?:\/|$)|\/)/i],
@@ -96,7 +96,7 @@ export const AGENT_SCREEN_IDENTITY = {
 export function identifyAgentFromScreen(output) {
   const lines = screenLines(output).slice(-6);
   for (const [kind, patterns] of Object.entries(AGENT_SCREEN_IDENTITY)) {
-    const candidates = kind === 'codex' ? lines.slice(-1) : lines;
+    const candidates = kind === 'codex' ? [lines[codexComposerFooterRow(lines)] || ''] : lines;
     if (candidates.some((line) => patterns.some((pattern) => pattern.test(line)))) return kind;
   }
   return null;
@@ -336,10 +336,8 @@ function cleanScreenRows(output) {
 }
 
 function codexStatusEnd(rows) {
-  const last = rows.findLastIndex(line => line.trim());
-  const footer = rows[last]?.trim() || '';
-  if (!AGENT_SCREEN_IDENTITY.codex.some(pattern => pattern.test(footer))
-    && !CODEX_CLIPPED_FOOTER.test(footer)) return rows.length;
+  const last = codexComposerFooterRow(rows);
+  if (last < 0) return rows.length;
   const composer = rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
   if (composer < 0 || !rows.slice(composer + 1, last).every(line => !line || /^ {2}/u.test(line))) return rows.length;
   // Measure from the live composer's top, not the pane bottom: wrapped drafts and
@@ -933,6 +931,18 @@ const CODEX_PLACEHOLDER = 'Ask Codex to do anything';
 // The goal badge can remain visible to the right of a clipped model/path.
 const CODEX_CLIPPED_FOOTER = /^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*…(?:\s+Goal (?:achieved \([^()\n]+\)|paused \(\/goal resume\)))?$/iu;
 
+function codexComposerFooterRow(rows) {
+  const index = rows.findLastIndex(line => AGENT_SCREEN_IDENTITY.codex.some(pattern => pattern.test(line.trim()))
+    || CODEX_CLIPPED_FOOTER.test(line.trim()));
+  if (index < 0) return -1;
+  // The model/path row bounds the composer; newer Codex versions put shortcuts
+  // and warnings below it. Accept only this known chrome, not arbitrary tail text
+  // from an overlay or a transcript. Join wrapped hints without changing draft rows.
+  const tail = rows.slice(index + 1).join(' ').trim().replace(/\s+/gu, ' ');
+  const hints = /^(?:(?:← for agents · )?\? for shortcuts(?: ⚠\uFE0F? \d+ warnings? · f2 to view)?|⚠\uFE0F? \d+ warnings? · f2 to view)$/iu;
+  return !tail || hints.test(tail) ? index : -1;
+}
+
 function hasDimComposerText(line, prefixLength) {
   let dim = false;
   let column = 0;
@@ -968,15 +978,13 @@ function agentComposerState(output, text, provider = 'codex') {
   if (rows.slice(Math.max(0, start - 2)).some((line) => (
     CODEX_MODEL_PICKER_TITLE.test(line) || /press enter to confirm/iu.test(line)
   ))) return 'other';
-  const lastRow = rows.findLastIndex((line) => line.trim());
+  const lastRow = codexComposerFooterRow(rows);
   // Codex clips its footer (including the path) on small terminals. Both preflight
   // and confirmation must still include every draft row above that final footer.
-  const footer = rows[lastRow]?.trim() || '';
-  const codexFooter = AGENT_SCREEN_IDENTITY.codex.some((pattern) => pattern.test(footer))
-    || CODEX_CLIPPED_FOOTER.test(footer);
+  const codexFooter = lastRow >= 0;
   const endOffset = codexFooter ? lastRow - start - 1
     : text === '' && provider === 'codex' ? -1 : rows.slice(start + 1).findIndex((line) => (
-      SCREEN_SEPARATOR.test(line.trim()) || /^\s*(?:gpt-\S+.*·|⏵⏵)/u.test(line)
+      SCREEN_SEPARATOR.test(line.trim()) || /^\s*⏵⏵/u.test(line)
     ));
   // A transcript prompt, clipped composer, or collapsed paste is not enough evidence
   // to press Enter. Require its visible lower boundary and the entire matching draft.
@@ -1951,7 +1959,8 @@ export async function interruptSession({ provider, sessionName, threadId, expect
       const idle = check(current.paneId, current.session);
       const screen = await capture(paneId);
       if (isCurrent && !isCurrent()) throw new Error('自主任务已暂停，已停止切换');
-      const footer = cleanScreenRows(screen).findLast(line => line.trim()) || '';
+      const rows = cleanScreenRows(screen);
+      const footer = rows[codexComposerFooterRow(rows)] || '';
       return { idle, screen, background: Boolean(current.session.agent?.hasBackgroundProcess)
         || resolveScreenSignals(screen, AGENT_SCREEN_MARKERS.codex).background,
         goal: AGENT_SCREEN_IDENTITY.codex.some(pattern => pattern.test(footer.trim())) && /\bGoal\b/u.test(footer) };

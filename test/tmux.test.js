@@ -1598,8 +1598,12 @@ test('confirmed Codex replacement stops foreground, native Goal and session back
 });
 
 test('autonomy exit clears the native Goal even when idle, leaving background terminals alone', async () => {
-  for (const busy of [false, true]) {
+  for (const [busy, footer] of [false, true].flatMap(busy => [false, true].map(footer => [busy, footer]))) {
     const f = codexStopFixture({ busy });
+    if (footer) {
+      const capture = f.options.capturePane;
+      f.options.capturePane = async () => `${await capture()}\n  ← for agents · ? for shortcuts     ⚠ 1 warning · f2 to view`;
+    }
     await interruptSession({ ...f.params, stopBackground: false, stopGoal: true, allowBackground: true }, f.options);
     assert.equal(f.goal, false);
     assert.equal(f.background, true);
