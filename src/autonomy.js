@@ -188,6 +188,10 @@ export class AutonomyController extends EventEmitter {
     if (runId && run?.id !== runId) throw new Error('自主任务已变化，请核对当前任务');
     if (!run || run.status === 'off') return this.snapshot(target);
     if (run.status === 'exiting') return this.snapshot(target);
+    // A verified finished run owns no live execution. Reset its retained UI state
+    // without inspecting or interrupting whatever now occupies the same terminal.
+    // This also recovers errors left by the previous reset path after completion.
+    if (TERMINAL.has(run.status) && run.cleanupVerified === true) return this.end(target, 'off', '清理已核验，自主模式已退出');
     // No prompt can have been delivered if preparation never bound a pane.
     if (!run.paneId && !run.planningText) return this.end(target, 'off', '未启动任务，规划资源已回收');
     const planning = run.exitPlanning ?? (run.status === 'planning');
