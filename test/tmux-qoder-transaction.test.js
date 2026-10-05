@@ -55,7 +55,7 @@ test('isolated real tmux: narrow 56-line paste, copy-mode, delayed composer and 
       const result = await tmux(args);
       if (args.includes('paste-buffer')) {
         events.push('paste');
-        scroll = scrollSession('isolated-qoder', 2, { execTmux: async args => { events.push('scroll'); return tmux(args); } });
+        scroll = scrollSession('isolated-qoder', 2, { execTmux: async args => { if (args[0] !== 'display-message') events.push('scroll'); return tmux(args); } });
         human = writeTerminalInput('isolated-qoder', 'x', {
           isCurrent: () => true, execTmux: tmux, write: data => { terminal.write(data); events.push('human'); },
         });

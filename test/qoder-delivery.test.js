@@ -112,7 +112,7 @@ test('Qoder waits for its delayed paste summary while cross-connection scrolling
     execTmux: async args => {
       if (args.includes('paste-buffer')) {
         pasted = true; events.push('paste');
-        scroll = scrollSession('qoder-race', 2, { execTmux: async () => { events.push('scroll'); } });
+        scroll = scrollSession('qoder-race', 2, { execTmux: async args => { if (args[0] !== 'display-message') events.push('scroll'); } });
       }
       if (args.includes('Enter')) { assert.ok(reads >= 4, 'Enter waits for paste evidence'); entered = true; events.push('enter'); }
     },

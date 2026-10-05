@@ -405,7 +405,7 @@ test('wheel wiring captures before xterm, keeps readonly scroll, and cancels acr
     },
     FitAddon: class {}, ResizeObserver: class { observe() {} },
     createTerminalImagePreview() {},
-    activateTerminalWebgl() {}, bindTerminalRenderWatchdog() {}, bindMobileScroll() {}, bindTerminalPalette() {}, enableTerminalLinks() {},
+    activateTerminalWebgl() {}, bindTerminalRenderWatchdog() {}, bindMobileScroll() {}, bindTerminalPalette() {}, enableTerminalLinks() {}, bindTranscriptClick() {},
     handleTerminalDragEnter() {}, handleTerminalDragOver() {}, handleTerminalDragLeave() {}, handleTerminalDragStart() {},
     touchLog() {},
     createTerminalWheelScroller: (send) => terminalUtils.createTerminalWheelScroller(send, {

@@ -939,7 +939,7 @@ function codexComposerFooterRow(rows) {
   // and warnings below it. Accept only this known chrome, not arbitrary tail text
   // from an overlay or a transcript. Join wrapped hints without changing draft rows.
   const tail = rows.slice(index + 1).join(' ').trim().replace(/\s+/gu, ' ');
-  const hints = /^(?:(?:← for agents · )?\? for shortcuts(?: ⚠\uFE0F? \d+ warnings? · f2 to view)?|⚠\uFE0F? \d+ warnings? · f2 to view)$/iu;
+  const hints = /^(?:(?:(?:← for agents · )?\? for shortcuts|enter\/esc latest · \? shortcuts)(?: ⚠\uFE0F? \d+ warnings? · f2 to view)?|⚠\uFE0F? \d+ warnings? · f2 to view)$/iu;
   return !tail || hints.test(tail) ? index : -1;
 }
 
@@ -2109,8 +2109,8 @@ export function parseViewport(searchParams) {
 
 // tmux drives the outer terminal's alternate screen (verified: it emits ESC[?1049h on
 // attach), and the alternate screen has no scrollback by definition — xterm's viewport
-// has nothing to scroll, so scrollTop is inert no matter who handles the gesture. The
-// history lives in tmux's copy mode, so scrolling has to be asked of tmux itself.
+// has nothing to scroll, so scrollTop is inert no matter who handles the gesture.
+// Inline history lives in tmux; Codex's fullscreen transcript owns its own history.
 // Positive `lines` moves back into history.
 export function scrollSession(name, lines, overrides = {}) {
   // One session-wide lane: a different WebSocket must not re-enter copy-mode
@@ -2118,11 +2118,60 @@ export function scrollSession(name, lines, overrides = {}) {
   return queueSessionInput(name, () => runSessionScroll(name, lines, overrides));
 }
 
+async function codexFullscreenPane(name, execTmux, isCurrent) {
+  const pane = await execTmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_id}\t#{alternate_on}']);
+  const [paneId, alternate] = (pane?.stdout || '').trim().split('\t');
+  if (!isCurrent() || !PANE_ID.test(paneId || '') || alternate !== '1') return null;
+  const screen = await execTmux(['capture-pane', '-p', '-e', '-t', paneId]);
+  const rows = cleanScreenRows(screen?.stdout);
+  return isCurrent() && codexComposerFooterRow(rows) >= 0 ? { paneId, rows } : null;
+}
+
+function sendCodexPointer(execTmux, paneId, bytes) {
+  // Only generated SGR reports reach here. Recheck alternate-screen atomically;
+  // a CLI exit during capture must not turn a pointer event into a shell draft.
+  return execTmux(['if-shell', '-F', '-t', paneId, '#{alternate_on}',
+    `copy-mode -q -t ${paneId} ; send-keys -l -t ${paneId} '${bytes}'`]);
+}
+
+export function clickSessionTranscript(name, column, row, overrides = {}) {
+  if (!validateSessionName(name)) throw new Error('无效的会话名');
+  if (!Number.isSafeInteger(column) || !Number.isSafeInteger(row) || column < 1 || row < 1
+    || column > 1000 || row > 1000 || overrides.readOnly) return Promise.resolve();
+  return queueSessionInput(name, async () => {
+    const execTmux = overrides.execTmux || (args => exec('tmux', args));
+    const isCurrent = overrides.isCurrent || (() => true);
+    if (!isCurrent()) return;
+    const pane = await codexFullscreenPane(name, execTmux, isCurrent);
+    // Browser selection/link handling stays local. Only disclosure controls need
+    // a native click; never let this fallback approve a dialog or move a draft.
+    if (!pane) return;
+    const composer = pane.rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
+    if (composer < 0 || row - 1 >= composer
+      || !/Show (?:details|less|more)|Hide details/iu.test(pane.rows[row - 1] || '')) return;
+    await sendCodexPointer(execTmux, pane.paneId, `\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
+  });
+}
+
 async function runSessionScroll(name, lines, overrides) {
   if (!validateSessionName(name)) throw new Error('无效的会话名');
   const count = Math.min(Math.trunc(Math.abs(lines)), MAX_SCROLL_LINES);
   if (!count) return;
   const execTmux = overrides.execTmux || (args => exec('tmux', args));
+  const isCurrent = overrides.isCurrent || (() => true);
+  if (!isCurrent()) return;
+  if (!overrides.readOnly) {
+    const pane = await codexFullscreenPane(name, execTmux, isCurrent);
+    if (pane) {
+      // Codex disables mouse capture when tmux mouse is off, but still handles
+      // SGR wheel events. Send directly to the pane, never through paste-buffer
+      // or cursor keys (which would edit the composer/history). Each tick is 3 rows.
+      const wheel = `\x1b[<${lines > 0 ? 64 : 65};2;2M`.repeat(Math.ceil(count / 3));
+      await sendCodexPointer(execTmux, pane.paneId, wheel);
+      return;
+    }
+  }
+  if (!isCurrent()) return;
   if (lines > 0) {
     // copy-mode is idempotent here: re-entering while already in it keeps the current
     // scroll position rather than resetting it. `-e` makes tmux leave copy mode on its

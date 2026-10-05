@@ -2,6 +2,7 @@ import pty from 'node-pty';
 import { terminalDiagnostics } from './terminal-diagnostics.js';
 import {
   clampViewport,
+  clickSessionTranscript,
   getLinkedWindowSessions,
   getSessionSize,
   preferLatestClientSize,
@@ -29,6 +30,7 @@ function spawnTerminal(session, size, options) {
 
 const defaultDependencies = {
   clampViewport,
+  clickSessionTranscript,
   createTerminal: spawnTerminal,
   getLinkedWindowSessions,
   getSessionSize,
@@ -48,7 +50,9 @@ const isNativePaste = message => message.type === 'input' && message.submit !== 
 // xterm speaks the outer tmux client's cursor mode (e.g. SS3 Up = ESC O A).
 // Only tmux can translate that key to the pane's current mode; paste-buffer cannot.
 const isCursorKey = message => message.submit !== true && typeof message.data === 'string'
-  && /^\x1b(?:O[ABCDHF]|\[[\d;]*[ABCDHF~])$/u.test(message.data);
+  && /^\x1b(?:O[ABCDHFPQRS]|\[[\d;]*[ABCDHF~])$/u.test(message.data);
+const isPointerReport = message => message.submit !== true && typeof message.data === 'string'
+  && /^(?:\x1b\[<\d+;\d+;\d+[Mm])+$/u.test(message.data);
 
 function validOutputFlowId(value) {
   return typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value);
@@ -175,9 +179,12 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     const isCurrent = () => isOpen() && generation === inputGeneration;
     Promise.resolve().then(async () => {
       if (!isCurrent()) throw new Error('终端连接或会话已切换，输入未发送');
+      if (message.type === 'transcriptClick') {
+        return dependencies.clickSessionTranscript(targetSession, message.column, message.row, { isCurrent, readOnly });
+      }
       if (message.type === 'scroll') {
         inputMode = 'history';
-        return dependencies.scrollSession(targetSession, message.lines);
+        return dependencies.scrollSession(targetSession, message.lines, { isCurrent, readOnly });
       }
       if (raw) {
         await dependencies.writeTerminalInput(targetSession, message.data, {
@@ -331,7 +338,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
           return;
         }
       }
-      if (!terminal || (inputOperation && ((message.type === 'input' && !protocolReply) || message.type === 'scroll'))) {
+      if (!terminal || (inputOperation && ((message.type === 'input' && !protocolReply)
+        || message.type === 'scroll' || message.type === 'transcriptClick'))) {
         // Retain touch-scroll coalescing without moving a scroll across an input.
         if (message.type === 'scroll' && Number.isInteger(message.lines) && pending.at(-1)?.type === 'scroll') {
           pending.at(-1).lines += message.lines;
@@ -341,8 +349,8 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         return;
       }
       if (!readOnly && message.type === 'input' && typeof message.data === 'string') {
-        if (message.data && !TERMINAL_REPLY.test(message.data)) dependencies.onHumanInput?.(activeSession);
-        if (isCursorKey(message)) queueTerminalOperation(message, true);
+        if (message.data && !TERMINAL_REPLY.test(message.data) && !isPointerReport(message)) dependencies.onHumanInput?.(activeSession);
+        if (isCursorKey(message) || isPointerReport(message)) queueTerminalOperation(message, true);
         else if (explicitInput || isNativePaste(message) || (message.data && !protocolReply && inputMode !== 'live')) queueTerminalOperation(message);
         else if (message.data && !protocolReply) queueTerminalOperation(message, true);
         else {
@@ -361,6 +369,9 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
         }
       }
       if (message.type === 'scroll' && Number.isInteger(message.lines)) {
+        queueTerminalOperation(message);
+      }
+      if (!readOnly && message.type === 'transcriptClick' && Number.isSafeInteger(message.column) && Number.isSafeInteger(message.row)) {
         queueTerminalOperation(message);
       }
     } catch { /* Ignore malformed terminal frames. */ }

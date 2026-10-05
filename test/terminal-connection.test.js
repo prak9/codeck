@@ -83,7 +83,9 @@ test('cursor keys pass through the tmux client after attach, scroll and explicit
   sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
   sendFrame(ws, { type: 'input', data: '\x1b[A', resume: true }); await nextTurn();
   sendFrame(ws, { type: 'input', data: '\x1b[1;5D' }); await nextTurn();
-  assert.deepEqual(keys, ['\x1bOA', '\x1b[A', '\x1b[1;5D']);
+  sendFrame(ws, { type: 'input', data: '\x1bOR' }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: '\x1b[5~' }); await nextTurn();
+  assert.deepEqual(keys, ['\x1bOA', '\x1b[A', '\x1b[1;5D', '\x1bOR', '\x1b[5~']);
   assert.deepEqual(submissions, []);
   sendFrame(ws, { type: 'input', data: '\x1bOA', submit: true }); await nextTurn();
   assert.deepEqual(submissions, ['\x1bOA'], 'explicit text submissions remain literal');
@@ -102,6 +104,23 @@ test('native bracketed paste uses pane negotiation both before and after raw inp
   sendFrame(ws, { type: 'input', data }); await nextTurn();
   assert.deepEqual(submitted, [{ data, paste: true }, { data, paste: true }]);
   assert.deepEqual(raw, ['x']);
+  ws.close();
+});
+
+test('native pointer reports after attach and scroll are never pasted or treated as task instructions', async () => {
+  const ws = new FakeSocket(), raw = [], submitted = [], human = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    writeTerminalInput: async (_session, data) => raw.push(data),
+    submitTerminalInput: async (_session, data) => submitted.push(data),
+    onHumanInput: name => human.push(name),
+  }));
+  const pointer = '\x1b[<64;5;5M';
+  sendFrame(ws, { type: 'input', data: pointer }); await nextTurn();
+  sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: pointer }); await nextTurn();
+  assert.deepEqual(raw, [pointer, pointer]);
+  assert.deepEqual(submitted, []);
+  assert.deepEqual(human, []);
   ws.close();
 });
 

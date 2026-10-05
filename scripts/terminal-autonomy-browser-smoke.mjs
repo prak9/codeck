@@ -86,6 +86,7 @@ sockets.on('connection', (socket, req) => {
       const m = JSON.parse(raw);
       if (m.type === 'ping' && !f.dropPongs) socket.send(Buffer.from(JSON.stringify({ type: 'pong', id: m.id })));
       if (m.type === 'scroll') f.scrolls = (f.scrolls || 0) + 1;
+      if (m.type === 'transcriptClick') (f.transcriptClicks ||= []).push(m);
       if (m.type === 'input') { f.inputs.push(m); if (m.inputId) socket.send(Buffer.from(JSON.stringify({ type: 'inputResult', inputId: m.inputId, ok: true }))); }
     });
   }
@@ -189,6 +190,16 @@ try {
       assert.equal(await page.locator('dialog[open]').count(), 0);
       assert.equal(fixture.requests.some(request => ['startAutonomy', 'answerAutonomy'].includes(request.type)), false);
       if (provider === 'codex' && width === 1365) {
+        const bounds = await page.locator('#terminal .xterm-screen').boundingBox();
+        await page.mouse.click(bounds.x + 25, bounds.y + 12);
+        await page.waitForTimeout(100);
+        assert.equal(fixture.transcriptClicks?.length, 1, 'unmodified terminal click reaches the disclosure route');
+        await page.mouse.move(bounds.x + 25, bounds.y + 12);
+        await page.mouse.down();
+        await page.mouse.move(bounds.x + 180, bounds.y + 12, { steps: 8 });
+        await page.mouse.up();
+        await page.waitForTimeout(100);
+        assert.equal(fixture.transcriptClicks.length, 1, 'drag selection is not a native disclosure click');
         const beforeResume = { inputs: fixture.inputs.length, attachments: fixture.terminals.length, scrolls: fixture.scrolls || 0 };
         await page.locator('#terminalVoiceDraft').fill('离开窗口后保留草稿');
         await page.evaluate(() => {

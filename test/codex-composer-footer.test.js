@@ -8,6 +8,7 @@ const footerVariants = [
   model,
   `${model}\n${help}`,
   `${model}\n  ? for shortcuts`,
+  `${model}\n  enter/esc latest · ? shortcuts`,
   `${model}\n  ⚠ 2 warnings · f2 to view`,
   `${model}\n  ← for agents · ? for shortcuts\n  ⚠ 1 warning · f2 to view`,
   `${model}\n  ← for agents · ? for\n  shortcuts\n  ⚠ 1 warning · f2 to view\n`,

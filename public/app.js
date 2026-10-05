@@ -1,4 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=1';
 import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=20';
 import { createTerminalAutonomy } from './terminal-autonomy.js?v=22';
@@ -1329,9 +1330,8 @@ async function handleTerminalDrop(event) {
 }
 
 // tmux runs in the outer terminal's alternate screen, which has no scrollback — xterm's
-// own viewport has nothing to scroll, so no amount of local scrollTop or wheel handling
-// moves anything. The history is tmux's, reachable only through its copy mode, so a touch
-// drag is forwarded to the server and replayed as a tmux scroll instead.
+// own viewport has nothing to scroll. Forward gestures to the server, which chooses
+// Codex's native fullscreen history or tmux's inline scrollback from live pane state.
 // `?debug=touch` prints the gesture chain on screen. Touch behaviour cannot be reproduced
 // off-device, so when a gesture misbehaves this shows which link broke rather than
 // guessing: whether the hold registered, whether the synthetic mousedown went out, and
@@ -1366,6 +1366,11 @@ function ensureTerminal() {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open($('#terminal'));
+  bindTranscriptClick($('#terminal'), terminal, position => {
+    if (state.canWrite && state.terminalInputReady && state.socket?.readyState === WebSocket.OPEN) {
+      state.socket.send(JSON.stringify({ type: 'transcriptClick', ...position }));
+    }
+  });
   enableTerminalLinks(terminal, {
     previewImage: createTerminalImagePreview(),
     getContext: () => ({ session: state.active, connectionId: state.connectionId }),
@@ -1377,7 +1382,7 @@ function ensureTerminal() {
   bindTerminalRenderWatchdog(terminal, { isVisible: () => !document.hidden && $('#terminal').getClientRects().length > 0 });
   // 桌面上滚轮原本滚的是 xterm 自己的缓冲, 而那对全屏 TUI 只是一帧帧重绘的残片:
   // 往上翻是碎片, 翻回来只剩当前一帧, 看着就像"历史没了"。会话历史在 tmux 手里,
-  // 所以滚轮和触摸走同一条路 —— 交给 tmux 的 copy-mode。
+  // 滚轮和触摸统一交给服务端，按当前 pane 模式路由，不滚 xterm 的重绘残片。
   const wheelScroller = createTerminalWheelScroller((lines) => {
     if (state.terminalInputReady && state.socket?.readyState === WebSocket.OPEN) {
       state.socket.send(JSON.stringify({ type: 'scroll', lines }));
