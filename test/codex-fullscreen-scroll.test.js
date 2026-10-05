@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { scrollSession, clickSessionTranscript } from '../src/tmux.js';
 
-function fixture({ alternate = true, codex = true, current = true } = {}) {
+function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '' } = {}) {
   const commands = [];
   return { commands, options: {
     isCurrent: () => current,
@@ -10,7 +10,7 @@ function fixture({ alternate = true, codex = true, current = true } = {}) {
       commands.push(args);
       if (args[0] === 'display-message') return { stdout: `%7\t${Number(alternate)}\n` };
       if (args[0] === 'capture-pane') return { stdout: codex
-        ? 'Show details\n\n› \n\n  GPT-6-Astra medium · ~/project\n  ? for shortcuts'
+        ? `Show details\n\n› ${draft}\n\n  GPT-6-Astra medium · ~/project\n  ${footer}`
         : 'shell$ ' };
       return { stdout: '' };
     },
@@ -26,6 +26,14 @@ test('Codex fullscreen scroll uses native wheel reports, not tmux scrollback or 
     assert.ok(send.some(arg => arg.includes(lines > 0 ? '[<64;2;2M' : '[<65;2;2M')));
     assert.equal(f.commands.some(args => args.includes('scroll-up') || args.includes('scroll-down')), false);
   }
+});
+
+test('busy Codex with an unsent draft still routes scroll to native history', async () => {
+  const f = fixture({ footer: 'tab to queue message', draft: '^ do not change this' });
+  await scrollSession('work', 24, f.options);
+  assert.equal(f.commands.some(args => args[0] === 'if-shell'), true);
+  assert.equal(f.commands.some(args => args.includes('scroll-up')), false);
+  assert.equal(f.commands.some(args => args.includes('Enter') || args.includes('Escape') || args.includes('C-u')), false);
 });
 
 test('only fullscreen disclosure rows accept clicks; drafts and readonly views do not', async () => {

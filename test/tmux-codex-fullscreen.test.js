@@ -21,10 +21,10 @@ test('real tmux: fullscreen history scrolls with mouse off, inherited copy-mode 
   const receipt = path.join(dir, 'input.json');
   await tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'fixture', '-x', '80', '-y', '24',
     process.execPath, fileURLToPath(new URL('../scripts/fixtures/codex-fullscreen-tui.mjs', import.meta.url)), receipt]);
-  const waitFor = async offset => {
+  const waitFor = async (offset, draft = '') => {
     for (let i = 0; i < 100; i++) {
       const state = await fs.readFile(receipt, 'utf8').then(JSON.parse).catch(() => null);
-      if (state?.offset === offset) { assert.equal(state.draft, ''); return; }
+      if (state?.offset === offset && state.draft === draft) return;
       await delay(20);
     }
     assert.fail(`native history should reach offset ${offset}`);
@@ -33,10 +33,17 @@ test('real tmux: fullscreen history scrolls with mouse off, inherited copy-mode 
   await tmux(['copy-mode', '-t', 'fixture']);
   await scrollSession('fixture', 12, { execTmux: tmux });
   await waitFor(12);
+  await tmux(['send-keys', '-l', '-t', 'fixture', '^ retained draft']);
+  await waitFor(12, '^ retained draft');
+  await tmux(['copy-mode', '-t', 'fixture']);
+  await scrollSession('fixture', 9, { execTmux: tmux });
+  await waitFor(21, '^ retained draft');
+  await scrollSession('fixture', -9, { execTmux: tmux });
+  await waitFor(12, '^ retained draft');
   assert.equal((await tmux(['display-message', '-p', '-t', 'fixture', '#{pane_in_mode}'])).stdout.trim(), '0');
   await scrollSession('fixture', -6, { execTmux: tmux });
-  await waitFor(6);
+  await waitFor(6, '^ retained draft');
   await tmux(['resize-window', '-t', 'fixture', '-x', '37', '-y', '22']);
   await scrollSession('fixture', 6, { execTmux: tmux });
-  await waitFor(12);
+  await waitFor(12, '^ retained draft');
 });

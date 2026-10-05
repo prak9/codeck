@@ -7,7 +7,7 @@ const draw = () => {
   const height = process.stdout.rows || 24;
   process.stdout.write('\x1b[2J\x1b[H' + [
     ...Array.from({ length: height - 5 }, (_, n) => `history ${300 - offset - (height - 6) + n}`),
-    '', `› ${draft}`, '', '  GPT-6-Astra · ~/fixture', '  ? for shortcuts',
+    '', `› ${draft}`, '', '  GPT-6-Astra · ~/fixture', draft ? '  tab to queue message' : '  ? for shortcuts',
   ].join('\r\n'));
   fs.writeFileSync(receipt, JSON.stringify({ offset, draft }));
 };

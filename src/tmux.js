@@ -939,7 +939,7 @@ function codexComposerFooterRow(rows) {
   // and warnings below it. Accept only this known chrome, not arbitrary tail text
   // from an overlay or a transcript. Join wrapped hints without changing draft rows.
   const tail = rows.slice(index + 1).join(' ').trim().replace(/\s+/gu, ' ');
-  const hints = /^(?:(?:(?:← for agents · )?\? for shortcuts|enter\/esc latest · \? shortcuts)(?: ⚠\uFE0F? \d+ warnings? · f2 to view)?|⚠\uFE0F? \d+ warnings? · f2 to view)$/iu;
+  const hints = /^(?:(?:(?:← for agents · )?\? for shortcuts|enter\/esc latest · \? shortcuts|tab to queue(?: message)?)(?: ⚠\uFE0F? \d+ warnings? · f2 to view)?|⚠\uFE0F? \d+ warnings? · f2 to view)$/iu;
   return !tail || hints.test(tail) ? index : -1;
 }
 
