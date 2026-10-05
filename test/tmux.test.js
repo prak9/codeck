@@ -1848,8 +1848,8 @@ test('removes nested tmux markers from web terminal environments', () => {
   assert.deepEqual(withoutTmuxEnvironment({ PATH: '/bin', TMUX: '/tmp/tmux,1,0', TMUX_PANE: '%1' }), { PATH: '/bin' });
 });
 
-test('starts Codeck-managed Codex sessions without the interactive update check', async () => {
-  assert.equal(resolveSessionClientCommand('codex'), 'codex -c check_for_update_on_startup=false');
+test('starts Codeck-managed Codex sessions in inline mode without the interactive update check', async () => {
+  assert.equal(resolveSessionClientCommand('codex'), 'codex --no-alt-screen -c check_for_update_on_startup=false');
   assert.equal(resolveSessionClientCommand('claude'), 'claude');
 
   const calls = [];
@@ -1860,14 +1860,14 @@ test('starts Codeck-managed Codex sessions without the interactive update check'
 
   assert.deepEqual(calls, [
     ['tmux', ['new-session', '-d', '-s', 'ainfra', '-P', '-F', '#{pane_id}', '-c', '/data/code/codeck']],
-    ['tmux', ['send-keys', '-l', '-t', '%17', 'codex -c check_for_update_on_startup=false']],
+    ['tmux', ['send-keys', '-l', '-t', '%17', 'codex --no-alt-screen -c check_for_update_on_startup=false']],
     ['tmux', ['send-keys', '-t', '%17', 'Enter']],
   ]);
 });
 
 test('starts each Agent in its native resume picker inside the requested tmux directory', async () => {
   for (const [client, command] of [
-    ['codex', 'codex -c check_for_update_on_startup=false resume'],
+    ['codex', 'codex --no-alt-screen -c check_for_update_on_startup=false resume'],
     ['claude', 'claude --resume'],
     ['qodercli', 'qodercli --resume'],
   ]) {

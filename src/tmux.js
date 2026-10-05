@@ -131,7 +131,7 @@ export function validateClient(client) {
 export function resolveSessionClientCommand(client, mode = 'new') {
   if (mode !== 'new' && mode !== 'resume') throw new Error('未知的会话启动方式');
   if (mode === 'resume' && client === 'shell') throw new Error('Shell 会话不支持恢复模式');
-  const command = client === 'codex' ? 'codex -c check_for_update_on_startup=false' : client;
+  const command = client === 'codex' ? 'codex --no-alt-screen -c check_for_update_on_startup=false' : client;
   return mode === 'resume' ? `${command} ${client === 'codex' ? 'resume' : '--resume'}` : command;
 }
 
