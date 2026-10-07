@@ -39,6 +39,13 @@ test('terminal access keeps owners exclusive and share writers collaborative', (
   assert.deepEqual(terminalAccessForAuth({ owner: false, canWrite: false }), { readOnly: true });
 });
 
+test('automatic terminal recovery never detaches peers or grants write access', () => {
+  assert.deepEqual(terminalAccessForAuth({ owner: true, canWrite: true }, { recovery: true }), {
+    readOnly: false, detachOtherClients: false,
+  });
+  assert.deepEqual(terminalAccessForAuth({ owner: false, canWrite: false }, { recovery: true }), { readOnly: true });
+});
+
 test('health checks pass through the API authentication boundary', () => {
   const authMiddleware = serverSource.indexOf("app.use('/api'");
   const healthRoute = serverSource.indexOf("app.get('/api/health'");

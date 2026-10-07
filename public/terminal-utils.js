@@ -120,8 +120,11 @@ export function bindTerminalRenderWatchdog(terminal, {
   let pendingRender = false;
   let forcedSinceRender = false;
   let disposed = false;
+  let visibilityObserver = null;
 
   const clearTimers = () => {
+    visibilityObserver?.disconnect();
+    visibilityObserver = null;
     if (settleTimer !== null) cancel(settleTimer);
     if (maxWaitTimer !== null) cancel(maxWaitTimer);
     settleTimer = null;
@@ -137,6 +140,25 @@ export function bindTerminalRenderWatchdog(terminal, {
     // flashes and cannot repair a renderer that did not react to the first refresh.
     forcedSinceRender = true;
     terminal.refresh(0, terminal.rows - 1);
+    // xterm 5.5 ignores public refresh() while its intersection state is paused.
+    // Re-sample the real screen; never infer visibility from focus alone or mutate
+    // the pause flag. Use its existing lifecycle hook so pending resize is flushed.
+    const renderer = terminal._core?._renderService;
+    const screen = terminal.element?.querySelector('.xterm-screen');
+    if (renderer?._isPaused === true && typeof renderer._handleIntersectionChange === 'function'
+      && screen && typeof window?.IntersectionObserver === 'function') {
+      const observer = new window.IntersectionObserver(entries => {
+        observer.disconnect();
+        if (visibilityObserver !== observer) return;
+        visibilityObserver = null;
+        const entry = entries.at(-1);
+        if (disposed || page?.hidden || !isVisible() || entry?.target !== screen || !entry.isIntersecting
+          || terminal._core?._renderService !== renderer || renderer._isPaused !== true) return;
+        renderer._handleIntersectionChange(entry);
+      });
+      visibilityObserver = observer;
+      observer.observe(screen);
+    }
   };
   const parsed = terminal.onWriteParsed(() => {
     pendingRender = true;

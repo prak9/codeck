@@ -137,6 +137,18 @@ function setup({
   return { backends, registry, hub };
 }
 
+test('Agent heartbeat replies without backend work or an RPC result', async () => {
+  const { hub, backends } = setup();
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  socket.sent.length = 0;
+  send(socket, { type: 'ping', id: 9 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(socket.sent, [{ type: 'pong', id: 9 }]);
+  for (const backend of Object.values(backends)) assert.deepEqual(backend.calls, []);
+  socket.close();
+});
+
 test('native question answers are bound to the active provider/thread/tmux subscription', async () => {
   const calls = [];
   const sessionFeed = new FakeSnapshotFeed();

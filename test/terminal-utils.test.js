@@ -302,6 +302,32 @@ test('returning to a visible terminal rearms a stalled render watchdog without i
   assert.equal(refreshes.length, 3, 'disposal removes recovery listeners');
 });
 
+test('stale renderer pause resumes only after a fresh visible intersection, never after disposal', () => {
+  for (const outcome of ['visible', 'hidden', 'disposed']) {
+    const page = new EventTarget(), window = new EventTarget();
+    const screen = {}, observers = []; let resumed = 0;
+    window.IntersectionObserver = class {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe(target) { assert.equal(target, screen); }
+      disconnect() { this.disconnected = true; }
+    };
+    const renderer = { _isPaused: true, _handleIntersectionChange() { resumed++; this._isPaused = false; } };
+    const terminal = { rows: 24, element: { querySelector: () => screen },
+      _core: { _renderService: renderer },
+      onWriteParsed() { return { dispose() {} }; }, onRender() { return { dispose() {} }; }, refresh() {},
+    };
+    const dispose = bindTerminalRenderWatchdog(terminal, { page, window, isVisible: () => !page.hidden });
+    window.dispatchEvent(new Event('focus'));
+    assert.equal(observers.length, 1);
+    if (outcome === 'hidden') page.hidden = true;
+    if (outcome === 'disposed') dispose();
+    observers[0].callback([{ target: screen, isIntersecting: true }]);
+    assert.equal(resumed, outcome === 'visible' ? 1 : 0);
+    assert.equal(observers[0].disconnected, true);
+    dispose();
+  }
+});
+
 test('terminal resize gate sends only changed grids and can mark an attach size as synchronized', () => {
   const sent = [];
   const gate = createTerminalResizeGate((cols, rows) => sent.push([cols, rows]));

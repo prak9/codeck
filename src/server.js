@@ -473,7 +473,7 @@ server.on('upgrade', (req, socket, head) => {
   const outputFlowControl = url.searchParams.get('flowControl') === '1'
     && /^[1-9]\d{0,15}$/.test(outputFlowId || '');
   const terminalAccess = {
-    ...terminalAccessForAuth(auth),
+    ...terminalAccessForAuth(auth, { recovery: url.searchParams.get('recovery') === '1' }),
     canSwitchSession: auth.owner,
     outputFlowControl,
     outputFlowId: outputFlowControl ? outputFlowId : null,

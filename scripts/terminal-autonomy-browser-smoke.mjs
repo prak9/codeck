@@ -206,6 +206,7 @@ try {
           window.resumeRenders = 0;
           const refresh = Terminal.prototype.refresh;
           Terminal.prototype.refresh = function (...args) {
+            window.observedTerminal = this;
             if (!this.resumeObserved) {
               this.resumeObserved = true;
               this.onRender(() => window.resumeRenders++);
@@ -218,6 +219,24 @@ try {
         // Headless window focus is platform-dependent; exercise the same event explicitly.
         await page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await page.waitForFunction(() => window.resumeRenders > 0);
+        const resumeState = await page.evaluate(async () => {
+          const terminal = window.observedTerminal;
+          const renderer = terminal._core._renderService;
+          // Fault injection: emulate a lost visibility restoration notification.
+          renderer._isPaused = true;
+          await new Promise(resolve => terminal.write('\r\nRENDER_RECOVERY_PROBE', resolve));
+          const before = { text: terminal.buffer.active.getLine(terminal.buffer.active.baseY + terminal.buffer.active.cursorY).translateToString(true),
+            baseY: terminal.buffer.active.baseY, cursorY: terminal.buffer.active.cursorY };
+          window.resumeRenders = 0;
+          window.dispatchEvent(new Event('focus'));
+          return before;
+        });
+        await page.waitForFunction(() => window.resumeRenders > 0 && !window.observedTerminal._core._renderService._isPaused);
+        assert.deepEqual(await page.evaluate(() => {
+          const terminal = window.observedTerminal;
+          return { text: terminal.buffer.active.getLine(terminal.buffer.active.baseY + terminal.buffer.active.cursorY).translateToString(true),
+            baseY: terminal.buffer.active.baseY, cursorY: terminal.buffer.active.cursorY };
+        }), resumeState, 'renderer recovery preserves parsed text and cursor');
         await page.locator('#terminal').hover(); await page.mouse.wheel(0, -160);
         await page.waitForTimeout(100);
         assert.ok(fixture.scrolls > beforeResume.scrolls);
@@ -232,12 +251,11 @@ try {
         fixture.dropPongs = true;
         await page.evaluate(() => window.dispatchEvent(new Event('online')));
         await page.locator('#terminalDisconnect').waitFor({ state: 'visible', timeout: 12_000 });
-        assert.equal(fixture.terminals.length, attachments, 'timeout never steals back a detached pane');
         assert.equal(fixture.inputs.length, inputs, 'heartbeat never sends Agent input');
         assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '断线时保留草稿');
         fixture.dropPongs = false;
-        await page.locator('#reconnectTerminalButton').click();
         await page.locator('#terminalDisconnect').waitFor({ state: 'hidden' });
+        assert.equal(fixture.terminals.length, attachments + 1, 'failed transport automatically reconnects once');
         await page.waitForFunction(() => !document.querySelector('#sendTerminalVoiceButton').disabled);
         await page.locator('#terminal').hover();
         await page.mouse.wheel(0, -160);

@@ -1,6 +1,7 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
-import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=1';
+import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
+import { bindTerminalRecovery } from './terminal-recovery.js?v=1';
 import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=20';
 import { createTerminalAutonomy } from './terminal-autonomy.js?v=22';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
@@ -20,7 +21,7 @@ import {
   fitTerminalGrid,
   isTerminalCopyShortcut,
   resetTerminalInput,
-} from './terminal-utils.js?v=18';
+} from './terminal-utils.js?v=19';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
@@ -1047,6 +1048,7 @@ function scheduleSessionFeedReconnect() {
 
 function connectSessionFeed() {
   if (!state.token || !state.canManage || state.sessionFeedSocket?.readyState <= WebSocket.OPEN) return;
+  state.cancelSessionFeedHeartbeat?.();
   clearTimeout(state.sessionFeedReconnectTimer);
   state.sessionFeedReconnectTimer = null;
   const generation = ++state.sessionFeedGeneration;
@@ -1055,11 +1057,22 @@ function connectSessionFeed() {
   state.sessionFeedSocket = socket;
   state.sessionFeedReady = false;
   syncTerminalProgressButton();
+  state.cancelSessionFeedHeartbeat = bindTerminalHeartbeat(socket, () => {
+    if (generation !== state.sessionFeedGeneration || state.sessionFeedSocket !== socket) return;
+    state.sessionFeedSocket = null;
+    state.sessionFeedReady = false;
+    state.sessionStreamHealthy = false;
+    rejectSessionFeedRequests('Agent 连接无响应，发送结果未确认');
+    terminalAutonomy.disconnect();
+    socket.close();
+    connectSessionFeed();
+  }, { textFrames: true });
   socket.addEventListener('message', (event) => {
     if (generation !== state.sessionFeedGeneration) return;
     let message;
     try { message = JSON.parse(event.data); }
     catch { return; }
+    if (message.type === 'pong') return;
     if (message.id != null) {
       const pending = state.sessionFeedRequests.get(message.id);
       if (!pending) return;
@@ -1484,7 +1497,7 @@ function markActiveSession(session) {
   }
 }
 
-async function connect(session) {
+async function connect(session, { recovery = false } = {}) {
   if (state.active === session && state.socket && state.socket.readyState <= WebSocket.OPEN) {
     syncTerminalSessionLocation(session);
     $('#sidebar').classList.remove('open');
@@ -1492,7 +1505,7 @@ async function connect(session) {
     if (state.socket.readyState === WebSocket.OPEN && state.terminalInputReady) focusTerminalInput();
     return;
   }
-  closeTerminalVoiceComposer({ restoreFocus: false });
+  if (!recovery) closeTerminalVoiceComposer({ restoreFocus: false });
   rejectTerminalSubmit('会话已切换，发送结果未确认');
   const sessionDetails = state.sessions.find((item) => item.name === session);
   const connectionId = ++state.connectionId;
@@ -1500,6 +1513,7 @@ async function connect(session) {
   const reuseSocket = state.canSwitchSession && state.socket?.readyState === WebSocket.OPEN;
   const currentSocket = state.socket;
   state.cancelTerminalHeartbeat?.();
+  state.cancelTerminalRecovery?.();
   state.cancelTerminalReveal?.();
   state.cancelTerminalReveal = null;
   state.cancelTerminalOutputAck?.();
@@ -1542,6 +1556,7 @@ async function connect(session) {
   const query = new URLSearchParams({
     session, cols: String(terminal.cols), rows: String(terminal.rows), flowControl: '1', flowId,
   });
+  if (recovery) query.set('recovery', '1');
   const socket = reuseSocket
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
@@ -1566,6 +1581,14 @@ async function connect(session) {
   let awaitingSwitchReset = reuseSocket;
   let terminalResetReady = !needsReset;
   state.socket = socket;
+  const terminalRecovery = bindTerminalRecovery(socket, () => {
+    if (state.connectionId !== connectionId || state.socket !== socket || state.active !== session) return;
+    // Fresh transport and output flow, never replay queued keystrokes or submissions.
+    state.socket = null;
+    socket.close();
+    void connect(session, { recovery: true });
+  });
+  state.cancelTerminalRecovery = terminalRecovery.stop;
   syncTerminalAccess();
   const enableTerminalInput = () => {
     if (reuseSocket || disconnected || !terminalResetReady || state.connectionId !== connectionId
@@ -1669,6 +1692,7 @@ async function connect(session) {
     showTerminalDisconnect('终端连接无响应，请点击重新连接；未发送的草稿仍保留');
     syncTerminalAccess();
     socket.close(4000, '终端连接无响应，请重新连接');
+    terminalRecovery.recover();
   });
 
   if (reuseSocket) {

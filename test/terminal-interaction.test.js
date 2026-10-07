@@ -55,6 +55,7 @@ function fixture() {
     },
     ...terminalUtils,
     bindTerminalHeartbeat: () => () => {},
+    bindTerminalRecovery: () => ({ recover() {}, stop() {} }),
     ensureTerminal: () => state.terminal,
     resetTerminalInput: async () => {},
     closeTerminalVoiceComposer() {}, markActiveSession() {}, refreshActiveAgentOutput() {},
@@ -312,6 +313,63 @@ test('clipboard paste exits history mode through the submission path without app
   await pending;
   assert.equal(f.$('#terminalVoiceDraft').value, 'unsent draft');
   assert.equal(f.state.terminalSubmitPending, null);
+});
+
+test('automatic terminal recovery reconnects the same target without replaying drafts', async () => {
+  const f = fixture();
+  let recover;
+  f.context.bindTerminalRecovery = (_socket, callback) => {
+    recover = callback;
+    return { recover() {}, stop() {} };
+  };
+  await f.context.connect('b');
+  const calls = [];
+  f.context.connect = (session, options) => calls.push({ session, ...options });
+  recover();
+  assert.deepEqual(calls, [{ session: 'b', recovery: true }]);
+  assert.equal(f.state.socket, null);
+  assert.equal(f.socket.readyState, 3);
+  assert.equal(f.$('#terminalVoiceDraft').value, 'unsent draft');
+  assert.equal(f.sent.some(frame => frame.type === 'input'), false);
+  recover();
+  assert.equal(calls.length, 1, 'old callback cannot reconnect again');
+  f.state.cancelTerminalReveal?.();
+});
+
+test('recovery marks the new transport non-exclusive and keeps the composer open', async () => {
+  const f = fixture();
+  const urls = [];
+  let composerCloses = 0;
+  f.state.socket = null;
+  f.context.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    constructor(url) { urls.push(url); }
+    send() {}
+    close() { this.readyState = 3; }
+  };
+  f.context.websocketProtocolToken = value => value;
+  f.context.closeTerminalVoiceComposer = () => composerCloses++;
+  await f.context.connect('a', { recovery: true });
+  assert.equal(new URL(urls[0]).searchParams.get('recovery'), '1');
+  assert.equal(composerCloses, 0);
+  assert.equal(f.state.terminalInputReady, true);
+  f.state.cancelTerminalReveal?.();
+});
+
+test('a stale recovery callback cannot switch back to an earlier session', async () => {
+  const f = fixture();
+  const callbacks = [];
+  f.context.bindTerminalRecovery = (_socket, callback) => {
+    callbacks.push(callback);
+    return { recover() {}, stop() {} };
+  };
+  await f.context.connect('b');
+  await f.context.connect('c');
+  callbacks[0]();
+  assert.equal(f.state.active, 'c');
+  assert.equal(f.state.socket, f.socket);
+  f.state.cancelTerminalReveal?.();
 });
 
 test('disconnection exposes a manual recovery control even on narrow screens', async () => {

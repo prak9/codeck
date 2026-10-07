@@ -528,6 +528,10 @@ export class AgentHub {
     try {
       message = JSON.parse(String(data));
       if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid message');
+      if (message.type === 'ping') {
+        if (Number.isSafeInteger(message.id) && message.id > 0) send(socket, { type: 'pong', id: message.id });
+        return;
+      }
       const dispatched = await this.#dispatch(socket, message);
       const wrapped = dispatched?.[AFTER_REPLY] === true;
       const result = wrapped ? dispatched.result : dispatched;

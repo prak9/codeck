@@ -33,8 +33,8 @@ export function authenticateToken(secret, token, now = Date.now()) {
   }
 }
 
-export function terminalAccessForAuth(auth) {
+export function terminalAccessForAuth(auth, { recovery = false } = {}) {
   if (!auth?.canWrite) return { readOnly: true };
-  if (!auth.owner) return { readOnly: false, detachOtherClients: false };
+  if (!auth.owner || recovery) return { readOnly: false, detachOtherClients: false };
   return { readOnly: false };
 }

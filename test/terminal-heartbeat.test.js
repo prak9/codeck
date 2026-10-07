@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bindTerminalHeartbeat } from '../public/terminal-heartbeat.js';
 
-function fixture() {
+function fixture(options = {}) {
   const socket = new EventTarget();
   socket.readyState = 1;
   const sent = [], timers = new Map();
@@ -13,12 +13,24 @@ function fixture() {
   const window = new EventTarget();
   const stop = bindTerminalHeartbeat(socket, () => failures++, {
     page, window, schedule: fn => { timers.set(++next, fn); return next; },
-    cancel: id => timers.delete(id),
+    cancel: id => timers.delete(id), ...options,
   });
   const tick = () => { const [id, fn] = timers.entries().next().value; timers.delete(id); fn(); };
   const pong = id => { const event = new Event('message'); event.data = new TextEncoder().encode(JSON.stringify({ type: 'pong', id })).buffer; socket.dispatchEvent(event); };
   return { socket, sent, page, window, stop, tick, pong, timers, failures: () => failures };
 }
+
+test('Agent text pong confirms a probe without accepting arbitrary terminal text', () => {
+  const f = fixture({ textFrames: true });
+  f.tick();
+  const event = new Event('message');
+  event.data = JSON.stringify({ type: 'pong', id: 1 });
+  f.socket.dispatchEvent(event);
+  f.tick();
+  assert.equal(f.failures(), 0);
+  assert.equal(f.sent.at(-1).id, 2);
+  f.stop();
+});
 
 test('an apparently OPEN but silent socket times out without terminal input or replay', () => {
   const f = fixture();
@@ -27,6 +39,16 @@ test('an apparently OPEN but silent socket times out without terminal input or r
   f.tick();
   assert.equal(f.failures(), 1);
   assert.equal(f.timers.size, 0);
+});
+
+test('terminal text cannot spoof a heartbeat receipt', () => {
+  const f = fixture();
+  f.tick();
+  const event = new Event('message');
+  event.data = JSON.stringify({ type: 'pong', id: 1 });
+  f.socket.dispatchEvent(event);
+  f.tick();
+  assert.equal(f.failures(), 1);
 });
 
 test('matching binary pong keeps an idle terminal alive; stale pong cannot confirm a new probe', () => {

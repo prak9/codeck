@@ -55,7 +55,7 @@ test('normal terminal deduplicates browser and tmux grids before sending resize'
   const ensureEnd = appJs.indexOf('\n\nfunction isMobileOverview()', ensureStart);
   const fitStart = appJs.indexOf('function fitTerminalView(');
   const fitEnd = appJs.indexOf('\n\nfunction markActiveSession(', fitStart);
-  const connectStart = appJs.indexOf('async function connect(session)');
+  const connectStart = appJs.indexOf('async function connect(session,');
   const connectEnd = appJs.indexOf('\n\nfunction openNewDialog()', connectStart);
   const terminalPath = appJs.slice(ensureStart, connectEnd);
 
@@ -70,7 +70,7 @@ test('normal terminal deduplicates browser and tmux grids before sending resize'
 });
 
 test('normal mode reuses an open owner socket when switching sessions', () => {
-  const start = appJs.indexOf('async function connect(session)');
+  const start = appJs.indexOf('async function connect(session,');
   const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
   const connect = appJs.slice(start, end);
 
@@ -88,7 +88,7 @@ test('normal mode reuses an open owner socket when switching sessions', () => {
 });
 
 test('normal mode drops stale terminal frames until the switched session reset boundary', () => {
-  const start = appJs.indexOf('async function connect(session)');
+  const start = appJs.indexOf('async function connect(session,');
   const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
   const connect = appJs.slice(start, end);
 
@@ -100,7 +100,7 @@ test('normal mode drops stale terminal frames until the switched session reset b
 });
 
 test('normal mode acknowledges parsed terminal output within a per-screen flow epoch', () => {
-  const start = appJs.indexOf('async function connect(session)');
+  const start = appJs.indexOf('async function connect(session,');
   const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
   const connect = appJs.slice(start, end);
 
@@ -112,7 +112,7 @@ test('normal mode acknowledges parsed terminal output within a per-screen flow e
 });
 
 test('normal mode does not forward an old terminal reply through a replacement socket', () => {
-  const start = appJs.indexOf('async function connect(session)');
+  const start = appJs.indexOf('async function connect(session,');
   const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
   const connect = appJs.slice(start, end);
 

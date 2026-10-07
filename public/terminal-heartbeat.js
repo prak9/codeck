@@ -4,6 +4,7 @@ export function bindTerminalHeartbeat(socket, onTimeout, {
   page = document, window = globalThis.window,
   schedule = setTimeout, cancel = clearTimeout,
   intervalMs = 15_000, timeoutMs = 10_000,
+  textFrames = false,
 } = {}) {
   let timer = null, pending = null, sequence = 0, stopped = false;
   const clear = () => {
@@ -27,9 +28,9 @@ export function bindTerminalHeartbeat(socket, onTimeout, {
     }, timeoutMs);
   };
   const receive = event => {
-    if (!(event.data instanceof ArrayBuffer)) return;
+    if (textFrames ? typeof event.data !== 'string' : !(event.data instanceof ArrayBuffer)) return;
     let message;
-    try { message = JSON.parse(new TextDecoder().decode(event.data)); } catch { return; }
+    try { message = JSON.parse(textFrames ? event.data : new TextDecoder().decode(event.data)); } catch { return; }
     if (message.type !== 'pong' || message.id !== pending) return;
     pending = null;
     arm();

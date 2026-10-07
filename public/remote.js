@@ -1,4 +1,5 @@
 import { filterSessionNames } from './session-search.js?v=1';
+import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { clipboardFiles } from './clipboard-files.js?v=1';
 import { createRemoteImages } from './remote-images.js?v=1';
 import {
@@ -587,6 +588,7 @@ function resyncThreadStream(target) {
 }
 
 function connectSocket() {
+  state.cancelHeartbeat?.();
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = null;
   const generation = ++state.socketGeneration;
@@ -596,12 +598,18 @@ function connectSocket() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}/agent?streamVersion=2`, `codeck.${websocketProtocolToken(state.token)}`);
   state.socket = socket;
+  state.cancelHeartbeat = bindTerminalHeartbeat(socket, () => {
+    if (generation !== state.socketGeneration || state.socket !== socket) return;
+    // Rebind subscriptions only; never retry an uncertain user submission.
+    connectSocket();
+  }, { textFrames: true });
 
   socket.addEventListener('message', (event) => {
     if (generation !== state.socketGeneration) return;
     let message;
     try { message = JSON.parse(event.data); }
     catch { return; }
+    if (message.type === 'pong') return;
     handleSocketMessage(message);
   });
   socket.addEventListener('close', () => {
