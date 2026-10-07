@@ -1,5 +1,5 @@
 export const MAX_ATTACHMENTS = 10;
-export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 * 1024;
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -10,7 +10,7 @@ export function validateAttachmentSelection(files, currentCount = 0) {
   const rejected = [];
   for (const file of Array.from(files || [])) {
     if (Number(file?.size || 0) > MAX_ATTACHMENT_BYTES) {
-      rejected.push({ file, message: `${file?.name || '文件'} 超过 100 MB` });
+      rejected.push({ file, message: `${file?.name || '文件'} 超过 10 GiB` });
       continue;
     }
     if (currentCount + accepted.length >= MAX_ATTACHMENTS) {

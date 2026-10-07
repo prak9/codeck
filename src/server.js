@@ -35,8 +35,7 @@ import {
 } from './web-session.js';
 import {
   resolveDownloadPath,
-  saveFileUpload,
-  saveImageUpload,
+  saveUploadStream,
   uploadRoot,
 } from './uploads.js';
 
@@ -58,7 +57,11 @@ let flexibleSizePromise = null;
 const authRateLimiter = createAuthRateLimiter();
 app.disable('x-powered-by');
 app.use(setSecurityHeaders);
-app.use(express.json({ limit: '16kb' }));
+const parseJson = express.json({ limit: '16kb' });
+app.use((req, res, next) => {
+  if (req.method === 'POST' && ['/api/uploads/images', '/api/uploads/files'].includes(req.path)) return next();
+  return parseJson(req, res, next);
+});
 
 function setSecurityHeaders(_req, res, next) {
   res.set({
@@ -274,18 +277,20 @@ app.post('/api/sessions/:name/share', ownerOnly, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.post('/api/uploads/images', ownerOnly, express.raw({ type: 'image/*', limit: '10mb' }), (req, res, next) => {
+app.post('/api/uploads/images', ownerOnly, async (req, res, next) => {
   try {
+    req.setTimeout(180_000);
     const contentType = req.headers['content-type']?.split(';')[0].trim().toLowerCase();
-    res.status(201).json({ path: saveImageUpload(req.body, contentType) });
+    res.status(201).json({ path: await saveUploadStream(req, { contentType: contentType || 'application/octet-stream' }) });
   } catch (error) { next(error); }
 });
 
-app.post('/api/uploads/files', ownerOnly, express.raw({ type: '*/*', limit: '100mb' }), (req, res, next) => {
+app.post('/api/uploads/files', ownerOnly, async (req, res, next) => {
   try {
+    req.setTimeout(180_000);
     const fileName = req.query.name || req.get('x-file-name') || 'upload';
     const relativePath = req.query.relativePath || req.get('x-relative-path') || '';
-    res.status(201).json({ path: saveFileUpload(req.body, fileName, relativePath) });
+    res.status(201).json({ path: await saveUploadStream(req, { fileName, relativePath }) });
   } catch (error) { next(error); }
 });
 
@@ -327,16 +332,19 @@ app.use('/fonts/inter', express.static(path.join(dirname, '../node_modules/@font
 app.use('/fonts/noto-sans-sc', express.static(path.join(dirname, '../node_modules/@fontsource-variable/noto-sans-sc')));
 app.use(express.static(publicDir));
 app.use((error, _req, res, _next) => {
-  const status = error.type === 'entity.too.large'
+  const status = error.type === 'entity.too.large' || error.status === 413
     ? 413
     : /无效|只能|未知|格式|为空|非法|上传/.test(error.message)
       ? 400
       : 500;
+  if (status === 413) res.set('Connection', 'close');
   res.status(status).json({ error: error.message || '服务器操作失败' });
 });
 
 const tls = loadTlsOptions();
 const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
+// Allow large uploads beyond Node's five-minute body deadline; idle sockets remain bounded.
+server.requestTimeout = 24 * 60 * 60_000;
 const wss = new WebSocketServer({ noServer: true, ...TERMINAL_WEBSOCKET_OPTIONS });
 const agentWss = new WebSocketServer({ noServer: true, ...AGENT_WEBSOCKET_OPTIONS });
 const agentRegistry = new AgentRegistry(createAgentBackends(), {

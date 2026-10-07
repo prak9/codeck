@@ -26,7 +26,7 @@ import {
 } from './agent-model.js?v=47';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
-import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=1';
+import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=5';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
 import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=5';

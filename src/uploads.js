@@ -2,6 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { MAX_ATTACHMENT_BYTES } from '../public/remote-attachments.js';
 
 const EXTENSIONS = new Map([
   ['image/png', '.png'],
@@ -17,6 +20,50 @@ const SIGNATURES = {
 };
 
 export const uploadRoot = path.join(os.homedir(), '.codeck', 'uploads');
+
+// Stream to a private sibling first: failed/aborted uploads never replace a file.
+export async function saveUploadStream(request, { fileName, relativePath, contentType, root = uploadRoot, maxBytes = MAX_ATTACHMENT_BYTES } = {}) {
+  const tooLarge = () => Object.assign(new Error('单个文件不能超过 10 GiB'), { status: 413 });
+  if (Number(request.headers?.['content-length']) > maxBytes) throw tooLarge();
+  if (request.headers?.['content-encoding'] && request.headers['content-encoding'] !== 'identity') {
+    throw Object.assign(new Error('上传不支持压缩请求体'), { status: 415 });
+  }
+  if (contentType && !EXTENSIONS.has(contentType)) throw new Error('仅支持 PNG、JPEG、WebP 或 GIF 图片格式');
+  const target = contentType
+    ? resolveUploadPath('', `${Date.now()}-${crypto.randomUUID()}${EXTENSIONS.get(contentType)}`, root)
+    : resolveUploadPath(relativePath, fileName, root);
+  await fs.promises.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = path.join(path.dirname(target), `.upload-${crypto.randomUUID()}.part`);
+  let size = 0, header = Buffer.alloc(0);
+  const limiter = new Transform({ transform(chunk, _encoding, callback) {
+    size += chunk.length;
+    if (size > maxBytes) return callback(tooLarge());
+    if (header.length < 12) header = Buffer.concat([header, chunk.subarray(0, 12 - header.length)]);
+    callback(null, chunk);
+  } });
+  const abort = () => limiter.destroy(new Error('上传连接已中断'));
+  const fail = error => limiter.destroy(error);
+  request.once('aborted', abort);
+  request.once('error', fail);
+  try {
+    // Do not put the HTTP request in pipeline: destroying it on a size error
+    // would reset the socket before Express can return a useful 413 response.
+    const saved = pipeline(limiter, fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
+    if (request.destroyed || request.aborted) abort();
+    else request.pipe(limiter);
+    await saved;
+    if (contentType && !size) throw new Error('图片内容为空');
+    if (contentType && !SIGNATURES[contentType](header)) throw new Error('图片内容与格式不匹配');
+    await fs.promises.rename(temporary, target);
+    return target;
+  } finally {
+    request.unpipe(limiter);
+    request.removeListener('aborted', abort);
+    request.removeListener('error', fail);
+    if (!request.destroyed) request.resume();
+    await fs.promises.rm(temporary, { force: true });
+  }
+}
 
 export function sanitizePathSegment(raw) {
   const normalized = (raw || '').normalize('NFKC').replace(/\r?\n/g, '_');

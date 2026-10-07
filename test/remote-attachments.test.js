@@ -58,5 +58,5 @@ test('limits attachment count and rejects files larger than the upload route', (
   assert.equal(result.accepted.length, MAX_ATTACHMENTS);
   assert.equal(result.rejected.length, 2);
   assert.match(result.rejected[0].message, /最多添加/);
-  assert.match(result.rejected[1].message, /100 MB/);
+  assert.match(result.rejected[1].message, /10 GiB/);
 });
