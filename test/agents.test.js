@@ -201,13 +201,13 @@ test('daemon-backed Codex follows a visible thread switch instead of its startup
       [oldId, '怎么样了'], [newId, '怎么样了'], [otherId, '另一个项目'],
     ].map(([session_id, text]) => JSON.stringify({ session_id, ts: 100, text })).join('\n'));
     const identityCache = new Map();
-    const detect = async (output, now) => (await detectPaneAgents(
-      [{ session: 'daemon-switch', pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome, HOME: root }, {
-        procRoot, clockTicks: 100, uptimeMs: 100_000 + now - 1_000_000, now, identityCache,
-        paneOutputs: new Map([['daemon-switch', output]]),
+    const detect = async (output, now, uptimeJitter = 0, session = 'daemon-switch') => (await detectPaneAgents(
+      [{ session, pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome, HOME: root }, {
+        procRoot, clockTicks: 100, uptimeMs: 100_000 + now - 1_000_000 + uptimeJitter, now, identityCache,
+        paneOutputs: new Map([[session, output]]),
         readCodexPaneOutput: async () => output,
       },
-    )).get('daemon-switch')?.id;
+    )).get(session)?.id;
     assert.equal(await detect('› 旧任务\n• 完成', 1_000_000), oldId);
     assert.equal(await detect('› 怎么样了\n• 完成', 1_001_000), oldId, 'shared prompts must not guess a new thread');
     assert.equal(await detect('› 总结当前实验的目标和状态\n• 完成\n› 怎么样了\n• 完成', 1_007_000), newId,
@@ -222,6 +222,24 @@ test('daemon-backed Codex follows a visible thread switch instead of its startup
       'the daemon client launch cwd is not the active thread workspace');
     assert.equal(await detect('› 总结当前实验的目标和状态\n• 完成\n› Ask Codex to do anything\n\n  GPT-6.1-Sol high · ~/workspace · 实验状态 · ← for agents', 1_050_000), newId,
       'the footer home alias resolves against the configured user home');
+    assert.equal(await detect('› 怎么样了\n• Working', 1_060_000, 7), newId,
+      'wall-clock and uptime sampling jitter must not discard an established binding');
+    assert.equal(await detect('', 1_070_000, -4), newId, 'long output can remove all identifying prompts');
+    fs.writeFileSync(path.join(codexHome, 'session_index.jsonl'),
+      JSON.stringify({ id: newId, thread_name: '实验状态' }));
+    fs.appendFileSync(path.join(codexHome, 'history.jsonl'), '\n');
+    const footer = '› 怎么样了\n• Working\n\n  GPT-6.1-Sol high · ~/workspace · 实验状态 · ← for agents';
+    assert.equal(await detect(footer, 1_080_000, 0, 'daemon-cold'), newId,
+      'a cold service can disambiguate shared prompts by the exact current footer title');
+    assert.equal(await detect(footer.replace('实验状态', '实验…'), 1_081_000, 0, 'daemon-truncated'), oldId,
+      'a truncated title is not enough to change the startup binding');
+    fs.appendFileSync(path.join(codexHome, 'session_index.jsonl'), '\n' +
+      JSON.stringify({ id: oldId, thread_name: '实验状态' }));
+    fs.appendFileSync(path.join(codexHome, 'history.jsonl'), '\n');
+    assert.equal(await detect(footer, 1_090_000, 0, 'daemon-ambiguous'), oldId,
+      'duplicate titles must not choose between matching threads');
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, startTicks: 10_000, command: `codex resume ${oldId}` });
+    assert.equal(await detect('', 1_100_000), oldId, 'a reused PID must not inherit the previous process binding');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

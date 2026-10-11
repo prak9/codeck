@@ -1074,8 +1074,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
       // Managed-daemon clients can stay in their launch directory while the
       // active thread uses another workspace. Only trust the final TUI footer.
-      const footerCwd = stripCodexAnsi(paneOutput).trimEnd().split('\n').at(-1)
-        ?.match(/^\s*(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*?\s·\s(~(?:\/[^·]*|)|\/[^·]*)(?:\s·\s.*)?$/i)?.[1]?.trim();
+      const footer = stripCodexAnsi(paneOutput).trimEnd().split('\n').at(-1)
+        ?.match(/^\s*(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*?\s·\s(~(?:\/[^·]*|)|\/[^·]*)(?:\s·\s(.*))?$/i);
+      const footerCwd = footer?.[1]?.trim();
       const paneCwd = normalizedPath(footerCwd?.startsWith('~')
         ? path.join(env.HOME || os.homedir(), footerCwd.slice(1))
         : footerCwd || runtime.cwd);
@@ -1087,12 +1088,19 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
         if (!cwdMatches.has(id)) cwdMatches.set(id, normalizedPath(codexSessionCwd(id, codex)) === paneCwd);
         return cwdMatches.get(id);
       });
-      const visibleId = visibleMatch.id;
+      // After a service restart, generic prompts may be all that remain in the
+      // bounded capture. An exact title can disambiguate those cwd-checked
+      // candidates, but a duplicate/truncated title is not an identity.
+      const footerTitle = footer?.[2]?.split(' · ')[0]?.trim();
+      const titledCandidates = !openSessionId && !visibleMatch.id && footerTitle
+        ? [...visibleMatch.candidates].filter((id) => codex.names.get(id) === footerTitle)
+        : [];
+      const visibleId = visibleMatch.id || (titledCandidates.length === 1 ? titledCandidates[0] : null);
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
       if (promptChanged && !explicitId && !visibleMatch.matched) cacheable = false;
       const remembered = codexPaneSessions.get(pane.session);
       const rememberedId = remembered?.pid === process.pid
-        && remembered.startedAt === process.startedAt
+        && remembered.startTicks === process.startTicks
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
       let id = openSessionId || verifiedVisibleId || rememberedId || explicitId
@@ -1102,7 +1110,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
               process, codex, visibleMatch.candidates, claimedCodexIds,
             )
           : resolveCodexSessionId(process, codex));
-      if (openSessionId || explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startedAt: process.startedAt, id });
+      if (openSessionId || explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id });
       let name = codex.names.get(id) || codexPreview(id, codex);
       if (!name) {
         const paneIdentity = parseCodexRename(paneOutput);
