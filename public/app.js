@@ -1,4 +1,5 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
+import { CONTINUE_PROMPT } from './continue-prompt.js?v=1';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { bindTerminalRecovery } from './terminal-recovery.js?v=1';
@@ -861,7 +862,7 @@ async function askTerminalProgress({ confirm = false } = {}) {
       provider: target.provider,
       threadId: target.threadId,
       tmuxSession: target.tmuxSession,
-      text: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT,
+      text: confirm ? CONTINUE_PROMPT : PROGRESS_PROMPT,
       commandId: attempt.commandId,
     });
     if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;

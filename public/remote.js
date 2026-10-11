@@ -1,4 +1,5 @@
 import { filterSessionNames } from './session-search.js?v=1';
+import { CONTINUE_PROMPT } from './continue-prompt.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { clipboardFiles } from './clipboard-files.js?v=1';
 import { createRemoteImages } from './remote-images.js?v=1';
@@ -2857,7 +2858,7 @@ async function askProgress({ confirm = false } = {}) {
     focusPendingAgentRequest();
     return;
   }
-  await submitComposer({ presetText: confirm ? '好的，请按当前目标和约定继续推进。' : PROGRESS_PROMPT });
+  await submitComposer({ presetText: confirm ? CONTINUE_PROMPT : PROGRESS_PROMPT });
 }
 
 function renderAutonomySummary(run) {

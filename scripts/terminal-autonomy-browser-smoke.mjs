@@ -1,5 +1,6 @@
 // Actual terminal page + AgentHub/controller, simulated CLI only. No live input.
 import assert from 'node:assert/strict';
+import { CONTINUE_PROMPT } from '../public/continue-prompt.js';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -270,7 +271,7 @@ try {
       await page.locator('#terminalVoiceDraft').fill('保留我的草稿');
       await continueButton.click();
       await page.waitForFunction(() => document.querySelector('#terminalContinueButton').getAttribute('aria-busy') === 'false');
-      assert.equal(fixture.inputs.at(-1).text, '好的，请按当前目标和约定继续推进。');
+      assert.equal(fixture.inputs.at(-1).text, CONTINUE_PROMPT);
       assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '保留我的草稿');
       assert.deepEqual(errors, []); await context.close();
       console.log('PASS planning shortcut ' + provider + ' ' + width + ': send once, draft, confirmation, progress, reconnect');

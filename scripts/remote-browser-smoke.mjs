@@ -2,6 +2,7 @@
 // No owner credentials, real CLI writes, or project dependency installation.
 // CODECK_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node scripts/remote-browser-smoke.mjs
 import assert from 'node:assert/strict';
+import { CONTINUE_PROMPT } from '../public/continue-prompt.js';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -432,7 +433,7 @@ try {
         await page.locator('#composerInput').fill('保留我的草稿');
         await page.locator('#continueButton').click();
         await page.waitForFunction(() => !document.querySelector('#continueButton').disabled);
-        assert.equal(fixture.sent.at(-1).text, '好的，请按当前目标和约定继续推进。');
+        assert.equal(fixture.sent.at(-1).text, CONTINUE_PROMPT);
         assert.equal(await page.locator('#composerInput').inputValue(), '保留我的草稿');
         assert.equal(await page.locator('dialog[open]').count(), 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
