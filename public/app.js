@@ -1,10 +1,10 @@
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
-import { CONTINUE_PROMPT } from './continue-prompt.js?v=1';
+import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { bindTerminalRecovery } from './terminal-recovery.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=20';
-import { createTerminalAutonomy } from './terminal-autonomy.js?v=22';
+import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=21';
+import { createTerminalAutonomy } from './terminal-autonomy.js?v=23';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';

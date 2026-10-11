@@ -1,4 +1,4 @@
-export const AUTONOMY_PROGRESS_PROMPT = '现在进展怎么样？请简要说明你理解的目标、当前进展、剩余事项和阻塞。不打断当前节奏，不续跑、不改方向、模式或预算。';
+export const AUTONOMY_PROGRESS_PROMPT = '请简要汇报当前目标、进展、剩余事项和阻塞。仅汇报，不打断、不续跑、不改方向或预算。';
 
 export const AUTONOMY_CONFIRM_PROMPT = `确认当前对话中最新的自主任务计划，请开始执行。
 先检查原生 goal：若支持 get_goal / create_goal，复用与本计划一致的已有目标，或用已确认的目标、验收和边界创建目标。预算未指定就不设默认值，也不重置已有预算。若已有不同的未完成目标，先说明冲突，不覆盖它。
