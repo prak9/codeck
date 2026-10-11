@@ -137,10 +137,11 @@ test('a Codex process follows its open thread after an explicit resume forks', a
     const pane = [{ session: 'codeck', pid: 10, paneId: '%1' }];
     const identityCache = new Map();
     const processTreeCache = new Map();
+    let paneOutput = '› 旧任务\n• 正在分析';
     const detect = (now) => detectPaneAgents(pane, { CODEX_HOME: codexHome }, {
       procRoot, clockTicks: 100, now, uptimeMs: 100_000,
       identityCache, identityCacheTtlMs: 5_000, processTreeCache,
-      readCodexPaneOutput: async () => '› 子分支的新消息\n• 正在分析',
+      readCodexPaneOutput: async () => paneOutput,
     });
 
     assert.equal((await detect(1_000_000)).get('codeck')?.id, parentId);
@@ -153,6 +154,7 @@ test('a Codex process follows its open thread after an explicit resume forks', a
       'a writer lock without an open rollout is not enough to expose the child',
     );
     fs.symlinkSync(childRollout, rolloutFd);
+    paneOutput = '› 子分支的新消息\n• 正在分析';
     assert.equal(
       (await detect(1_002_000)).get('codeck')?.id,
       childId,
@@ -171,6 +173,55 @@ test('a Codex process follows its open thread after an explicit resume forks', a
       childId,
       'parallel subagents must not make the current fork fall back to its old resume argument',
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('daemon-backed Codex follows a visible thread switch instead of its startup resume id', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-daemon-switch-'));
+  const procRoot = path.join(root, 'proc');
+  const codexHome = path.join(root, 'codex');
+  const cwd = path.join(root, 'workspace');
+  const oldId = '01a05160-1111-7111-8111-111111111111';
+  const newId = '01a05161-2222-7222-8222-222222222222';
+  const otherId = '01a05162-3333-7333-8333-333333333333';
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, startTicks: 9_000, command: `codex resume ${oldId}`, cwd });
+    const sessions = path.join(codexHome, 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    for (const id of [oldId, newId, otherId]) {
+      fs.writeFileSync(path.join(sessions, `rollout-2026-10-11T16-16-16-${id}.jsonl`),
+        JSON.stringify({ type: 'session_meta', payload: { id, cwd: id === otherId ? root : cwd } }));
+    }
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [
+      [oldId, '旧任务'], [newId, '总结当前实验的目标和状态'],
+      [oldId, '怎么样了'], [newId, '怎么样了'], [otherId, '另一个项目'],
+    ].map(([session_id, text]) => JSON.stringify({ session_id, ts: 100, text })).join('\n'));
+    const identityCache = new Map();
+    const detect = async (output, now) => (await detectPaneAgents(
+      [{ session: 'daemon-switch', pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome, HOME: root }, {
+        procRoot, clockTicks: 100, uptimeMs: 100_000 + now - 1_000_000, now, identityCache,
+        paneOutputs: new Map([['daemon-switch', output]]),
+        readCodexPaneOutput: async () => output,
+      },
+    )).get('daemon-switch')?.id;
+    assert.equal(await detect('› 旧任务\n• 完成', 1_000_000), oldId);
+    assert.equal(await detect('› 怎么样了\n• 完成', 1_001_000), oldId, 'shared prompts must not guess a new thread');
+    assert.equal(await detect('› 总结当前实验的目标和状态\n• 完成\n› 怎么样了\n• 完成', 1_007_000), newId,
+      'the periodic identity audit follows a unique visible conversation without local rollout FDs');
+    assert.equal(await detect('› 怎么样了\n• 完成', 1_010_000), newId, 'ambiguous prompts retain the verified thread');
+    assert.equal(await detect('› 另一个项目\n• 完成', 1_020_000), newId, 'a different cwd cannot replace the current thread');
+    assert.equal(await detect('', 1_030_000), newId, 'a temporarily empty screen cannot restore the startup id');
+    fs.unlinkSync(path.join(procRoot, '11', 'cwd'));
+    fs.symlinkSync(root, path.join(procRoot, '11', 'cwd'));
+    identityCache.clear();
+    assert.equal(await detect(`› 总结当前实验的目标和状态\n• 完成\n› Ask Codex to do anything\n\n  GPT-6.1-Sol high · ${cwd} · 实验状态 · ← for agents`, 1_040_000), newId,
+      'the daemon client launch cwd is not the active thread workspace');
+    assert.equal(await detect('› 总结当前实验的目标和状态\n• 完成\n› Ask Codex to do anything\n\n  GPT-6.1-Sol high · ~/workspace · 实验状态 · ← for agents', 1_050_000), newId,
+      'the footer home alias resolves against the configured user home');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

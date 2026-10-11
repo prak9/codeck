@@ -1072,9 +1072,17 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const paneOutput = codexPaneOutputs.get(pane.session) || '';
       cachePrompt = visiblePrompt || latestCodexPrompt(paneOutput);
       const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
-      const paneCwd = normalizedPath(runtime.cwd);
+      // Managed-daemon clients can stay in their launch directory while the
+      // active thread uses another workspace. Only trust the final TUI footer.
+      const footerCwd = stripCodexAnsi(paneOutput).trimEnd().split('\n').at(-1)
+        ?.match(/^\s*(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*?\s·\s(~(?:\/[^·]*|)|\/[^·]*)(?:\s·\s.*)?$/i)?.[1]?.trim();
+      const paneCwd = normalizedPath(footerCwd?.startsWith('~')
+        ? path.join(env.HOME || os.homedir(), footerCwd.slice(1))
+        : footerCwd || runtime.cwd);
       const cwdMatches = new Map();
-      const visibleMatch = openSessionId || explicitId ? { id: null, matched: false } : matchCodexHistorySession(paneOutput, codex.history, (id) => {
+      // A daemon-backed CLI owns no rollout FDs; its startup resume argument
+      // survives /new and thread switches. Reconcile the live conversation too.
+      const visibleMatch = openSessionId ? { id: null, matched: false } : matchCodexHistorySession(paneOutput, codex.history, (id) => {
         if (!paneCwd) return true;
         if (!cwdMatches.has(id)) cwdMatches.set(id, normalizedPath(codexSessionCwd(id, codex)) === paneCwd);
         return cwdMatches.get(id);
@@ -1087,7 +1095,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
         && remembered.startedAt === process.startedAt
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
-      let id = openSessionId || explicitId || verifiedVisibleId || rememberedId
+      let id = openSessionId || verifiedVisibleId || rememberedId || explicitId
         || (visibleMatch.matched
           ? uniqueCodexStartMatch(process, codex, claimedCodexIds)
             || uniqueCodexResumeWriterMatch(
