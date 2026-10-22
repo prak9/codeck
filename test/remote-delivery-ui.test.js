@@ -101,6 +101,19 @@ test('switching sessions selects the target before its history request finishes'
   assert.deepEqual(Array.from(state.thread.turns, turn => turn.id), ['new-turn']);
 });
 
+test('Codex local model-switch prompts enter the Remote native dialog', () => {
+  const question = { id: 'switch', question: 'Approaching rate limits', options: [{ label: 'Keep current model' }] };
+  const state = { provider: 'codex', thread: { id: 'thread', tmux: { name: 'research', question } } };
+  const context = vm.createContext({ state });
+  load(context, 'nativeQuestionEntry');
+  const entry = context.nativeQuestionEntry();
+  assert.equal(entry.provider, 'codex');
+  assert.equal(entry.request.id, 'switch');
+  assert.equal(entry.request.params.questions[0].options, question.options);
+  delete state.thread.tmux.question;
+  assert.equal(context.nativeQuestionEntry(), null);
+});
+
 test('a native question opens while transcript history is loading and remains dismissible', () => {
   const dialog = { open: false, dataset: {}, showModal() { this.open = true; }, close() { this.open = false; } };
   const content = { replaceChildren() {} };

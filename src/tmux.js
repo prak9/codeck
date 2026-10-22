@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
 import { clampTerminalGrid } from '../public/terminal-utils.js';
 import { parseQoderQuestion, QoderQuestionTracker } from './qoder-question.js';
+import { parseCodexQuestion } from './codex-question.js';
 import { qoderTaskPanel, stopQoderTasks } from './qoder-stop.js';
 import { redrawTerminalPane } from './terminal-redraw.js';
 import { terminalDiagnostics } from './terminal-diagnostics.js';
@@ -929,7 +930,7 @@ const SUBMIT_CONFIRM_ATTEMPTS = 3;
 const SUBMIT_CONFIRM_DELAY_MS = 200;
 const CODEX_PLACEHOLDER = 'Ask Codex to do anything';
 // The goal badge can remain visible to the right of a clipped model/path.
-const CODEX_CLIPPED_FOOTER = /^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*…(?:\s+Goal (?:achieved \([^()\n]+\)|paused \(\/goal resume\)))?$/iu;
+const CODEX_CLIPPED_FOOTER = /^(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*…(?:\s+Goal (?:achieved \([^()\n]+\)|(?:paused|stalled) \(\/goal resume\)))?$/iu;
 
 function codexComposerFooterRow(rows) {
   const index = rows.findLastIndex(line => AGENT_SCREEN_IDENTITY.codex.some(pattern => pattern.test(line.trim()))
@@ -1705,13 +1706,14 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
 }
 
 export async function answerSessionQuestion({ provider, sessionName, threadId, questionId, answer }, overrides = {}) {
-  if (provider !== 'qodercli' || !validateSessionName(sessionName)
+  if (!['qodercli', 'codex'].includes(provider) || !validateSessionName(sessionName)
     || typeof questionId !== 'string' || !questionId || typeof answer !== 'string' || !answer || answer.length > 4_000) {
     throw new Error('无效的终端询问回答');
   }
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
     const tracker = overrides.questionTracker || qoderQuestions;
+    const parseQuestion = provider === 'codex' ? parseCodexQuestion : parseQoderQuestion;
     const capture = overrides.capturePane || capturePane;
     const target = { provider, sessionName, threadId };
     const first = await verifiedSessionTarget(target, listTmuxSessions);
@@ -1720,7 +1722,7 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
     if (latest.paneId !== first.paneId) throw new Error('终端 pane 已变化，回答未发送');
     const screen = await capture(latest.paneId);
     const active = tracker.observe(sessionName, latest.session.agent, screen);
-    const picker = parseQoderQuestion(screen);
+    const picker = parseQuestion(screen);
     if (!active || active.id !== questionId || !picker) throw new Error('询问已变化或已回答，回答未发送');
     const selectedOption = picker.options.findIndex(option => option.label === answer);
     if (selectedOption < 0) throw new Error('回答选项已变化，回答未发送');
@@ -1736,7 +1738,7 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
       const visible = await capture(current.paneId);
       const observed = tracker.observe(sessionName, current.session.agent, visible);
       if (observed?.id !== questionId) throw new Error('询问已变化或已回答，回答未发送');
-      return parseQoderQuestion(visible);
+      return parseQuestion(visible);
     };
     let cursor = picker.cursor;
     while (!picker.selectByNumber && cursor !== selected) {
@@ -1762,9 +1764,9 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
     for (let attempt = 0; attempt < 10; attempt += 1) {
       await waitForQuestion();
       const after = await capture(latest.paneId);
-      const next = parseQoderQuestion(after);
+      const next = parseQuestion(after);
       if (after.trim() && (next ? next.fingerprint !== picker.fingerprint
-        : !/^\s*(?:Asking User|Permission Required(?: \(\d+ of \d+\))?)\s*$|Would\s+you\s+like\s+to\s+proceed\?|Exit\s+plan\s+mode\?/mu.test(after))) {
+        : !/^\s*(?:Approaching rate limits|Asking User|Permission Required(?: \(\d+ of \d+\))?)\s*$|Would\s+you\s+like\s+to\s+proceed\?|Exit\s+plan\s+mode\?/mu.test(after))) {
         return { submitted: true };
       }
     }

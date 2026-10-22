@@ -44,7 +44,8 @@ const defaultDependencies = {
 const TERMINAL_OUTPUT_HIGH_WATERMARK = 256 * 1024;
 // xterm answers terminal queries on the same channel as keystrokes. Merely
 // opening a terminal must not be mistaken for taking over an autonomous task.
-const TERMINAL_REPLY = /^(?:\x1b\[[>?]?[\d;]*[cnR]|\x1b\]\d+;rgb:[\da-f/]+(?:\x07|\x1b\\))+$/iu;
+// DECRPM replies (e.g. CSI ? 2026 ; 0 $ y) belong to the tmux client too.
+const TERMINAL_REPLY = /^(?:\x1b\[[>?]?[\d;]*[cnR]|\x1b\[\??\d+;[0-4]\$y|\x1b\]\d+;rgb:[\da-f/]+(?:\x07|\x1b\\))+$/iu;
 const isNativePaste = message => message.type === 'input' && message.submit !== true && message.resume !== true
   && typeof message.data === 'string' && message.data.startsWith('\x1b[200~') && message.data.endsWith('\x1b[201~');
 // xterm speaks the outer tmux client's cursor mode (e.g. SS3 Up = ESC O A).

@@ -224,7 +224,7 @@ export function tmuxSessionsToThreads(sessions) {
           : 'done',
         available,
         ...(session.agent?.hasBackgroundProcess ? { hasBackgroundProcess: true } : {}),
-        ...(provider === 'qodercli' && session.agent?.question ? { question: session.agent.question } : {}),
+        ...(['qodercli', 'codex'].includes(provider) && session.agent?.question ? { question: session.agent.question } : {}),
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
         ...(liveOutput ? { liveOutput } : {}),
       },

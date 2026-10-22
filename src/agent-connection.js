@@ -827,7 +827,7 @@ export class AgentHub {
       const threadId = cleanId(message.threadId, 'Thread');
       const sessionName = cleanId(message.tmuxSession, 'tmux session');
       const target = this.clients.get(socket)?.threadSubscription?.target;
-      if (provider !== 'qodercli' || target?.provider !== provider || target.threadId !== threadId
+      if (!['qodercli', 'codex'].includes(provider) || target?.provider !== provider || target.threadId !== threadId
         || target.tmuxSession !== sessionName) throw new Error('询问不属于当前会话，回答未发送');
       const result = await this.registry.answerSessionQuestion(provider, {
         threadId, sessionName, questionId: cleanId(message.questionId, 'Question'), answer: cleanMessage(message.answer),

@@ -73,6 +73,68 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const inputResults = (ws) => ws.sent.filter(Buffer.isBuffer).map((data) => JSON.parse(data.toString()));
 const sendFrame = (ws, message) => ws.emit('message', Buffer.from(JSON.stringify(message)), false);
 
+test('mode query replies go directly to tmux without taking input ownership', async () => {
+  const ws = new FakeSocket(), terminal = fakeTerminal(), submitted = [], human = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    submitTerminalInput: async (_session, data) => submitted.push(data),
+    onHumanInput: name => human.push(name),
+  }));
+  const replies = ['\x1b[?2026;0$y', '\x1b[?2026;1$y', '\x1b[4;2$y', '\x1b[?2026;0$y\x1b[1;1R'];
+  for (const data of replies) sendFrame(ws, { type: 'input', data });
+  await nextTurn();
+  assert.deepEqual(terminal.writes, replies);
+  assert.deepEqual(submitted, []);
+  assert.deepEqual(human, []);
+  sendFrame(ws, { type: 'input', data: 'hello' }); await nextTurn();
+  assert.deepEqual(submitted, ['hello'], 'first human input still restores ownership');
+  ws.close();
+});
+
+test('mode replies after repeated session switches never enter the new session composer', async () => {
+  const ws = new FakeSocket(), terminals = [], submitted = [], human = [];
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    canSwitchSession: true,
+    createTerminal: () => { const terminal = fakeTerminal(); terminals.push(terminal); return terminal; },
+    submitTerminalInput: async (session, data) => submitted.push({ session, data }),
+    onHumanInput: name => human.push(name),
+  }));
+  for (const session of ['other', 'work', 'other']) {
+    const previous = terminals.at(-1);
+    sendFrame(ws, { type: 'switch', session, cols: 80, rows: 24 }); await nextTurn();
+    assert.equal(previous.killed, true);
+    sendFrame(ws, { type: 'input', data: '\x1b[?2026;0$y' }); await nextTurn();
+    assert.deepEqual(terminals.at(-1).writes, ['\x1b[?2026;0$y']);
+    assert.deepEqual(submitted, []);
+    assert.deepEqual(human, []);
+  }
+  sendFrame(ws, { type: 'input', data: 'hello' }); await nextTurn();
+  assert.deepEqual(submitted, [{ session: 'other', data: 'hello' }]);
+  assert.deepEqual(human, ['other']);
+  ws.close();
+});
+
+test('mode replies bypass pending scroll but pasted reply text remains user input', async () => {
+  const ws = new FakeSocket(), terminal = fakeTerminal(), submitted = [], human = [];
+  let finish;
+  await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({
+    createTerminal: () => terminal,
+    scrollSession: () => new Promise(resolve => { finish = resolve; }),
+    submitTerminalInput: async (_session, data) => submitted.push(data),
+    onHumanInput: name => human.push(name),
+  }));
+  sendFrame(ws, { type: 'scroll', lines: 3 }); await nextTurn();
+  sendFrame(ws, { type: 'input', data: '\x1b[?2026;0$y' });
+  assert.deepEqual(terminal.writes, ['\x1b[?2026;0$y']);
+  assert.deepEqual(human, []);
+  finish(); await nextTurn();
+  const paste = '\x1b[200~\x1b[?2026;0$y\x1b[201~';
+  sendFrame(ws, { type: 'input', data: paste }); await nextTurn();
+  assert.deepEqual(submitted, [paste]);
+  assert.deepEqual(human, ['work']);
+  ws.close();
+});
+
 test('cursor keys pass through the tmux client after attach, scroll and explicit handoff', async () => {
   const ws = new FakeSocket(), keys = [], submissions = [];
   await handleTerminalConnection(ws, 'work', { width: 80, height: 24 }, dependencies({

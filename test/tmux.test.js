@@ -6,6 +6,26 @@ import { AGENT_SCREEN_MARKERS, dismissSessionCommand, ensureAgentInputSubmitted,
 
 const EMPTY_CODEX_COMPOSER = '» \n\n  gpt-6-astra · /project';
 
+test('a stalled Codex goal does not block explicit input in a narrow terminal', async () => {
+  for (const footer of ['GPT-6.1-Sol … Goal stalled (/goal resume)',
+    'GPT-6.1-Sol high · ~/py · research    Goal stalled (/goal resume)']) {
+    const commands = [];
+    let redraws = 0;
+    const result = await sendSessionMessage({ provider: 'codex', sessionName: 'research', threadId: 'thread-1',
+      text: 'Status?', replaceDraft: true, nonInterrupting: true }, {
+      listTmuxSessions: async () => [{ name: 'research', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+      capturePane: async () => `■ Error running remote compact task: Connection failed\n\n› \x1b[2mAsk Codex to do anything\x1b[0m\n\n  ${footer}`,
+      redrawCodexPane: async () => { redraws++; },
+      execTmux: async args => commands.push(args),
+      loadBuffer: async () => {}, waitForPaste: async () => {}, waitForSubmit: async () => {},
+    });
+    assert.equal(result.submissionStatus, 'submitted');
+    assert.equal(redraws, 0);
+    assert.equal(commands.filter(args => args.includes('paste-buffer')).length, 1);
+    assert.equal(commands.some(args => args.includes('Escape') || args.includes('C-c')), false);
+  }
+});
+
 test('explicit noninterrupting Codex progress redraws a hidden composer before sending', async () => {
   const commands = []; let pasted = false, redrawn = false;
   const screen = '› Earlier progress question\n\n• Current progress: workers are still running.\n────────────────\n\n';

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { parseQoderEmptyPlan, parseQoderPermission } from './qoder-permission.js';
+import { parseCodexQuestion } from './codex-question.js';
 
 // ExitPlanMode has its own layout, not the Asking User footer. Keep the exact
 // native option order: the feedback editor occupies index 2 but cannot be
@@ -105,7 +106,8 @@ export class QoderQuestionTracker {
   constructor() { this.entries = new Map(); }
 
   observe(sessionName, agent, screen) {
-    const question = agent?.kind === 'qodercli' && agent.id && agent.paneId ? parseQoderQuestion(screen) : null;
+    const parse = agent?.kind === 'codex' ? parseCodexQuestion : agent?.kind === 'qodercli' ? parseQoderQuestion : null;
+    const question = parse && agent.id && agent.paneId ? parse(screen) : null;
     if (!question) { this.entries.delete(sessionName); return null; }
     const identity = `${agent.id}:${agent.paneId}:${question.fingerprint}`;
     let entry = this.entries.get(sessionName);

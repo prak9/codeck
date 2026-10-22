@@ -2050,7 +2050,7 @@ function approvalNode(key, entry) {
 function nativeQuestionEntry() {
   const thread = state.thread;
   const question = thread?.tmux?.question;
-  if (state.provider !== 'qodercli' || !question) return null;
+  if (!['qodercli', 'codex'].includes(state.provider) || !question) return null;
   return { native: true, provider: state.provider, tmuxSession: thread.tmux.name,
     request: { id: question.id, params: { threadId: thread.id, questions: [{
       id: 'native', header: '等待你的回答', question: question.question, options: question.options,
