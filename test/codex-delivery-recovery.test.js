@@ -10,6 +10,26 @@ const receipt = (commandId = 'command-1') => ({
 const turn = (...items) => ({ id: 'turn', status: 'completed', items });
 const tick = () => new Promise(setImmediate);
 
+test('same-turn input after an item baseline is confirmed using recovered placement', () => {
+  const recovery = new CodexDeliveryRecovery({ read: async () => ({ data: [] }), observe() {} });
+  recovery.record({ ...receipt(), baselineUserMessageId: null, baselineLastItemId: 'output' });
+  const summary = [turn(user('actual', '可以'), { id: 'final', type: 'agentMessage' })];
+  const cached = new Map([['turn', { items: [user('old', '可以'), user('actual', '可以')],
+    order: ['old', 'output', 'actual', 'final'] }]]);
+  assert.deepEqual(recovery.update('thread', summary, cached).deliveryConfirmations,
+    [{ commandId: 'command-1', itemId: 'actual' }]);
+  recovery.close();
+});
+
+test('item baseline never confirms earlier same-text inputs or an absent anchor', () => {
+  for (const items of [[user('old', '可以'), { id: 'output' }], [user('old', '可以')]]) {
+    const recovery = new CodexDeliveryRecovery({ read: async () => ({ data: [] }), observe() {} });
+    recovery.record({ ...receipt(), baselineUserMessageId: null, baselineLastItemId: 'output' });
+    assert.deepEqual(recovery.update('thread', [turn(...items)]).deliveryConfirmations, []);
+    recovery.close();
+  }
+});
+
 test('recovers missed completed-turn follow-ups asynchronously, preserving source order', async () => {
   let release;
   const observed = [];

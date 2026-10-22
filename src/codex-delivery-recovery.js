@@ -49,7 +49,8 @@ export class CodexDeliveryRecovery {
     const proposals = [];
     const groups = new Map();
     for (const receipt of receipts) {
-      const key = JSON.stringify([receipt.baselineUserMessageId, receipt.baselineTurnId, receipt.text]);
+      const key = JSON.stringify([receipt.baselineUserMessageId, receipt.baselineTurnId,
+        receipt.baselineUserMessageId ? null : receipt.baselineLastItemId, receipt.text]);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(receipt);
     }
@@ -73,6 +74,20 @@ export class CodexDeliveryRecovery {
         const index = sourceTurns.findIndex(turn => turn.id === baseline.baselineTurnId);
         if (index < 0) continue;
         candidates = users.filter(entry => entry.turnIndex > index);
+        // A steering input can be persisted inside the current turn. Summary
+        // views may omit its preceding item; recovery retains the full ID order.
+        // Only an exact item boundary proves it is newer than this submission.
+        if (baseline.baselineLastItemId) {
+          const anchorTurn = sourceTurns[index];
+          const order = cached?.order?.includes(baseline.baselineLastItemId)
+            ? cached.order : (anchorTurn.items || []).filter(item => !item.delivery).map(item => item.id);
+          const anchor = order.indexOf(baseline.baselineLastItemId);
+          if (anchor < 0) continue;
+          const items = new Map([...(cached?.items || []), ...(anchorTurn.items || [])]
+            .filter(item => item.type === 'userMessage' && !item.delivery).map(item => [item.id, item]));
+          candidates = [...order.slice(anchor + 1).filter(id => items.has(id))
+            .map(id => ({ item: items.get(id), turnIndex: index })), ...candidates];
+        }
       } else {
         candidates = users;
       }
