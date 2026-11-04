@@ -3,8 +3,7 @@ import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { bindTerminalRecovery } from './terminal-recovery.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT, autonomyExecutionLabel } from './remote-autonomy.js?v=21';
-import { createTerminalAutonomy } from './terminal-autonomy.js?v=23';
+import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=22';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -147,11 +146,6 @@ function localInputEnabled() {
 
 const TERMINAL_KEY_HINT = '回车发送 · \u2303J 换行 · @ Tab Esc 直达 CLI';
 const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT;
-const terminalAutonomy = createTerminalAutonomy({
-  getTarget: () => state.canWrite && state.terminalInputReady ? activeAgentSessionTarget() : null,
-  request: sessionFeedRequest,
-  focusTerminal: () => state.terminal?.focus(),
-});
 
 function setTerminalVoiceState(active, message = '') {
   const capture = $('#terminalVoiceCaptureButton');
@@ -329,14 +323,7 @@ async function submitTerminalVoiceDraft() {
   if (!isCurrentTerminalTarget(target)) return setTerminalVoiceState(false, '终端尚未连接，草稿仍保留在这里。');
   voiceInput.abort();
   try {
-    const direction = terminalAutonomy.sendDirection(text);
-    let directionPending;
-    const receipt = direction ? Promise.race([direction, new Promise((_resolve, reject) => {
-      directionPending = { reject };
-      state.terminalSubmitPending = directionPending;
-    })]).finally(() => {
-      if (state.terminalSubmitPending === directionPending) state.terminalSubmitPending = null;
-    }) : requestTerminalSubmit(target, `${text}\r`, {
+    const receipt = requestTerminalSubmit(target, `${text}\r`, {
       replaceDraft: true,
       // Agent identity can still be unresolved on an SSH-backed or newly opened session.
       // Slash commands share the same TUI race regardless of provider: let the text settle
@@ -660,9 +647,7 @@ function sessionEntryHtml(session, index) {
 
 function sessionExecutionLabel(session) {
   const status = resolveSessionStatus(session);
-  const run = terminalAutonomy.runFor({ provider: session.agent?.kind,
-    threadId: session.agent?.id, tmuxSession: session.name });
-  return autonomyExecutionLabel(run, status, Boolean(session.agent?.question)) || (status === 'working'
+  return session.agent?.question ? '等待你的回答' : (status === 'working'
     ? '正在干活'
     : status === 'background' ? '后台运行' : '已就绪');
 }
@@ -833,7 +818,7 @@ function activeAgentOutputTarget() {
 function syncTerminalProgressButton() {
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
-  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalContinueButton', '确认并继续推进']]) {
+  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalContinueButton', '确认并继续推进'], ['terminalAutonomyButton', '请 Agent 规划自主任务']]) {
     const button = $(`#${id}`);
     const label = target?.question ? '处理 Agent 等待的问题' : action;
     button.hidden = !target;
@@ -844,8 +829,9 @@ function syncTerminalProgressButton() {
   }
 }
 
-async function askTerminalProgress({ confirm = false } = {}) {
-  const button = $(confirm ? '#terminalContinueButton' : '#terminalProgressButton');
+async function askTerminalProgress({ confirm = false, planning = false } = {}) {
+  const button = $(planning ? '#terminalAutonomyButton' : confirm ? '#terminalContinueButton' : '#terminalProgressButton');
+  const action = planning ? '请求任务规划' : confirm ? '确认并请求继续推进' : '询问 Agent 进度';
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   if (!target || button.hidden || button.disabled) return;
   if (target.question) {
@@ -856,24 +842,24 @@ async function askTerminalProgress({ confirm = false } = {}) {
   const attempt = { key: target.progressKey, commandId: crypto.randomUUID() };
   state.terminalProgressPending = attempt;
   syncTerminalProgressButton();
-  setConnectionMessage(confirm ? '正在确认并请求继续推进…' : '正在询问 Agent 进度…', false);
+  setConnectionMessage(`正在${action}…`, false);
   try {
     const result = await sessionFeedRequest('sendSessionMessage', {
       provider: target.provider,
       threadId: target.threadId,
       tmuxSession: target.tmuxSession,
-      text: confirm ? CONTINUE_PROMPT : PROGRESS_PROMPT,
+      text: planning ? AUTONOMY_PLANNING_PROMPT : confirm ? CONTINUE_PROMPT : PROGRESS_PROMPT,
       commandId: attempt.commandId,
     });
     if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;
     if (result?.submissionStatus === 'unconfirmed') {
       setConnectionMessage('消息提交未确认；请检查终端，勿重复点击。', false);
     } else {
-      setConnectionMessage(confirm ? '已确认并请求继续推进' : '已询问 Agent 进度');
+      setConnectionMessage(`已${action}`);
     }
   } catch (error) {
     if (activeAgentSessionTarget()?.progressKey === attempt.key) {
-      setConnectionMessage(`${confirm ? '确认回复' : '进度询问'}未确认：${error.message}。请检查终端后再试。`, false);
+      setConnectionMessage(`${action}未确认：${error.message}。请检查终端后再试。`, false);
     }
   } finally {
     if (state.terminalProgressPending === attempt) state.terminalProgressPending = null;
@@ -1064,7 +1050,6 @@ function connectSessionFeed() {
     state.sessionFeedReady = false;
     state.sessionStreamHealthy = false;
     rejectSessionFeedRequests('Agent 连接无响应，发送结果未确认');
-    terminalAutonomy.disconnect();
     socket.close();
     connectSessionFeed();
   }, { textFrames: true });
@@ -1085,7 +1070,6 @@ function connectSessionFeed() {
     }
     if (message.type === 'ready') {
       state.sessionFeedReady = true;
-      terminalAutonomy.ready(message);
       renderSessions();
       syncTerminalProgressButton();
       if (message.protocol?.epoch !== state.sessionStreamCursor?.epoch) {
@@ -1102,7 +1086,6 @@ function connectSessionFeed() {
       void refreshActiveAgentOutput({ force: true });
       return;
     }
-    if (message.type === 'autonomyState') { terminalAutonomy.update(message.run); renderSessions(); return; }
     const applyFeedSnapshot = (snapshot, cursor) => {
       state.sessionStreamCursor = cursor;
       state.sessionStreamSnapshot = snapshot;
@@ -1156,7 +1139,6 @@ function connectSessionFeed() {
     state.sessionFeedReady = false;
     state.sessionStreamHealthy = false;
     rejectSessionFeedRequests('Agent 连接已断开');
-    terminalAutonomy.disconnect();
     syncAgentOutputCopyButtons();
     syncTerminalProgressButton();
     scheduleSessionFeedReconnect();
@@ -1181,7 +1163,6 @@ function syncTerminalAccess() {
   if (writable && localInputEnabled()) openTerminalComposer();
   syncTerminalVoiceControls();
   syncTerminalProgressButton();
-  terminalAutonomy.sync();
 }
 
 function terminalOutputForSession(output, sessionName) {
@@ -1826,6 +1807,7 @@ $('#reconnectTerminalButton').addEventListener('click', () => {
 });
 
 $('#terminalProgressButton').addEventListener('click', askTerminalProgress);
+$('#terminalAutonomyButton').addEventListener('click', () => askTerminalProgress({ planning: true }));
 $('#terminalContinueButton').addEventListener('click', () => askTerminalProgress({ confirm: true }));
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {

@@ -129,7 +129,7 @@ test('normal session shortcuts share a right-side group before Share', () => {
   const actions = html.slice(html.indexOf('<div class="terminal-actions">'), html.indexOf('<div class="terminal-disconnect"'));
   assert.match(actions, /class="terminal-agent-controls" role="group" aria-label="会话助手"/);
   assert.ok(actions.indexOf('terminalProgressButton') >= 0);
-  assert.ok(actions.indexOf('terminalProgressButton') < actions.indexOf('terminalConfirmButton'));
-  assert.ok(actions.indexOf('terminalConfirmButton') < actions.indexOf('terminalAutonomyButton'));
+  assert.ok(actions.indexOf('terminalProgressButton') < actions.indexOf('terminalContinueButton'));
+  assert.ok(actions.indexOf('terminalContinueButton') < actions.indexOf('terminalAutonomyButton'));
   assert.ok(actions.indexOf('terminalAutonomyButton') < actions.indexOf('shareButton'));
 });

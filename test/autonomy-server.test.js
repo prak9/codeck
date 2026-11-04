@@ -10,38 +10,9 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 
-test('server summary delivery keeps identity guards, input receipts and foreground-only cancellation', async () => {
+test('server does not start the retired autonomy controller or receipt watcher', () => {
   const source = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
-  let options; const sends = []; const stops = []; const reads = [];
-  const agentRegistry = {
-    prepareSessionMessage: async () => ({}), recordSessionMessage() {},
-    openThread: async (provider, threadId, options) => { reads.push({ provider, threadId, ...options }); },
-    sendSessionMessage: async (provider, params) => { sends.push({ provider, ...params }); return { submissionStatus: 'submitted' }; },
-    interruptSession: async (provider, params) => { stops.push({ provider, ...params }); },
-  };
-  vm.runInNewContext(source.slice(source.indexOf('const autonomy = new AutonomyController('), source.indexOf('const sessionFeed =')), {
-    AutonomyController: function (value) { options = value; },
-    extractDefinition: async () => ({ fieldsVersion: 5 }),
-    path, os, process: { env: {} }, crypto: { randomUUID: () => 'fixture-command' },
-    agentRegistry, invalidateSessionSnapshots: async () => {},
-  });
-  const target = { provider: 'codex', tmuxSession: 'research', threadId: 'thread-1', paneId: '%7' };
-  const guard = () => true;
-  assert.equal(options.readThread, undefined); assert.equal(options.suggestDefinition, undefined);
-  await options.send(target, '总结', guard, { commandId: 'summary-command' });
-  await options.stop(target, guard, { stopGoal: true });
-  assert.deepEqual(sends.map(value => value.requireIdle), [true]);
-  assert.equal(sends[0].replaceDraft, true); assert.equal(reads.length, 0);
-  for (const value of [...sends, ...stops]) {
-    assert.equal(value.provider, 'codex'); assert.equal(value.sessionName, 'research');
-    assert.equal(value.threadId, 'thread-1'); assert.equal(value.expectedPaneId, '%7');
-    assert.equal(value.isCurrent, guard);
-  }
-  assert.equal(sends.every(value => value.nonInterrupting), true);
-  assert.equal(stops[0].waitForIdle, true);
-  assert.equal(stops[0].stopBackground, false);
-  assert.equal(stops[0].stopGoal, true);
-  assert.equal(stops[0].allowBackground, true);
+  assert.doesNotMatch(source, /AutonomyController|autonomy\.close/);
 });
 
 test('isolated server ignores legacy autonomy, requires owner authentication and serves new controls', { timeout: 15_000 }, async t => {
@@ -77,7 +48,7 @@ test('isolated server ignores legacy autonomy, requires owner authentication and
     [`codeck.${Buffer.from('isolated-autonomy-test').toString('base64url')}`], { rejectUnauthorized: false });
   t.after(() => socket.terminate());
   const [raw] = await once(socket, 'message'); const ready = JSON.parse(raw);
-  assert.equal(ready.type, 'ready'); assert.deepEqual(ready.autonomy, []);
+  assert.equal(ready.type, 'ready'); assert.equal(ready.autonomy, undefined);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'autonomy.json'))).version, 1, 'legacy data is not loaded or rewritten on startup');
   const html = await new Promise((resolve, reject) => {
     https.get(`https://127.0.0.1:${port}/remote.html`, { rejectUnauthorized: false }, response => {

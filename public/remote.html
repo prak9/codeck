@@ -78,10 +78,6 @@
           <div class="welcome-providers" id="welcomeProviders"></div>
         </section>
         <div class="turns" id="turns"></div>
-        <details id="autonomySummary" class="autonomy-summary" hidden>
-          <summary>自主任务总结</summary>
-          <dl id="autonomySummaryContent"></dl>
-        </details>
         <div class="approval-stack" id="approvalStack"></div>
         <p class="live-status" id="liveStatus" role="status" aria-live="polite"></p>
       </main>
@@ -96,9 +92,7 @@
           <div class="session-controls" role="group" aria-label="会话助手">
             <button class="progress-button" id="progressButton" type="button" title="询问 Agent 进度" aria-label="询问 Agent 进度" hidden><span class="autonomy-icon" aria-hidden="true">?</span></button>
             <button class="progress-button" id="continueButton" type="button" title="确认并继续推进" aria-label="确认并继续推进" hidden><span class="autonomy-icon" aria-hidden="true">✓</span></button>
-            <button class="autonomy-button" id="confirmButton" type="button" title="确认目标并开始执行" aria-label="确认目标并开始执行" hidden>确认目标</button>
-            <button class="autonomy-button" id="cancelAutonomyButton" type="button" title="取消规划" aria-label="取消规划" hidden>取消</button>
-            <button class="autonomy-button" id="autonomyButton" type="button" aria-label="配置自主迭代" aria-pressed="false" hidden><span class="autonomy-icon" aria-hidden="true">A</span><span id="autonomyStatus" role="status" aria-live="polite"></span></button>
+            <button class="progress-button" id="autonomyButton" type="button" aria-label="请 Agent 规划自主任务" title="请 Agent 规划自主任务" hidden><span class="autonomy-icon" aria-hidden="true">A</span></button>
           </div>
         </div>
         <div class="composer-stack">
@@ -235,6 +229,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=135"></script>
+  <script type="module" src="/remote.js?v=136"></script>
 </body>
 </html>

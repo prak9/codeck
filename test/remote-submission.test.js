@@ -118,7 +118,7 @@ test('the progress shortcut sends its own prompt without touching the draft or a
 test('Remote progress query preserves A, drafts and attachments', async () => {
   const f = fixture(); f.context.currentThreadWaitingForInput = () => false;
   f.context.PROGRESS_PROMPT = '当前进展如何？';
-  vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nfunction currentAutonomy(')), f.context);
+  vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nasync function toggleAutonomy(')), f.context);
   f.state.attachments = [{ id: 'keep', path: '/uploads/keep.txt' }];
   const runs = f.state.autonomyRuns = new Map([['current', { status: 'running' }]]);
   await f.context.askProgress();
@@ -131,7 +131,7 @@ test('Remote progress query cannot approve a native question or bypass disabled 
   const f = fixture(); let focused = 0;
   f.context.currentThreadWaitingForInput = () => true;
   f.context.focusPendingAgentRequest = () => focused++;
-  vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nfunction currentAutonomy(')), f.context);
+  vm.runInContext(source.slice(source.indexOf('async function askProgress('), source.indexOf('\nasync function toggleAutonomy(')), f.context);
   await f.context.askProgress(); assert.equal(focused, 1); assert.equal(f.sent.length, 0);
   f.input.disabled = true; f.context.currentThreadWaitingForInput = () => false;
   await f.context.askProgress(); assert.equal(f.sent.length, 0);

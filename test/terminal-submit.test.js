@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
+import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
 import { terminalDraftForSend, terminalDraftForHandoff } from '../public/terminal-compose.js';
 
 const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -48,6 +48,7 @@ function progressFixture({
     setAttribute(name, value) { this.attributes[name] = String(value); },
   };
   const confirmButton = { ...button, attributes: {} };
+  const planningButton = { ...button, attributes: {} };
   let terminalFocuses = 0;
   let resolveRequest;
   const request = new Promise((resolve) => { resolveRequest = resolve; });
@@ -62,11 +63,11 @@ function progressFixture({
   const context = vm.createContext({
     state,
     terminalAutonomy: { runFor: () => null },
-    $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalContinueButton' ? confirmButton : draft,
+    $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalContinueButton' ? confirmButton : selector === '#terminalAutonomyButton' ? planningButton : draft,
     crypto: { randomUUID: () => 'progress-command' },
     sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
     setConnectionMessage: (message, restore) => feedback.push({ message, restore }),
-    PROGRESS_PROMPT: AUTONOMY_PROGRESS_PROMPT,
+    PROGRESS_PROMPT: AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT,
   });
   for (const name of ['activeAgentSessionTarget', 'syncTerminalProgressButton', 'askTerminalProgress']) {
     vm.runInContext(functionSource(source, name), context);
@@ -120,43 +121,27 @@ test('explicit composer handoff preserves bytes and asks the server to leave cop
   assert.equal(f.draft.value, ''); assert.equal(f.state.handoffTerminalInput, true);
 });
 
-test('autonomous direction uses the shared control path, not raw terminal input', async () => {
-  const f = fixture({ draftValue: '只修改后端，继续' });
-  const routed = []; let finish;
-  f.context.terminalAutonomy.sendDirection = text => { routed.push(text); return new Promise(resolve => { finish = resolve; }); };
-  const pending = f.context.submitTerminalVoiceDraft();
-  await f.context.submitTerminalVoiceDraft();
-  assert.deepEqual(routed, ['只修改后端，继续']); assert.deepEqual(f.sent, []);
-  assert.equal(f.draft.value, '只修改后端，继续');
-  finish(); await pending; assert.equal(f.draft.value, '');
-  assert.equal(f.state.terminalSubmitPending, null);
+test('planning shortcut sends plain text once and does not prepare or reset autonomy', async () => {
+  const f = progressFixture();
+  f.context.syncTerminalProgressButton();
+  const pending = f.context.askTerminalProgress({ planning: true });
+  await f.context.askTerminalProgress({ planning: true });
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].type, 'sendSessionMessage');
+  assert.equal(f.requests[0].text, AUTONOMY_PLANNING_PROMPT);
+  assert.equal(f.requests[0].planningId, undefined);
+  f.resolveRequest({ submissionStatus: 'submitted' }); await pending;
+  assert.equal(f.draft.value, '尚未发送的草稿');
 });
 
-test('failed or stale autonomy direction never clears the current draft or falls back to raw input', async () => {
-  for (const outcome of ['error', 'switch', 'edit']) {
-    const f = fixture(); let finish, fail;
-    f.context.terminalAutonomy.sendDirection = () => new Promise((resolve, reject) => { finish = resolve; fail = reject; });
-    const pending = f.context.submitTerminalVoiceDraft();
-    if (outcome === 'error') fail(new Error('Agent 连接已断开'));
-    else {
-      if (outcome === 'switch') { f.state.active = 'two'; f.state.connectionId++; }
-      f.draft.value = '新草稿'; finish();
-    }
-    await pending; assert.deepEqual(f.sent, []);
-    assert.equal(f.draft.value, outcome === 'error' ? 'echo intact' : '新草稿');
-  }
-});
-
-test('switching cancels the local wait for a direction without blocking the new terminal', async () => {
-  const f = fixture(); let finish;
-  f.context.terminalAutonomy.sendDirection = () => new Promise(resolve => { finish = resolve; });
+test('ordinary input never enters the retired autonomy direction route', async () => {
+  const f = fixture();
+  f.context.terminalAutonomy.sendDirection = () => { throw new Error('must not route here'); };
   const pending = f.context.submitTerminalVoiceDraft();
-  f.context.rejectTerminalSubmit('会话已切换');
-  f.state.active = 'two'; f.state.connectionId++;
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(f.state.terminalSubmitPending, null);
-  assert.equal(f.draft.value, 'echo intact'); assert.deepEqual(f.sent, []);
-  finish(); await pending;
+  assert.equal(f.sent[0].submit, true);
+  f.state.terminalSubmitPending.resolve();
+  await pending;
+  assert.equal(f.draft.value, '');
 });
 
 test('slash commands request a separate final Enter even before Agent identity resolves', async () => {

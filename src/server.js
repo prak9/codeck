@@ -11,7 +11,6 @@ import { createAuthRateLimiter, requestClientAddress } from './auth-rate-limit.j
 import { createAgentBackends } from './agent-backends.js';
 import { createAgentImages } from './agent-images.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
-import { AutonomyController } from './autonomy.js';
 import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { createTerminalHistoryLinkReader } from './terminal-history-links.js';
@@ -356,29 +355,6 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
   dismissTmuxCommand: dismissSessionCommand,
   interruptTmuxSession: interruptSession,
 });
-const autonomy = new AutonomyController({
-  file: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'autonomy.json'),
-  readSession: async target => (await listSessions({ refreshAgentIdentities: true, refreshPaneSession: target.tmuxSession }))
-    .find(session => session.name === target.tmuxSession),
-  stop: (target, isCurrent, { stopGoal = false, onlyIfIdle = false } = {}) => agentRegistry.interruptSession(target.provider, {
-    sessionName: target.tmuxSession, threadId: target.threadId,
-    expectedPaneId: target.paneId, isCurrent, waitForIdle: true, stopBackground: false, allowBackground: true, stopGoal, onlyIfIdle,
-  }),
-  send: async (target, text, isCurrent, { commandId } = {}) => {
-    const deliveryBaseline = await agentRegistry.prepareSessionMessage(target.provider, {
-      threadId: target.threadId, text, commandId,
-    });
-    const result = await agentRegistry.sendSessionMessage(target.provider, {
-      sessionName: target.tmuxSession, threadId: target.threadId, text, isCurrent,
-      expectedPaneId: target.paneId, requireIdle: true, nonInterrupting: true, replaceDraft: true,
-    });
-    if (!['not-sent', 'deferred'].includes(result?.submissionStatus)) agentRegistry.recordSessionMessage(target.provider, {
-      threadId: target.threadId, text, commandId, deliveryBaseline,
-      submissionStatus: ['attempted', 'unconfirmed'].includes(result?.submissionStatus) ? 'unconfirmed' : 'submitted' });
-    invalidateSessionSnapshots().catch(() => {});
-    return result;
-  },
-});
 const sessionFeed = createSnapshotFeed(
   async () => {
     const raw = await sessionSnapshots.get();
@@ -433,7 +409,6 @@ const agentHub = new AgentHub(agentRegistry, {
   defaultCwd: process.cwd(),
   hostname: os.hostname(),
   protocolEpoch,
-  autonomy,
   sessionFeed,
   threadFeed,
   invalidateSessions: invalidateSessionSnapshots,
@@ -493,7 +468,6 @@ server.on('upgrade', (req, socket, head) => {
 wss.on('connection', (ws, session, viewport, terminalAccess) => handleTerminalConnection(ws, session, viewport, terminalAccess));
 agentWss.on('connection', (ws, options) => agentHub.handleConnection(ws, options));
 server.on('close', () => {
-  autonomy.close();
   sessionFeed.close();
   threadFeed.close();
   agentRegistry.close();

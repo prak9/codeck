@@ -24,36 +24,14 @@ function fixture(status, question) {
 }
 
 
-test('A sends planning as ordinary input from inactive states and can exit an existing managed run', async () => {
-  for (const status of ['off', 'ended', 'error']) {
+test('A always sends plain planning input regardless of old managed state', async () => {
+  for (const status of ['off', 'ended', 'error', 'running', 'planning', 'completed', 'exiting']) {
     const f = fixture(status, null); await f.context.toggleAutonomy();
     assert.equal(f.calls[0].type, 'send-preset');
     assert.equal(f.calls[0].payload.presetText, AUTONOMY_PLANNING_PROMPT);
   }
-  for (const status of ['running', 'planning', 'completed']) {
-    const f = fixture(status, null); await f.context.toggleAutonomy();
-    assert.equal(f.calls[0].type, 'resetAutonomy');
-  }
 });
 
-test('confirmation and cancellation use scoped actions rather than a generic continue message', async () => {
-  const f = fixture('planning', null);
-  await f.context.toggleAutonomy({ confirm: true });
-  assert.equal(f.calls[0].type, 'confirmAutonomy');
-  await f.context.toggleAutonomy({ cancel: true });
-  assert.equal(f.calls[1].type, 'resetAutonomy');
-});
-
-test('an existing managed run can exit without stale errors overwriting the latest intent', async () => {
-  const f = fixture('running', null); let reject;
-  f.context.agentRequest = () => new Promise((_resolve, fail) => { reject = fail; });
-  const first = f.context.toggleAutonomy();
-  f.context.agentRequest = async () => ({});
-  const messages = []; f.context.setLiveMessage = text => messages.push(text);
-  await f.context.toggleAutonomy(); reject(new Error('old failure')); await first;
-  assert.equal(f.context.state.autonomyPending, false);
-  assert.equal(messages.includes('old failure'), false);
-});
 
 test('A focuses a pending native question instead of injecting text into its selector', async () => {
   const f = fixture('off', null); f.context.currentThreadWaitingForInput = () => true;
