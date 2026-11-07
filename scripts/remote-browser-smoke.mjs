@@ -127,7 +127,7 @@ async function readyPlan() {
   await fixture.autonomy.tick();
 }
 function snapshot() {
-  return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status,
+  return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status, checkpoint: { text: '已建立基线', updatedAt: '2026-11-07T10:00:00Z', attention: { id: 'read-1', kind: 'review' } },
     agent: { kind: fixture.provider, id: 'fixture-thread', name: 'Remote fixture',
       hasBackgroundProcess: fixture.background || fixture.status === 'background',
       ...(fixture.question ? { question: fixture.question } : {}) } }] };
@@ -143,6 +143,7 @@ function thread() {
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://fixture');
+  if (url.pathname.endsWith('/attention/read')) { res.writeHead(204).end(); return; }
   if (url.pathname === '/api/agent-turn-images') {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ images: [] }));
@@ -325,6 +326,7 @@ try {
       assert.equal(fixture.sent.length, 0);
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
+      await page.getByText('● 待你查看 · 已建立基线', { exact: true }).waitFor({ state: 'attached' });
       if (simpleMode) {
         const auto = page.locator('#autonomyButton');
         fixture.status = 'working'; publishSessions();

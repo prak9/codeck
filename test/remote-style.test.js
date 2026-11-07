@@ -110,7 +110,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
   assert.match(html, /\/remote\.css\?v=53/);
-  assert.match(html, /\/remote\.js\?v=136/);
+  assert.match(html, /\/remote\.js\?v=142/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -189,9 +189,7 @@ test('all slash command results use the same dismissible dialog', () => {
 
 test('normal and remote sidebars use the same ready and background status labels', () => {
   for (const source of [appJs, remoteJs]) {
-    assert.match(source, /status === 'background'/);
-    assert.match(source, /'后台运行'/);
-    assert.match(source, /'已就绪'/);
+    assert.match(source, /executionLabel\(/);
     assert.doesNotMatch(source, /:\s*'完成'/);
   }
   for (const source of [appCss, css]) {
@@ -201,7 +199,7 @@ test('normal and remote sidebars use the same ready and background status labels
 
 test('normal sidebar matches the remote session hierarchy and restores its UI typography', () => {
   assert.match(appJs, /const meta = \[statusText, timeAgo\(session\.activityAt\)\]\.filter\(Boolean\)\.join\(' · '\)/);
-  assert.match(appJs, /<span class="session-copy"><b[^>]*>\$\{escapeHtml\(session\.name\)\}<\/b><small>\$\{escapeHtml\(meta\)\}<\/small><\/span>/);
+  assert.match(appJs, /<span class="session-copy"><b[^>]*>\$\{escapeHtml\(session\.name\)\}<\/b><small>\$\{escapeHtml\(meta\)\}<\/small>/);
   assert.doesNotMatch(appJs, /tmux \$\{escapeHtml\(session\.name\)\}/);
 
   assert.doesNotMatch(appCss, /\.sidebar\s*\{[^}]*font-family:/s);
@@ -323,7 +321,7 @@ test('an open Agent session has a labelled touch-sized progress shortcut above t
   assert.match(remoteJs, /const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT/);
   assert.match(remoteJs, /progressButton'\)\.addEventListener\('click', askProgress\)/);
   assert.match(html, /remote\.css\?v=53/);
-  assert.match(html, /remote\.js\?v=136/);
+  assert.match(html, /remote\.js\?v=142/);
 });
 
 test('the load-earlier control is styled', () => {

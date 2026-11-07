@@ -1030,3 +1030,28 @@ test('a client without a viewport still attaches at the current tmux size', asyn
 
   assert.deepEqual(terminal.sizes, []);
 });
+
+test('negotiated terminal output carries flow/attach identity and cumulative ACK rejects duplicates and stale epochs', async () => {
+  const ws = new FakeSocket(), terminals = [];
+  await handleTerminalConnection(ws, 'first', { width: 80, height: 24 }, dependencies({
+    canSwitchSession: true, outputFlowControl: true, outputFlowId: '1', outputProtocol: 1,
+    outputHighWaterMark: 4,
+    createTerminal: () => { const t = fakeTerminal(); terminals.push(t); return t; },
+  }));
+  let frames = inputResults(ws).filter(m => m.type === 'terminalOutput');
+  assert.deepEqual(frames.map(f => [f.flowId, f.epoch, f.seq, f.reset]), [['1', 1, 2, true]]);
+  const first = terminals[0]; first.dataCallback('abc'); await waitForTerminalOutput();
+  assert.equal(first.killed, true);
+  sendFrame(ws, { type: 'outputAck', flowId: '1', epoch: 1, seq: 2 });
+  sendFrame(ws, { type: 'outputAck', flowId: '1', epoch: 1, seq: 2 });
+  await nextTurn(); assert.equal(terminals.length, 1);
+  sendFrame(ws, { type: 'outputAck', flowId: '1', epoch: 1, seq: 5 });
+  await nextTurn(); assert.equal(terminals.length, 2);
+  sendFrame(ws, { type: 'switch', session: 'second', cols: 60, rows: 20, flowId: '2' });
+  await nextTurn();
+  first.dataCallback('stale'); await waitForTerminalOutput();
+  frames = inputResults(ws).filter(m => m.type === 'terminalOutput');
+  assert.equal(frames.at(-1).flowId, '2'); assert.equal(frames.at(-1).reset, true);
+  assert.equal(frames.some(f => f.data === 'stale'), false);
+  ws.close();
+});

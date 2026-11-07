@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createIsolatedWorkspace } from '../src/isolated-workspace.js';
+const exec=promisify(execFile);
+test('optional workspace leaves dirty main checkout intact and refuses existing paths', async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'worktree-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const cwd=path.join(dir,'repo'), worktree=path.join(dir,'task'); await fs.mkdir(cwd);
+ await exec('git',['init',cwd]);await fs.writeFile(path.join(cwd,'file'),'initial');await exec('git',['-C',cwd,'add','file']);
+ await exec('git',['-C',cwd,'-c','user.name=test','-c','user.email=test@example.invalid','commit','-m','initial']);
+ await fs.writeFile(path.join(cwd,'file'),'dirty');
+ await createIsolatedWorkspace({cwd,worktree});
+ assert.equal(await fs.readFile(path.join(worktree,'file'),'utf8'),'initial');
+ assert.equal(await fs.readFile(path.join(cwd,'file'),'utf8'),'dirty');
+ await assert.rejects(createIsolatedWorkspace({cwd,worktree}),/已存在/);
+});

@@ -1,0 +1,12 @@
+{
+  "id": "/codeck",
+  "name": "Codeck",
+  "short_name": "Codeck",
+  "lang": "zh-CN",
+  "start_url": "/remote.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#151517",
+  "theme_color": "#151517",
+  "icons": [{ "src": "/app-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }]
+}

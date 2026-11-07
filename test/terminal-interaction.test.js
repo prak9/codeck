@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createTerminalStream } from '../public/terminal-stream.js';
 import * as terminalUtils from '../public/terminal-utils.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
 import { clipboardFiles, readClipboardPayload } from '../public/clipboard-files.js';
@@ -53,7 +54,7 @@ function fixture() {
         context.location.hash = url.hash;
       },
     },
-    ...terminalUtils,
+    ...terminalUtils, createTerminalStream,
     bindTerminalHeartbeat: () => () => {},
     bindTerminalRecovery: () => ({ recover() {}, stop() {} }),
     ensureTerminal: () => state.terminal,
@@ -392,8 +393,8 @@ test('queued final output remains visible after exit without re-enabling input',
   const callbacks = [];
   f.state.terminal.write = (_data, done) => callbacks.push(done);
   await f.context.connect('b');
-  f.socket.onmessage({ data: '\x1bc' });
-  f.socket.onmessage({ data: 'FINAL-OUTPUT' });
+  f.socket.onmessage({ data: new TextEncoder().encode(JSON.stringify({ type: 'terminalOutput', flowId: '2', epoch: 1, seq: 2, reset: true, data: '\x1bc' })).buffer });
+  f.socket.onmessage({ data: new TextEncoder().encode(JSON.stringify({ type: 'terminalOutput', flowId: '2', epoch: 1, seq: 14, data: 'FINAL-OUTPUT' })).buffer });
   f.socket.readyState = 3;
   f.socket.onclose({ reason: '会话已结束' });
   while (callbacks.length) callbacks.shift()();
@@ -410,8 +411,8 @@ test('stale close and parse callbacks cannot modify a replacement session', asyn
   f.state.terminal.write = (_data, done) => callbacks.push(done);
   await f.context.connect('b');
   const staleClose = f.socket.onclose;
-  f.socket.onmessage({ data: '\x1bc' });
-  f.socket.onmessage({ data: 'old frame' });
+  f.socket.onmessage({ data: new TextEncoder().encode(JSON.stringify({ type: 'terminalOutput', flowId: '2', epoch: 1, seq: 2, reset: true, data: '\x1bc' })).buffer });
+  f.socket.onmessage({ data: new TextEncoder().encode(JSON.stringify({ type: 'terminalOutput', flowId: '2', epoch: 1, seq: 11, data: 'old frame' })).buffer });
   await f.context.connect('c');
   staleClose({ reason: 'old close' });
   while (callbacks.length) callbacks.shift()();

@@ -87,30 +87,6 @@ test('normal mode reuses an open owner socket when switching sessions', () => {
   assert.doesNotMatch(connect, /pendingOutput|waitingForSwitch|outputReady/);
 });
 
-test('normal mode drops stale terminal frames until the switched session reset boundary', () => {
-  const start = appJs.indexOf('async function connect(session,');
-  const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
-  const connect = appJs.slice(start, end);
-
-  assert.match(appJs, /terminalInputReady:\s*false/);
-  assert.match(appJs, /state\.canWrite && state\.terminalInputReady && state\.socket\?\.readyState === WebSocket\.OPEN/);
-  assert.match(connect, /let awaitingSwitchReset = reuseSocket;/);
-  assert.match(connect, /if \(awaitingSwitchReset\) \{[\s\S]*?event\.data !== '\\x1bc'[\s\S]*?switchResetFrame = true;/);
-  assert.match(connect, /terminalWrites\.write\(output, \(\) => \{[\s\S]*?if \(switchResetFrame\) \{[\s\S]*?state\.terminalInputReady = true;/);
-});
-
-test('normal mode acknowledges parsed terminal output within a per-screen flow epoch', () => {
-  const start = appJs.indexOf('async function connect(session,');
-  const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
-  const connect = appJs.slice(start, end);
-
-  assert.match(appJs, /createTerminalOutputAcknowledger/);
-  assert.match(connect, /flowControl:\s*'1',\s*flowId/);
-  assert.match(connect, /type: 'switch', session, cols: terminal\.cols, rows: terminal\.rows, flowId/);
-  assert.match(connect, /outputAcks\.acknowledge\(event\.data\.length\)/);
-  assert.match(connect, /state\.cancelTerminalOutputAck\?\.\(\);/);
-});
-
 test('normal mode does not forward an old terminal reply through a replacement socket', () => {
   const start = appJs.indexOf('async function connect(session,');
   const end = appJs.indexOf('\n\nfunction openNewDialog()', start);
@@ -157,7 +133,7 @@ test('the sidebar only rebuilds when what it renders actually changed', () => {
 
 test('normal mode suppresses Codex shared-daemon background counts', () => {
   assert.match(appJs, /hideSharedCodexBackgroundFooter/);
-  assert.match(appJs, /const output = terminalOutputForSession\(event\.data, session\);/);
+  assert.match(appJs, /const output = terminalOutputForSession\(streamFrame\.data, session\);/);
   assert.match(appJs, /terminalWrites\.write\(output, \(\) => \{/);
 });
 

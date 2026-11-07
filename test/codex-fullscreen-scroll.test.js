@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { scrollSession, clickSessionTranscript } from '../src/tmux.js';
 
-function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '' } = {}) {
+function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '', firstRow = 'Show details' } = {}) {
   const commands = [];
   return { commands, options: {
     isCurrent: () => current,
@@ -10,7 +10,7 @@ function fixture({ alternate = true, codex = true, current = true, footer = '? f
       commands.push(args);
       if (args[0] === 'display-message') return { stdout: `%7\t${Number(alternate)}\n` };
       if (args[0] === 'capture-pane') return { stdout: codex
-        ? `Show details\n\n› ${draft}\n\n  GPT-6-Astra medium · ~/project\n  ${footer}`
+        ? ` ${firstRow}\n\n› ${draft}\n\n  GPT-6-Astra medium · ~/project\n  ${footer}`
         : 'shell$ ' };
       return { stdout: '' };
     },
@@ -66,4 +66,20 @@ test('read-only clients cannot inject native input and stale scrolls do nothing'
   const stale = fixture({ current: false });
   await scrollSession('work', 3, stale.options);
   assert.deepEqual(stale.commands, []);
+});
+
+
+test('native back-to-bottom banner accepts a click without Escape, Enter or draft edits', async () => {
+  const f = fixture({ firstRow: 'New activity · ↓ Back to bottom · esc', draft: 'keep draft' });
+  await clickSessionTranscript('work', 20, 1, f.options);
+  assert.ok(f.commands.some(args => args[0] === 'if-shell'));
+  assert.equal(f.commands.some(args => args.includes('Escape') || args.includes('Enter') || args.includes('C-u')), false);
+  for (const options of [{ readOnly: true }, { isCurrent: () => false }]) {
+    const blocked = fixture({ firstRow: 'New activity · ↓ Back to bottom · esc' });
+    await clickSessionTranscript('work', 20, 1, { ...blocked.options, ...options });
+    assert.equal(blocked.commands.some(args => args[0] === 'if-shell'), false);
+  }
+  const quoted = fixture({ firstRow: 'Agent says: New activity · ↓ Back to bottom · esc' });
+  await clickSessionTranscript('work', 20, 1, quoted.options);
+  assert.equal(quoted.commands.some(args => args[0] === 'if-shell'), false);
 });

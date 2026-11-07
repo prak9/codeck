@@ -220,6 +220,8 @@ test('connecting and readonly terminals cannot submit or clear a draft', async (
 
 test('server advertises receipt support without broadening owner or share permissions', async () => {
   const context = vm.createContext({
+    agentHub: { pendingRequests: new Map() },
+    checkpoints: { observe: async () => {}, get: () => null },
     sessionSnapshots: { get: async () => [] }, flexibleSizeSupport: async () => true,
     resolveSessionStatus: () => 'done',
   });

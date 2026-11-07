@@ -6,7 +6,12 @@
   <meta name="color-scheme" content="dark">
   <script src="/terminal-theme.js?v=1"></script>
   <title>Codeck · Agent sessions</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="/app-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/app-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Codeck">
   <script>
     if (window.SpeechRecognition || window.webkitSpeechRecognition) document.documentElement.classList.add('speech-input');
   </script>
@@ -152,6 +157,12 @@
         <input type="checkbox" id="localInputToggle">
         <span><strong>本地输入</strong><span>先在输入框里编辑，回车整行发送。关闭则每个按键直达 CLI，跟原生终端一致。</span></span>
       </label>
+      <details id="backgroundServices" hidden>
+        <summary>后台服务</summary>
+        <p>连接恢复与投递回执已启用。</p>
+        <label class="setting-row"><input type="checkbox" id="telegramServiceToggle" disabled><span>Telegram 会话通知与操作</span></label>
+        <p id="telegramServiceStatus" role="status"></p>
+      </details>
       <div class="dialog-actions"><button class="primary-button" value="close" type="submit">完成</button></div>
     </form>
   </dialog>
@@ -166,6 +177,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-    <script type="module" src="/app.js?v=155"></script>
+    <script type="module" src="/app.js?v=160"></script>
 </body>
 </html>

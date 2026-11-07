@@ -219,6 +219,7 @@ export function tmuxSessionsToThreads(sessions) {
         name: session.name,
         title: session.agent?.name || session.name,
         activityAt: session.activityAt,
+        ...(session.checkpoint ? { checkpoint: session.checkpoint } : {}),
         status: session.status === 'working' || session.status === 'background'
           ? session.status
           : 'done',

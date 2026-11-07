@@ -2146,11 +2146,14 @@ export function clickSessionTranscript(name, column, row, overrides = {}) {
     if (!isCurrent()) return;
     const pane = await codexFullscreenPane(name, execTmux, isCurrent);
     // Browser selection/link handling stays local. Only disclosure controls need
-    // a native click; never let this fallback approve a dialog or move a draft.
+    // a native click; the history banner also returns to live output without Escape.
+    // Never let this fallback approve a dialog or move a draft.
     if (!pane) return;
     const composer = pane.rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
+    const line = pane.rows[row - 1] || '';
+    const historyBanner = /^\s*(?:New activity\s*·\s*)?↓\s*Back to bottom\s*·\s*esc\s*$/iu.test(line);
     if (composer < 0 || row - 1 >= composer
-      || !/Show (?:details|less|more)|Hide details/iu.test(pane.rows[row - 1] || '')) return;
+      || (!historyBanner && !/Show (?:details|less|more)|Hide details/iu.test(line))) return;
     await sendCodexPointer(execTmux, pane.paneId, `\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
   });
 }

@@ -255,6 +255,7 @@ function tmuxThreads(provider, sessions, threads) {
         name: session.name,
         title: session.agent.name || session.name,
         activityAt: session.activityAt,
+        ...(session.checkpoint ? { checkpoint: session.checkpoint } : {}),
         status: resolveSessionStatus(session),
         available,
       },

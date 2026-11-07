@@ -1,3 +1,4 @@
+import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=2';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
@@ -24,7 +25,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=47';
+} from './agent-model.js?v=48';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
@@ -1379,15 +1380,17 @@ function threadRow(thread, index) {
   const title = tmux.name || thread.name || thread.preview || '未命名会话';
   const execution = threadExecutionState(thread);
   const status = execution === 'idle' ? 'done' : execution;
-  const statusText = status === 'working'
-    ? '正在干活'
-    : status === 'waitingForInput' ? '等待你的回答' : status === 'background' ? '后台运行' : status === 'done' ? '已就绪'
-      : status === 'failed' ? '任务失败' : '状态待确认';
+  const statusText = executionLabel(execution);
   const meta = [statusText, timeAgo(tmux.activityAt)].filter(Boolean).join(' · ');
   copy.append(
     element('b', '', title),
     element('small', '', meta),
   );
+  if (checkpointLabel(tmux.checkpoint)) {
+    const note = element('small', '', checkpointLabel(tmux.checkpoint));
+    note.title = [tmux.checkpoint.updatedAt, note.textContent].filter(Boolean).join(' · ');
+    copy.append(note);
+  }
   const presence = element('span', `presence ${status}`);
   presence.title = statusText;
   button.append(
@@ -1398,6 +1401,7 @@ function threadRow(thread, index) {
   );
   if (tmux.available === false) button.title = '已连接终端，可直接参与';
   button.addEventListener('click', () => {
+    if (tmux.checkpoint?.attention?.id) fetch(`/api/sessions/${encodeURIComponent(tmux.name)}/attention/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` }, body: JSON.stringify({ id: tmux.checkpoint.attention.id }) }).catch(() => {});
     openListedThread(thread).catch((error) => setLiveMessage(error.message));
   });
   return button;
@@ -1498,10 +1502,7 @@ function compactPath(value) {
 }
 
 function statusText(status) {
-  if (status === 'inProgress' || status === 'running') return '运行中';
-  if (status === 'failed' || status === 'errored') return '失败';
-  if (status === 'declined') return '已拒绝';
-  return '完成';
+  return { inProgress: '运行中', running: '运行中', failed: '失败', errored: '失败', interrupted: '已中止', declined: '已拒绝', completed: '已结束' }[status] || '状态未知';
 }
 
 function safeJson(value) {
@@ -1871,7 +1872,7 @@ function renderTurn(turn) {
     if (turn.status === 'inProgress') foot.append(element('span', 'spinner'), element('span', 'working', '正在处理'));
     else {
       const duration = Number.isFinite(turn.durationMs) ? ` · ${Math.max(.1, turn.durationMs / 1000).toFixed(1)} 秒` : '';
-      foot.textContent = `${statusText(turn.status)}${duration}`;
+      foot.textContent = `${turnStatusLabel(turn.status)}${duration}`;
     }
     section.append(foot);
   }

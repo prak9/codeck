@@ -1,3 +1,5 @@
+import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=2';
+import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
@@ -13,7 +15,6 @@ import { bindTerminalTextSelection } from './terminal-text-selection.js?v=1';
 import {
   activateTerminalWebgl,
   bindTerminalRenderWatchdog,
-  createTerminalOutputAcknowledger,
   createTerminalRevealGate,
   createTerminalResizeGate,
   createTerminalWriteQueue,
@@ -105,7 +106,6 @@ const state = {
   cancelMobileScroll: null,
   cancelTerminalWheel: null,
   cancelTerminalReveal: null,
-  cancelTerminalOutputAck: null,
   cancelTerminalWrite: null,
   terminalResizeGate: null,
   terminalInputReady: false,
@@ -635,10 +635,10 @@ function sessionEntryHtml(session, index) {
   const meta = [statusText, timeAgo(session.activityAt)].filter(Boolean).join(' · ');
   return `
     <div class="session-entry">
-      <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}">
+      <button type="button" class="session-row ${session.name === state.active ? 'active' : ''}" data-session="${escapeHtml(session.name)}" data-attention="${escapeHtml(session.checkpoint?.attention?.id || '')}">
         <span class="session-index">${index + 1}</span>
         <span class="session-icon">${session.agent ? agentLabels[session.agent.kind]?.icon || '›_' : '$_'}</span>
-        <span class="session-copy"><b title="${escapeHtml(session.name)}">${escapeHtml(session.name)}</b><small>${escapeHtml(meta)}</small></span>
+        <span class="session-copy"><b title="${escapeHtml(session.name)}">${escapeHtml(session.name)}</b><small>${escapeHtml(meta)}</small>${checkpointLabel(session.checkpoint) ? `<small title="${escapeHtml((session.checkpoint?.updatedAt || '') + ' · ' + checkpointLabel(session.checkpoint))}">${escapeHtml(checkpointLabel(session.checkpoint))}</small>` : ''}</span>
         <span class="presence ${status}" title="${statusText}"></span>
       </button>
       ${state.canManage ? `<button type="button" class="rename-session" data-rename-session="${escapeHtml(session.name)}" title="重命名 tmux 会话" aria-label="重命名 ${escapeHtml(session.name)}">✎</button>` : ''}
@@ -646,10 +646,7 @@ function sessionEntryHtml(session, index) {
 }
 
 function sessionExecutionLabel(session) {
-  const status = resolveSessionStatus(session);
-  return session.agent?.question ? '等待你的回答' : (status === 'working'
-    ? '正在干活'
-    : status === 'background' ? '后台运行' : '已就绪');
+  return executionLabel(sessionExecutionState(session));
 }
 
 function sessionFolderHtml(entry, indexByName) {
@@ -1498,8 +1495,6 @@ async function connect(session, { recovery = false } = {}) {
   state.cancelTerminalRecovery?.();
   state.cancelTerminalReveal?.();
   state.cancelTerminalReveal = null;
-  state.cancelTerminalOutputAck?.();
-  state.cancelTerminalOutputAck = null;
   state.cancelTerminalWrite?.();
   state.cancelTerminalWrite = null;
   state.terminalResizeGate = null;
@@ -1536,20 +1531,13 @@ async function connect(session, { recovery = false } = {}) {
   // than the visible area.
   const flowId = String(connectionId);
   const query = new URLSearchParams({
-    session, cols: String(terminal.cols), rows: String(terminal.rows), flowControl: '1', flowId,
+    session, cols: String(terminal.cols), rows: String(terminal.rows), flowControl: '1', flowId, outputProtocol: '1',
   });
   if (recovery) query.set('recovery', '1');
   const socket = reuseSocket
     ? currentSocket
     : new WebSocket(`${protocol}//${location.host}/ws?${query}`, `codeck.${websocketProtocolToken(state.token)}`);
   socket.binaryType = 'arraybuffer';
-  const outputAcks = createTerminalOutputAcknowledger((message) => {
-    if (state.connectionId !== connectionId || state.socket !== socket
-      || socket.readyState !== WebSocket.OPEN) return false;
-    socket.send(JSON.stringify(message));
-    return true;
-  }, flowId);
-  state.cancelTerminalOutputAck = outputAcks.cancel;
   const resizeGate = createTerminalResizeGate((cols, rows) => {
     if (state.connectionId !== connectionId || state.socket !== socket
       || socket.readyState !== WebSocket.OPEN) return false;
@@ -1560,7 +1548,7 @@ async function connect(session, { recovery = false } = {}) {
   state.terminalResizeGate = resizeGate;
   let displayReady = false;
   let disconnected = false;
-  let awaitingSwitchReset = reuseSocket;
+  const outputStream = createTerminalStream(flowId);
   let terminalResetReady = !needsReset;
   state.socket = socket;
   const terminalRecovery = bindTerminalRecovery(socket, () => {
@@ -1602,35 +1590,45 @@ async function connect(session, { recovery = false } = {}) {
   };
   socket.onmessage = (event) => {
     if (state.connectionId !== connectionId) return;
-    // PTY output is text; binary frames are receipts requested by this client, never
-    // terminal content. Keep them outside both the renderer and output flow accounting.
+    let streamFrame = null;
     if (typeof event.data !== 'string') {
       let message;
       try { message = JSON.parse(new TextDecoder().decode(event.data)); }
       catch { return; }
+      if (message.type === 'terminalOutput') {
+        try { streamFrame = outputStream.accept(message); }
+        catch {
+          state.terminalInputReady = false; syncTerminalAccess();
+          socket.close(4000, '终端显示同步失败，正在重新连接');
+          terminalRecovery.recover();
+          return;
+        }
+        if (!streamFrame) return;
+      }
       const pending = state.terminalSubmitPending;
       if (message.type === 'inputResult' && pending?.inputId === message.inputId) {
         if (message.ok) pending.resolve();
         else pending.reject(new Error(message.error || '终端提交失败'));
       }
-      return;
+      if (!streamFrame) return;
     }
-    let switchResetFrame = false;
-    if (awaitingSwitchReset) {
-      if (event.data !== '\x1bc') return;
-      awaitingSwitchReset = false;
-      switchResetFrame = true;
-    }
-    const output = terminalOutputForSession(event.data, session);
+    // This client negotiates identified output; never treat untagged old bytes as the new session.
+    if (!streamFrame) return;
+    const acknowledge = () => {
+      if (state.connectionId === connectionId && state.socket === socket && socket.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify(streamFrame.ack));
+    };
+    const switchResetFrame = streamFrame.reset;
+    const output = terminalOutputForSession(streamFrame.data, session);
     if (!output) {
-      outputAcks.acknowledge(event.data.length);
+      acknowledge();
       return;
     }
     // Preserve terminal byte order and capability-query replies, but keep older frames
     // cancellable instead of filling xterm's internal write buffer before a switch.
     terminalWrites.write(output, () => {
       if (state.connectionId !== connectionId) return;
-      outputAcks.acknowledge(event.data.length);
+      acknowledge();
       if (switchResetFrame) {
         if (disconnected || socket.readyState !== WebSocket.OPEN) return;
         state.terminalInputReady = true;
@@ -1645,8 +1643,6 @@ async function connect(session, { recovery = false } = {}) {
     if (state.connectionId !== connectionId) return;
     disconnected = true;
     rejectTerminalSubmit('连接已断开，发送结果未确认');
-    outputAcks.cancel();
-    state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
     state.cancelTerminalWheel?.();
     showTerminalDisconnect(event.reason || '连接已断开');
@@ -1656,8 +1652,6 @@ async function connect(session, { recovery = false } = {}) {
     if (state.connectionId !== connectionId) return;
     disconnected = true;
     rejectTerminalSubmit('连接失败，发送结果未确认');
-    outputAcks.cancel();
-    state.cancelTerminalOutputAck = null;
     state.terminalInputReady = false;
     state.cancelTerminalWheel?.();
     showTerminalDisconnect('连接失败，请检查网络或访问令牌后重试');
@@ -1669,7 +1663,6 @@ async function connect(session, { recovery = false } = {}) {
     disconnected = true;
     state.terminalInputReady = false;
     rejectTerminalSubmit('连接无响应，发送结果未确认；请检查终端，勿重复发送');
-    outputAcks.cancel();
     state.cancelTerminalWheel?.();
     showTerminalDisconnect('终端连接无响应，请点击重新连接；未发送的草稿仍保留');
     syncTerminalAccess();
@@ -1772,6 +1765,24 @@ document.addEventListener('click', (event) => {
 $('#settingsButton').addEventListener('click', () => {
   $('#localInputToggle').checked = localInputEnabled();
   $('#settingsDialog').showModal();
+  $('#backgroundServices').hidden = !state.canManage;
+  if (state.canManage) refreshBackgroundServices();
+});
+async function refreshBackgroundServices() {
+  const toggle = $('#telegramServiceToggle');
+  try {
+    const { telegram } = await api('/api/services');
+    toggle.disabled = !telegram.configured;
+    toggle.checked = telegram.configured && telegram.status !== 'disabled';
+    const labels = { starting: '正在连接', connected: '已连接', reconnecting: '连接中断，正在重试', disabled: '已关闭', error: '接入异常，请检查服务日志' };
+    $('#telegramServiceStatus').textContent = telegram.configured ? labels[telegram.status] || '状态未知' : '尚未配置 Bot';
+  } catch { toggle.disabled = true; $('#telegramServiceStatus').textContent = '服务状态暂不可用'; }
+}
+$('#telegramServiceToggle').addEventListener('change', async event => {
+  const toggle = event.target; toggle.disabled = true;
+  try { await api('/api/services/telegram', { method: 'POST', body: JSON.stringify({ enabled: toggle.checked }) }); }
+  catch { $('#telegramServiceStatus').textContent = '设置未确认，请重新查看服务状态'; }
+  await refreshBackgroundServices();
 });
 $('#localInputToggle').addEventListener('change', (event) => {
   const on = event.target.checked;
@@ -2122,3 +2133,12 @@ function terminalFontsChanged() {
 }
 document.fonts?.ready.then(terminalFontsChanged);
 document.fonts?.addEventListener('loadingdone', terminalFontsChanged);
+
+// Reading a result clears only that exact notice, never a newer question/result.
+document.addEventListener('click', event => {
+  const row = event.target.closest('[data-session][data-attention]');
+  if (!row?.dataset.attention || !state.canManage) return;
+  api(`/api/sessions/${encodeURIComponent(row.dataset.session)}/attention/read`, {
+    method: 'POST', body: JSON.stringify({ id: row.dataset.attention }),
+  }).catch(() => {});
+});

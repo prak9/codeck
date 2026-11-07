@@ -123,12 +123,15 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     canSwitchSession = false,
     outputFlowControl = false,
     outputFlowId = null,
+    outputProtocol = 0,
     outputHighWaterMark = TERMINAL_OUTPUT_HIGH_WATERMARK,
     outputDrainTimeoutMs = 10_000,
     ...dependencyOverrides
   } = overrides;
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
   const flowControlEnabled = outputFlowControl && validOutputFlowId(outputFlowId);
+  const framedOutput = flowControlEnabled && outputProtocol === 1;
+  let outputSequence = 0, acknowledgedSequence = 0;
   const highWaterMark = Number.isFinite(outputHighWaterMark)
     ? Math.max(1, Math.floor(outputHighWaterMark))
     : TERMINAL_OUTPUT_HIGH_WATERMARK;
@@ -234,14 +237,24 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     });
   };
   const acknowledgeOutput = (message) => {
-    if (!flowControlEnabled || message.flowId !== activeFlowId
-      || !Number.isSafeInteger(message.chars) || message.chars <= 0) return;
-    unacknowledgedOutput = Math.max(0, unacknowledgedOutput - message.chars);
+    if (!flowControlEnabled || message.flowId !== activeFlowId) return;
+    if (framedOutput) {
+      if (message.epoch !== attachSequence || !Number.isSafeInteger(message.seq)
+        || message.seq <= acknowledgedSequence || message.seq > outputSequence) return;
+      acknowledgedSequence = message.seq;
+      unacknowledgedOutput = outputSequence - acknowledgedSequence;
+    } else {
+      if (!Number.isSafeInteger(message.chars) || message.chars <= 0) return;
+      unacknowledgedOutput = Math.max(0, unacknowledgedOutput - message.chars);
+    }
     reattachAfterDrain();
   };
-  const sendOutput = (data, attached) => {
+  const sendOutput = (data, attached, reset = false) => {
     if (!data || terminal !== attached || !isOpen()) return false;
-    ws.send(data);
+    outputSequence += data.length;
+    ws.send(framedOutput ? Buffer.from(JSON.stringify({ type: 'terminalOutput', flowId: activeFlowId,
+      epoch: attachSequence, seq: outputSequence, data, ...(reset ? { reset: true } : {}),
+    })) : data);
     if (!flowControlEnabled) return true;
     unacknowledgedOutput += data.length;
     if (unacknowledgedOutput > highWaterMark && !resyncPending) {
@@ -427,6 +440,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       return;
     }
 
+    outputSequence = 0; acknowledgedSequence = 0;
     terminal = attached;
     activeViewport = attachSize;
     terminalGrid = `${attachSize.width}x${attachSize.height}`;
@@ -434,7 +448,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
     terminalOutput = createTerminalOutputBatcher((data) => {
       sendOutput(data, attached);
     });
-    if (resetScreen) sendOutput('\x1bc', attached);
+    if (resetScreen || framedOutput) sendOutput('\x1bc', attached, true);
     attached.onData((data) => {
       if (terminal !== attached || !isOpen()) return;
       terminalOutput.write(data);
