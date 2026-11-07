@@ -112,5 +112,5 @@ test('the shared terminal UI enables terminal input without exposing owner actio
   assert.match(appSource, /state\.canWrite \? '已连接（共享协作）' : '已连接（只读）'/);
   assert.match(appSource, /state\.canWrite \? '协作链接暂不支持上传图片' : '当前分享链接为只读'/);
   assert.match(appSource, /state\.canWrite \? '协作链接暂不支持上传文件' : '当前分享链接为只读'/);
-  assert.match(appSource, /for \(const id of \['#newButton',[\s\S]*'#shareButton'\]\) \$\(id\)\.hidden = !state\.canManage/);
+  assert.match(appSource, /for \(const id of \['#newButton',[\s\S]*'#shareButton', '#historySearchButton'\]\) \$\(id\)\.hidden = !state\.canManage/);
 });

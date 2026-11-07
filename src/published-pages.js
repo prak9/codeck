@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { normalizeEvidence, evidencePanel } from './page-evidence.js';
 import { feedbackControls, paragraphPicker } from './page-feedback-ui.js';
 
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
@@ -67,8 +68,11 @@ export function createPageStore(directory) {
       const source = value.source === undefined ? previous?.source : pageSource({ ...previous?.source, ...value.source });
       if (source && (sourceId(source) !== id || (previous && previous.source?.key !== source.key))) throw fail('页面来源与标识不匹配', 409);
       const contentHash = crypto.createHash('sha256').update(value.html).digest('hex');
+      const evidence = value.evidence === undefined
+        ? (previous?.contentHash === contentHash && previous?.source?.revision === source?.revision ? previous.evidence : undefined)
+        : normalizeEvidence(value.evidence, contentHash);
       const now = new Date().toISOString();
-      const page = { ...(previous?.comments ? { comments: previous.comments } : {}), ...(source ? { source } : {}), contentHash, ...(previous?.shareHash ? { shareHash: previous.shareHash } : {}), id, title: value.title.trim(), html: value.html, createdAt: previous?.createdAt || now, updatedAt: now };
+      const page = { ...(evidence ? { evidence } : {}), ...(previous?.comments ? { comments: previous.comments } : {}), ...(source ? { source } : {}), contentHash, ...(previous?.shareHash ? { shareHash: previous.shareHash } : {}), id, title: value.title.trim(), html: value.html, createdAt: previous?.createdAt || now, updatedAt: now };
       await save(page);
       return metadata(page);
     }); },
@@ -258,7 +262,7 @@ export function mountPublishedPages(app, { store, apiAuth, pageAuth, resolveTarg
     const split = controls.indexOf('<div id="share-result"');
     const buttons = split < 0 ? '' : controls.slice(0, split);
     const panel = split < 0 ? '' : controls.slice(split);
-    res.type('html').send(document(page.title, `<header>${req.pageShare ? '' : '<a href="/pages">← 页面</a>'}<b>${escape(page.title)}</b>${buttons}</header>${panel}${req.pageShare ? '' : feedbackControls(nonce, page.contentHash)}<iframe title="${escape(page.title)}" sandbox="allow-scripts" referrerpolicy="no-referrer" src="/pages/${page.id}/content${req.pageShare ? `?share=${req.pageShare}` : `?revision=${page.contentHash}`}"></iframe>`));
+    res.type('html').send(document(page.title, `<header>${req.pageShare ? '' : '<a href="/pages">← 页面</a>'}<b>${escape(page.title)}</b>${buttons}</header>${panel}${req.pageShare ? '' : evidencePanel(page) + feedbackControls(nonce, page.contentHash)}<iframe title="${escape(page.title)}" sandbox="allow-scripts" referrerpolicy="no-referrer" src="/pages/${page.id}/content${req.pageShare ? `?share=${req.pageShare}` : `?revision=${page.contentHash}`}"></iframe>`));
   }));
   app.get('/pages/:id/content', run(async (req, res) => {
     const page = req.sharedPage || await store.get(req.params.id);

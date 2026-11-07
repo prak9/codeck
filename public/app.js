@@ -1,3 +1,4 @@
+import { bindHistorySearch } from './history-search.js?v=1';
 import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=2';
 import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
@@ -1014,7 +1015,7 @@ function applySessionSnapshot(data, previousActiveSession = state.sessions.find(
   // A sole tmux 2.7 client can still resize through the pty. The missing window-size
   // option only affects arbitration between clients, so it must not disable readable mode.
   $('#viewModeButton').hidden = false;
-  for (const id of ['#newButton', '#newButtonBottom', '#emptyNewButton', '#killButton', '#shareButton']) $(id).hidden = !state.canManage;
+  for (const id of ['#newButton', '#newButtonBottom', '#emptyNewButton', '#killButton', '#shareButton', '#historySearchButton']) $(id).hidden = !state.canManage;
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
@@ -2142,3 +2143,5 @@ document.addEventListener('click', event => {
     method: 'POST', body: JSON.stringify({ id: row.dataset.attention }),
   }).catch(() => {});
 });
+
+bindHistorySearch({ token: () => state.token });

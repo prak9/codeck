@@ -13,11 +13,14 @@ export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck session read NAME
   codeck session send NAME --file PROMPT.txt
   codeck session create NAME --provider codex --cwd /project [--worktree /path/to/new-worktree]
+  codeck history search QUERY [--provider codex]
+  codeck history context ID
+  codeck history link SESSION --repo /project --commit SHA
   codeck task list
   codeck task put ID --file TASK.json
   codeck task remove ID
   codeck page list
-  codeck page publish FILE.html --title TITLE [--id ID | --source-key KEY] [--session NAME] [--revision VERSION]
+  codeck page publish FILE.html --title TITLE [--id ID | --source-key KEY] [--session NAME] [--revision VERSION] [--evidence RECORD.json]
   codeck page share ID
   codeck page revoke ID
 配置：~/.config/codeck/client.json（url、tokenFile、caFile），或 CODECK_URL / CODECK_TOKEN / CODECK_CA_FILE。
@@ -61,7 +64,7 @@ export function clientRequest(connection, endpoint, method = 'GET', body) {
 export async function runCodeck(argv, connection, { request = clientRequest, rpc = sessionRpc } = {}) {
   const [area, action, ...args] = argv.filter(a => a !== '--json');
   const positional = [], options = {};
-  const allowed = new Set(['file', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision']);
+  const allowed = new Set(['file', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision']);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     const key = args[i].slice(2), value = args[++i];
@@ -70,7 +73,7 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
   }
   const commandOptions = {
     'session:checkpoint': ['file'], 'session:list': [], 'session:read': [], 'session:send': ['file'], 'session:create': ['provider', 'cwd', 'worktree'],
-    'task:list': [], 'task:put': ['file'], 'task:remove': [], 'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision'], 'page:share': [], 'page:revoke': [],
+    'history:search': ['provider'], 'history:context': [], 'history:link': ['repo', 'commit', 'provider'], 'task:list': [], 'task:put': ['file'], 'task:remove': [], 'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
   }[area + ':' + action];
   if (!commandOptions || Object.keys(options).some(key => !commandOptions.includes(key))) throw new Error('未知命令或该命令不支持此参数');
   const name = positional[0];
@@ -97,6 +100,13 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     try { return await rpc(connection, { type: 'sendSessionMessage', ...target, text, commandId }); }
     catch (error) { throw new Error(`${error.message}（commandId: ${commandId}）；未自动重发`); }
   }
+  if (area === 'history') {
+    if (!name) throw new Error('请提供搜索词、记录 ID 或会话名');
+    if (action === 'search') return call('/api/history/search?' + new URLSearchParams({ q: name, ...(options.provider ? { provider: options.provider } : {}) }));
+    if (action === 'context') return call('/api/history/context/' + encodeURIComponent(name));
+    const target = options.provider ? { provider: options.provider, threadId: name } : sessionTarget((await call('/api/sessions')).sessions, name);
+    return call('/api/history/commits', 'POST', { provider: target.provider, threadId: target.threadId, repo: options.repo, commit: options.commit });
+  }
   if (area === 'task') {
     if (action === 'list') return call('/api/tasks');
     if (!name) throw new Error('请指定任务 ID');
@@ -111,6 +121,7 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
       if (options.id && options['source-key']) throw new Error('--id 与 --source-key 请选择一个');
       if (!options['source-key'] && (options.session || options.revision)) throw new Error('来源信息需要 --source-key');
       const body = { title: options.title, html: await fs.readFile(name, 'utf8'),
+        ...(options.evidence ? { evidence: JSON.parse(await fs.readFile(options.evidence, 'utf8')) } : {}),
         ...(options['source-key'] ? { source: { key: options['source-key'], session: options.session, revision: options.revision } } : {}) };
       const result = options.id ? await call(`/api/pages/${encodeURIComponent(options.id)}`, 'PUT', body)
         : await call('/api/pages/publish', 'POST', body);
@@ -124,6 +135,7 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
 }
 
 export function formatClientResult(value) {
+  if (value.results) return [value.status?.indexing ? '索引中，结果尚不完整' : value.status?.error || '', ...value.results.map(r => `${r.id}\t${r.provider}/${r.threadId}\n${r.excerpt}`)].filter(Boolean).join('\n\n');
   if (value.url) return value.url;
   if (value.sessions) return value.sessions.map(s => `${s.name}\t${s.agent?.kind || 'shell'}\t${executionLabel(sessionExecutionState(s))}`).join('\n') || '暂无会话';
   if (value.pages) return value.pages.map(p => `${p.id}\t${p.title}\t${p.url}`).join('\n') || '暂无页面';

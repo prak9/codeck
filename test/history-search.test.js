@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import express from 'express';
+import { createHistorySearch } from '../src/history-search.js';
+import { mountHistoryRoutes } from '../src/history-routes.js';
+const exec=promisify(execFile);
+test('worker indexes in background, verifies real git commits and keeps private history behind owner auth',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'history-worker-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const root=path.join(dir,'source');await fs.mkdir(root);
+ await fs.writeFile(path.join(root,'one.jsonl'),JSON.stringify({type:'assistant',sessionId:'thread',message:{role:'assistant',content:[{type:'text',text:'跨会话记忆验证'}]}})+'\n');
+ const history=createHistorySearch({directory:path.join(dir,'index'),roots:[{provider:'claude',directory:root}]});t.after(()=>history.close());
+ const first=await history.search('会话记忆');assert.equal(first.status.indexing,true);
+ let result;
+ for(let i=0;i<100;i++){result=await history.search('会话记忆');if(!result.status.indexing)break;await new Promise(r=>setTimeout(r,10));}
+ assert.equal(result.results.length,1);
+ await exec('git',['init',root]);await exec('git',['-C',root,'add','.']);await exec('git',['-C',root,'-c','user.name=test','-c','user.email=test@example.invalid','commit','-m','verified source']);
+ const {stdout}=await exec('git',['-C',root,'rev-parse','HEAD']);
+ const link=await history.link({provider:'claude',threadId:'thread',repo:root,commit:stdout.trim().slice(0,8)});
+ assert.equal(link.sha,stdout.trim());assert.equal((await history.context(result.results[0].id)).commits[0].subject,'verified source');
+ await assert.rejects(history.link({provider:'claude',threadId:'thread',repo:root,commit:'--all'}),/SHA/);
+ const app=express();app.use(express.json());mountHistoryRoutes(app,{history,ownerOnly:(req,res,next)=>req.get('Authorization')==='Bearer owner'?next():res.sendStatus(403)});
+ const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));t.after(()=>new Promise(r=>server.close(r)));
+ const url=`http://127.0.0.1:${server.address().port}/api/history/search?q=记忆`;
+ assert.equal((await fetch(url)).status,403);
+ const response=await fetch(url,{headers:{Authorization:'Bearer owner'}});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+});

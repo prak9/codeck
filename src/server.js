@@ -1,3 +1,5 @@
+import { createHistorySearch } from './history-search.js';
+import { mountHistoryRoutes } from './history-routes.js';
 import { createIsolatedWorkspace } from './isolated-workspace.js';
 import { createConditionalTasks } from './conditional-tasks.js';
 import { sessionRpc } from './session-rpc.js';
@@ -183,6 +185,8 @@ app.post('/api/web-logout', (_req, res) => {
 });
 
 app.use('/api', authenticateApiRequest);
+const historySearch = createHistorySearch({ directory: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'history-search') });
+mountHistoryRoutes(app, { history: historySearch, ownerOnly });
 mountPublishedPages(app, {
   store: createPageStore(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'pages')),
   resolveTarget: async name => sessionTarget(await sessionSnapshots.get(), name),
@@ -594,6 +598,7 @@ server.on('upgrade', (req, socket, head) => {
 wss.on('connection', (ws, session, viewport, terminalAccess) => handleTerminalConnection(ws, session, viewport, terminalAccess));
 agentWss.on('connection', (ws, options) => agentHub.handleConnection(ws, options));
 server.on('close', () => {
+  historySearch.close().catch(() => {});
   clearInterval(taskTimer);
   clearInterval(checkpointTimer);
   telegram?.stop();

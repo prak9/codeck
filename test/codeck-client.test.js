@@ -12,6 +12,8 @@ import { WebSocketServer } from 'ws';
 import { loadTlsOptions } from '../src/tls.js';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { createPageStore, mountPublishedPages } from '../src/published-pages.js';
+import { createHistorySearch } from '../src/history-search.js';
+import { mountHistoryRoutes } from '../src/history-routes.js';
 import { createConditionalTasks } from '../src/conditional-tasks.js';
 import { createCheckpoints } from '../src/session-checkpoints.js';
 import { runCodeck, loadClientConnection } from '../src/codeck-client.js';
@@ -38,7 +40,11 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   app.put('/api/tasks/:id', auth, async (req, res) => res.json(await tasks.put(req.params.id, { ...req.body, provider: 'qodercli', threadId: 'thread' })));
   app.get('/api/tasks', auth, async (_req, res) => res.json({ tasks: await tasks.list() }));
   app.delete('/api/tasks/:id', auth, async (req, res) => { await tasks.remove(req.params.id); res.sendStatus(204); });
-  mountPublishedPages(app, { store: createPageStore(path.join(directory, 'pages')), apiAuth: auth, pageAuth: auth });
+  const history = createHistorySearch({ directory: path.join(directory, 'history-index'), roots: [{ provider: 'qodercli', directory: path.join(directory, 'history-source') }] });
+  t.after(() => history.close());
+  mountHistoryRoutes(app, { history, ownerOnly: auth });
+  const pages = createPageStore(path.join(directory, 'pages'));
+  mountPublishedPages(app, { store: pages, apiAuth: auth, pageAuth: auth });
   const server = https.createServer(tls, app), wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
     if (req.headers['sec-websocket-protocol'] !== `codeck.${Buffer.from('fixture-secret').toString('base64url')}`) return socket.destroy();
@@ -58,6 +64,12 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   assert.equal(sends.length, 1); assert.equal(sends[0].text, 'only this task\n$() is text');
   await cli('session', 'create', 'new-task', '--provider', 'codex', '--cwd', directory);
   assert.equal(creates.length, 1); assert.equal(creates[0].cwd, directory);
+  await fs.mkdir(path.join(directory, 'history-source'));
+  await fs.writeFile(path.join(directory, 'history-source/thread.jsonl'), JSON.stringify({ type: 'assistant', sessionId: 'thread', message: { role: 'assistant', content: '可检索的历史结论' } }) + '\n');
+  let search;
+  for (let i = 0; i < 20; i++) { search = await cli('history', 'search', '历史结论'); if (!search.status.indexing) break; }
+  assert.equal(search.results.length, 1);
+  assert.equal((await cli('history', 'context', search.results[0].id)).threadId, 'thread');
   const note = path.join(directory, 'note.txt'); await fs.writeFile(note, '验证进行中');
   assert.equal((await cli('session', 'checkpoint', 'fixture', '--file', note)).text, '验证进行中');
   const taskFile = path.join(directory, 'task.json');
@@ -66,7 +78,9 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   assert.equal((await cli('task', 'list')).tasks[0].session, 'fixture');
   await cli('task', 'remove', 'watch'); assert.equal((await cli('task', 'list')).tasks.length, 0);
   const file = path.join(directory, 'report.html'); await fs.writeFile(file, '<h1>report</h1>');
-  const a = await cli('page', 'publish', file, '--title', '报告', '--source-key', '/project:report', '--session', 'fixture', '--revision', 'v1');
+  const evidenceFile = path.join(directory, 'evidence.json'); await fs.writeFile(evidenceFile, JSON.stringify({ version: 'v1', summary: 'verified fixture', checks: [{ method: 'browser', result: 'passed' }], limitations: ['not real device'] }));
+  const a = await cli('page', 'publish', file, '--title', '报告', '--source-key', '/project:report', '--session', 'fixture', '--revision', 'v1', '--evidence', evidenceFile);
+  assert.equal((await pages.get(a.id)).evidence.version, 'v1');
   await fs.writeFile(file, '<h1>updated</h1>');
   const b = await cli('page', 'publish', file, '--title', '报告', '--source-key', '/project:report', '--revision', 'v2');
   assert.equal(a.id, b.id); assert.notEqual(a.contentHash, b.contentHash);

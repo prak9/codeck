@@ -1,3 +1,4 @@
+import { bindHistorySearch } from './history-search.js?v=1';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=2';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
@@ -3427,3 +3428,5 @@ if (state.token) {
 } else {
   $('#tokenDialog').showModal();
 }
+
+bindHistorySearch({ token: () => state.token });

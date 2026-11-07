@@ -174,3 +174,18 @@ test('feedback HTTP requires owner action, refuses stale versions and cannot tar
   assert.equal((await f.call(`/api/pages/${page.id}/comments`, 'POST', body)).status, 409);
   assert.equal(sends, 0);
 });
+
+test('evidence is bound to exact content and revision, escapes markup and stays private on share links', async t => {
+  const f = await fixture(t);
+  const source = { key: 'evidence-report', revision: 'abc1234' };
+  const evidence = { version: 'abc1234', summary: '已验证核心路径', checks: [{ method: 'browser journey', result: 'passed', reference: '/tmp/report.html' }], limitations: ['尚未真机验证 <script>bad()</script>'] };
+  const a = await f.store.publish({ title: '结果', html: '<p>v1</p>', source, evidence });
+  assert.equal((await f.store.get(a.id)).evidence.contentHash, a.contentHash);
+  const body = await (await fetch(f.base + a.url, { headers: { Cookie: 'fixture-login=yes' } })).text();
+  assert.match(body, /尚未真机验证/); assert.doesNotMatch(body, /<script>bad\(\)<\/script>/);
+  const shared=await f.store.createShare(a.id);assert.doesNotMatch(await (await fetch(f.base+shared.url)).text(), /尚未真机验证/);
+  await f.store.publish({ title:'结果', html:'<p>v1</p>', source }); assert.ok((await f.store.get(a.id)).evidence);
+  await f.store.publish({ title:'结果', html:'<p>v2</p>', source }); assert.equal((await f.store.get(a.id)).evidence,undefined);
+  await f.store.publish({ title:'结果', html:'<p>v2</p>', source, evidence });
+  await f.store.publish({ title:'结果', html:'<p>v2</p>', source:{...source,revision:'def5678'} });assert.equal((await f.store.get(a.id)).evidence,undefined);
+});

@@ -52,8 +52,12 @@ try {
     await page.getByRole('button', { name: '取消分享', exact: true }).click();
     await page.getByText('已取消分享', { exact: true }).waitFor();
     assert.equal((await fetch(uiLink)).status, 404);
-    const report = await store.publish({ title: '研究结论', html: '<style>body{font:16px system-ui;padding:20px;line-height:1.6}</style><h1>研究结论</h1><p>增长来自新增客户，需要核对留存率。</p><p>估值判断需要分情景验证。</p>', source: { key: 'feedback', session: 'research', revision: 'v1' } });
+    const report = await store.publish({ title: '研究结论', html: '<style>body{font:16px system-ui;padding:20px;line-height:1.6}</style><h1>研究结论</h1><p>增长来自新增客户，需要核对留存率。</p><p>估值判断需要分情景验证。</p>', source: { key: 'feedback', session: 'research', revision: 'v1' }, evidence: { version: 'v1', summary: '核心流程已验证', checks: [{ method: '隔离浏览器旅程', result: 'passed', reference: 'fixture/log' }], limitations: ['尚未做真实设备验证'] } });
     await page.goto(`${base}/pages/${report.id}`);
+    await page.locator('.page-evidence summary').click();
+    await page.getByText('尚未做真实设备验证', { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(directory, `evidence-${width}.png`) });
+    await page.locator('.page-evidence summary').click();
     await page.getByRole('button', { name: '批注', exact: true }).click();
     await page.frameLocator('iframe').getByText('增长来自新增客户，需要核对留存率。').click();
     await page.waitForFunction(() => document.querySelector('#feedback-quote').value.includes('增长'));

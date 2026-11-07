@@ -23,6 +23,7 @@
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
   <link rel="stylesheet" href="/remote.css?v=53">
+  <link rel="stylesheet" href="/history-search.css?v=1">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -43,6 +44,7 @@
         </div>
       </div>
       <div class="session-search"><input id="sessionSearch" type="search" placeholder="搜索会话名称" aria-label="搜索会话名称" aria-controls="threadList" autocomplete="off" spellcheck="false"></div>
+      <button id="historySearchButton" class="history-search-entry" type="button">搜索历史内容</button>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
         <span><i class="connection-dot" id="drawerConnectionDot"></i><span id="drawerConnectionText">正在连接</span></span>
@@ -234,6 +236,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=142"></script>
+  <script type="module" src="/remote.js?v=143"></script>
 </body>
 </html>
