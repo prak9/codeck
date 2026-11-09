@@ -231,18 +231,50 @@ test('daemon-backed Codex follows a visible thread switch instead of its startup
     const footer = '› 怎么样了\n• Working\n\n  GPT-6.1-Sol high · ~/workspace · 实验状态 · ← for agents';
     assert.equal(await detect(footer, 1_080_000, 0, 'daemon-cold'), newId,
       'a cold service can disambiguate shared prompts by the exact current footer title');
-    assert.equal(await detect(footer.replace('实验状态', '实验…'), 1_081_000, 0, 'daemon-truncated'), oldId,
-      'a truncated title is not enough to change the startup binding');
+    assert.equal(await detect(footer.replace('实验状态', '实验…'), 1_081_000, 0, 'daemon-truncated'), null,
+      'a truncated title cannot justify restoring an ambiguous startup binding');
     fs.appendFileSync(path.join(codexHome, 'session_index.jsonl'), '\n' +
       JSON.stringify({ id: oldId, thread_name: '实验状态' }));
     fs.appendFileSync(path.join(codexHome, 'history.jsonl'), '\n');
-    assert.equal(await detect(footer, 1_090_000, 0, 'daemon-ambiguous'), oldId,
+    assert.equal(await detect(footer, 1_090_000, 0, 'daemon-ambiguous'), null,
       'duplicate titles must not choose between matching threads');
     writeProcProcess(procRoot, { pid: 11, ppid: 10, startTicks: 10_000, command: `codex resume ${oldId}` });
     assert.equal(await detect('', 1_100_000), oldId, 'a reused PID must not inherit the previous process binding');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('shared progress prompts resolve through the latest complete assistant reply, never the stale resume id', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-reply-'));
+  const procRoot = path.join(root, 'proc'), codexHome = path.join(root, 'codex');
+  const oldId = '01a05170-1111-7111-8111-111111111111';
+  const newId = '01a05171-2222-7222-8222-222222222222';
+  const reply = '当前状态无变化：目标是完成九窗日夜盘四方案对照，随后进行新的重训对照。统计包已全部通过，拟合尚未完成，尚无完整收益结果。阻塞是基线与封存值不一致，校验失败，原因尚未定位。下一步定位差异，完成拟合、回放核验与分窗汇总。本次仅只读核查，未续跑或修改方向、预算。';
+  try {
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, command: `codex resume ${oldId}`, cwd: root });
+    const sessions = path.join(codexHome, 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    const file = id => path.join(sessions, `rollout-2026-10-11T16-16-16-${id}.jsonl`);
+    const message = text => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } });
+    for (const id of [oldId, newId]) fs.writeFileSync(file(id), JSON.stringify({ type: 'session_meta', payload: { id, cwd: root } }) + '\n');
+    fs.appendFileSync(file(newId), message(reply) + '\n');
+    fs.appendFileSync(file(oldId), JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', output: reply } }) + '\n');
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [oldId, newId].map(session_id => JSON.stringify({ session_id, ts: 100, text: '汇报进度' })).join('\n'));
+    const output = '› 汇报进度\n\n• ' + reply.match(/.{1,15}/gu).join('\n  ') + '\n\n  Worked for 9s • 08:26\n\n› Ask Codex to do anything\n\n  GPT-6 Goal achieved';
+    const detect = async (pane = output, session = 'reply-cold') => (await detectPaneAgents(
+      [{ session, pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome },
+      { procRoot, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000, readCodexPaneOutput: async () => pane },
+    )).get(session)?.id;
+    assert.equal(await detect(), newId, 'cold start follows the wrapped reply with generic prompts');
+    fs.appendFileSync(file(oldId), message(reply) + '\n');
+    assert.equal(await detect(), null, 'conflicting replies invalidate an earlier verified binding');
+    assert.equal(await detect(output, 'reply-duplicate'), null, 'copied replies must not guess the most recently modified file');
+    assert.equal(await detect('› 汇报进度\n• 好的', 'reply-short'), null, 'generic replies cannot justify the old launch id');
+    fs.rmSync(file(newId));
+    assert.equal(await detect(output, 'reply-missing'), null, 'a missing candidate must not make the remaining match unique');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('Codex open-session detection keeps unknown metadata and multiple roots ambiguous', () => {

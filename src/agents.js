@@ -249,6 +249,44 @@ function readTextTail(file, limit) {
   } finally { fs.closeSync(descriptor); }
 }
 
+// Generic progress prompts are shared across threads. A cold daemon client has
+// no rollout FD, and its resume argument may predate several thread switches.
+// Compare a complete visible reply against bounded tails of every candidate;
+// never infer identity from file recency or from the absence of an unreadable file.
+function matchCodexReply(output, candidates, codex) {
+  const lines = stripCodexAnsi(output).split('\n');
+  const start = lines.findLastIndex(line => /^• /.test(line));
+  if (start < 0) return { id: null, present: false };
+  const parts = [lines[start].slice(2)];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*Worked for\b/.test(line) || (line.trim() && !/^ {2}/.test(line))) break;
+    parts.push(line);
+  }
+  const normalize = value => value.replace(/^[ \t]*[-*•]\s+/gm, '').replace(/[\s*`#]/gu, '');
+  const reply = normalize(parts.join('\n'));
+  if (reply.length < 80) return { id: null, present: false };
+  const result = { id: null, present: true };
+  if (!candidates.size || candidates.size > 32) return result;
+  const matches = [];
+  for (const id of candidates) {
+    const file = codex.starts.find(item => item.id === id)?.file;
+    if (!file) return result;
+    try {
+      const tail = readTextTail(file, 256 * 1024);
+      for (const line of tail.split('\n')) {
+        let item;
+        try { item = JSON.parse(line); } catch { continue; }
+        const payload = item?.type === 'response_item' ? item.payload : null;
+        if (payload?.role !== 'assistant' || !Array.isArray(payload.content)) continue;
+        const text = payload.content.filter(part => part?.type === 'output_text' || part?.type === 'text')
+          .map(part => part.text || '').join('');
+        if (normalize(text) === reply) { matches.push(id); break; }
+      }
+    } catch { return result; }
+  }
+  return { ...result, id: matches.length === 1 ? matches[0] : null };
+}
+
 function loadCodexSessions(codexHome) {
   const historyFile = path.join(codexHome, 'history.jsonl');
   let historySignature = '';
@@ -1095,24 +1133,28 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const titledCandidates = !openSessionId && !visibleMatch.id && footerTitle
         ? [...visibleMatch.candidates].filter((id) => codex.names.get(id) === footerTitle)
         : [];
-      const visibleId = visibleMatch.id || (titledCandidates.length === 1 ? titledCandidates[0] : null);
+      const replyMatch = !openSessionId && !visibleMatch.id && visibleMatch.candidates.size > 1
+        ? matchCodexReply(paneOutput, visibleMatch.candidates, codex) : { id: null, present: false };
+      const visibleId = visibleMatch.id || replyMatch.id
+        || (!replyMatch.present && titledCandidates.length === 1 ? titledCandidates[0] : null);
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
       if (promptChanged && !explicitId && !visibleMatch.matched) cacheable = false;
       const remembered = codexPaneSessions.get(pane.session);
-      const rememberedId = remembered?.pid === process.pid
+      const rememberedId = !replyMatch.present && remembered?.pid === process.pid
         && remembered.startTicks === process.startTicks
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
-      let id = openSessionId || verifiedVisibleId || rememberedId || explicitId
-        || (visibleMatch.matched
+      let id = openSessionId || verifiedVisibleId || rememberedId
+        || (replyMatch.present ? null : visibleMatch.matched
           ? uniqueCodexStartMatch(process, codex, claimedCodexIds)
             || uniqueCodexResumeWriterMatch(
               process, codex, visibleMatch.candidates, claimedCodexIds,
             )
-          : resolveCodexSessionId(process, codex));
-      if (openSessionId || explicitId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id });
+          : explicitId || resolveCodexSessionId(process, codex));
+      if (openSessionId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id });
+      if (replyMatch.present && !verifiedVisibleId) codexPaneSessions.delete(pane.session);
       let name = codex.names.get(id) || codexPreview(id, codex);
-      if (!name) {
+      if (!name && !visibleMatch.matched) {
         const paneIdentity = parseCodexRename(paneOutput);
         if (paneIdentity && (!id || paneIdentity.id === id)) {
           id = paneIdentity.id;
