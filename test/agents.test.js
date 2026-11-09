@@ -271,8 +271,15 @@ test('shared progress prompts resolve through the latest complete assistant repl
     assert.equal(await detect(), newId, 'cold start follows the wrapped reply with generic prompts');
     assert.equal(await detect(output.replace('Ask Codex to do anything', '修复阻塞')), newId, 'typing another thread prompt cannot replace the verified identity');
     assert.equal(await detect('› 修复阻塞\n• 旧任务已经结束\n\n' + output, 'reply-with-old-scrollback'), newId, 'old unique prompts cannot override the latest reply');
+    const busy = '• Compacting context (3m 21s • esc to interrupt)\n  └ Making room to continue.\n\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ 请简要汇报当前目标、进展、剩余事项和阻塞。\n\n› Ask Codex to do anything';
+    fs.appendFileSync(file(newId), JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', output: 'x'.repeat(350_000) } }) + '\n');
+    const executing = output.slice(0, output.indexOf('  Worked for')) + busy;
+    assert.equal(await detect(executing, 'reply-busy-cold'), newId, 'tool output and compaction do not hide an earlier reply in the current turn');
+    assert.equal(await detect('› 汇报进度\n' + busy), newId, 'status UI without a new assistant reply cannot revoke a verified binding');
+    assert.equal(await detect('› 汇报进度\n' + busy, 'reply-no-evidence'), null, 'status UI alone cannot create a cold binding');
+    assert.equal(await detect(output.slice(output.indexOf('• '), output.indexOf('  Worked for')) + '› 汇报进度\n' + busy, 'reply-old-answer'), null, 'an answer preceding the latest submitted prompt cannot identify its new thread');
     fs.appendFileSync(file(oldId), message(reply) + '\n');
-    assert.equal(await detect(), null, 'conflicting replies invalidate an earlier verified binding');
+    assert.equal(await detect(), newId, 'a copied reply in another transcript does not contradict an already verified binding');
     assert.equal(await detect(output, 'reply-duplicate'), null, 'copied replies must not guess the most recently modified file');
     assert.equal(await detect('› 汇报进度\n• 好的', 'reply-short'), null, 'generic replies cannot justify the old launch id');
     fs.rmSync(file(newId));

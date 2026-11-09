@@ -246,37 +246,55 @@ function readTextTail(file, limit) {
 // never infer identity from file recency or from the absence of an unreadable file.
 function matchCodexReply(output, candidates, codex) {
   const lines = stripCodexAnsi(output).split('\n');
-  const start = lines.findLastIndex(line => /^• /.test(line));
-  if (start < 0) return { id: null, present: false };
-  const parts = [lines[start].slice(2)];
-  for (const line of lines.slice(start + 1)) {
-    if (/^\s*Worked for\b/.test(line) || (line.trim() && !/^ {2}/.test(line))) break;
-    parts.push(line);
-  }
+  const prompt = codexPromptBlocks(output).at(-1);
+  const absent = { id: null, present: false };
+  if (!prompt || !candidates.size || candidates.size > 32) return absent;
   const normalize = value => value.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, '$1 ($2)')
     .replace(/^[ \t]*[-*•]\s+/gm, '').replace(/[\s*`#]/gu, '');
-  const reply = normalize(parts.join('\n'));
-  if (reply.length < 80) return { id: null, present: false };
-  const result = { id: null, present: true };
-  if (!candidates.size || candidates.size > 32) return result;
-  const matches = [];
+  const replies = [];
+  // Tool calls, compaction and queued-input notices also start with •. They are
+  // not negative identity evidence. Only a block actually found as an assistant
+  // message in a candidate transcript can participate in identity resolution.
+  for (let index = prompt.position + 1; index < lines.length; index++) {
+    if (/^›(?:\s|$)/u.test(lines[index])) break;
+    if (!/^• /.test(lines[index])) continue;
+    const parts = [lines[index].slice(2)];
+    for (const line of lines.slice(index + 1)) {
+      if (/^\s*Worked for\b/.test(line) || (line.trim() && !/^ {2}/.test(line))) break;
+      parts.push(line);
+    }
+    const reply = normalize(parts.join('\n'));
+    if (reply.length >= 80) replies.push(reply);
+  }
+  if (!replies.length) return absent;
+  const matches = new Map(replies.map(reply => [reply, []]));
   for (const id of candidates) {
     const file = codex.starts.find(item => item.id === id)?.file;
-    if (!file) return result;
+    if (!file) return absent;
     try {
-      const tail = readTextTail(file, 256 * 1024);
+      // Large tool results can push a valid reply past 256 KiB. Keep this bounded,
+      // and skip tool records before JSON parsing rather than materializing them.
+      const tail = readTextTail(file, 1024 * 1024);
+      const found = new Set();
       for (const line of tail.split('\n')) {
+        if (!/"role"\s*:\s*"assistant"/.test(line)) continue;
         let item;
         try { item = JSON.parse(line); } catch { continue; }
         const payload = item?.type === 'response_item' ? item.payload : null;
         if (payload?.role !== 'assistant' || !Array.isArray(payload.content)) continue;
         const text = payload.content.filter(part => part?.type === 'output_text' || part?.type === 'text')
           .map(part => part.text || '').join('');
-        if (normalize(text) === reply) { matches.push(id); break; }
+        const reply = normalize(text);
+        if (matches.has(reply)) found.add(reply);
       }
-    } catch { return result; }
+      for (const reply of found) matches.get(reply).push(id);
+    } catch { return absent; }
   }
-  return { ...result, id: matches.length === 1 ? matches[0] : null };
+  for (const reply of replies.reverse()) {
+    const ids = matches.get(reply);
+    if (ids.length) return { id: ids.length === 1 ? ids[0] : null, present: true, matches: ids };
+  }
+  return absent;
 }
 
 function loadCodexSessions(codexHome) {
@@ -1133,7 +1151,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
         || (!replyMatch.present && titledCandidates.length === 1 ? titledCandidates[0] : null);
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
       if (promptChanged && !explicitId && !visibleMatch.matched) cacheable = false;
-      const rememberedId = !replyMatch.present
+      const rememberedId = (!replyMatch.present || replyMatch.matches?.includes(remembered?.id))
         && (!visibleMatch.observed || visibleMatch.candidates.has(remembered?.id))
         && sameProcess
         && codex.starts.some((item) => item.id === remembered.id)
