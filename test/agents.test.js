@@ -150,8 +150,8 @@ test('a Codex process follows its open thread after an explicit resume forks', a
     fs.symlinkSync(childLock, writerFd);
     assert.equal(
       (await detect(1_001_000)).get('codeck')?.id,
-      parentId,
-      'a writer lock without an open rollout is not enough to expose the child',
+      null,
+      'losing the parent descriptors without verifying the child invalidates the binding',
     );
     fs.symlinkSync(childRollout, rolloutFd);
     paneOutput = '› 子分支的新消息\n• 正在分析';
@@ -210,11 +210,12 @@ test('daemon-backed Codex follows a visible thread switch instead of its startup
     )).get(session)?.id;
     assert.equal(await detect('› 旧任务\n• 完成', 1_000_000), oldId);
     assert.equal(await detect('› 怎么样了\n• 完成', 1_001_000), oldId, 'shared prompts must not guess a new thread');
-    assert.equal(await detect('› 总结当前实验的目标和状态\n• 完成\n› 怎么样了\n• 完成', 1_007_000), newId,
+    assert.equal(await detect('› 总结当前实验的目标和状态\n• 完成', 1_007_000), newId,
       'the periodic identity audit follows a unique visible conversation without local rollout FDs');
     assert.equal(await detect('› 怎么样了\n• 完成', 1_010_000), newId, 'ambiguous prompts retain the verified thread');
-    assert.equal(await detect('› 另一个项目\n• 完成', 1_020_000), newId, 'a different cwd cannot replace the current thread');
-    assert.equal(await detect('', 1_030_000), newId, 'a temporarily empty screen cannot restore the startup id');
+    assert.equal(await detect('› 另一个项目\n• 完成', 1_020_000), null, 'a conflicting cwd invalidates identity instead of borrowing another thread');
+    assert.equal(await detect('', 1_030_000), null, 'an empty screen after invalidation cannot resurrect the startup id');
+    assert.equal(await detect(`• Session renamed to old. To resume this session run codex resume, then select old (${oldId})`, 1_035_000), null, 'old rename output cannot resurrect an invalidated identity');
     fs.unlinkSync(path.join(procRoot, '11', 'cwd'));
     fs.symlinkSync(root, path.join(procRoot, '11', 'cwd'));
     identityCache.clear();
@@ -250,7 +251,7 @@ test('shared progress prompts resolve through the latest complete assistant repl
   const procRoot = path.join(root, 'proc'), codexHome = path.join(root, 'codex');
   const oldId = '01a05170-1111-7111-8111-111111111111';
   const newId = '01a05171-2222-7222-8222-222222222222';
-  const reply = '当前状态无变化：目标是完成九窗日夜盘四方案对照，随后进行新的重训对照。统计包已全部通过，拟合尚未完成，尚无完整收益结果。阻塞是基线与封存值不一致，校验失败，原因尚未定位。下一步定位差异，完成拟合、回放核验与分窗汇总。本次仅只读核查，未续跑或修改方向、预算。';
+  const reply = '当前状态无变化：目标是完成九窗日夜盘四方案对照，随后进行新的重训对照。统计包已全部通过，拟合尚未完成，尚无完整收益结果。阻塞是基线与封存值不一致，校验失败，原因尚未定位。下一步定位差异，完成拟合、回放核验与分窗汇总。本次仅只读核查，未续跑或修改方向、预算。\n\n[验证证据](/project/evidence.json)';
   try {
     writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
     writeProcProcess(procRoot, { pid: 11, ppid: 10, command: `codex resume ${oldId}`, cwd: root });
@@ -261,13 +262,15 @@ test('shared progress prompts resolve through the latest complete assistant repl
     for (const id of [oldId, newId]) fs.writeFileSync(file(id), JSON.stringify({ type: 'session_meta', payload: { id, cwd: root } }) + '\n');
     fs.appendFileSync(file(newId), message(reply) + '\n');
     fs.appendFileSync(file(oldId), JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', output: reply } }) + '\n');
-    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [oldId, newId].map(session_id => JSON.stringify({ session_id, ts: 100, text: '汇报进度' })).join('\n'));
-    const output = '› 汇报进度\n\n• ' + reply.match(/.{1,15}/gu).join('\n  ') + '\n\n  Worked for 9s • 08:26\n\n› Ask Codex to do anything\n\n  GPT-6 Goal achieved';
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), [...[oldId, newId].map(session_id => JSON.stringify({ session_id, ts: 100, text: '汇报进度' })), JSON.stringify({ session_id: oldId, ts: 200, text: '修复阻塞' })].join('\n'));
+    const output = '› 汇报进度\n\n• ' + reply.replace('[验证证据](/project/evidence.json)', '验证证据 (/project/evidence.json)').match(/.{1,15}/gu).join('\n  ') + '\n\n  Worked for 9s • 08:26\n\n› Ask Codex to do anything\n\n  GPT-6 Goal achieved';
     const detect = async (pane = output, session = 'reply-cold') => (await detectPaneAgents(
       [{ session, pid: 10, paneId: '%1' }], { CODEX_HOME: codexHome },
       { procRoot, clockTicks: 100, now: 1_000_000, uptimeMs: 100_000, readCodexPaneOutput: async () => pane },
     )).get(session)?.id;
     assert.equal(await detect(), newId, 'cold start follows the wrapped reply with generic prompts');
+    assert.equal(await detect(output.replace('Ask Codex to do anything', '修复阻塞')), newId, 'typing another thread prompt cannot replace the verified identity');
+    assert.equal(await detect('› 修复阻塞\n• 旧任务已经结束\n\n' + output, 'reply-with-old-scrollback'), newId, 'old unique prompts cannot override the latest reply');
     fs.appendFileSync(file(oldId), message(reply) + '\n');
     assert.equal(await detect(), null, 'conflicting replies invalidate an earlier verified binding');
     assert.equal(await detect(output, 'reply-duplicate'), null, 'copied replies must not guess the most recently modified file');
@@ -503,6 +506,31 @@ test('Codex output quoting another thread prompt cannot switch the tmux session 
   assert.equal(findCodexHistorySessionId(pane, history), codeckId);
 });
 
+test('only the latest submitted Codex prompt can supply identity candidates', () => {
+  const oldId = '01a05170-1111-7111-8111-111111111111';
+  const newId = '01a05171-2222-7222-8222-222222222222';
+  const history = parseCodexHistory([
+    [oldId, '旧任务'], [oldId, '汇报进度'], [newId, '汇报进度'],
+  ].map(([session_id, text]) => JSON.stringify({ session_id, text, ts: 100 })).join('\n'));
+  assert.equal(findCodexHistorySessionId('› 旧任务\n• 结束\n› 汇报进度\n• 当前进度', history), null);
+  assert.equal(findCodexHistorySessionId('› 旧任务\n• 结束\n› 尚未进入输入历史的新任务\n• 开始', history), null);
+});
+
+test('an unsubmitted Codex composer cannot rebind a pane to another thread', () => {
+  const research = '01a1968d-5d58-74f3-9fbd-559a421cc2e9';
+  const report = '01a02936-cfd6-7eb1-8a66-d18af33402c5';
+  const history = parseCodexHistory([
+    { session_id: research, ts: 100, text: '当前研究进展' },
+    { session_id: report, ts: 200, text: '修复阻塞' },
+  ].map(JSON.stringify).join('\n'));
+  for (const footer of ['', '  GPT-6-Ast… Goal achieved (1h 26m)', '  GPT-6.1-Sol medium · ~/py · 继续']) {
+    const pane = '› 当前研究进展\n\n• 研究任务仍在进行\n\n› 修复阻塞\n\n' + footer;
+    assert.equal(findCodexHistorySessionId(pane, history), research, 'a draft matching report must not replace research');
+    assert.equal(findCodexHistorySessionId('› 修复阻塞\n\n' + footer, history), null, 'a composer alone is not submitted history');
+  }
+  assert.equal(findCodexHistorySessionId('› 修复阻塞\n\n• 已开始处理', history), report, 'a submitted turn with a response remains usable');
+});
+
 test('a prompt shared by multiple Codex threads is ambiguous', () => {
   const codeckId = '01a01f67-bd04-7ca0-afdd-e9f2b59d27d5';
   const skillsId = '01a03781-258c-7e12-85a9-97f5c8440771';
@@ -512,7 +540,7 @@ test('a prompt shared by multiple Codex threads is ambiguous', () => {
   ].join('\n'));
 
   assert.equal(findCodexHistorySessionId('› 提交并推送', history), null);
-  assert.equal(findCodexHistorySessionId('› 提交并推送', history, (id) => id === codeckId), codeckId);
+  assert.equal(findCodexHistorySessionId('› 提交并推送\n• 完成', history, (id) => id === codeckId), codeckId);
 });
 
 test('an old Codex thread resumed from an ambiguous prompt needs one fresh writer lock', async () => {
@@ -615,7 +643,7 @@ test('Codex rollout cwd disambiguates identical prompts in different tmux panes'
     ], { CODEX_HOME: codexHome }, {
       procRoot, clockTicks: 100, now: new Date('2026-08-25T10:02:40').getTime(), uptimeMs: 100_000,
       readCodexPaneOutput: async (session) => session === 'skills-cwd'
-        ? '› 更新现有 code review skill\n• 已完成\n› 提交并推送\n• 已完成'
+        ? '› 更新现有 code review skill\n• 已完成'
         : '› 提交并推送\n• 已完成',
     });
 

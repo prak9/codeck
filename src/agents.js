@@ -160,6 +160,11 @@ function codexPromptBlocks(output) {
       parts.push(continuation[1]);
       cursor += 1;
     }
+    // The last › block can be the editable composer, including a draft whose
+    // text already exists in another thread. Footer layout is not stable (narrow
+    // panes truncate it). Require a later conversation marker before using it
+    // as identity evidence; an unanswered send keeps the previous binding.
+    if (!lines.slice(cursor).some(line => /^(?:[•■](?:\s|$)|›(?:\s|$))/u.test(line))) continue;
     let next = cursor;
     while (next < lines.length && !lines[next].trim()) next += 1;
     if (/^\s*(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)\b.*\s·\s(?:~(?:\/|$)|\/)/i.test(lines[next] || '')) continue;
@@ -192,33 +197,19 @@ function codexHistoryIndex(history) {
 }
 
 function matchCodexHistorySession(output, history, acceptId = () => true) {
-  const prompts = codexPromptBlocks(output);
-  const candidatesByPrompt = prompts.map(() => new Set());
+  // Scrollback can cross /new, /resume and fork boundaries. Older prompts
+  // cannot narrow the identity of the latest submitted conversation.
+  const prompt = codexPromptBlocks(output).at(-1);
+  const candidates = new Set();
+  if (!prompt) return { id: null, matched: false, observed: false, candidates };
   const historyIndex = codexHistoryIndex(history);
-  let matched = false;
-  for (const [index, prompt] of prompts.entries()) {
-    const ids = new Set(historyIndex.exact.get(prompt.text) || []);
-    if (prompt.text.length >= 320) {
-      for (const id of historyIndex.prefixes.get(prompt.text.slice(0, 320)) || []) ids.add(id);
-    }
-    if (ids.size) matched = true;
-    for (const id of ids) {
-      if (acceptId(id)) candidatesByPrompt[index].add(id);
-    }
+  const ids = new Set(historyIndex.exact.get(prompt.text) || []);
+  if (prompt.text.length >= 320) {
+    for (const id of historyIndex.prefixes.get(prompt.text.slice(0, 320)) || []) ids.add(id);
   }
-  let candidates = null;
-  for (let index = candidatesByPrompt.length - 1; index >= 0; index -= 1) {
-    const promptCandidates = candidatesByPrompt[index];
-    if (!promptCandidates.size) continue;
-    if (!candidates) candidates = new Set(promptCandidates);
-    else if (candidates.size > 1) {
-      const overlap = new Set([...candidates].filter((id) => promptCandidates.has(id)));
-      if (!overlap.size) return { id: null, matched, candidates: overlap };
-      candidates = overlap;
-    }
-    if (candidates.size === 1) return { id: candidates.values().next().value, matched, candidates };
-  }
-  return { id: null, matched, candidates: candidates || new Set() };
+  for (const id of ids) if (acceptId(id)) candidates.add(id);
+  return { id: candidates.size === 1 ? candidates.values().next().value : null,
+    matched: ids.size > 0, observed: true, candidates };
 }
 
 export function findCodexHistorySessionId(output, history, acceptId = () => true) {
@@ -262,7 +253,8 @@ function matchCodexReply(output, candidates, codex) {
     if (/^\s*Worked for\b/.test(line) || (line.trim() && !/^ {2}/.test(line))) break;
     parts.push(line);
   }
-  const normalize = value => value.replace(/^[ \t]*[-*•]\s+/gm, '').replace(/[\s*`#]/gu, '');
+  const normalize = value => value.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, '$1 ($2)')
+    .replace(/^[ \t]*[-*•]\s+/gm, '').replace(/[\s*`#]/gu, '');
   const reply = normalize(parts.join('\n'));
   if (reply.length < 80) return { id: null, present: false };
   const result = { id: null, present: true };
@@ -1110,6 +1102,8 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const paneOutput = codexPaneOutputs.get(pane.session) || '';
       cachePrompt = visiblePrompt || latestCodexPrompt(paneOutput);
       const explicitId = process.command.match(new RegExp(`\\bresume\\s+(${UUID})`, 'i'))?.[1] || null;
+      const remembered = codexPaneSessions.get(pane.session);
+      const sameProcess = remembered?.pid === process.pid && remembered.startTicks === process.startTicks;
       // Managed-daemon clients can stay in their launch directory while the
       // active thread uses another workspace. Only trust the final TUI footer.
       const footer = stripCodexAnsi(paneOutput).trimEnd().split('\n').at(-1)
@@ -1117,7 +1111,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const footerCwd = footer?.[1]?.trim();
       const paneCwd = normalizedPath(footerCwd?.startsWith('~')
         ? path.join(env.HOME || os.homedir(), footerCwd.slice(1))
-        : footerCwd || runtime.cwd);
+        : footerCwd || (sameProcess && remembered.cwd) || runtime.cwd);
       const cwdMatches = new Map();
       // A daemon-backed CLI owns no rollout FDs; its startup resume argument
       // survives /new and thread switches. Reconcile the live conversation too.
@@ -1139,22 +1133,26 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
         || (!replyMatch.present && titledCandidates.length === 1 ? titledCandidates[0] : null);
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
       if (promptChanged && !explicitId && !visibleMatch.matched) cacheable = false;
-      const remembered = codexPaneSessions.get(pane.session);
-      const rememberedId = !replyMatch.present && remembered?.pid === process.pid
-        && remembered.startTicks === process.startTicks
+      const rememberedId = !replyMatch.present
+        && (!visibleMatch.observed || visibleMatch.candidates.has(remembered?.id))
+        && sameProcess
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
+      const startedId = !openSessionId && !verifiedVisibleId && !rememberedId && visibleMatch.matched
+        ? uniqueCodexStartMatch(process, codex, claimedCodexIds) : null;
       let id = openSessionId || verifiedVisibleId || rememberedId
-        || (replyMatch.present ? null : visibleMatch.matched
-          ? uniqueCodexStartMatch(process, codex, claimedCodexIds)
+        || (replyMatch.present || (visibleMatch.observed && !visibleMatch.candidates.size) ? null : visibleMatch.matched
+          ? (visibleMatch.candidates.has(startedId) ? startedId : null)
             || uniqueCodexResumeWriterMatch(
               process, codex, visibleMatch.candidates, claimedCodexIds,
             )
-          : explicitId || resolveCodexSessionId(process, codex));
-      if (openSessionId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id });
-      if (replyMatch.present && !verifiedVisibleId) codexPaneSessions.delete(pane.session);
+          : sameProcess ? null : explicitId || resolveCodexSessionId(process, codex));
+      if (openSessionId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id, cwd: paneCwd });
+      // Remember invalidation too: a subsequent blank screen must not resurrect
+      // the startup resume id. A new process gets its own initial binding.
+      if (visibleMatch.observed && !id) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id: null, cwd: paneCwd });
       let name = codex.names.get(id) || codexPreview(id, codex);
-      if (!name && !visibleMatch.matched) {
+      if (!name && !visibleMatch.observed && (!sameProcess || id)) {
         const paneIdentity = parseCodexRename(paneOutput);
         if (paneIdentity && (!id || paneIdentity.id === id)) {
           id = paneIdentity.id;

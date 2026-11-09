@@ -1330,3 +1330,13 @@ test('pane text full of tool output no longer keeps the card alive forever', () 
   thread.tmux = { name: 'claude', status: 'done', available: true };
   assert.equal(shouldShowTerminalActivity(thread), false);
 });
+
+test('an uncertain identity replaces old history and can resolve again without leaving its session', () => {
+  const current = tmuxSessionsToThreads([{ name: 'research', agent: { kind: 'codex', id: 'old' } }])[0];
+  const pending = tmuxSessionsToThreads([{ name: 'research', agent: { kind: 'codex', id: null } }])[0];
+  const resolved = tmuxSessionsToThreads([{ name: 'research', agent: { kind: 'codex', id: 'new' } }])[0];
+  assert.equal(findTmuxThreadReplacement([pending], current), pending);
+  assert.equal(findTmuxThreadReplacement([pending], pending), null);
+  assert.equal(findTmuxThreadReplacement([resolved], pending), resolved);
+  assert.equal(findTmuxThreadReplacement([{ ...pending, tmux: { ...pending.tmux, name: 'report' } }], current), null);
+});

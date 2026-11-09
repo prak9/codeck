@@ -254,7 +254,6 @@ export function findTmuxThreadReplacement(threads, currentThread) {
   if (shell) return shell;
   return sameSession.find((thread) => (
     thread.provider === currentThread.provider
-    && thread.tmux.available === true
     && thread.id !== currentThread.id
   )) || null;
 }
