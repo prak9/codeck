@@ -218,6 +218,7 @@ export function tmuxSessionsToThreads(sessions) {
       readOnly: provider === 'codex',
       tmux: {
         name: session.name,
+        ...(session.createdAt != null ? { createdAt: session.createdAt } : {}),
         title: session.agent?.name || session.name,
         activityAt: session.activityAt,
         ...(session.checkpoint ? { checkpoint: session.checkpoint } : {}),

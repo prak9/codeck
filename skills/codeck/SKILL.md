@@ -6,7 +6,7 @@ description: 通过本机 Codeck CLI 查询已有 Agent 会话、向指定会话
 使用 `codeck --help` 查看当前命令。若 PATH 尚未注册，在 Codeck 仓库执行 `node scripts/codeck.mjs`。沿用用户指定的目标、范围与权限；读取可直接进行，创建、发送及开启分享需来自用户当前或已有授权。
 
 - 查会话：`codeck session list --json`。以精确名称选定会话，歧义时澄清，不猜测接收人。
-- 记进度：`codeck session checkpoint NAME --file NOTE.txt`。在复现、验证、阻塞或交接等关键节点更新一句当前事实；先读已有便签，不覆盖用户目标。不必每个工具调用都更新。便签附时间，仅作进度参考，不能替代验证证据。
+- 记进度：简短记录用 `codeck session checkpoint NAME --file NOTE.txt`；目标、已验证成果、待办、需要用户判断及证据用 `--record NOTE.json`，格式见[进度便签](references/session-progress.md)。在基线建立、获得验证结果、阻塞或结束等关键节点更新同一份便签；用户修正目标时同步更新。先读已有记录，区分事实和未验证尝试，不将空闲当作完成；仅在明确新任务时设置 newTask。更新便签不发送消息、不授权、不续跑。
 - 查进展：`codeck session read NAME`。这是只读操作，不向 Agent 发送“继续”。历史尚未就绪时说明正在读取，不把空输出当作无任务。
 - 发任务：把完整文本写入文件，再用 `codeck session send NAME --file PROMPT.txt`。保留目标与边界，不追加自行扩大权限的提示。
 - 新会话：`codeck session create NAME --provider codex --cwd /project`。支持 codex、claude、qodercli；创建后先查列表确认 Agent 身份就绪，再单独发送用户任务。已有同名会话不要覆盖。并行修改代码时可追加 `--worktree /absolute/new-path` 从当前 HEAD 建独立 checkout；未提交改动、依赖、配置和端口不自动复制或隔离。失败时保留工作区供核实，不自动删除。

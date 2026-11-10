@@ -5,8 +5,8 @@ import vm from 'node:vm';
 import { CONTINUE_PROMPT } from '../public/continue-prompt.js';
 import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 
-const expectedPrompt = '确认，请按当前目标、授权和预算自主推进。阶段汇报后直接继续，不反复请示；仅在完成、预算耗尽、我要求停止或确需我决策时停下，并总结结果与下一步。';
-const expectedProgress = '请简要汇报当前目标、进展、剩余事项和阻塞。仅汇报，不打断、不续跑、不改方向或预算。';
+const expectedPrompt = '确认，请按当前目标、授权和预算自主推进。阶段汇报后直接继续，不反复请示；关键进展用 Codeck Skill 更新本会话便签；仅在完成、预算耗尽、我要求停止或确需我决策时停下，并总结结果与下一步。';
+const expectedProgress = '请简要汇报当前目标、进展、剩余事项和阻塞。仅汇报，不打断、不续跑、不改方向或预算；用 Codeck Skill 更新本会话进度便签。';
 
 for (const remote of [false, true]) test(`${remote ? 'remote' : 'normal'}: independent confirmation sends conversation text, not an autonomy action`, async () => {
   const source = fs.readFileSync(new URL(`../public/${remote ? 'remote' : 'app'}.js`, import.meta.url), 'utf8');

@@ -1,7 +1,8 @@
+import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=2';
+import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { filterSessionNames } from './session-search.js?v=1';
-import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
+import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { clipboardFiles } from './clipboard-files.js?v=1';
 import { createRemoteImages } from './remote-images.js?v=1';
@@ -26,7 +27,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=50';
+} from './agent-model.js?v=51';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
@@ -37,7 +38,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=22';
+import { autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=23';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -947,11 +948,17 @@ function openPendingThread(thread, { quiet = false, refresh = true } = {}) {
     renderProviderControls();
   }
   state.activeThreadId = thread.id;
+  const previous = state.thread;
+  const retained = previous?.provider === thread.provider && previous?.tmux?.name === thread.tmux.name
+    && previous?.tmux?.createdAt === thread.tmux.createdAt ? previous.turns || [] : [];
   state.thread = normalizeAgentThread(thread.provider, {
     id: thread.id,
     preview: thread.tmux.title || thread.tmux.name,
     readOnly: thread.readOnly,
-    turns: [],
+    historyStale: retained.length > 0,
+    retainedThreadId: retained.length ? previous.retainedThreadId || previous.id : null,
+    truncated: previous?.truncated, oldestTurnId: previous?.oldestTurnId, historyCursor: previous?.historyCursor,
+    turns: retained,
   });
   state.thread.tmux = { ...thread.tmux };
   state.threadRefreshUntil = 0;
@@ -1008,10 +1015,13 @@ function handoffTmuxThread(thread) {
       || state.thread?.id !== previousThreadId
       || state.thread?.tmux?.name !== sessionName
     ) return;
+    const restoring = state.thread?.historyStale && state.thread.retainedThreadId === thread.id;
     state.activeThreadId = thread.id;
     if (!result?.resumed) {
       rememberOpenedThread(streamTarget, result.thread);
-      state.thread = normalizeAgentThread(provider, result.thread);
+      const refreshed = normalizeAgentThread(provider, result.thread);
+      state.thread = restoring ? reconcileAgentThreadRefresh({ ...state.thread, id: thread.id }, refreshed) : refreshed;
+      delete state.thread.historyStale; delete state.thread.retainedThreadId;
     }
     const latestTarget = findTmuxThreadTarget(state.threads, thread);
     state.thread.tmux = { ...(latestTarget?.tmux || thread.tmux) };
@@ -1020,7 +1030,7 @@ function handoffTmuxThread(thread) {
     state.threadRefreshUntil = Date.now() + 2_500;
     setLiveMessage(state.thread.historyError || (state.thread.historyLoading ? '正在后台读取对话记录…' : '已同步对话记录，可直接参与。'));
     renderThreadList();
-    scheduleThreadRender(true);
+    scheduleThreadRender(!restoring);
   })();
   handoff.promise = load.finally(() => {
     if (state.threadHandoff === handoff) state.threadHandoff = null;
@@ -1391,7 +1401,8 @@ function threadRow(thread, index) {
   );
   if (checkpointLabel(tmux.checkpoint)) {
     const note = element('small', '', checkpointLabel(tmux.checkpoint));
-    note.title = [tmux.checkpoint.updatedAt, note.textContent].filter(Boolean).join(' · ');
+    note.title = '点击查看任务进度';
+    note.dataset.progressSummary = 'true';
     copy.append(note);
   }
   const presence = element('span', `presence ${status}`);
@@ -1403,9 +1414,15 @@ function threadRow(thread, index) {
     presence,
   );
   if (tmux.available === false) button.title = '已连接终端，可直接参与';
-  button.addEventListener('click', () => {
+  button.addEventListener('click', event => {
+    const showProgress = Boolean(event.target?.closest?.('[data-progress-summary]') || (event.detail === 0 && isThreadActive(thread) && tmux.checkpoint?.text));
     if (tmux.checkpoint?.attention?.id) fetch(`/api/sessions/${encodeURIComponent(tmux.name)}/attention/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` }, body: JSON.stringify({ id: tmux.checkpoint.attention.id }) }).catch(() => {});
-    openListedThread(thread).catch((error) => setLiveMessage(error.message));
+    openListedThread(thread).then(() => {
+      if (showProgress && state.thread?.tmux?.name === tmux.name) {
+        const details = $('#sessionProgress details'); if (details) details.open = true;
+        if (!$('#progressDialog').open) $('#progressDialog').showModal();
+      }
+    }).catch((error) => setLiveMessage(error.message));
   });
   return button;
 }
@@ -1444,6 +1461,7 @@ function threadFolder(entry, indexByThread) {
 $('#sessionSearch').addEventListener('input', () => renderThreadList());
 
 function renderThreadList() {
+  renderSessionProgress($('#sessionProgress'), state.thread?.tmux?.checkpoint, { key: `${state.thread?.tmux?.name}:${state.thread?.tmux?.checkpoint?.taskId || ''}`, onRespond: () => { if ($('#progressDialog').open) $('#progressDialog').close(); closeDrawer(); $('#composerInput').focus(); } });
   const list = $('#threadList');
   const scrollTop = list.scrollTop;
   const focusedThread = document.activeElement?.closest?.('[data-thread-id]');
@@ -2330,7 +2348,8 @@ function renderThread() {
   });
   // 首帧只带尾部若干轮 (打开 1.2MB 的会话原本要 73ms), 更早的按需再取。
   // 用显式按钮而不是滚动到顶自动加载: 后者要处理滚动位置补偿, 出错的方式更隐蔽。
-  if (state.thread?.truncated) nodes.unshift(loadEarlierNode());
+  if (state.thread?.historyStale) nodes.unshift(element('div', 'history-retained', '保留上次已读记录 · 当前身份待确认，确认前暂不可发送'));
+  else if (state.thread?.truncated) nodes.unshift(loadEarlierNode());
   const terminalContent = terminalActivityContent();
   if (shouldShowTerminalActivity(state.thread) && terminalContent.kind !== 'command') {
     const existing = [...turnContainer.children].find((node) => node.classList.contains('terminal-activity'));
@@ -2393,7 +2412,7 @@ function renderComposerState() {
   const execution = threadExecutionState(state.thread, { waitingForInput });
   const active = execution === 'working';
   const background = execution === 'background';
-  const readOnly = Boolean(state.thread?.readOnly && !sessionName);
+  const readOnly = Boolean(state.thread?.historyStale || (state.thread?.readOnly && !sessionName));
   const hasText = Boolean(input.value.trim());
   const attachmentsSupported = providerSupports('attachments');
   const hasContent = hasText || Boolean(state.attachments.length && state.provider !== 'shell' && attachmentsSupported);
@@ -2422,9 +2441,6 @@ function renderComposerState() {
   const continueButton = $('#continueButton');
   continueButton.hidden = progressUnavailable;
   continueButton.disabled = progressButton.disabled;
-  const autonomyButton = $('#autonomyButton');
-  autonomyButton.hidden = progressUnavailable;
-  autonomyButton.disabled = progressButton.disabled;
   const voiceButton = $('#voiceInputButton');
   voiceButton.disabled = !speechInput.supported || readOnly || opening || closing || pending || !state.connected;
   if (voiceButton.disabled && speechInput.active) speechInput.abort();
@@ -2439,6 +2455,7 @@ function renderComposerState() {
     ? '正在读取会话…'
     : !state.connected
       ? '连接已断开'
+      : state.thread?.historyStale ? '历史记录已保留 · 当前身份待确认，暂不可发送'
       : waitingForInput ? 'Agent 等待你的确认或回答'
         : execution === 'failed' ? '最近任务失败 · 可查看错误后继续输入'
         : execution === 'unknown' && state.thread ? '终端状态尚未确认 · 可查看普通终端'
@@ -2558,8 +2575,8 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
     active, attachmentCount: attachments.length, explicitInterrupt,
     provider: state.provider, text,
   });
-  if (state.thread?.readOnly && !sessionName) {
-    setLiveMessage('当前会话只读。');
+  if (state.thread?.historyStale || (state.thread?.readOnly && !sessionName)) {
+    setLiveMessage(state.thread?.historyStale ? '历史记录已保留，正在确认会话身份；未发送消息。' : '当前会话只读。');
     return;
   }
   if (submitAction === 'needsShellCommand') {
@@ -2816,7 +2833,7 @@ function focusPendingAgentRequest() {
 
 async function askProgress({ confirm = false } = {}) {
   const button = $(confirm ? '#continueButton' : '#progressButton');
-  if (button.hidden || button.disabled) return;
+  if (!button || button.hidden || button.disabled) return;
   if (currentThreadWaitingForInput()) {
     focusPendingAgentRequest();
     return;
@@ -2826,7 +2843,7 @@ async function askProgress({ confirm = false } = {}) {
 
 async function toggleAutonomy() {
   const button = $('#autonomyButton');
-  if (button.hidden || button.disabled) return;
+  if (!button || button.hidden || button.disabled) return;
   if (currentThreadWaitingForInput()) { focusPendingAgentRequest(); return; }
   await submitComposer({ presetText: AUTONOMY_PLANNING_PROMPT });
 }
@@ -3114,7 +3131,7 @@ $('#closeSessionButton').addEventListener('click', openCloseSessionDialog);
 $('#composerPlus').addEventListener('click', openAttachmentDialog);
 $('#progressButton').addEventListener('click', askProgress);
 $('#continueButton').addEventListener('click', () => askProgress({ confirm: true }));
-$('#autonomyButton').addEventListener('click', () => toggleAutonomy());
+$('#autonomyButton')?.addEventListener('click', () => toggleAutonomy());
 $('#voiceInputButton').addEventListener('pointerdown', (event) => {
   event.preventDefault();
 });
@@ -3432,3 +3449,5 @@ if (state.token) {
 }
 
 bindHistorySearch({ token: () => state.token });
+
+$('#closeProgressDialog').addEventListener('click', () => $('#progressDialog').close());

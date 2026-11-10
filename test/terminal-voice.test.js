@@ -130,6 +130,6 @@ test('normal session shortcuts share a right-side group before Share', () => {
   assert.match(actions, /class="terminal-agent-controls" role="group" aria-label="会话助手"/);
   assert.ok(actions.indexOf('terminalProgressButton') >= 0);
   assert.ok(actions.indexOf('terminalProgressButton') < actions.indexOf('terminalContinueButton'));
-  assert.ok(actions.indexOf('terminalContinueButton') < actions.indexOf('terminalAutonomyButton'));
-  assert.ok(actions.indexOf('terminalAutonomyButton') < actions.indexOf('shareButton'));
+  assert.equal(actions.indexOf('terminalAutonomyButton'), -1);
+  assert.ok(actions.indexOf('terminalContinueButton') < actions.indexOf('shareButton'));
 });

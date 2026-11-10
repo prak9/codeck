@@ -72,6 +72,8 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   assert.equal((await cli('history', 'context', search.results[0].id)).threadId, 'thread');
   const note = path.join(directory, 'note.txt'); await fs.writeFile(note, '验证进行中');
   assert.equal((await cli('session', 'checkpoint', 'fixture', '--file', note)).text, '验证进行中');
+  const record = path.join(directory, 'progress.json'); await fs.writeFile(record, JSON.stringify({ text: '回归中', progress: { goal: '修复', next: '部署' } }));
+  assert.equal((await cli('session', 'checkpoint', 'fixture', '--record', record)).progress.next, '部署');
   const taskFile = path.join(directory, 'task.json');
   await fs.writeFile(taskFile, JSON.stringify({ session: 'fixture', everyMinutes: 30, cwd: directory, check: ['/bin/true'], prompt: 'analyze' }));
   await cli('task', 'put', 'watch', '--file', taskFile);

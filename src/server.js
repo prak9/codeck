@@ -314,11 +314,11 @@ app.put('/api/sessions/:name/checkpoint', ownerOnly, async (req, res, next) => {
   try {
     const session = (await sessionSnapshots.get()).find(s => s.name === req.params.name);
     if (!session) return res.status(404).json({ error: '会话不存在' });
-    if (req.body?.threadId !== session.agent?.id) return res.status(409).json({ error: '会话身份已变化，请重新读取' });
+    if (!session.agent?.id || req.body?.threadId !== session.agent.id) return res.status(409).json({ error: '会话身份已变化，请重新读取' });
     await checkpoints.set(session, req.body);
     await invalidateSessionSnapshots();
     res.json(checkpoints.get(session));
-  } catch (error) { next(error); }
+  } catch (error) { if (error instanceof TypeError) return res.status(400).json({ error: error.message }); next(error); }
 });
 app.post('/api/sessions/:name/attention/read', ownerOnly, async (req, res, next) => {
   try {

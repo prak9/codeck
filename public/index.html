@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="/terminal-theme.css?v=4">
   <link rel="stylesheet" href="/terminal-image-preview.css?v=1">
   <link rel="stylesheet" href="/history-search.css?v=1">
+  <link rel="stylesheet" href="/session-progress.css?v=1">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -68,7 +69,6 @@
             <div class="terminal-agent-controls" role="group" aria-label="会话助手">
               <button class="terminal-progress-button" id="terminalProgressButton" type="button" aria-label="询问 Agent 进度" title="询问 Agent 进度" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">?</span></button>
               <button class="terminal-progress-button" id="terminalContinueButton" type="button" aria-label="确认并继续推进" title="确认并继续推进" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">✓</span></button>
-              <button class="terminal-progress-button" id="terminalAutonomyButton" type="button" aria-label="请 Agent 规划自主任务" title="请 Agent 规划自主任务" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">A</span></button>
             </div>
             <button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button>
           </div>
@@ -77,6 +77,7 @@
             <button class="secondary-button" id="reconnectTerminalButton" type="button">重新连接</button>
           </div>
         </header>
+        <div id="sessionProgress" class="session-progress-host" hidden></div>
         <div class="terminal-frame"><div id="terminal" aria-label="远程终端"></div></div>
         <form class="terminal-voice-composer" id="terminalVoiceComposer" hidden>
           <span class="terminal-voice-prompt" aria-hidden="true">›</span><textarea id="terminalVoiceDraft" rows="1" aria-label="终端输入" maxlength="100000" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入指令，回车发送"></textarea>
@@ -179,6 +180,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-    <script type="module" src="/app.js?v=161"></script>
+    <script type="module" src="/app.js?v=162"></script>
 </body>
 </html>

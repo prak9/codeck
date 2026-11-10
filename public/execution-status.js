@@ -26,5 +26,6 @@ export function turnStatusLabel(status) {
 
 export function checkpointLabel(checkpoint) {
   const label = { failed: '本轮失败', question: '需要回答', ended: '本轮有新结果', review: '待你查看' }[checkpoint?.attention?.kind];
-  return [label ? `● ${label}` : '', checkpoint?.text || ''].filter(Boolean).join(' · ');
+  if (checkpoint?.stale) return checkpoint.text ? '历史进度 · 待确认' : '';
+  return [checkpoint?.progress?.needsUser ? '● 需要判断' : label ? `● ${label}` : '', checkpoint?.text || ''].filter(Boolean).join(' · ');
 }

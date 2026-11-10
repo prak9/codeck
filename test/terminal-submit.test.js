@@ -121,17 +121,11 @@ test('explicit composer handoff preserves bytes and asks the server to leave cop
   assert.equal(f.draft.value, ''); assert.equal(f.state.handoffTerminalInput, true);
 });
 
-test('planning shortcut sends plain text once and does not prepare or reset autonomy', async () => {
+test('retired planning shortcut is not enabled by session updates', async () => {
   const f = progressFixture();
   f.context.syncTerminalProgressButton();
-  const pending = f.context.askTerminalProgress({ planning: true });
   await f.context.askTerminalProgress({ planning: true });
-  assert.equal(f.requests.length, 1);
-  assert.equal(f.requests[0].type, 'sendSessionMessage');
-  assert.equal(f.requests[0].text, AUTONOMY_PLANNING_PROMPT);
-  assert.equal(f.requests[0].planningId, undefined);
-  f.resolveRequest({ submissionStatus: 'submitted' }); await pending;
-  assert.equal(f.draft.value, '尚未发送的草稿');
+  assert.equal(f.requests.length, 0);
 });
 
 test('ordinary input never enters the retired autonomy direction route', async () => {

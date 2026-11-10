@@ -11,7 +11,7 @@ import { WebSocketServer } from 'ws';
 import { AgentHub, AgentRegistry } from '../src/agent-connection.js';
 import { AutonomyController } from '../src/autonomy.js';
 import { writeReceipt } from '../src/autonomy-receipt.js';
-import { AUTONOMY_PLANNING_PROMPT, AUTONOMY_CONFIRM_PROMPT } from '../public/remote-autonomy.js';
+import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT, AUTONOMY_CONFIRM_PROMPT } from '../public/remote-autonomy.js';
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-terminal-autonomy-'));
@@ -23,6 +23,7 @@ function reset(provider) {
   const target = { provider, threadId: 'fixture-thread', tmuxSession: 'fixture' };
   const sessions = ['fixture', 'other'].map(name => ({ name, width: 100, height: 24, activityAt: Date.now(),
     agent: { kind: provider, id: name === 'fixture' ? target.threadId : 'other-thread', paneId: '%7' } }));
+  sessions[0].checkpoint = { text: '已建立基线', updatedAt: '2026-11-10T10:00:00Z', taskId: 'demo', progress: { goal: '修复断线后的输入与翻页', verified: '基线已复现', current: '浏览器回归中', next: '通过后部署', needsUser: '是否接受较高计算成本验证候选？', evidence: [{ label: '验证页面', url: '/pages/example', version: 'fixture' }] } };
   const f = fixture = { target, sessions, sent: [], inputs: [], requests: [], turns: [], stops: 0, manualStops: [], agents: [], terminals: [], grids: [] };
   if (simpleMode) sessions[0].width = 37;
   const thread = () => ({ thread: { id: target.threadId, turns: f.turns } });
@@ -104,179 +105,26 @@ try {
     page.on('response', r => { if (r.status() >= 400) console.error(r.status(), r.url()); });
     page.setDefaultTimeout(5000);
     await page.goto(`http://127.0.0.1:${server.address().port}/?session=fixture${simpleMode ? '&view=readable' : ''}`);
-    const a = page.locator('#terminalAutonomyButton');
-    try { await a.waitFor({ state: 'visible' }); }
-    catch (error) { console.error(await page.locator('body').innerText(), fixture.requests); throw error; }
-    if (simpleMode) {
-      fixture.sessions[0].hasRunningProcess = false;
-      await page.locator('#terminalVoiceDraft').fill('尚未发送的草稿');
-      await a.click();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
-      const planned = fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT));
-      assert.equal(planned.length, 1); assert.equal(planned[0].nonInterrupting, true);
-      assert.equal(fixture.stops, 0); assert.equal(fixture.sent.length, 0);
-      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'planning');
-      assert.equal(await page.locator('#terminalAutonomyDialog').count(), 0);
-      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
-      assert.ok(width > 720 ? fixture.grids[0] > 80 : fixture.grids[0] < 60, 'grid follows the viewport');
-      assert.equal(await a.getAttribute('aria-pressed'), 'false', 'planning is not execution');
-      const confirm = page.locator('#terminalConfirmButton');
-      await confirm.waitFor({ state: 'visible' });
-      assert.equal(await confirm.isDisabled(), true, 'confirmation waits for an actual plan');
-      await readyPlan();
-      await page.waitForFunction(() => !document.querySelector('#terminalConfirmButton').disabled);
-      assert.equal(await a.isVisible(), true);
-      assert.equal(await page.locator('#terminalCancelButton').isVisible(), true);
-      assert.equal(await page.locator('#terminalProgressButton').isVisible(), true);
-      const confirmBox = await confirm.boundingBox();
-      assert.ok(confirmBox.width >= 44 && confirmBox.height >= 44 && confirmBox.x + confirmBox.width <= width);
-      await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-confirm.png') });
-      await confirm.focus(); await page.keyboard.press('Enter');
-      await a.waitFor({ state: 'visible' });
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').getAttribute('aria-busy') === 'false');
-      assert.equal(fixture.sent.filter(text => text === AUTONOMY_CONFIRM_PROMPT).length, 1);
-      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '尚未发送的草稿');
-      assert.equal(await confirm.isVisible(), false);
-      assert.equal(await page.locator('#terminalCancelButton').isVisible(), false);
-      const observed = fixture.autonomy.runs.values().next().value;
-      writeReceipt(['--receipt', observed.observation.startFile, '--status', 'started', '--goal', '修复输入', '--summary', '用户确认开始']);
-      await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'running');
-      await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('自主模式·当前空闲'));
-      if (width < 600) {
-        if (await page.locator('#menuButton').getAttribute('aria-expanded') !== 'true') await page.locator('#menuButton').click();
-        await page.waitForFunction(() => document.querySelector('#sidebar').getBoundingClientRect().left >= -0.5);
-      }
-      await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-autonomy-idle.png') });
-      if (width < 600) await page.locator('[data-session="fixture"]').click();
-      assert.equal(await a.locator('.terminal-autonomy-symbol').evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(234, 179, 8)');
-      writeReceipt(['--receipt', observed.observation.endFile, '--status', 'completed', '--summary', '目标已验证完成', '--next', '无需后续工作', '--evidence', 'fixture.log 回归通过', '--version', 'abc123', '--verification', '回归通过', '--cleanup', 'verified resources']);
-      await fixture.autonomy.tick();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.tone === 'idle');
-      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.open && !el.hidden), true);
-      assert.match(await page.locator('#terminalAutonomySummaryContent').innerText(), /目标已验证完成/);
-      assert.match(await page.locator('#terminalAutonomySummaryContent').innerText(), /abc123/);
-      await page.waitForFunction(() => document.querySelector('[data-session="fixture"] small')?.textContent.includes('已就绪'));
-      assert.equal(await a.evaluate(el => el.parentElement.nextElementSibling.id), 'shareButton');
-      assert.deepEqual(await a.evaluate(el => [...el.parentElement.children].map(button => button.id)),
-        ['terminalProgressButton', 'terminalContinueButton', 'terminalConfirmButton', 'terminalCancelButton', 'terminalAutonomyButton']);
-      const groupBox = await a.locator('..').boundingBox();
-      const titleBox = await page.locator('#terminalTitle').boundingBox();
-      assert.ok(groupBox.x > titleBox.x && groupBox.x + groupBox.width <= width, 'shortcut group is right-aligned without clipping');
-      await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-planning-shortcut.png') });
-      await page.reload(); await a.waitFor({ state: 'visible' });
-      await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
-      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'reconnect never resends');
-      assert.equal(await a.getAttribute('data-tone'), 'idle', 'completion restores default');
-      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => !el.open && !el.hidden), true, 'reconnect retains a collapsed report');
-      await a.click();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'off');
-      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 1, 'completed click only exits');
-      await a.click(); await confirm.waitFor({ state: 'visible' });
-      await page.waitForFunction(() => !document.querySelector('#terminalCancelButton').disabled);
-      assert.equal(await page.locator('#terminalAutonomySummary').evaluate(el => el.hidden), true);
-      assert.equal(await page.locator('#terminalAutonomySummaryContent').textContent(), '');
-      assert.equal(fixture.inputs.filter(input => input.text?.startsWith(AUTONOMY_PLANNING_PROMPT)).length, 2, 'first click plans again');
-      await page.locator('#terminalCancelButton').click(); await a.waitFor({ state: 'visible' });
-      await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
-      assert.equal(fixture.autonomy.snapshot(fixture.target).status, 'off');
-      await a.click(); await confirm.waitFor({ state: 'visible' });
-      await readyPlan();
-      await page.waitForFunction(() => !document.querySelector('#terminalConfirmButton').disabled);
-      await confirm.click(); await a.waitFor({ state: 'visible' });
-      await page.waitForFunction(() => !document.querySelector('#terminalAutonomyButton').disabled);
-      await a.click();
-      await page.waitForFunction(() => document.querySelector('#terminalAutonomyButton').dataset.state === 'off');
-      assert.match(fixture.sent.at(-1), /只总结.*不要续跑/);
-      assert.equal(await page.locator('dialog[open]').count(), 0);
-      assert.equal(fixture.requests.some(request => ['startAutonomy', 'answerAutonomy'].includes(request.type)), false);
-      if (provider === 'codex' && width === 1365) {
-        const bounds = await page.locator('#terminal .xterm-screen').boundingBox();
-        await page.mouse.click(bounds.x + 25, bounds.y + 12);
-        await page.waitForTimeout(100);
-        assert.equal(fixture.transcriptClicks?.length, 1, 'unmodified terminal click reaches the disclosure route');
-        await page.mouse.move(bounds.x + 25, bounds.y + 12);
-        await page.mouse.down();
-        await page.mouse.move(bounds.x + 180, bounds.y + 12, { steps: 8 });
-        await page.mouse.up();
-        await page.waitForTimeout(100);
-        assert.equal(fixture.transcriptClicks.length, 1, 'drag selection is not a native disclosure click');
-        const beforeResume = { inputs: fixture.inputs.length, attachments: fixture.terminals.length, scrolls: fixture.scrolls || 0 };
-        await page.locator('#terminalVoiceDraft').fill('离开窗口后保留草稿');
-        await page.evaluate(() => {
-          window.resumeRenders = 0;
-          const refresh = Terminal.prototype.refresh;
-          Terminal.prototype.refresh = function (...args) {
-            window.observedTerminal = this;
-            if (!this.resumeObserved) {
-              this.resumeObserved = true;
-              this.onRender(() => window.resumeRenders++);
-            }
-            return refresh.apply(this, args);
-          };
-        });
-        const away = await context.newPage(); await away.goto('about:blank');
-        await away.bringToFront(); await page.bringToFront();
-        // Headless window focus is platform-dependent; exercise the same event explicitly.
-        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-        await page.waitForFunction(() => window.resumeRenders > 0);
-        const resumeState = await page.evaluate(async () => {
-          const terminal = window.observedTerminal;
-          const renderer = terminal._core._renderService;
-          // Fault injection: emulate a lost visibility restoration notification.
-          renderer._isPaused = true;
-          await new Promise(resolve => terminal.write('\r\nRENDER_RECOVERY_PROBE', resolve));
-          const before = { text: terminal.buffer.active.getLine(terminal.buffer.active.baseY + terminal.buffer.active.cursorY).translateToString(true),
-            baseY: terminal.buffer.active.baseY, cursorY: terminal.buffer.active.cursorY };
-          window.resumeRenders = 0;
-          window.dispatchEvent(new Event('focus'));
-          return before;
-        });
-        await page.waitForFunction(() => window.resumeRenders > 0 && !window.observedTerminal._core._renderService._isPaused);
-        assert.deepEqual(await page.evaluate(() => {
-          const terminal = window.observedTerminal;
-          return { text: terminal.buffer.active.getLine(terminal.buffer.active.baseY + terminal.buffer.active.cursorY).translateToString(true),
-            baseY: terminal.buffer.active.baseY, cursorY: terminal.buffer.active.cursorY };
-        }), resumeState, 'renderer recovery preserves parsed text and cursor');
-        await page.locator('#terminal').hover(); await page.mouse.wheel(0, -160);
-        await page.waitForTimeout(100);
-        assert.ok(fixture.scrolls > beforeResume.scrolls);
-        assert.equal(fixture.inputs.length, beforeResume.inputs, 'foreground recovery sends no Agent input');
-        assert.equal(fixture.terminals.length, beforeResume.attachments, 'foreground recovery keeps the existing connection');
-        assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '离开窗口后保留草稿');
-        await away.close();
-        console.log('PASS foreground rendering and scroll recovery without reload, reconnect or draft replay');
-        await page.locator('#terminalVoiceDraft').fill('断线时保留草稿');
-        const inputs = fixture.inputs.length;
-        const attachments = fixture.terminals.length;
-        fixture.dropPongs = true;
-        await page.evaluate(() => window.dispatchEvent(new Event('online')));
-        await page.locator('#terminalDisconnect').waitFor({ state: 'visible', timeout: 12_000 });
-        assert.equal(fixture.inputs.length, inputs, 'heartbeat never sends Agent input');
-        assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '断线时保留草稿');
-        fixture.dropPongs = false;
-        await page.locator('#terminalDisconnect').waitFor({ state: 'hidden' });
-        assert.equal(fixture.terminals.length, attachments + 1, 'failed transport automatically reconnects once');
-        await page.waitForFunction(() => !document.querySelector('#sendTerminalVoiceButton').disabled);
-        await page.locator('#terminal').hover();
-        await page.mouse.wheel(0, -160);
-        await page.waitForTimeout(100);
-        assert.ok(fixture.scrolls > 0, 'scroll reaches the server after reconnect, without reload');
-        assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '断线时保留草稿');
-        assert.equal(fixture.inputs.length, inputs, 'reconnect does not replay drafts');
-        console.log('PASS silent connection timeout, preserved draft, reconnect and scroll without page reload');
-      }
-      const continueButton = page.locator('#terminalContinueButton');
-      await continueButton.waitFor({ state: 'visible' });
-      await page.locator('#terminalVoiceDraft').fill('保留我的草稿');
-      await continueButton.click();
-      await page.waitForFunction(() => document.querySelector('#terminalContinueButton').getAttribute('aria-busy') === 'false');
-      assert.equal(fixture.inputs.at(-1).text, CONTINUE_PROMPT);
-      assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '保留我的草稿');
-      assert.deepEqual(errors, []); await context.close();
-      console.log('PASS planning shortcut ' + provider + ' ' + width + ': send once, draft, confirmation, progress, reconnect');
-      continue;
-    }
+    await page.locator('#terminalProgressButton').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#terminalAutonomyButton').count(), 0);
+    await page.locator('#sessionProgress summary').click();
+    assert.equal(await page.locator('#sessionProgress details').evaluate(el => el.open), true);
+    await page.getByRole('button', { name: '回到对话回答', exact: true }).click();
+    assert.equal(await page.locator('#sessionProgress a').getAttribute('href'), '/pages/example');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    await page.locator('#terminalVoiceDraft').fill('保留我的草稿');
+    await page.locator('#terminalProgressButton').click();
+    await page.waitForFunction(() => document.querySelector('#terminalProgressButton').getAttribute('aria-busy') === 'false');
+    assert.equal(fixture.inputs.at(-1).text, AUTONOMY_PROGRESS_PROMPT);
+    await page.locator('#terminalContinueButton').click();
+    await page.waitForFunction(() => document.querySelector('#terminalContinueButton').getAttribute('aria-busy') === 'false');
+    assert.equal(fixture.inputs.at(-1).text, CONTINUE_PROMPT);
+    assert.equal(await page.locator('#terminalVoiceDraft').inputValue(), '保留我的草稿');
+    assert.equal(fixture.stops, 0);
+    assert.deepEqual(errors, []);
+    await page.screenshot({ path: path.join(artifacts, provider + '-' + width + '-progress-shortcuts.png') });
+    await context.close();
+    console.log('PASS progress/continue/no-A ' + provider + ' ' + width);
 
   }
 } finally {

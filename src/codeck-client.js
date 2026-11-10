@@ -9,7 +9,7 @@ import { sessionTarget } from './telegram-sessions.js';
 
 export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck session list
-  codeck session checkpoint NAME --file NOTE.txt
+  codeck session checkpoint NAME --file NOTE.txt | --record NOTE.json
   codeck session read NAME
   codeck session send NAME --file PROMPT.txt
   codeck session create NAME --provider codex --cwd /project [--worktree /path/to/new-worktree]
@@ -64,7 +64,7 @@ export function clientRequest(connection, endpoint, method = 'GET', body) {
 export async function runCodeck(argv, connection, { request = clientRequest, rpc = sessionRpc } = {}) {
   const [area, action, ...args] = argv.filter(a => a !== '--json');
   const positional = [], options = {};
-  const allowed = new Set(['file', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision']);
+  const allowed = new Set(['file', 'record', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision']);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     const key = args[i].slice(2), value = args[++i];
@@ -72,7 +72,7 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     options[key] = value;
   }
   const commandOptions = {
-    'session:checkpoint': ['file'], 'session:list': [], 'session:read': [], 'session:send': ['file'], 'session:create': ['provider', 'cwd', 'worktree'],
+    'session:checkpoint': ['file', 'record'], 'session:list': [], 'session:read': [], 'session:send': ['file'], 'session:create': ['provider', 'cwd', 'worktree'],
     'history:search': ['provider'], 'history:context': [], 'history:link': ['repo', 'commit', 'provider'], 'task:list': [], 'task:put': ['file'], 'task:remove': [], 'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
   }[area + ':' + action];
   if (!commandOptions || Object.keys(options).some(key => !commandOptions.includes(key))) throw new Error('未知命令或该命令不支持此参数');
@@ -89,8 +89,9 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     if (!['read', 'send', 'checkpoint'].includes(action)) throw new Error('未知 session 命令');
     const target = sessionTarget((await call('/api/sessions')).sessions, name);
     if (action === 'checkpoint') {
-      if (!options.file) throw new Error('进度需 --file');
-      return call(`/api/sessions/${encodeURIComponent(name)}/checkpoint`, 'PUT', { threadId: target.threadId, text: await fs.readFile(options.file, 'utf8') });
+      if (Boolean(options.file) === Boolean(options.record)) throw new Error('进度需指定 --file NOTE.txt 或 --record NOTE.json');
+      const value = options.record ? JSON.parse(await fs.readFile(options.record, 'utf8')) : { text: await fs.readFile(options.file, 'utf8') };
+      return call(`/api/sessions/${encodeURIComponent(name)}/checkpoint`, 'PUT', { ...value, threadId: target.threadId });
     }
     if (action === 'read') return rpc(connection, { type: 'openThread', ...target, readOnly: true });
     if (!options.file) throw new Error('发送需 --file 指定正文文件');

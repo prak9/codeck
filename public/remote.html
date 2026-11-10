@@ -22,8 +22,9 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=53">
+  <link rel="stylesheet" href="/remote.css?v=55">
   <link rel="stylesheet" href="/history-search.css?v=1">
+  <link rel="stylesheet" href="/session-progress.css?v=1">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -76,6 +77,7 @@
         </div>
       </header>
 
+      <dialog id="progressDialog" class="sheet"><div class="sheet-head"><h2>任务进度</h2><button type="button" id="closeProgressDialog" aria-label="关闭任务进度">×</button></div><div id="sessionProgress" class="session-progress-host" hidden></div></dialog>
       <main class="transcript" id="transcript" tabindex="-1">
         <section class="welcome" id="welcome">
           <div class="welcome-mark" id="welcomeMark">C›</div>
@@ -99,7 +101,6 @@
           <div class="session-controls" role="group" aria-label="会话助手">
             <button class="progress-button" id="progressButton" type="button" title="询问 Agent 进度" aria-label="询问 Agent 进度" hidden><span class="autonomy-icon" aria-hidden="true">?</span></button>
             <button class="progress-button" id="continueButton" type="button" title="确认并继续推进" aria-label="确认并继续推进" hidden><span class="autonomy-icon" aria-hidden="true">✓</span></button>
-            <button class="progress-button" id="autonomyButton" type="button" aria-label="请 Agent 规划自主任务" title="请 Agent 规划自主任务" hidden><span class="autonomy-icon" aria-hidden="true">A</span></button>
           </div>
         </div>
         <div class="composer-stack">
@@ -236,6 +237,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=145"></script>
+  <script type="module" src="/remote.js?v=147"></script>
 </body>
 </html>

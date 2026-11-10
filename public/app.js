@@ -1,12 +1,13 @@
+import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=2';
+import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
-import { CONTINUE_PROMPT } from './continue-prompt.js?v=2';
+import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { bindTerminalRecovery } from './terminal-recovery.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=22';
+import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=23';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -698,6 +699,8 @@ function bindSessionListDelegates(list) {
 let sessionRenderSignature = null;
 
 function renderSessions({ force = false } = {}) {
+  const progressSession = state.sessions.find(item => item.name === state.active);
+  renderSessionProgress($('#sessionProgress'), progressSession?.checkpoint, { key: `${progressSession?.createdAt}:${progressSession?.checkpoint?.taskId || ''}`, onRespond: () => { state.terminal?.focus(); } });
   const list = $('#sessionList');
   // 服务端在任一会话工作时按 750ms 推送, 而 activityAt / agent.activity 每秒都在
   // 变。侧栏显示的相对时间是分桶的, 多数帧渲染结果完全一样 —— 没变就别重建 DOM,
@@ -816,7 +819,7 @@ function activeAgentOutputTarget() {
 function syncTerminalProgressButton() {
   const target = state.canWrite ? activeAgentSessionTarget() : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
-  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalContinueButton', '确认并继续推进'], ['terminalAutonomyButton', '请 Agent 规划自主任务']]) {
+  for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalContinueButton', '确认并继续推进']]) {
     const button = $(`#${id}`);
     const label = target?.question ? '处理 Agent 等待的问题' : action;
     button.hidden = !target;
@@ -1819,7 +1822,7 @@ $('#reconnectTerminalButton').addEventListener('click', () => {
 });
 
 $('#terminalProgressButton').addEventListener('click', askTerminalProgress);
-$('#terminalAutonomyButton').addEventListener('click', () => askTerminalProgress({ planning: true }));
+$('#terminalAutonomyButton')?.addEventListener('click', () => askTerminalProgress({ planning: true }));
 $('#terminalContinueButton').addEventListener('click', () => askTerminalProgress({ confirm: true }));
 
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {

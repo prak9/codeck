@@ -32,3 +32,11 @@ test('sending without a bound session preserves the draft and never starts sessi
     assert.match(message, /选择.*会话/);
   }
 });
+
+test('retained history is readable but cannot authorize a submission', async () => {
+ let requests=0,message='';const input={value:'保留草稿'};
+ const context=vm.createContext({state:{provider:'codex',thread:{id:'old',historyStale:true,tmux:{name:'work'}},attachments:[]},$:()=>input,
+  composerRequestGate:{pending:false,run(){requests++}},settleConfirmedDeliveries:()=>false,abortSpeechInput(){},latestRunningTurn:()=>null,threadExecutionState:()=> 'unknown',composerSubmitAction,
+  setLiveMessage:t=>message=t});
+ vm.runInContext(submitSource,context);await context.submitComposer();assert.equal(requests,0);assert.equal(input.value,'保留草稿');assert.match(message,/未发送/);
+});

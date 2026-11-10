@@ -55,5 +55,5 @@ test('isolated server ignores legacy autonomy, requires owner authentication and
       let body = ''; response.on('data', chunk => { body += chunk; }); response.on('end', () => resolve(body));
     }).on('error', reject);
   });
-  assert.match(html, /id="autonomyButton"/);
+  assert.doesNotMatch(html, /id="autonomyButton"/);
 });

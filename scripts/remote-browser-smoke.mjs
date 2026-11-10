@@ -127,7 +127,7 @@ async function readyPlan() {
   await fixture.autonomy.tick();
 }
 function snapshot() {
-  return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status, checkpoint: { text: '已建立基线', updatedAt: '2026-11-07T10:00:00Z', attention: { id: 'read-1', kind: 'review' } },
+  return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status, checkpoint: { taskId: 'demo', progress: { goal: '修复断线后的输入与翻页', verified: '基线已复现', current: '浏览器回归中', next: '通过后部署', needsUser: '是否接受较高计算成本验证候选？', evidence: [{ label: '验证页面', url: '/pages/example', version: 'fixture' }] }, text: '已建立基线', updatedAt: '2026-11-07T10:00:00Z', attention: { id: 'read-1', kind: 'review' } },
     agent: { kind: fixture.provider, id: 'fixture-thread', name: 'Remote fixture',
       hasBackgroundProcess: fixture.background || fixture.status === 'background',
       ...(fixture.question ? { question: fixture.question } : {}) } }] };
@@ -326,42 +326,32 @@ try {
       assert.equal(fixture.sent.length, 0);
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
-      await page.getByText('● 待你查看 · 已建立基线', { exact: true }).waitFor({ state: 'attached' });
+      await page.getByText('● 需要判断 · 已建立基线', { exact: true }).waitFor({ state: 'attached' });
       if (simpleMode) {
-        const auto = page.locator('#autonomyButton');
-        fixture.status = 'working'; publishSessions();
+        assert.equal(await page.locator('#progressDialog').evaluate(el => el.open), false);
+        if (viewport.width < 720) await page.locator('#drawerButton').click();
+        await page.locator('[data-progress-summary]').first().click();
+        await page.locator('#progressDialog[open]').waitFor();
+        await page.locator('#closeProgressDialog').click();
+        await page.locator('#composerInput').focus();
+        assert.equal(await page.locator('#composerInput').evaluate(el => document.activeElement === el), true);
+        assert.equal(await page.locator('#sessionProgress a').getAttribute('href'), '/pages/example');
+        await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-progress.png') });
+        assert.equal(await page.locator('#autonomyButton').count(), 0);
         await page.locator('#composerInput').fill('尚未发送的草稿');
-        await auto.click();
-        await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
-        assert.equal(fixture.sent.filter(request => request.text === AUTONOMY_PLANNING_PROMPT).length, 1);
-        assert.equal(fixture.autonomySent.length, 0);
-        assert.equal(fixture.autonomyStops, 0);
-        assert.equal(fixture.autonomy.snapshots().length, 0, 'planning creates no managed run');
-        assert.equal(await page.locator('#composerInput').inputValue(), '尚未发送的草稿');
-        assert.equal(await auto.getAttribute('aria-pressed'), null);
-        assert.equal(await auto.getAttribute('data-tone'), null);
-        assert.equal(await page.locator('#confirmButton, #cancelAutonomyButton, #autonomySummary').count(), 0);
         await page.locator('#progressButton').click();
         await page.waitForFunction(() => !document.querySelector('#progressButton').disabled);
         assert.equal(fixture.sent.at(-1).text, progressPrompt);
         await page.locator('#continueButton').click();
         await page.waitForFunction(() => !document.querySelector('#continueButton').disabled);
         assert.equal(fixture.sent.at(-1).text, CONTINUE_PROMPT);
+        assert.equal(await page.locator('#composerInput').inputValue(), '尚未发送的草稿');
         await page.reload();
-        await auto.waitFor({ state: 'visible' });
-        await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
-        assert.equal(fixture.sent.filter(request => request.text === AUTONOMY_PLANNING_PROMPT).length, 1, 'reconnect never sends a plan');
-        await auto.click();
-        await page.waitForFunction(() => !document.querySelector('#autonomyButton').disabled);
-        assert.equal(fixture.sent.filter(request => request.text === AUTONOMY_PLANNING_PROMPT).length, 2, 'another click requests planning, not exit');
-        assert.equal(fixture.autonomyStops, 0);
-        assert.equal(await page.locator('dialog[open]').count(), 0);
-        const box = await auto.boundingBox();
-        assert.ok(box.width >= 44 && box.height >= 44 && box.x + box.width <= viewport.width);
-        await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-planning-shortcut.png') });
-        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+        await page.waitForSelector('[data-turn-id="turn-80"]');
+        assert.equal(await page.locator('#autonomyButton').count(), 0);
+        assert.equal(fixture.autonomySent.length, 0);
         assert.deepEqual(errors, []);
-        results.push({ provider, viewport: viewport.width, journeys: 'plain-planning/draft/continue/progress/reconnect', errors: 0 });
+        results.push({ provider, viewport: viewport.width, journeys: 'progress/continue/draft/reconnect/no-A', errors: 0 });
         await context.close(); continue;
       }
       if (viewport.width < 720) await page.click('#drawerButton');

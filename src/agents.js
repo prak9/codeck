@@ -1159,7 +1159,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const nativeCandidates = nativeTitle && paneCwd && path.basename(paneCwd) === nativeTitle[2]
         ? [...codex.names].filter(([id, name]) => name === nativeTitle[1]
           && normalizedPath(codexSessionCwd(id, codex)) === paneCwd
-          && (!visibleMatch.observed || visibleMatch.candidates.has(id))).map(([id]) => id) : [];
+          && (!visibleMatch.matched || visibleMatch.candidates.has(id))).map(([id]) => id) : [];
       const nativeId = nativeCandidates.length === 1 ? nativeCandidates[0] : null;
       const replyMatch = !openSessionId && !visibleMatch.id && visibleMatch.candidates.size > 1
         ? matchCodexReply(paneOutput, visibleMatch.candidates, codex) : { id: null, present: false };

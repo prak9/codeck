@@ -315,6 +315,8 @@ test('native Codex pane titles retain and switch identities when all prompts scr
     assert.equal(await detect('当前研究' + suffix, 'folded-cold', 1008001), currentId, 'a complete unique title can recover while the prompt is folded');
     paneOutput = '› 当前消息被折叠为摘…\n\n• 已结束\n\n› Ask Codex to do anything';
     assert.equal(await detect('当前研究' + suffix, 'native-title', 1009000), currentId, 'ending the turn does not turn a folded prompt into conflicting evidence');
+    paneOutput = '› 这个消息只剩第一行但没有省略符\n\n• Working (4s • esc to interrupt)\n\n› Ask Codex to do anything';
+    assert.equal(await detect('当前研究' + suffix, 'native-title', 1009500), currentId, 'unmatched partial redraw cannot veto an independently verified complete title');
     paneOutput = '› /model\n\nSelect Model and Effort\n› 1. gpt-6-astra (current)\n  2. gpt-6.1-sol\nPress enter to confirm or esc to go back';
     assert.equal(await detect('当前研究' + suffix, 'native-title', 1010000), currentId, 'local model commands and picker rows are not conversation identity evidence');
     paneOutput = '• Compacting context\n\n› Ask Codex to do anything';
