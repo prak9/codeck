@@ -18,11 +18,11 @@ for (const provider of ['codex', 'claude', 'qodercli']) {
     assert.equal(model.threadExecutionState({ id: 'thread-1', provider, turns: [] }), 'unknown');
     assert.equal(model.threadExecutionState(base()), 'idle');
     assert.equal(model.threadExecutionState({ ...base(), tmux: { name: 'work', status: 'background' } }), 'background');
-    assert.equal(model.threadExecutionState({ ...base(), status: { type: 'active' } }), 'working');
+    assert.equal(model.threadExecutionState({ ...base(), status: { type: 'active' } }), 'idle');
     assert.equal(model.threadExecutionState({ ...base(), tmux: { name: 'work', status: 'working' }, turns: [
       { id: 'old', status: 'failed', items: [] },
     ] }), 'working', 'an old failure does not hide newer foreground activity');
-    assert.equal(model.threadExecutionState({ ...base(), turns: [{ id: 'latest', status: 'failed', error: 'Failed', items: [] }] }), 'failed');
+    assert.equal(model.threadExecutionState({ ...base(), turns: [{ id: 'latest', status: 'failed', error: 'Failed', items: [] }] }), 'idle');
     assert.equal(model.threadExecutionState(base(), { waitingForInput: true }), 'waitingForInput');
     assert.equal(model.threadExecutionState({ ...base(), tmux: { name: 'work', available: false } }), 'unknown');
   });
@@ -68,5 +68,23 @@ for (const provider of ['codex', 'claude', 'qodercli']) {
     });
     assert.equal(refreshed.truncated, false);
     assert.equal(refreshed.oldestTurnId, 'turn-1');
+  });
+}
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} live session state wins over stale history and provider status`, () => {
+    const thread = { provider, id: 't', status: { type: 'active' }, turns: [{ id: 'old', status: 'inProgress' }, { id: 'new', status: 'completed' }], tmux: { name: 'work', status: 'background' } };
+    assert.equal(model.threadExecutionState(thread), 'background');
+    assert.equal(model.latestRunningTurn(thread), null);
+    thread.tmux.status = 'done';
+    assert.equal(model.threadExecutionState(thread), 'idle');
+    assert.equal(model.latestRunningTurn(thread), null);
+    thread.tmux.status = 'working';
+    assert.equal(model.threadExecutionState(thread), 'working');
+    assert.equal(model.latestRunningTurn(thread), null, 'an older running turn is not the current one');
+    thread.turns.push({ id: 'current', status: 'inProgress' });
+    assert.equal(model.latestRunningTurn(thread).id, 'current');
+    thread.tmux.question = { id: 'question' };
+    assert.equal(model.threadExecutionState(thread), 'waitingForInput');
   });
 }

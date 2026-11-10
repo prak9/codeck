@@ -267,7 +267,8 @@ test('trusts tmux completion over a stale structured running turn', () => {
 
   assert.equal(completed, true);
   assert.equal(thread.tmux.status, 'done');
-  assert.equal(latestRunningTurn(thread)?.id, 'turn-1');
+  assert.equal(latestRunningTurn(thread), null);
+  assert.equal(thread.turns[0].status, 'inProgress', 'runtime status must not rewrite archived evidence');
   assert.equal(shouldRefreshTmuxThread(thread, {
     now: 10_000, refreshUntil: 20_000,
   }), true);

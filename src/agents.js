@@ -204,7 +204,9 @@ function matchCodexHistorySession(output, history, acceptId = () => true) {
   // cannot narrow the identity of the latest submitted conversation.
   const prompt = codexPromptBlocks(output).at(-1);
   const candidates = new Set();
-  if (!prompt) return { id: null, matched: false, observed: false, candidates };
+  // Codex replaces submitted messages with ellipsized summaries while working.
+  // Missing text is not contradictory evidence and cannot narrow candidates.
+  if (!prompt || prompt.text.endsWith('…')) return { id: null, matched: false, observed: false, candidates };
   const historyIndex = codexHistoryIndex(history);
   const ids = new Set(historyIndex.exact.get(prompt.text) || []);
   if (prompt.text.length >= 320) {

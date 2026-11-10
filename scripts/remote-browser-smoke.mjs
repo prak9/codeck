@@ -444,7 +444,8 @@ try {
       await page.waitForSelector('.turn-error');
       assert.match(await page.locator('.turn-error').last().textContent(), /Fixture model error/);
       assert.equal(await page.locator('[data-turn-id="turn-81"]').count(), 1, 'failure cannot erase history');
-      await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('失败'));
+      await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('已连接当前终端会话'));
+      assert.equal(await page.locator('#sendButton').getAttribute('aria-label'), '发送消息', 'historical failure does not make an idle session executable or stoppable');
       for (const socket of sockets.clients) send(socket, { type: 'approval', provider,
         tmuxSession: 'fixture', request: { id: 'fixture-approval', params: { threadId: 'fixture-thread', title: 'Fixture approval' } } });
       await page.waitForFunction(() => document.querySelector('#composerStatus').textContent.includes('等待你的确认'));

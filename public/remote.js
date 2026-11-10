@@ -26,7 +26,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=49';
+} from './agent-model.js?v=50';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
@@ -872,13 +872,15 @@ function handleSocketMessage(message) {
 }
 
 function updateThreadActivity(provider, threadId, status) {
+  // Provider events update transcript state; named tmux sessions get their live
+  // status from session snapshots, which an older event must not overwrite.
   const matches = state.threads.filter((candidate) => candidate.provider === provider && candidate.id === threadId);
   const thread = matches.length === 1 ? matches[0] : findTmuxThreadTarget(matches, state.thread);
-  if (thread?.tmux) {
+  if (thread?.tmux && !thread.tmux.name) {
     thread.tmux.status = status;
     thread.tmux.activityAt = Date.now();
   }
-  if (state.provider === provider && state.thread?.id === threadId && state.thread.tmux) {
+  if (state.provider === provider && state.thread?.id === threadId && state.thread.tmux && !state.thread.tmux.name) {
     state.thread.tmux.status = status;
     state.thread.tmux.activityAt = Date.now();
   }

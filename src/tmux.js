@@ -942,7 +942,15 @@ function codexComposerFooterRow(rows) {
   // from an overlay or a transcript. Join wrapped hints without changing draft rows.
   const tail = rows.slice(index + 1).join(' ').trim().replace(/\s+/gu, ' ');
   const hints = /^(?:(?:(?:← for agents · )?\? for shortcuts|enter\/esc latest · \? shortcuts|tab to queue(?: message)?)(?: ⚠\uFE0F? \d+ warnings? · f2 to view)?|⚠\uFE0F? \d+ warnings? · f2 to view)$/iu;
-  return !tail || hints.test(tail) ? index : -1;
+  const warningAt = tail.indexOf('⚠');
+  const shortcut = (warningAt < 0 ? tail : tail.slice(0, warningAt)).trim().replace(/…$/u, '');
+  const warning = warningAt < 0 ? '' : tail.slice(warningAt);
+  const clippedHints = shortcut.length >= 10 && [
+    '← for agents · ? for shortcuts', '? for shortcuts',
+    'enter/esc latest · ? shortcuts', 'tab to queue message',
+  ].some(hint => hint.startsWith(shortcut))
+    && (!warning || /^⚠\uFE0F? \d+(?: warnings?)?(?: · f2(?: to view)?)?$/u.test(warning));
+  return !tail || hints.test(tail) || clippedHints ? index : -1;
 }
 
 function hasDimComposerText(line, prefixLength) {

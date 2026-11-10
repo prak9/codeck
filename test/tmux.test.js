@@ -255,6 +255,7 @@ const NARROW_CODEX_REASONING_PICKER = `
 // Real Codex 0.153.2 captures at 24 and 28 columns. tmux -e preserves the
 // faint placeholder, which has the same text as a possible user-authored draft.
 const NARROW_CODEX_COMPOSERS = [
+  '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m\n\n  GPT-6.1-Sol l… Goal achieved (1m)\n  ← for agents · ? for sho  ⚠ 4 · f2',
   '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anyth\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fas…',
   '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\n\x1b[0m \n  \x1b[38;2;246;226;183mgpt-6-astra xhigh fast\x1b[2m\x1b[39m · …',
   // research at 37 columns: the clipped model is followed by a goal badge.
@@ -2983,7 +2984,7 @@ test('Codex preflight recognizes the existing o3 and codex-mini footer identitie
 
 test('real narrow Codex composers accept messages and slash commands with clipped footers', async () => {
   for (const screen of NARROW_CODEX_COMPOSERS) {
-    for (const text of ['怎么样了', '/status']) {
+    for (const text of ['怎么样了', '/status', '/model']) {
       const commands = [];
       const result = await sendSessionMessage({
         provider: 'codex', sessionName: 'narrow', threadId: 'thread-1', text,
@@ -2995,6 +2996,7 @@ test('real narrow Codex composers accept messages and slash commands with clippe
       });
       if (!text.startsWith('/')) assert.equal(result.submissionStatus, 'submitted');
       assert.equal(commands.filter((args) => args.includes('Enter')).length, 1);
+      assert.equal(commands.some(args => args.includes('C-u')), false, 'empty inputs must not enter draft clearing');
     }
   }
 });

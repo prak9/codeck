@@ -42,3 +42,11 @@ test('identity loss withdraws old history, cancels a handoff and ignores its lat
   assert.equal(state.thread.id, 'new');
   assert.equal(state.thread.turns[0].id, 'verified-turn');
 });
+
+test('a delayed provider event cannot overwrite the live tmux session state', () => {
+  const thread = { provider: 'codex', id: 't', tmux: { name: 'work', status: 'background' } };
+  const context = vm.createContext({ state: { threads: [thread], thread, provider: 'codex' }, findTmuxThreadTarget, Date, renderThreadList() {} });
+  vm.runInContext(functionSource('updateThreadActivity'), context);
+  context.updateThreadActivity('codex', 't', 'working');
+  assert.equal(thread.tmux.status, 'background');
+});

@@ -94,10 +94,11 @@ export function isUserMessageDeliveryReceived(thread, delivery) {
 
 export function threadExecutionState(thread, { waitingForInput = false } = {}) {
   if (waitingForInput || thread?.tmux?.question) return 'waitingForInput';
-  if (thread?.tmux?.status === 'working' || latestRunningTurn(thread)
-    || thread?.status?.type === 'active') return 'working';
+  if (thread?.tmux?.status === 'working') return 'working';
   if (thread?.tmux?.status === 'background') return 'background';
   if (thread?.tmux?.available === false) return 'unknown';
+  if (thread?.tmux?.status === 'done') return 'idle';
+  if (latestRunningTurn(thread) || thread?.status?.type === 'active') return 'working';
   const latest = asArray(thread?.turns).findLast(turn => !turn.deliveryOnly && !turn.localOnly);
   if (latest?.status === 'failed' || latest?.status === 'errored' || latest?.error) return 'failed';
   if (thread?.tmux?.status === 'done' || thread?.status?.type === 'idle') return 'idle';
@@ -602,7 +603,9 @@ export function applyAcceptedUserMessage(currentThread, {
 }
 
 export function latestRunningTurn(thread) {
-  return [...asArray(thread?.turns)].reverse().find((turn) => turn.status === 'inProgress') || null;
+  if (thread?.tmux?.question || ['done', 'background'].includes(thread?.tmux?.status)) return null;
+  const latest = asArray(thread?.turns).findLast(turn => !turn.deliveryOnly && !turn.localOnly);
+  return ['inProgress', 'running'].includes(latest?.status) ? latest : null;
 }
 
 export function checkpointTerminalActivity(currentThread, { commandId, output, turnId } = {}) {
