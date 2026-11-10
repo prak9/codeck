@@ -287,6 +287,40 @@ test('shared progress prompts resolve through the latest complete assistant repl
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('native Codex pane titles retain and switch identities when all prompts scroll away', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-native-title-'));
+  const procRoot = path.join(root, 'proc'), codexHome = path.join(root, 'codex');
+  const oldId = '01a05180-1111-7111-8111-111111111111';
+  const currentId = '01a05181-2222-7222-8222-222222222222';
+  try {
+    writeProcProcess(procRoot, { pid: 10, ppid: 1, command: '/bin/bash', children: [11] });
+    writeProcProcess(procRoot, { pid: 11, ppid: 10, command: `codex resume ${oldId}`, cwd: root });
+    fs.mkdirSync(path.join(codexHome, 'sessions'), { recursive: true });
+    for (const id of [oldId, currentId]) fs.writeFileSync(path.join(codexHome, 'sessions', `rollout-2026-10-11T16-16-16-${id}.jsonl`), JSON.stringify({ type: 'session_meta', payload: { id, cwd: root } }));
+    fs.writeFileSync(path.join(codexHome, 'session_index.jsonl'), [
+      { id: oldId, thread_name: '旧项目' }, { id: currentId, thread_name: '当前研究' },
+    ].map(JSON.stringify).join('\n'));
+    const identityCache = new Map();
+    let paneOutput = '• Compacting context\n\n› Ask Codex to do anything\n\n  GPT-6 Goal achieved';
+    const detect = async (title, session = 'native-title', now = 1000000) => (await detectPaneAgents(
+      [{ session, pid: 10, paneId: '%1', title }], { CODEX_HOME: codexHome },
+      { procRoot, clockTicks: 100, now, uptimeMs: 100000, identityCache, readCodexPaneOutput: async () => paneOutput },
+    )).get(session)?.id;
+    const suffix = ' | ' + path.basename(root);
+    assert.equal(await detect('⠹ 当前研究' + suffix), currentId, 'cold startup must not use stale resume when title identifies the current thread');
+    assert.equal(await detect('旧项目' + suffix, 'native-title', 1000001), oldId, 'title changes invalidate a cached identity before TTL');
+    assert.equal(await detect('⠸ 当前研究' + suffix, 'native-title', 1000002), currentId);
+    paneOutput = '› /model\n\nSelect Model and Effort\n› 1. gpt-6-astra (current)\n  2. gpt-6.1-sol\nPress enter to confirm or esc to go back';
+    assert.equal(await detect('当前研究' + suffix, 'native-title', 1010000), currentId, 'local model commands and picker rows are not conversation identity evidence');
+    paneOutput = '• Compacting context\n\n› Ask Codex to do anything';
+    assert.notEqual(await detect('当前研究 | other', 'wrong-project'), currentId);
+    assert.notEqual(await detect('当前研…' + suffix, 'truncated-title'), currentId);
+    fs.appendFileSync(path.join(codexHome, 'session_index.jsonl'), '\n' + JSON.stringify({ id: oldId, thread_name: '当前研究' }));
+    fs.writeFileSync(path.join(codexHome, 'history.jsonl'), '\n');
+    assert.notEqual(await detect('当前研究' + suffix, 'duplicate-title'), currentId, 'duplicate titles cannot establish a new identity');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('Codex open-session detection keeps unknown metadata and multiple roots ambiguous', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-codex-open-metadata-'));
   const codexHome = path.join(root, 'codex');

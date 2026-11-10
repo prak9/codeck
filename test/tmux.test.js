@@ -1024,7 +1024,7 @@ test('model selection returns the real clipped reasoning menu instead of claimin
   assert.match(result.terminalOutput, /Select Reasoning Level/);
   assert.match(result.terminalOutput, /Extra high \(current\)/);
   assert.equal(result.completed, undefined);
-  assert.deepEqual(commands, [['send-keys', '-t', '%7', 'Enter']]);
+  assert.deepEqual(commands, [['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter']]);
 });
 
 test('model selection recognizes a fully clipped current badge after the default reasoning label', async () => {
@@ -1300,7 +1300,7 @@ test('selects an exact option in the verified Codex model picker and returns its
 
   assert.deepEqual(calls, [
     { type: 'capture', paneId: '%7' },
-    { type: 'exec', args: ['send-keys', '-t', '%7', 'Down', 'Enter'] },
+    { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Down', 'Enter'] },
     { type: 'wait' },
     { type: 'capture', paneId: '%7' },
   ]);
@@ -3073,4 +3073,23 @@ test('Codex goal footer permits replacement and confirms only the exact submitte
   });
   assert.equal(result, 'submitted');
   assert.equal(enters, 1);
+});
+
+test('pane discovery preserves Codex native title independently of screen text', () => {
+  assert.equal(parsePanes('research\t1\t1\t42\t%7\tbash\t300\t⠹ 当前研究 | py\n')[0].title, '⠹ 当前研究 | py');
+});
+
+test('model selection exits copy-mode before delivering its first selection key', async () => {
+  let copyMode = true, delivered = false;
+  const result = await selectSessionModel({ provider: 'codex', sessionName: 'work', threadId: 'thread-1', option: 'gpt-6-astra' }, {
+    listTmuxSessions: async () => [{ name: 'work', agent: { kind: 'codex', id: 'thread-1', paneId: '%7' } }],
+    capturePane: async () => delivered ? NARROW_CODEX_REASONING_PICKER : NARROW_CODEX_MODEL_PICKER,
+    execTmux: async args => {
+      if (args[0] === 'copy-mode' && args[1] === '-q') copyMode = false;
+      if (args.includes('send-keys') && !copyMode) delivered = true;
+    },
+    waitForSlashOutput: async () => {},
+  });
+  assert.equal(delivered, true);
+  assert.match(result.terminalOutput, /Select Reasoning Level/);
 });

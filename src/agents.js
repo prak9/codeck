@@ -152,6 +152,9 @@ function codexPromptBlocks(output) {
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(/^›(?:\s(.*)|$)/u);
     if (!match) continue;
+    // Local command screens and their numbered cursor rows are not user turns.
+    // Opening a model/skills menu must not invalidate the owning conversation.
+    if (/^\s*(?:\d+\.\s|\/(?:model|skills|usage|status)(?:\s|$))/u.test(match[1] || '')) continue;
     const parts = [match[1] || ''];
     let cursor = index + 1;
     while (cursor < lines.length) {
@@ -986,6 +989,7 @@ function agentIdentityFingerprint(pane, process, cwd, configSignature, providerI
     process.pid,
     process.startTicks,
     process.command,
+    String(pane.title || '').replace(/^[\u2800-\u28ff]\s*/u, ''),
     cwd,
     providerIdentity,
   ]);
@@ -1145,21 +1149,32 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       const titledCandidates = !openSessionId && !visibleMatch.id && footerTitle
         ? [...visibleMatch.candidates].filter((id) => codex.names.get(id) === footerTitle)
         : [];
+      // OSC pane titles survive scrollback truncation and compaction. They are
+      // useful only as an exact, cwd-checked unique name, never a prefix or a
+      // newest-file guess. The spinner is presentation, not part of the name.
+      const nativeTitle = stripCodexAnsi(pane.title || '').replace(/^[\u2800-\u28ff]\s*/u, '')
+        .match(/^(.+) \| ([^|]+)$/u);
+      const nativeCandidates = nativeTitle && paneCwd && path.basename(paneCwd) === nativeTitle[2]
+        ? [...codex.names].filter(([id, name]) => name === nativeTitle[1]
+          && normalizedPath(codexSessionCwd(id, codex)) === paneCwd
+          && (!visibleMatch.observed || visibleMatch.candidates.has(id))).map(([id]) => id) : [];
+      const nativeId = nativeCandidates.length === 1 ? nativeCandidates[0] : null;
       const replyMatch = !openSessionId && !visibleMatch.id && visibleMatch.candidates.size > 1
         ? matchCodexReply(paneOutput, visibleMatch.candidates, codex) : { id: null, present: false };
-      const visibleId = visibleMatch.id || replyMatch.id
+      const visibleId = visibleMatch.id || replyMatch.id || nativeId
         || (!replyMatch.present && titledCandidates.length === 1 ? titledCandidates[0] : null);
       const verifiedVisibleId = codex.starts.some((item) => item.id === visibleId) ? visibleId : null;
       if (promptChanged && !explicitId && !visibleMatch.matched) cacheable = false;
       const rememberedId = (!replyMatch.present || replyMatch.matches?.includes(remembered?.id))
         && (!visibleMatch.observed || visibleMatch.candidates.has(remembered?.id))
+        && (!nativeTitle || nativeCandidates.includes(remembered?.id))
         && sameProcess
         && codex.starts.some((item) => item.id === remembered.id)
         ? remembered.id : null;
       const startedId = !openSessionId && !verifiedVisibleId && !rememberedId && visibleMatch.matched
         ? uniqueCodexStartMatch(process, codex, claimedCodexIds) : null;
       let id = openSessionId || verifiedVisibleId || rememberedId
-        || (replyMatch.present || (visibleMatch.observed && !visibleMatch.candidates.size) ? null : visibleMatch.matched
+        || (replyMatch.present || (nativeTitle && !nativeId) || (visibleMatch.observed && !visibleMatch.candidates.size) ? null : visibleMatch.matched
           ? (visibleMatch.candidates.has(startedId) ? startedId : null)
             || uniqueCodexResumeWriterMatch(
               process, codex, visibleMatch.candidates, claimedCodexIds,
@@ -1168,9 +1183,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       if (openSessionId || verifiedVisibleId) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id, cwd: paneCwd });
       // Remember invalidation too: a subsequent blank screen must not resurrect
       // the startup resume id. A new process gets its own initial binding.
-      if (visibleMatch.observed && !id) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id: null, cwd: paneCwd });
+      if ((visibleMatch.observed || nativeTitle) && !id) codexPaneSessions.set(pane.session, { pid: process.pid, startTicks: process.startTicks, id: null, cwd: paneCwd });
       let name = codex.names.get(id) || codexPreview(id, codex);
-      if (!name && !visibleMatch.observed && (!sameProcess || id)) {
+      if (!name && !visibleMatch.observed && !nativeTitle && (!sameProcess || id)) {
         const paneIdentity = parseCodexRename(paneOutput);
         if (paneIdentity && (!id || paneIdentity.id === id)) {
           id = paneIdentity.id;

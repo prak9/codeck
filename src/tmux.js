@@ -196,7 +196,7 @@ export async function getLinkedWindowSessions(name) {
 export function parsePanes(output) {
   if (!output.trim()) return [];
   return output.trim().split('\n').map((line) => {
-    const [session, windowActive, paneActive, pid, paneId, currentCommand, windowActivity] = line.split('\t');
+    const [session, windowActive, paneActive, pid, paneId, currentCommand, windowActivity, title] = line.split('\t');
     return {
       session,
       pid: Number(pid),
@@ -204,6 +204,7 @@ export function parsePanes(output) {
       score: Number(windowActive) + Number(paneActive),
       currentCommand: (currentCommand || 'bash').trim().toLowerCase(),
       windowActivityAt: Number(windowActivity || 0) * 1000,
+      ...(title ? { title } : {}),
     };
     }).filter((pane) => pane.session);
 }
@@ -724,7 +725,7 @@ export async function listSessions({ refreshAgentIdentities = false, refreshPane
   try {
     const [{ stdout }, { stdout: paneOutput }] = await Promise.all([
       exec('tmux', ['list-sessions', '-F', '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}\t#{session_activity}\t#{window_width}\t#{window_height}\t#{status}']),
-      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}']),
+      exec('tmux', ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{pane_title}']),
     ]);
     const allPanes = parsePanes(paneOutput);
     const parsedSessions = mergeWindowActivity(parseSessions(stdout), allPanes);
@@ -1817,7 +1818,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const direction = target > cursor ? 'Down' : 'Up';
     const movement = Array.from({ length: Math.abs(target - cursor) }, () => direction);
-    await execTmux(['send-keys', '-t', paneId, ...movement, 'Enter']);
+    await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, ...movement, 'Enter']));
 
     const waitForSlashOutput = overrides.waitForSlashOutput
       || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
