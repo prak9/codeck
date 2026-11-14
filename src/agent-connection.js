@@ -7,7 +7,7 @@ import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
 import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
-import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
+import { clearSessionCommandConfirmation, normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
 import { isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
@@ -265,7 +265,7 @@ function tmuxThreads(provider, sessions, threads) {
 
 export class AgentRegistry extends EventEmitter {
   constructor(backends, {
-    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, selectTmuxCommand, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
     decorateTranscript = value => value,
   } = {}) {
     super();
@@ -274,6 +274,7 @@ export class AgentRegistry extends EventEmitter {
     this.sendTmuxMessage = sendTmuxMessage;
     this.answerTmuxQuestion = answerTmuxQuestion;
     this.selectTmuxModel = selectTmuxModel;
+    this.selectTmuxCommand = selectTmuxCommand;
     this.dismissTmuxCommand = dismissTmuxCommand;
     this.interruptTmuxSession = interruptTmuxSession;
     this.decorateTranscript = decorateTranscript;
@@ -344,6 +345,9 @@ export class AgentRegistry extends EventEmitter {
   async sendSessionMessage(provider, params) {
     if (cleanProvider(provider) !== 'shell') this.backend(provider);
     if (!this.sendTmuxMessage) throw new Error('当前服务不支持直接参与 tmux 会话');
+    if (provider === 'codex' && params.text.trim() === '/clear') {
+      return { terminalOutput: '清空当前对话？', commandOutput: clearSessionCommandConfirmation() };
+    }
     const result = await this.sendTmuxMessage({ provider, ...params });
     const command = provider !== 'shell' ? params.text.match(/^\/\S*/)?.[0] : null;
     const commandOutput = command && normalizeSessionCommandOutput(provider, command, result, this.commandCapabilities(provider));
@@ -354,6 +358,22 @@ export class AgentRegistry extends EventEmitter {
     if (!this.commandCapabilities(provider).modelSelection) throw new Error('当前 Agent 不支持远程选择模型，请在普通终端操作');
     const result = await this.selectTmuxModel({ provider, ...params });
     const commandOutput = normalizeSessionCommandOutput(provider, '/model', result, this.commandCapabilities(provider));
+    return commandOutput ? { ...result, commandOutput } : result;
+  }
+  async selectSessionCommand(provider, params) {
+    this.backend(provider);
+    const confirmation = clearSessionCommandConfirmation();
+    if (provider === 'codex' && params.command === '/clear' && params.menuText === confirmation.text) {
+      if (params.option === '取消') return { completed: true };
+      if (params.option !== '清空当前对话') throw new Error('无效的清理选项');
+      if (!this.sendTmuxMessage) throw new Error('当前服务不支持清空对话');
+      const result = await this.sendTmuxMessage({ provider, sessionName: params.sessionName, threadId: params.threadId, text: '/clear' });
+      const commandOutput = normalizeSessionCommandOutput(provider, '/clear', result, this.commandCapabilities(provider));
+      return commandOutput ? { ...result, commandOutput } : { unconfirmed: true };
+    }
+    if (!this.selectTmuxCommand) throw new Error('当前服务不支持命令选项，请刷新后重试');
+    const result = await this.selectTmuxCommand({ provider, ...params });
+    const commandOutput = normalizeSessionCommandOutput(provider, params.command, result, this.commandCapabilities(provider));
     return commandOutput ? { ...result, commandOutput } : result;
   }
   dismissSessionCommand(provider, params) {
@@ -754,9 +774,21 @@ export class AgentHub {
       const threadId = cleanId(message.threadId, 'Thread');
       const sessionName = cleanId(message.tmuxSession, 'tmux session');
       const option = cleanId(message.option, 'Model option');
+      if (message.menuText != null && (typeof message.menuText !== 'string' || message.menuText.length > 64_000)) throw new Error('无效的模型菜单');
       this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
       return this.registry.selectSessionModel(provider, {
-        threadId, sessionName, option,
+        threadId, sessionName, option, ...(message.scope != null ? { scope: message.scope } : {}),
+        ...(message.menuText != null ? { menuText: message.menuText } : {}),
+      });
+    }
+    if (message.type === 'selectSessionCommand') {
+      const threadId = cleanId(message.threadId, 'Thread');
+      const sessionName = cleanId(message.tmuxSession, 'tmux session');
+      if (typeof message.menuText !== 'string' || message.menuText.length > 64_000) throw new Error('无效的命令菜单');
+      this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
+      return this.registry.selectSessionCommand(provider, {
+        threadId, sessionName, command: cleanId(message.command, 'Command'),
+        option: cleanId(message.option, 'Command option'), menuText: message.menuText,
       });
     }
     if (message.type === 'dismissSessionCommand') {

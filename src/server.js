@@ -25,7 +25,7 @@ import { createTelegramTask } from './telegram-task.js';
 import { createPageStore, mountPublishedPages } from './published-pages.js';
 import { createAgentImages } from './agent-images.js';
 import { AgentHub, AgentRegistry } from './agent-connection.js';
-import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
+import { answerSessionQuestion, createSession, detectWindowSizeSupport, dismissSessionCommand, interruptSession, killSession, listSessions, parseViewport, renameSession, selectSessionCommand, selectSessionModel, sendSessionMessage, validateSessionName } from './tmux.js';
 import { handleTerminalConnection } from './terminal-connection.js';
 import { createTerminalHistoryLinkReader } from './terminal-history-links.js';
 import { loadTlsOptions } from './tls.js';
@@ -456,6 +456,7 @@ const agentRegistry = new AgentRegistry(createAgentBackends(), {
   sendTmuxMessage: sendSessionMessage,
   answerTmuxQuestion: answerSessionQuestion,
   selectTmuxModel: selectSessionModel,
+  selectTmuxCommand: selectSessionCommand,
   dismissTmuxCommand: dismissSessionCommand,
   interruptTmuxSession: interruptSession,
 });

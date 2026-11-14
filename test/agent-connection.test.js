@@ -124,12 +124,12 @@ function send(socket, message) {
 }
 
 function setup({
-  listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
+  listTmuxSessions, sendTmuxMessage, selectTmuxModel, selectTmuxCommand, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
   sessionFeed, threadFeed, protocolEpoch = 'test-epoch',
 } = {}) {
   const backends = Object.fromEntries(['codex', 'claude', 'qodercli'].map((provider) => [provider, new FakeBackend(provider)]));
   const registry = new AgentRegistry(backends, {
-    listTmuxSessions, sendTmuxMessage, selectTmuxModel, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
+    listTmuxSessions, sendTmuxMessage, selectTmuxModel, selectTmuxCommand, dismissTmuxCommand, interruptTmuxSession, answerTmuxQuestion,
   });
   const hub = new AgentHub(registry, {
     defaultCwd: '/srv/codeck', hostname: 'devbox', sessionFeed, threadFeed, protocolEpoch,
@@ -1780,4 +1780,30 @@ test('reaching the start of the transcript is reported', async () => {
 
   assert.deepEqual(result.turns.map((t) => t.id), ['turn-0', 'turn-1']);
   assert.equal(result.truncated, false, '已到最早, 不该再让客户端继续拉');
+});
+
+test('clear requires an explicit Remote confirmation and cancellation never reaches tmux', async () => {
+  const inputs = [];
+  const { registry } = setup({ sendTmuxMessage: async params => { inputs.push(params); return { terminalOutput: '已清空当前对话。', completed: true }; } });
+  const target = { sessionName: 'work', threadId: 'thread-1' };
+  const proposal = await registry.sendSessionMessage('codex', { ...target, text: '/clear' });
+  assert.equal(proposal.commandOutput.kind, 'commandSelection');
+  assert.deepEqual(inputs, []);
+  await registry.selectSessionCommand('codex', { ...target, command: '/clear', menuText: proposal.commandOutput.text, option: '取消' });
+  assert.deepEqual(inputs, []);
+  const result = await registry.selectSessionCommand('codex', { ...target, command: '/clear', menuText: proposal.commandOutput.text, option: '清空当前对话' });
+  assert.equal(result.completed, true);
+  assert.deepEqual(inputs, [{ provider: 'codex', ...target, text: '/clear' }]);
+});
+
+test('routes command choices and their exact menu through the selected session', async () => {
+  const selections = [];
+  const { hub } = setup({ selectTmuxCommand: async params => { selections.push(params); return { terminalOutput: 'Usage result' }; } });
+  const socket = new FakeSocket(); hub.handleConnection(socket);
+  send(socket, { type: 'selectSessionCommand', id: 8, provider: 'codex', threadId: 'thread-1', tmuxSession: 'work',
+    command: '/usage', option: 'View analytics', menuText: 'menu snapshot', paneId: '%999' });
+  await waitFor(() => socket.sent.some(message => message.id === 8));
+  assert.deepEqual(selections, [{ provider: 'codex', threadId: 'thread-1', sessionName: 'work', command: '/usage',
+    option: 'View analytics', menuText: 'menu snapshot' }]);
+  assert.equal(socket.sent.find(message => message.id === 8).ok, true);
 });

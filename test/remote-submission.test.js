@@ -451,3 +451,40 @@ test('a real turn event replaces the optimistic receipt without duplicate messag
   assert.equal(refreshed.turns.flatMap(t => t.items).filter(i => model.userMessageText(i) === draft).length, 1);
   assert.equal(refreshed.turns.flatMap(t => t.items).some(i => i.delivery), false);
 });
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} successful send during temporary identity loss clears the original draft after recovery`, async () => {
+    let resolve;
+    const f = fixture(new Promise(done => { resolve = done; }));
+    f.state.provider = f.state.thread.provider = provider;
+    const original = f.state.thread;
+    const sending = f.context.submitComposer();
+    await new Promise(setImmediate);
+    f.state.thread = { ...original, id: 'pending-identity', tmux: { ...original.tmux, available: false } };
+    resolve({ submissionStatus: 'submitted' });
+    await sending;
+    assert.equal(f.input.value, draft, 'identity must be restored before touching the composer');
+    f.state.thread = original;
+    f.context.settleConfirmedDeliveries();
+    assert.equal(f.input.value, '', 'a successful response must not lose its pending draft cleanup');
+    assert.equal(f.state.pendingDeliveries.size, 0);
+    assert.equal(f.sent.length, 1);
+  });
+}
+
+test('deferred successful cleanup preserves a newer draft and newer attachments', async () => {
+  let resolve;
+  const f = fixture(new Promise(done => { resolve = done; }));
+  const original = f.state.thread;
+  const sentAttachment = { id: 'old', status: 'uploaded' }, nextAttachment = { id: 'next' };
+  f.state.attachments = [sentAttachment];
+  const sending = f.context.submitComposer();
+  await new Promise(setImmediate);
+  f.state.thread = { ...original, id: 'pending-identity' };
+  f.input.value = '下一条草稿'; f.state.attachments.push(nextAttachment);
+  resolve({ submissionStatus: 'submitted' }); await sending;
+  f.state.thread = original; f.context.settleConfirmedDeliveries();
+  assert.equal(f.input.value, '下一条草稿');
+  assert.deepEqual(f.state.attachments, [nextAttachment]);
+  assert.equal(f.state.pendingDeliveries.size, 0);
+});

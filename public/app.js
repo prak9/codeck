@@ -335,7 +335,10 @@ async function submitTerminalVoiceDraft() {
     setTerminalVoiceState(false, '正在发送到终端…');
     syncTerminalVoiceControls();
     await receipt;
-    if (!isCurrentTerminalTarget(target)) return;
+    // A matching receipt proves this submission completed. Input readiness and
+    // access may change during a redraw; only ownership protects another draft.
+    if (state.socket !== target.socket || state.active !== target.session
+      || state.connectionId !== target.connectionId) return;
     terminalVoiceBaseDraft = '';
     terminalVoiceHadResult = false;
     // A receipt acknowledges the captured draft, not edits made while it was in flight.

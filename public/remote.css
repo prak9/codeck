@@ -85,6 +85,11 @@ button { cursor: pointer; }
 .thread-row.active { border-color: var(--line); background: #ffffff12; box-shadow: 0 6px 18px #00000018; }
 .thread-row:disabled { cursor: wait; opacity: .55; }
 .thread-row:disabled:hover { background: transparent; }
+.thread-entry { position: relative; }
+.thread-entry.has-progress .thread-row { padding-right: 62px; }
+.thread-progress-button { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--muted); font-size: 11px; }
+.thread-progress-button:hover, .thread-progress-button:focus-visible { border-color: var(--line-strong); color: var(--ink); }
+.thread-progress-button:disabled { opacity: .55; cursor: wait; }
 .thread-glyph { width: 30px; height: 30px; border: 1px solid var(--line-strong); border-radius: 8px; background: #ffffff07; display: grid; place-items: center; color: #d9d9dc; font: 11px "Courier New", Courier, "Noto Sans SC Variable", monospace; }
 .thread-row.active .thread-glyph { border-color: #ff6b3566; background: #ff6b3514; color: #ff8a61; }
 .thread-index { color: var(--subtle); font-size: 9px; font-family: "Courier New", Courier, "Noto Sans SC Variable", monospace; text-align: right; }
@@ -193,6 +198,10 @@ a.header-button { text-decoration: none; }
 .model-title { min-width: 0; color: #ffcfbb; font-size: 12px; font-weight: 680; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-summary { flex: none; color: var(--subtle); font-size: 9px; white-space: nowrap; }
 .model-list { display: grid; }
+.model-scope { padding: 11px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.model-scope select { flex: 1; min-width: 0; }
+.command-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; }
+.command-tabs button { min-height: 44px; }
 .model-row { min-width: 0; width: 100%; padding: 11px 11px 10px; border: 0; border-top: 1px solid #ffffff08; background: transparent; color: inherit; display: grid; grid-template-columns: minmax(112px, 32%) minmax(0, 1fr); gap: 10px; align-items: start; text-align: left; }
 .model-row:first-child { border-top: 0; }
 .model-row:hover, .model-row:focus-visible { background: #ffffff0c; }

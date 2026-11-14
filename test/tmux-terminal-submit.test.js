@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { submitTerminalInput } from '../src/tmux.js';
+import { sendSessionMessage, submitTerminalInput } from '../src/tmux.js';
 
 function submissionDependencies(overrides = {}) {
   const calls = [];
@@ -150,3 +150,52 @@ test('queued local submissions recheck cancellation before loading any bytes', a
   await Promise.all([first, rejected]);
   assert.deepEqual(deps.calls.filter((args) => args[0] === 'load').map((args) => args[2]), ['first\r']);
 });
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} local send overwrites residual input that appears while the buffer is loading`, async () => {
+    let draft = '';
+    const calls = [];
+    const screen = () => provider === 'qodercli'
+      ? `────────────────────\n > ${draft}\n────────────────────\n Ultimate Model`
+      : provider === 'claude' ? `❯ ${draft}\n────────────────────\n  ⏵⏵ bypass permissions on`
+        : `› ${draft}\n\n  gpt-6-astra · /project`;
+    await submitTerminalInput('work', 'new message\r', {
+      replaceDraft: true,
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: provider, paneId: '%17' } }],
+      capturePane: async () => screen(), waitForInputSettle: async () => {},
+      loadBuffer: async () => { draft = 'old residual'; },
+      execTmux: async args => {
+        calls.push(args);
+        if (args.includes('C-u')) draft = '';
+        if (args.includes('paste-buffer')) assert.equal(draft, '', 'new text must replace, never append to residual input');
+        return { stdout: 'work\t%17\n' };
+      },
+    });
+    assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
+    assert.equal(calls.some(args => args.includes('Escape') || args.includes('C-c')), false);
+  });
+}
+
+for (const provider of ['codex', 'claude', 'qodercli']) {
+  test(`${provider} explicit Remote send replaces a multiline draft without interrupting`, async () => {
+    let draft = 'old draft\nold second line', buffer = '';
+    const calls = [], text = 'new message\nnew second line';
+    const screen = () => provider === 'qodercli'
+      ? `────────────────────\n > ${draft.replaceAll('\n', '\n   ')}\n────────────────────\n Ultimate Model`
+      : provider === 'claude' ? `❯ ${draft.replaceAll('\n', '\n  ')}\n────────────────────\n  ⏵⏵ bypass permissions on`
+        : `› ${draft.replaceAll('\n', '\n  ')}\n\n  gpt-6-astra · /project`;
+    const result = await sendSessionMessage({ provider, sessionName: 'work', threadId: 'thread-1', text, replaceDraft: true }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { kind: provider, id: 'thread-1', paneId: '%17' } }],
+      capturePane: async () => screen(), loadBuffer: async (name, value) => { buffer = value; },
+      execTmux: async args => {
+        calls.push(args);
+        if (args.includes('C-u')) draft = '';
+        if (args.includes('paste-buffer')) { assert.equal(draft, ''); assert.equal(buffer, text); draft = buffer; }
+        if (args.includes('Enter')) draft = '';
+      }, waitForPaste: async () => {}, waitForSubmit: async () => {},
+    });
+    assert.notEqual(result.submissionStatus, 'not-sent');
+    assert.equal(calls.filter(args => args.includes('paste-buffer')).length, 1);
+    assert.equal(calls.some(args => args.includes('Escape') || args.includes('C-c')), false);
+  });
+}

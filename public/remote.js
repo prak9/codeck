@@ -33,7 +33,7 @@ import { composerControlState, composerSubmitAction, createComposerRequestGate, 
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=5';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
-import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=5';
+import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=6';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
@@ -336,7 +336,7 @@ function settleConfirmedDeliveries() {
     if ((composerRequestGate.pending && !attempt.blocked)
       || attempt.provider !== state.provider || attempt.threadId !== state.thread?.id
       || (attempt.tmuxSession || '') !== (state.thread?.tmux?.name || '')
-      || !isUserMessageDeliveryReceived(state.thread, attempt)) continue;
+      || (!attempt.submissionAcknowledged && !isUserMessageDeliveryReceived(state.thread, attempt))) continue;
     state.pendingDeliveries.delete(key);
     if (state.liveMessage === SUBMISSION_UNCONFIRMED_MESSAGE
       || (attempt.errorMessage && state.liveMessage === attempt.errorMessage)) setLiveMessage('');
@@ -1401,7 +1401,6 @@ function threadRow(thread, index) {
   );
   if (checkpointLabel(tmux.checkpoint)) {
     const note = element('small', '', checkpointLabel(tmux.checkpoint));
-    note.title = '点击查看任务进度';
     note.dataset.progressSummary = 'true';
     copy.append(note);
   }
@@ -1414,17 +1413,29 @@ function threadRow(thread, index) {
     presence,
   );
   if (tmux.available === false) button.title = '已连接终端，可直接参与';
-  button.addEventListener('click', event => {
-    const showProgress = Boolean(event.target?.closest?.('[data-progress-summary]') || (event.detail === 0 && isThreadActive(thread) && tmux.checkpoint?.text));
+  button.addEventListener('click', () => {
     if (tmux.checkpoint?.attention?.id) fetch(`/api/sessions/${encodeURIComponent(tmux.name)}/attention/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` }, body: JSON.stringify({ id: tmux.checkpoint.attention.id }) }).catch(() => {});
+    openListedThread(thread).catch((error) => setLiveMessage(error.message));
+  });
+  if (!checkpointLabel(tmux.checkpoint)) return button;
+  const entry = element('div', 'thread-entry has-progress');
+  const progress = element('button', 'thread-progress-button', '便签');
+  progress.type = 'button';
+  progress.disabled = state.sessionClosePending;
+  progress.dataset.threadId = thread.id;
+  progress.dataset.tmuxSession = tmux.name || '';
+  progress.title = `查看 ${title} 的进度便签`;
+  progress.setAttribute('aria-label', progress.title);
+  progress.addEventListener('click', () => {
     openListedThread(thread).then(() => {
-      if (showProgress && state.thread?.tmux?.name === tmux.name) {
+      if (state.provider === thread.provider && state.thread?.tmux?.name === tmux.name) {
         const details = $('#sessionProgress details'); if (details) details.open = true;
         if (!$('#progressDialog').open) $('#progressDialog').showModal();
       }
     }).catch((error) => setLiveMessage(error.message));
   });
-  return button;
+  entry.append(button, progress);
+  return entry;
 }
 
 function sessionFolderIcon() {
@@ -1467,6 +1478,7 @@ function renderThreadList() {
   const focusedThread = document.activeElement?.closest?.('[data-thread-id]');
   const focusedThreadId = focusedThread?.dataset.threadId;
   const focusedTmuxSession = focusedThread?.dataset.tmuxSession;
+  const focusedProgress = Boolean(document.activeElement?.closest?.('.thread-progress-button'));
   const focusedFolder = document.activeElement?.closest?.('[data-session-folder]')?.dataset.sessionFolder;
   const { visible, hidden } = sessionVisibilityPartition();
   syncSessionVisibilityButton(hidden.length);
@@ -1489,7 +1501,8 @@ function renderThreadList() {
   list.replaceChildren(...rows);
   if (focusedThreadId) {
     [...list.querySelectorAll('[data-thread-id]')]
-      .find((row) => row.dataset.threadId === focusedThreadId && row.dataset.tmuxSession === focusedTmuxSession)
+      .find((row) => row.dataset.threadId === focusedThreadId && row.dataset.tmuxSession === focusedTmuxSession
+        && row.classList.contains('thread-progress-button') === focusedProgress)
       ?.focus({ preventScroll: true });
   } else if (focusedFolder) {
     [...list.querySelectorAll('[data-session-folder]')]
@@ -1570,7 +1583,7 @@ function commandPendingMessage(text) {
   return '正在发送…';
 }
 
-function modelRowButton({ label, description }, selected) {
+function modelRowButton({ label, description }, selected, getScope, menuText) {
   const button = element('button', `model-row${label === selected ? ' primary' : ''}`);
   button.type = 'button';
   button.append(
@@ -1587,7 +1600,9 @@ function modelRowButton({ label, description }, selected) {
     await composerRequestGate.run(async () => {
       setLiveMessage(`正在选择 ${label}…`);
       try {
-        const result = await agentRequest('selectSessionModel', { ...target, option: label });
+        const result = await agentRequest('selectSessionModel', { ...target, option: label,
+          menuText,
+          ...(getScope ? { scope: getScope() } : {}) });
         if (state.provider !== target.provider || state.thread?.id !== target.threadId
           || state.thread?.tmux?.name !== target.tmuxSession) return;
         if (result?.terminalOutput) {
@@ -1613,9 +1628,18 @@ function modelRowButton({ label, description }, selected) {
 function modelCommandDialog(commandOutput) {
   const parsed = commandOutput.parsed || parseModelCommandOutput(commandOutput.text);
   const panel = element('div', 'model-panel');
+  let scope;
+  if (parsed.scopeSelection) {
+    const label = element('label', 'model-scope', '应用范围 ');
+    scope = element('select', 'model-scope-select');
+    for (const [value, text] of [['session', '仅当前会话'], ['default', '设为默认']]) {
+      const option = element('option', '', text); option.value = value; scope.append(option);
+    }
+    label.append(scope); panel.append(label);
+  }
   if (parsed.items.length) {
     const list = element('div', 'model-list');
-    parsed.items.forEach((item) => list.append(modelRowButton(item, parsed.selected)));
+    parsed.items.forEach((item) => list.append(modelRowButton(item, parsed.selected, scope ? () => scope.value : undefined, commandOutput.text)));
     panel.append(list);
   }
   if (parsed.notes.length) {
@@ -1671,6 +1695,7 @@ function commandDialogPresentation(commandOutput) {
     state.provider, commandOutput.command, { terminalOutput: commandOutput.text },
   );
   if (normalized?.kind === 'modelSelection') return modelCommandDialog(normalized);
+  if (normalized?.kind === 'commandSelection') return selectionCommandDialog(normalized);
   if (normalized?.kind === 'skills') {
     return skillsCommandDialog(normalized);
   }
@@ -1683,6 +1708,49 @@ function commandDialogPresentation(commandOutput) {
     content: output,
     focusSelector: '.command-output-body',
   };
+}
+
+function selectionCommandDialog(commandOutput) {
+  const panel = element('div', 'model-panel');
+  const { parsed } = commandOutput;
+  const list = element('div', parsed.dashboard ? 'command-tabs' : 'model-list');
+  if (parsed.dashboard) panel.append(element('pre', 'terminal-live-output command-output-body', commandOutput.text));
+  parsed.items.forEach((item, index) => {
+    const button = element('button', parsed.dashboard ? 'action-button' : `model-row${index === parsed.cursor ? ' primary' : ''}`);
+    button.type = 'button';
+    button.append(element('span', 'model-name', item.label), element('span', 'model-description', item.description));
+    button.addEventListener('click', async () => {
+      const thread = state.thread;
+      if (composerRequestGate.pending || state.threadOpening || thread?.tmux?.commandOutput !== commandOutput) return;
+      const target = { provider: state.provider, threadId: thread.id, tmuxSession: thread.tmux.name };
+      const current = () => state.provider === target.provider && state.thread?.id === target.threadId
+        && state.thread?.tmux?.name === target.tmuxSession && state.thread.tmux.commandOutput === commandOutput;
+      await composerRequestGate.run(async () => {
+        list.querySelectorAll('button').forEach(node => { node.disabled = true; });
+        try {
+          const result = await agentRequest('selectSessionCommand', { ...target, command: commandOutput.command,
+            option: item.label, menuText: commandOutput.text });
+          if (!current()) return;
+          if (result.unconfirmed) {
+            dismissCommandDialog();
+            setLiveMessage('选择已发送但结果尚未确认，请检查终端，勿重复提交。');
+          } else if (result.terminalOutput) {
+            state.thread.tmux.commandOutput = normalizeSessionCommandOutput(target.provider, commandOutput.command, result);
+            scheduleThreadRender(true);
+          } else if (result.completed) dismissCommandDialog();
+        } catch (error) {
+          if (current()) setLiveMessage(error.message);
+        } finally {
+          list.querySelectorAll('button').forEach(node => { node.disabled = false; });
+        }
+      });
+    });
+    list.append(button);
+  });
+  panel.append(list);
+  if (parsed.notes.length) panel.append(element('pre', 'terminal-live-output', parsed.notes.join('\n')));
+  return { kicker: 'COMMAND', title: commandOutput.command, summary: parsed.heading, content: panel,
+    focusSelector: parsed.dashboard ? '.command-tabs button' : '.model-row.primary, .model-row' };
 }
 
 function openCommandDialog(commandOutput) {
@@ -1728,8 +1796,8 @@ async function closeCommandDialog() {
       if (state.thread?.tmux?.commandOutput === commandOutput) dismissCommandDialog();
     } catch (error) {
       if (state.thread?.tmux?.commandOutput === commandOutput) {
-        dismissCommandDialog();
-        setLiveMessage(`${error.message}；原生菜单可能仍打开，请在普通终端检查。`);
+        $('#commandDialogSummary').textContent = error.message;
+        setLiveMessage(error.message);
       }
     }
   });
@@ -2786,9 +2854,17 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
         });
         scheduleThreadRender(true);
       }
-      if (state.pendingDeliveries.get(deliveryKey) === delivery) state.pendingDeliveries.delete(deliveryKey);
       if (state.provider !== targetProvider || state.thread?.id !== targetThreadId
-        || (state.thread?.tmux?.name || null) !== targetSessionName) return;
+        || (state.thread?.tmux?.name || null) !== targetSessionName) {
+        // The send already returned successfully. Keep its composer cleanup until
+        // this exact target is visible again; a transient identity refresh must
+        // not discard the acknowledgement or clear another session's draft.
+        if (state.pendingDeliveries.get(deliveryKey) === delivery) {
+          state.pendingDeliveries.set(deliveryKey, { ...delivery, submissionAcknowledged: true });
+        }
+        return;
+      }
+      if (state.pendingDeliveries.get(deliveryKey) === delivery) state.pendingDeliveries.delete(deliveryKey);
       if (!usesPreset) {
         input.value = draftAfterSuccessfulSend(input.value, draft);
         clearAttachments(attachments);

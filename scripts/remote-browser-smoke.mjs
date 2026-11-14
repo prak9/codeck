@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
+import { clearSessionCommandConfirmation, normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from '../src/thread-history-cursor.js';
 import { CodexDeliveryRecovery } from '../src/codex-delivery-recovery.js';
 import { QoderQuestionTracker } from '../src/qoder-question.js';
@@ -20,7 +20,8 @@ import { interruptSession } from '../src/tmux.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
-const simpleMode = process.env.CODECK_BROWSER_CORE !== '1';
+const commandMode = process.env.CODECK_BROWSER_COMMANDS === '1';
+const simpleMode = process.env.CODECK_BROWSER_CORE !== '1' && !commandMode;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-remote-smoke-'));
 console.log(`Browser artifacts: ${artifacts}`);
@@ -250,17 +251,42 @@ sockets.on('connection', socket => {
     }
     if (request.type === 'selectSessionModel') {
       assert.equal(request.option, fixture.modelSelected ? 'Extra high' : 'model-a');
-      if (fixture.modelSelected) return reply({ completed: true });
+      if (fixture.modelSelected) { assert.equal(request.scope, 'session'); return reply({ completed: true }); }
       fixture.modelSelected = true;
-      const terminalOutput = 'Select Reasoning Level for model-a\n1. High  Deep\n› 2. Extra high (current) More reasoning';
+      const terminalOutput = 'Select Reasoning Level for model-a\n1. High  Deep\n› 2. Extra high (current) More reasoning\nenter default · s session · esc back';
       return reply({ terminalOutput, commandOutput: normalizeSessionCommandOutput(fixture.provider, '/model', { terminalOutput }) });
     }
     if (request.type === 'dismissSessionCommand') return reply({ dismissed: true });
+    if (request.type === 'selectSessionCommand') {
+      if (request.command === '/clear') {
+        assert.equal(request.option, '取消');
+        return reply({ completed: true });
+      }
+      assert.equal(request.command, '/usage');
+      const dashboard = 'Usage · Pro · demo\n1 Overview   2 Usage   3 Messages   4 Plugins   5 Skills   6 Chats\ng Daily\nLifetime 19B\nesc back\ntab/1–6 report · z dashboard · ? help · R refresh';
+      let terminalOutput;
+      if (request.option === 'Show usage') {
+        assert.match(request.menuText, /Redeem usage limit reset/);
+        terminalOutput = dashboard;
+      } else if (request.option === '消息') terminalOutput = dashboard.replace('Lifetime 19B', 'Messages report');
+      else if (request.option === '帮助') terminalOutput = dashboard.replace(/tab\/1–6 report.*$/, '? close help');
+      else if (request.option === '返回用量') terminalOutput = dashboard;
+      else assert.fail(`Unexpected usage option: ${request.option}`);
+      return reply({ completed: true, terminalOutput,
+        commandOutput: normalizeSessionCommandOutput(fixture.provider, '/usage', { terminalOutput }) });
+    }
     if (request.type === 'sendSessionMessage') {
       fixture.sent.push(request);
       if (request.text.startsWith('/')) {
+        if (request.text === '/clear' && fixture.provider === 'codex') {
+          return reply({ terminalOutput: '清空当前对话？', commandOutput: clearSessionCommandConfirmation() });
+        }
         const terminalOutput = request.text === '/model'
           ? 'Select Model and Effort\n› 1. model-a (current) Fast\n2. model-b  Deep'
+          : request.text === '/usage' && fixture.provider === 'codex'
+            ? 'Usage\n› 1. Show usage  View token usage\n2. Redeem usage limit reset  You have 2 resets\nPress enter to confirm or esc to go back'
+          : request.text === '/clear' && fixture.provider === 'codex'
+            ? 'Clear conversation?\n› 1. Confirm  Clear current context\n2. Cancel  Keep conversation\nPress enter to confirm or esc to go back'
           : `Fixture ${request.text}\nModel: fixture-model\nUsage: 10%`;
         return reply({ terminalOutput, commandOutput: normalizeSessionCommandOutput(fixture.provider, request.text, { terminalOutput }) });
       }
@@ -331,6 +357,12 @@ try {
         assert.equal(await page.locator('#progressDialog').evaluate(el => el.open), false);
         if (viewport.width < 720) await page.locator('#drawerButton').click();
         await page.locator('[data-progress-summary]').first().click();
+        assert.equal(await page.locator('#progressDialog').evaluate(el => el.open), false, 'the summary only enters the session');
+        if (viewport.width < 720) await page.locator('#drawerButton').click();
+        const note = page.locator('.thread-progress-button').first();
+        const bounds = await note.boundingBox();
+        assert.ok(bounds.width >= 44 && bounds.height >= 44, 'dedicated note hit area');
+        await note.click();
         await page.locator('#progressDialog[open]').waitFor();
         await page.locator('#closeProgressDialog').click();
         await page.locator('#composerInput').focus();
@@ -556,19 +588,38 @@ try {
       assert.equal(fixture.sent.at(-1).text, progressPrompt);
       assert.equal(await page.inputValue('#composerInput'), '正在写的草稿');
       await page.locator('#composerInput').fill('');
-      for (const command of ['/status', '/usage', '/model']) {
+      for (const command of ['/status', '/usage', '/clear', '/model']) {
         await page.locator('#composerInput').fill(command);
         await page.locator('#sendButton').click();
         await page.waitForSelector('#commandDialog[open]');
         if (command === '/model') assert.equal(await page.locator('.model-row').count(), provider === 'codex' ? 2 : 0);
         await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-${command.slice(1)}.png`) });
-        if (command === '/model' && provider === 'codex') {
+        if (command === '/usage' && provider === 'codex') {
+          assert.equal(await page.locator('.model-row').count(), 2);
+          await page.getByText('Show usage', { exact: true }).click();
+          await page.locator('.command-tabs').waitFor();
+          await page.getByText('消息', { exact: true }).click();
+          await page.waitForFunction(() => document.querySelector('#commandDialogContent').textContent.includes('Messages report'));
+          await page.getByText('帮助', { exact: true }).click();
+          await page.getByText('返回用量', { exact: true }).click();
+          await page.waitForFunction(() => document.querySelector('#commandDialogSummary').textContent === '用量分析');
+          await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-usage-dashboard.png`) });
+          await page.locator('#commandDialogClose').click();
+        } else if (command === '/clear' && provider === 'codex') {
+          assert.equal(await page.locator('.model-row').count(), 2);
+          await page.locator('#commandDialog').getByText('取消', { exact: true }).click();
+        } else if (command === '/model' && provider === 'codex') {
           await page.locator('.model-row').first().click();
           await page.getByText('选择推理强度', { exact: true }).waitFor();
           await page.locator('.model-row').last().click();
         }
         else await page.locator('#commandDialogClose').click();
         await page.waitForSelector('#commandDialog[open]', { state: 'detached' });
+      }
+      if (commandMode) {
+        assert.deepEqual(errors, []);
+        results.push({ provider, viewport: viewport.width, journeys: 'commands/model-scope/usage-tabs-help/clear-cancel', errors: 0 });
+        await context.close(); continue;
       }
       if (provider === 'codex') {
         await page.locator('#composerInput').fill('延迟确认');

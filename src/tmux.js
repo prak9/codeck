@@ -8,6 +8,7 @@ import { parseCodexQuestion } from './codex-question.js';
 import { qoderTaskPanel, stopQoderTasks } from './qoder-stop.js';
 import { redrawTerminalPane } from './terminal-redraw.js';
 import { terminalDiagnostics } from './terminal-diagnostics.js';
+import { parseSessionCommandMenu } from '../public/remote-command-output.js';
 export { parseQoderQuestion } from './qoder-question.js';
 
 const exec = promisify(execFile);
@@ -513,7 +514,7 @@ export function resolveShellLiveOutput(output) {
   )).join('\n');
 }
 
-export function resolveSlashCommandOutput(output) {
+export function resolveSlashCommandOutput(output, maxLines = SLASH_OUTPUT_MAX_LINES) {
   const rows = cleanScreenRows(output);
   while (rows.length && !rows[0]) rows.shift();
   while (rows.length && !rows.at(-1)) rows.pop();
@@ -525,10 +526,10 @@ export function resolveSlashCommandOutput(output) {
       const content = /^\s*[│║](.*)[│║]\s*$/u.exec(line)?.[1];
       return content == null ? line.trim() : content.trim();
     })
-    : rows.slice(-SLASH_OUTPUT_MAX_LINES);
+    : rows.slice(-maxLines);
   while (visible.length && !visible[0]) visible.shift();
   while (visible.length && !visible.at(-1)) visible.pop();
-  return visible.slice(-SLASH_OUTPUT_MAX_LINES).map((line) => (
+  return visible.slice(-maxLines).map((line) => (
     line.length > LIVE_OUTPUT_MAX_LINE_LENGTH
       ? `${line.slice(0, LIVE_OUTPUT_MAX_LINE_LENGTH - 1)}…`
       : line
@@ -567,7 +568,7 @@ function resolveCodexLocalCommandOutput(output, initialScreen, text) {
   // Async commands may show Loading before echoing their command. Do not mistake
   // an earlier invocation (and its following status box) for the current result.
   if (body.some(line => /^\s*\/[a-z][\w-]*(?:\s|$)/iu.test(line) || /\bLoading\b/iu.test(line))) return '';
-  return resolveSlashCommandOutput(body.join('\n'));
+  return resolveSlashCommandOutput(body.join('\n'), 256);
 }
 
 // Where a marker sits on screen keeps moving: queued messages replace the interrupt hint,
@@ -884,7 +885,7 @@ const SLASH_OUTPUT_HISTORY_LINES = 120;
 const QUEUED_INPUT_DELAY_MS = 60;
 const QUEUED_INPUT_CAPTURE_ATTEMPTS = 5;
 const MODEL_PICKER_CAPTURE_ATTEMPTS = 12;
-const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model', '/usage']);
+const SLASH_COMMAND_OUTPUT_COMMANDS = new Set(['/status', '/model', '/usage', '/clear']);
 const CODEX_MODEL_PICKER_TITLE = /^(?:select model and effort|select reasoning level for .+|advanced reasoning)$/iu;
 const CODEX_PICKER_HINT = 'Press enter to confirm or esc to go back';
 const CODEX_USAGE_PICKER_TITLE = /^Usage$/iu;
@@ -1153,16 +1154,18 @@ function codexPickerRows(output) {
     const content = /^\s*[│║](.*)[│║]\s*$/u.exec(line)?.[1];
     return (content == null ? line : content).trim();
   }).filter((line) => line && !/^[╭┌╔╰└╚].*[╮┐╗╯┘╝]$/u.test(line));
-  const end = rows.findLastIndex((line) => line.startsWith('Press enter to '));
+  const end = rows.findLastIndex((line) => /^(?:Press enter to |enter (?:select|open|confirm|default)\s*[·•])/iu.test(line));
   const hint = rows.slice(end).join(' ');
   // Require the hint to own the final pane rows. Old pickers in scrollback must
   // never authorize a selection in a later composer or approval dialog.
-  if (end < 0 || hint.length < 17 || !CODEX_PICKER_HINT.startsWith(hint)) return null;
+  if (end < 0 || !(hint.length >= 17 && CODEX_PICKER_HINT.startsWith(hint))
+    && !/^enter (?:(?:select|open|confirm)\s*[·•]|default\s*[·•]\s*s session\s*[·•])\s*esc (?:back|cancel|close)$/iu.test(hint)) return null;
   const prompt = rows.slice(0, end).findLastIndex((line) => /^[»›>❯](?!\s*\d+\.)(?:\s|$)/u.test(line));
   return rows.slice(prompt + 1, end);
 }
 
 function hasCodexInputModal(output) {
+  if (parseSessionCommandMenu('/usage', output)?.dashboard) return true;
   if (codexPickerRows(output)) return true;
   const rows = cleanScreenRows(output).map((line) => line.trim()).filter(Boolean);
   if (rows.at(-1) === 'Press enter to continue' && rows.some((line) => /^›\s+\d+\./u.test(line))) return true;
@@ -1214,9 +1217,9 @@ function codexModelPicker(output) {
     title,
     ...(titleRow >= 0 ? rows.slice(titleRow + 1, rows.findIndex((line, index) => index > titleRow && /^[›>❯]?\s*\d+\./u.test(line))) : []),
     ...options.map(option => option.display),
-    CODEX_PICKER_HINT,
+    /enter default\s*[·•]\s*s session/iu.test(output) ? 'enter default · s session · esc back' : CODEX_PICKER_HINT,
   ].join('\n');
-  return { terminalOutput, options };
+  return { terminalOutput, options, scopeSelection: /enter default\s*[·•]\s*s session/iu.test(output) };
 }
 
 function hasCodexUsagePicker(output) {
@@ -1239,7 +1242,7 @@ function codexLocalCommandPicker(output) {
   if (start == null) return '';
   const choices = rows.slice(start + 1).filter(line => /^[›>❯]?\s*\d+\./u.test(line));
   const knownChoice = kind === 'usage'
-    ? /^[›>❯]?\s*\d+\.\s+(?:Show usage|Redeem usage limit reset)\b/iu
+    ? /^[›>❯]?\s*\d+\.\s+(?:Show usage|Redeem usage limit reset|View analytics|Redeem reset)\b/iu
     : /^[›>❯]?\s*\d+\.\s+(?:List skills|Enable\/Disable Sk)/iu;
   if (!choices.length || !choices.every(line => knownChoice.test(line))) return '';
   return kind;
@@ -1306,7 +1309,8 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
       return paneId;
     };
     const paneId = await currentPane();
-    if (overrides.replaceDraft === true) {
+    const replaceCurrentDraft = async () => {
+      if (overrides.replaceDraft !== true) return;
       const sessions = await (overrides.listTmuxSessions || listSessions)();
       const session = sessions.find(item => item.name === sessionName);
       const provider = session?.agent?.kind;
@@ -1320,7 +1324,7 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
           read: () => capture(paneId), verify: async () => await currentPane() === paneId, execTmux,
           wait: overrides.waitForInputSettle || (() => new Promise(resolve => setTimeout(resolve, PASTE_SUBMIT_DELAY_MS))) });
       }
-    }
+    };
     const separateFinalEnter = overrides.separateFinalEnter === true && data.length > 1
       && !/[\r\n]/u.test(data.slice(0, -1)) && data.endsWith('\r');
     // xterm brackets a native paste for the outer tmux client. When bypassing that
@@ -1333,6 +1337,9 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
     try {
       await loadBuffer(bufferName, bufferData);
       if (await currentPane() !== paneId) throw new Error('终端会话 pane 已变化，输入未发送');
+      // Buffer loading may yield while the CLI restores a leftover draft. Replace
+      // the latest visible text immediately before this explicit owner's paste.
+      await replaceCurrentDraft();
       checkConnection();
       await execTmux(exitPaneModeThen(paneId, [
         'paste-buffer', ...(bracketedPaste ? ['-p'] : []), '-r', '-d', '-b', bufferName, '-t', paneId,
@@ -1452,7 +1459,8 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         throw new Error('终端出现草稿或弹窗，自主消息未发送');
       }
       activeCodexInput = !command && hasCodexActiveTurn(screen);
-      if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'usage-picker';
+      if (parseSessionCommandMenu(matchingDraft, screen)) return 'command-picker';
+      if (matchingDraft === '/usage' && hasCodexUsagePicker(screen)) return 'command-picker';
       const localPicker = codexLocalCommandPicker(screen);
       if (matchingDraft === '/model' && localPicker === 'model' && codexModelPicker(screen)) {
         return 'model-picker';
@@ -1588,16 +1596,14 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         ? await prepareCodexComposer(bareCodexCommand ? command : '')
         : false;
       const existingCommand = composerRecovery === true;
-      const existingUsagePicker = composerRecovery === 'usage-picker';
+      const existingCommandPicker = composerRecovery === 'command-picker';
       const existingModelPicker = composerRecovery === 'model-picker';
       const initialScreen = await captureCommandPane(paneId).catch(() => '');
       if ((provider === 'codex' || provider === 'qodercli' || isCurrent) && !await verifyPane()) {
         throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       }
-      if (existingUsagePicker) {
-        if (!await verifyPane()) return {};
-        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
-      } else if (!existingModelPicker) {
+      if (existingCommandPicker && parseSessionCommandMenu(command, initialScreen)) return { terminalOutput: initialScreen };
+      if (!existingModelPicker && !existingCommandPicker) {
         await execTmux(exitPaneModeThen(
           paneId,
           ['send-keys', '-l', '-t', paneId, '--', existingCommand ? ' '
@@ -1614,7 +1620,6 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         let screen = '';
         let modelPicker = null;
         let terminalOutput = '';
-        let usagePickerAccepted = existingUsagePicker;
         const attempts = Math.max(
           bareCodexModel ? MODEL_PICKER_CAPTURE_ATTEMPTS : 1,
           bareCodexUsage || otherCodexCommand ? USAGE_OUTPUT_CAPTURE_ATTEMPTS : 1,
@@ -1623,12 +1628,8 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           await waitForSlashOutput();
           screen = await (bareCodexModel ? captureInputPane(paneId) : captureCommandPane(paneId));
-          if (bareCodexUsage && !usagePickerAccepted && hasCodexUsagePicker(screen)) {
-            if (!await verifyPane()) return {};
-            await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
-            usagePickerAccepted = true;
-            continue;
-          }
+          const commandPicker = provider === 'codex' && parseSessionCommandMenu(command, screen);
+          if (commandPicker) { terminalOutput = commandPicker.raw; break; }
           modelPicker = bareCodexModel ? codexModelPicker(screen) : null;
           // Menus own the visible pane, not the scrollback that can still contain
           // older menus, status boxes, or loading notices.
@@ -1636,8 +1637,18 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
             ? await captureInputPane(paneId) : screen;
           terminalOutput = modelPicker?.terminalOutput
             || (codexUsage ? resolveCodexUsageOutput(screen)
-              : otherCodexCommand ? resolveCodexLocalCommandOutput(localScreen, initialScreen, text)
+              : otherCodexCommand || provider === 'codex' && ['/status', '/clear'].includes(command)
+                ? resolveCodexLocalCommandOutput(localScreen, initialScreen, text)
               : resolveSlashCommandOutput(screen));
+          if (provider === 'codex' && command === '/clear' && screen !== initialScreen
+            && agentComposerState(screen, '') === 'empty' && /OpenAI Codex/u.test(screen)
+            && !cleanScreenRows(screen).some(line => line.trim() === '/clear')) {
+            const reset = (await listTmuxSessions()).find(item => item.name === sessionName);
+            if (reset?.agent?.kind === provider && reset.agent.paneId === paneId
+              && reset.agent.id && reset.agent.id !== threadId) {
+              return { completed: true, terminalOutput: '已清空当前对话。' };
+            }
+          }
           if (modelPicker) break;
           if (otherCodexCommand && terminalOutput && codexPickerRows(screen)) break;
           if (otherCodexCommand && !terminalOutput
@@ -1784,28 +1795,118 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
 }
 
 export async function dismissSessionCommand({ provider, sessionName, threadId, command }, overrides = {}) {
-  if (provider !== 'codex' || !['/model', '/skills', '/usage'].includes(command)
+  if (provider !== 'codex' || !['/model', '/skills', '/usage', '/status', '/clear'].includes(command)
     || !validateSessionName(sessionName)) throw new Error('无效的命令弹窗');
   return queueSessionInput(sessionName, async () => {
     const listTmuxSessions = overrides.listTmuxSessions || listSessions;
     const target = { provider, sessionName, threadId };
     const { paneId } = await verifiedSessionTarget(target, listTmuxSessions);
     const captureSessionPane = overrides.capturePane || capturePane;
-    const matches = screen => codexLocalCommandPicker(screen) === command.slice(1);
+    const matches = screen => Boolean(parseSessionCommandMenu(command, screen)) || codexLocalCommandPicker(screen) === command.slice(1);
     if (!matches(await captureSessionPane(paneId))) return { dismissed: false };
-    const current = await verifiedSessionTarget(target, listTmuxSessions);
-    if (current.paneId !== paneId || !matches(await captureSessionPane(paneId))) return { dismissed: false };
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
-    await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Escape']));
-    paneScreenCache.delete(sessionName);
-    return { dismissed: true };
+    const wait = overrides.waitForSlashOutput || (() => new Promise(resolve => setTimeout(resolve, 50)));
+    const identity = screen => parseSessionCommandMenu(command, screen)?.signature
+      || codexModelPicker(screen)?.terminalOutput || screen;
+    for (let depth = 0; depth < 8; depth++) {
+      const current = await verifiedSessionTarget(target, listTmuxSessions);
+      const before = await captureSessionPane(paneId);
+      if (current.paneId !== paneId || !matches(before)) return { dismissed: depth > 0 };
+      await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Escape']));
+      paneScreenCache.delete(sessionName);
+      let changed = false;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await wait();
+        const next = await captureSessionPane(paneId);
+        if (!next.trim()) continue;
+        if (!matches(next)) return { dismissed: true };
+        if (identity(next) !== identity(before)) { changed = true; break; }
+      }
+      if (!changed) throw new Error('原生菜单尚未确认关闭，请重试关闭');
+    }
+    throw new Error('原生菜单仍打开，请重试关闭');
   });
 }
 
-export async function selectSessionModel({ provider, sessionName, threadId, option }, overrides = {}) {
+export async function selectSessionCommand({ provider, sessionName, threadId, command, option, menuText }, overrides = {}) {
+  if (provider !== 'codex' || !validateSessionName(sessionName) || typeof option !== 'string'
+    || !option || option.length > 256 || /[\u0000-\u001f\u007f]/u.test(option)
+    || typeof menuText !== 'string' || menuText.length > 64_000) throw new Error('无效的命令选项');
+  const expected = parseSessionCommandMenu(command, menuText);
+  if (!expected) throw new Error('命令菜单已变化，请重新打开');
+  return queueSessionInput(sessionName, async () => {
+    const list = overrides.listTmuxSessions || listSessions;
+    const target = { provider, sessionName, threadId };
+    const { paneId } = await verifiedSessionTarget(target, list);
+    const capture = overrides.capturePane || capturePane;
+    const run = overrides.execTmux || (args => exec('tmux', args));
+    const wait = overrides.waitForSlashOutput || (() => new Promise(resolve => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));
+    const read = async () => {
+      const latest = await verifiedSessionTarget(target, list);
+      if (latest.paneId !== paneId) throw new Error('终端 pane 已变化，选择未发送');
+      const screen = await capture(paneId);
+      const picker = parseSessionCommandMenu(command, screen);
+      if (!picker || picker.signature !== expected.signature) throw new Error('命令菜单已变化，请重新打开');
+      return picker;
+    };
+    let picker = await read();
+    const selected = picker.items.findIndex(item => item.label === option);
+    if (selected < 0) throw new Error('命令选项已变化，请重新打开');
+    if (picker.dashboard) {
+      await read();
+      try {
+        await run(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, picker.items[selected].key]));
+        paneScreenCache.delete(sessionName);
+        for (let attempt = 0; attempt < USAGE_OUTPUT_CAPTURE_ATTEMPTS; attempt++) {
+          await wait();
+          const latest = await verifiedSessionTarget(target, list);
+          if (latest.paneId !== paneId) return { unconfirmed: true };
+          const screen = await capture(paneId);
+          const dashboard = parseSessionCommandMenu(command, screen);
+          if (dashboard?.dashboard && !/\bLoading\b/iu.test(screen)) return { terminalOutput: screen };
+        }
+      } catch { /* A dashboard key is not replayed after ambiguous delivery. */ }
+      return { unconfirmed: true };
+    }
+    while (picker.cursor !== selected) {
+      const cursor = picker.cursor;
+      const step = selected > cursor ? 1 : -1;
+      await run(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, step > 0 ? 'Down' : 'Up']));
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await wait(); picker = await read();
+        if (picker.cursor === cursor + step) break;
+        if (picker.cursor !== cursor) throw new Error('命令选项位置已变化，请重新打开');
+      }
+      if (picker.cursor === cursor) throw new Error('终端选项尚未更新，请重试');
+    }
+    if ((await read()).cursor !== selected) throw new Error('命令选项位置已变化，请重试');
+    try {
+      await run(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+      paneScreenCache.delete(sessionName);
+      for (let attempt = 0; attempt < USAGE_OUTPUT_CAPTURE_ATTEMPTS; attempt++) {
+        await wait();
+        const latest = await verifiedSessionTarget(target, list);
+        if (latest.paneId !== paneId) throw new Error('终端 pane 已变化，请检查选择结果，勿重复提交');
+        const screen = await capture(paneId);
+        const next = parseSessionCommandMenu(command, screen);
+        if (next?.info) return { terminalOutput: screen };
+        if (next?.dashboard && !/\bLoading\b/iu.test(screen)) return { terminalOutput: screen };
+        if (next && next.signature !== expected.signature) return { terminalOutput: screen };
+        if (next) continue;
+        const output = command === '/usage' ? resolveCodexUsageOutput(screen) : resolveSlashCommandOutput(screen);
+        if (output && !/\bLoading\b/iu.test(output) && agentComposerState(screen, '') === 'empty') {
+          return { completed: true, terminalOutput: output };
+        }
+      }
+    } catch { /* Enter may have reached the CLI; never offer an automatic replay. */ }
+    return { unconfirmed: true };
+  });
+}
+
+export async function selectSessionModel({ provider, sessionName, threadId, option, scope, menuText }, overrides = {}) {
   const selectedOption = typeof option === 'string' ? option.trim() : '';
   if (provider !== 'codex' || !selectedOption || selectedOption.length > 128
-    || /[\u0000-\u001f\u007f]/u.test(selectedOption)) {
+    || /[\u0000-\u001f\u007f]/u.test(selectedOption) || scope != null && !['session', 'default'].includes(scope)) {
     throw new Error('模型选项无效，请重新打开 /model');
   }
   if (!validateSessionName(sessionName)) throw new Error('会话信息无效，请刷新后重试');
@@ -1819,6 +1920,13 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
     const initialScreen = await captureSessionPane(paneId);
     const picker = codexModelPicker(initialScreen);
     if (!picker) throw new Error('模型选择器已关闭，请重新输入 /model');
+    if (menuText != null) {
+      if (typeof menuText !== 'string' || menuText.length > 64_000) throw new Error('无效的模型菜单');
+      const expected = codexModelPicker(menuText);
+      const identity = value => value && JSON.stringify([value.terminalOutput.split('\n')[0], value.options.map(item => item.label)]);
+      if (!expected || identity(expected) !== identity(picker)) throw new Error('模型菜单已变化，请重新打开 /model');
+    }
+    if (scope === 'session' && !picker.scopeSelection) throw new Error('当前菜单不支持会话范围，请重新打开 /model');
     const cursor = picker.options.findIndex((candidate) => candidate.cursor);
     const target = picker.options.findIndex((candidate) => candidate.label === selectedOption);
     if (cursor < 0 || target < 0) throw new Error('模型选项已变化，请重新输入 /model');
@@ -1826,7 +1934,7 @@ export async function selectSessionModel({ provider, sessionName, threadId, opti
     const execTmux = overrides.execTmux || ((args) => exec('tmux', args));
     const direction = target > cursor ? 'Down' : 'Up';
     const movement = Array.from({ length: Math.abs(target - cursor) }, () => direction);
-    await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, ...movement, 'Enter']));
+    await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, ...movement, scope === 'session' ? 's' : 'Enter']));
 
     const waitForSlashOutput = overrides.waitForSlashOutput
       || (() => new Promise((resolve) => setTimeout(resolve, SLASH_OUTPUT_DELAY_MS)));

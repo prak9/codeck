@@ -279,3 +279,15 @@ test('normal terminal progress button stays hidden outside an owned Agent sessio
   assert.equal(connecting.button.hidden, false);
   assert.equal(connecting.button.disabled, true);
 });
+
+test('a valid receipt clears its original draft even during a temporary input-readiness change', async () => {
+  for (const property of ['terminalInputReady', 'canWrite']) {
+    const f = fixture();
+    const pending = f.context.submitTerminalVoiceDraft();
+    f.state[property] = false;
+    f.state.terminalSubmitPending.resolve();
+    await pending;
+    assert.equal(f.draft.value, '', `${property} changes cannot invalidate an acknowledged submission`);
+    assert.equal(f.sent.length, 1);
+  }
+});

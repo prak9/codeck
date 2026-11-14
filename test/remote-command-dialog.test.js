@@ -82,3 +82,29 @@ test('a temporary approval failure leaves the existing choices retryable', async
   assert.equal(state.approvals.size, 1);
   assert.match(messages[0], /连接已断开/);
 });
+
+test('a same-session snapshot refresh does not discard a command choice result', async () => {
+  const commandOutput = normalizeSessionCommandOutput('codex', '/usage', {
+    terminalOutput: 'Usage\n› 1. Show usage  View usage\nPress enter to confirm or esc to go back',
+  });
+  const state = { provider: 'codex', thread: { id: 'thread', tmux: { name: 'work', commandOutput } } };
+  const nodes = [];
+  const context = vm.createContext({
+    state, normalizeSessionCommandOutput,
+    element(tag, cls, text) {
+      const node = element(tag, cls, text);
+      node.addEventListener = (type, fn) => { node[type] = fn; };
+      node.querySelectorAll = () => nodes.filter(n => n.tag === 'button');
+      nodes.push(node); return node;
+    },
+    composerRequestGate: { pending: false, run: fn => fn() },
+    agentRequest: async () => {
+      state.thread = { ...state.thread, tmux: { ...state.thread.tmux } };
+      return { terminalOutput: 'Latest usage' };
+    }, scheduleThreadRender() {}, setLiveMessage() {},
+  });
+  load(context, 'selectionCommandDialog');
+  context.selectionCommandDialog(commandOutput);
+  await nodes.find(n => n.tag === 'button').click();
+  assert.equal(state.thread.tmux.commandOutput.text, 'Latest usage');
+});

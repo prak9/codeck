@@ -729,7 +729,7 @@ test('captures the /status slash-command output after submitting it literally', 
     capturePane: async (paneId) => {
       if (!calls.some((call) => call.type === 'exec')) return EMPTY_CODEX_COMPOSER;
       calls.push({ type: 'capture', paneId });
-      return Array.from({ length: 34 }, (_, index) => (
+      return '/status\n' + Array.from({ length: 34 }, (_, index) => (
         index === 32 ? '› Ask Codex to do anything'
           : index === 33 ? '  gpt-5 · /data/code/codeck' : `status row ${index + 1}`
       )).join('\n');
@@ -737,12 +737,7 @@ test('captures the /status slash-command output after submitting it literally', 
   });
 
   assert.deepEqual(result, {
-    terminalOutput: [
-      'status row 5',
-      ...Array.from({ length: 27 }, (_, index) => `status row ${index + 6}`),
-      '› Ask Codex to do anything',
-      '  gpt-5 · /data/code/codeck',
-    ].join('\n'),
+    terminalOutput: Array.from({ length: 32 }, (_, index) => `status row ${index + 1}`).join('\n'),
   });
   assert.deepEqual(calls, [
     { type: 'exec', args: ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/status '] },
@@ -1134,7 +1129,7 @@ test('closing an old command popup never interrupts work, confirms approvals, or
   }
 });
 
-test('bare /usage bypasses completion, selects Show usage, and waits past loading', async () => {
+test('bare /usage bypasses completion and exposes the complete picker without selecting', async () => {
   const calls = [];
   const usagePicker = [
     'Usage',
@@ -1185,12 +1180,11 @@ test('bare /usage bypasses completion, selects Show usage, and waits past loadin
     capturePane: async () => screens.shift() || loaded,
   });
 
-  assert.match(result.terminalOutput, /Token activity\s+last 12 months/);
+  assert.equal(result.terminalOutput, usagePicker);
   assert.doesNotMatch(result.terminalOutput, /Loading/);
   assert.doesNotMatch(result.terminalOutput, /OpenAI Codex/);
   assert.deepEqual(calls.filter((call) => call.type === 'exec').map((call) => call.args), [
     ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', '/usage '],
-    ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
     ['copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter'],
   ]);
 });
@@ -1223,7 +1217,7 @@ test('recovers an identical /usage draft left by slash completion without duplic
     capturePane: async () => screens.shift() || loaded,
   });
 
-  assert.match(result.terminalOutput, /Token activity/);
+  assert.equal(result.terminalOutput, picker);
   assert.deepEqual(calls[0], [
     'copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-l', '-t', '%7', '--', ' ',
   ]);
@@ -1259,10 +1253,8 @@ test('resumes an already open /usage picker left by an earlier remote attempt', 
     capturePane: async () => screens.shift() || loaded,
   });
 
-  assert.match(result.terminalOutput, /Token activity/);
-  assert.deepEqual(calls, [[
-    'copy-mode', '-q', '-t', '%7', ';', 'send-keys', '-t', '%7', 'Enter',
-  ]]);
+  assert.equal(result.terminalOutput, picker);
+  assert.deepEqual(calls, []);
 });
 
 test('selects an exact option in the verified Codex model picker and returns its next step', async () => {
