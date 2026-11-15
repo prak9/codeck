@@ -13,6 +13,8 @@
 ```sh
 codeck session list
 codeck session read research
+codeck workfiles list research --json
+codeck workfiles add research --record /absolute/path/source.json
 codeck session send research --file /tmp/task.txt
 codeck session create new-task --provider codex --cwd /data/code/project
 codeck page publish report.html --title '研究报告' --source-key '/project:reports/report.html' --session research --revision abc123
@@ -25,3 +27,5 @@ codeck page revoke source-ID
 发布返回页面 ID、链接、source 和 contentHash。无来源时使用 `--id`；有来源时使用 `--source-key`，不要同时传两者。同一 key 在重启及并发发布后仍指向同一页面，正文、标题和来源版本按串行写入顺序更新，已有分享保持不变。key 是来源身份，不应把每次变化的 commit/hash 放进 key；变化版本写到 revision。
 
 配套 Skill 位于 `skills/codeck/SKILL.md`，本机通过 Codex Skill 目录的符号链接安装。无需新增常驻 Agent 或后台服务。
+
+[工作文件格式、会话归属与版本边界](workfiles.md)。

@@ -6,6 +6,7 @@ import { createTerminalStream } from '../public/terminal-stream.js';
 import * as terminalUtils from '../public/terminal-utils.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
 import { clipboardFiles, readClipboardPayload } from '../public/clipboard-files.js';
+import { uploadWorkContext } from '../public/workfiles.js';
 
 const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -43,7 +44,7 @@ function fixture() {
   const listeners = new Map();
   $('.mobile-keybar').addEventListener = (type, handler) => listeners.set(type, handler);
   const context = vm.createContext({
-    state, $, clipboardFiles, readClipboardPayload: () => readClipboardPayload(context.navigator.clipboard), WebSocket: { OPEN: 1 }, URLSearchParams, TextDecoder, setTimeout, clearTimeout,
+    state, $, clipboardFiles, uploadWorkContext, readClipboardPayload: () => readClipboardPayload(context.navigator.clipboard), WebSocket: { OPEN: 1 }, URLSearchParams, TextDecoder, setTimeout, clearTimeout,
     location: { protocol: 'http:', host: 'localhost', pathname: '/', search: '', hash: '' },
     history: {
       replaceState(_state, _title, next) {

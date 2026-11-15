@@ -23,6 +23,7 @@
   <link rel="stylesheet" href="/terminal-image-preview.css?v=1">
   <link rel="stylesheet" href="/history-search.css?v=1">
   <link rel="stylesheet" href="/session-progress.css?v=1">
+  <link rel="stylesheet" href="/workfiles.css?v=2">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -70,6 +71,7 @@
               <button class="terminal-progress-button" id="terminalProgressButton" type="button" aria-label="询问 Agent 进度" title="询问 Agent 进度" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">?</span></button>
               <button class="terminal-progress-button" id="terminalContinueButton" type="button" aria-label="确认并继续推进" title="确认并继续推进" hidden><span class="terminal-autonomy-symbol" aria-hidden="true">✓</span></button>
             </div>
+            <button id="workfilesButton" type="button" class="terminal-progress-button workfiles-button" aria-label="工作文件" title="工作文件" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2-3h9v16H3z"/></svg></button>
             <button class="terminal-tool-button" id="shareButton" type="button">分享</button><button class="terminal-tool-button desktop-agent-copy" id="copyLatestOutputButton" type="button" data-agent-output-copy aria-label="复制最新模型输出" disabled hidden>复制回复</button><button class="view-mode-button" id="viewModeButton" type="button" aria-pressed="true">全览</button><span id="connectionState" role="status" aria-live="polite">正在连接</span><button class="danger-button" id="killButton">结束会话</button>
           </div>
           <div class="terminal-disconnect" id="terminalDisconnect" hidden>
@@ -180,6 +182,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-    <script type="module" src="/app.js?v=163"></script>
+    <script type="module" src="/app.js?v=166"></script>
 </body>
 </html>

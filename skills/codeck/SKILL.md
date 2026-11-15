@@ -6,12 +6,19 @@ description: 通过本机 Codeck CLI 查询已有 Agent 会话、向指定会话
 使用 `codeck --help` 查看当前命令。若 PATH 尚未注册，在 Codeck 仓库执行 `node scripts/codeck.mjs`。沿用用户指定的目标、范围与权限；读取可直接进行，创建、发送及开启分享需来自用户当前或已有授权。
 
 - 查会话：`codeck session list --json`。以精确名称选定会话，歧义时澄清，不猜测接收人。
+- 工作文件：`codeck workfiles list NAME --json` 查看资料与成果；实际使用的重要来源和明确交付的文件用 `codeck workfiles add NAME --record RECORD.json` 登记。kind为source/result，key稳定，title为具体名称，url/path二选一，可填group、date、revision。文件用当前项目或上传目录内的绝对路径；登记保存快照。同一成果沿用key；不把临时输出或未核验结论包装成已验证成果，不保存凭据。关联session的发布页自动列入成果。见[工作文件](../../docs/workfiles.md)。
 - 记进度：简短记录用 `codeck session checkpoint NAME --file NOTE.txt`；目标、已验证成果、待办、需要用户判断及证据用 `--record NOTE.json`，格式见[进度便签](references/session-progress.md)。在基线建立、获得验证结果、阻塞或结束等关键节点更新同一份便签；用户修正目标时同步更新。先读已有记录，区分事实和未验证尝试，不将空闲当作完成；仅在明确新任务时设置 newTask。更新便签不发送消息、不授权、不续跑。
 - 查进展：`codeck session read NAME`。这是只读操作，不向 Agent 发送“继续”。历史尚未就绪时说明正在读取，不把空输出当作无任务。
 - 发任务：把完整文本写入文件，再用 `codeck session send NAME --file PROMPT.txt`。保留目标与边界，不追加自行扩大权限的提示。
 - 新会话：`codeck session create NAME --provider codex --cwd /project`。支持 codex、claude、qodercli；创建后先查列表确认 Agent 身份就绪，再单独发送用户任务。已有同名会话不要覆盖。并行修改代码时可追加 `--worktree /absolute/new-path` 从当前 HEAD 建独立 checkout；未提交改动、依赖、配置和端口不自动复制或隔离。失败时保留工作区供核实，不自动删除。
 - 发布：`codeck page publish report.html --title '报告标题' --source-key '/project:reports/report.html' --session NAME --revision VERSION`。同一来源 key 持续更新同一链接；来源 key 应稳定、跨项目不冲突，不包含凭据。版本填实际代码版本或资料标识，不编造。也可以仅用 `--id ID` 更新固定页面，两种方式选一种。
 - 分享：`codeck page share ID` 返回免登录链接；再次调用会更换链接并使旧链接失效。`codeck page revoke ID` 撤销。默认发布不等于开启分享；向用户返回可访问的页面链接。
+
+在 Codeck 会话中处理研究、分析或交付任务时，主动维护工作文件，不等用户再提醒：使用了影响结论的关键来源后登记为 source；正式报告、图表、数据表或可下载文件交付前登记为 result；修改已交付成果后沿用原 key 登记新版本。只记录本任务实际使用和交付的内容，不收集每次检索、工具日志或临时草稿。已关联 session 的发布页会自动进入成果，不重复登记同一页面。
+
+正式成果可附evidence，填写实际版本、验证概要、checks（method/result/reference）和limitations；未执行写not-run，不将保存成功写成验证通过。验证记录只对应登记的快照；内容变化后重新验证，不照搬旧结论。工作文件面板可原地预览Markdown、图片和PDF，用户无需再寻找终端路径。
+
+先核对目标会话，不能仅凭当前目录猜测 session；无法确定归属时先查询会话列表，仍不确定就说明未登记，不发消息打断其他 Agent。登记失败如实说明，保留原文件与正常答复，不重复执行原任务。用户要求只读或不记录时遵从要求。登记和界面刷新不改变目标、预算或权限，不代表结论已验证，也不开启分享。此约定通过读取本 Skill 生效，不向已有会话自动注入指令。
 
 页面使用独立 HTML，内嵌 CSS/JS；外部脚本和 fetch 被沙箱阻断。先获取所需数据，再写入 HTML。支持 HTTPS 图片、data 图片和交互图表。不要发布 Token、Cookie 或私密凭据。服务器仅局域网可达时，分享链接也不会自动变成公网可达。
 

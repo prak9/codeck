@@ -339,6 +339,7 @@ try {
         localStorage.setItem('codeck-remote-theme', theme);
       }, viewport.width < 500 ? 'dark' : 'light');
       const page = await context.newPage();
+      await page.route('**/api/sessions/*/workfiles?*', route => route.fulfill({ json: { identity: 'fixture', items: [], pages: [], archives: [] } }));
       page.setDefaultTimeout(15_000);
       console.log(`Journey: ${provider} ${viewport.width}`);
       const errors = [];
@@ -352,6 +353,9 @@ try {
       assert.equal(fixture.sent.length, 0);
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
+      await page.locator('#workfilesButton').click();
+      await page.getByText('暂无资料。上传文件或添加本次使用的链接。', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '关闭工作文件', exact: true }).click();
       await page.getByText('● 需要判断 · 已建立基线', { exact: true }).waitFor({ state: 'attached' });
       if (simpleMode) {
         assert.equal(await page.locator('#progressDialog').evaluate(el => el.open), false);

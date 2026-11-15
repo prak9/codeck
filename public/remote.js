@@ -1,3 +1,4 @@
+import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
@@ -87,6 +88,8 @@ const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT;
 let viewportFrame = 0;
 let transcriptScrollFrame = 0;
 let transcriptScrollRevision = 0;
+
+let workfilesPanel;
 
 const state = {
   loadingEarlier: false,
@@ -467,7 +470,9 @@ async function uploadAttachment(attachment) {
   const params = new URLSearchParams({
     name: `${Date.now()}-${attachment.id.slice(0, 8)}-${attachment.file.name || 'attachment'}`,
     relativePath: 'remote',
+    workTitle: attachment.file.name || '附件',
   });
+  uploadWorkContext(params, currentWorkfilesTarget());
   try {
     const response = await fetch(`/api/uploads/files?${params}`, {
       method: 'POST',
@@ -1472,6 +1477,7 @@ function threadFolder(entry, indexByThread) {
 $('#sessionSearch').addEventListener('input', () => renderThreadList());
 
 function renderThreadList() {
+  workfilesPanel?.sync();
   renderSessionProgress($('#sessionProgress'), state.thread?.tmux?.checkpoint, { key: `${state.thread?.tmux?.name}:${state.thread?.tmux?.checkpoint?.taskId || ''}`, onRespond: () => { if ($('#progressDialog').open) $('#progressDialog').close(); closeDrawer(); $('#composerInput').focus(); } });
   const list = $('#threadList');
   const scrollTop = list.scrollTop;
@@ -2471,6 +2477,7 @@ function currentThreadWaitingForInput() {
 }
 
 function renderComposerState() {
+  workfilesPanel?.sync();
   const input = $('#composerInput');
   const sendButton = $('#sendButton');
   if (!input || !sendButton) return;
@@ -3527,3 +3534,11 @@ if (state.token) {
 bindHistorySearch({ token: () => state.token });
 
 $('#closeProgressDialog').addEventListener('click', () => $('#progressDialog').close());
+
+function currentWorkfilesTarget() {
+  const thread = state.thread;
+  return thread?.tmux?.name ? { name: thread.tmux.name, createdAt: thread.tmux.createdAt, agent: { kind: state.provider === 'shell' ? '' : state.provider, id: thread.id.startsWith('tmux:') ? '' : thread.id } } : null;
+}
+
+workfilesPanel = bindWorkfiles({ button: document.getElementById('workfilesButton'), token: () => state.token, getTarget: currentWorkfilesTarget });
+workfilesPanel.sync();

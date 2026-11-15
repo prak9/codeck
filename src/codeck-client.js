@@ -10,6 +10,8 @@ import { sessionTarget } from './telegram-sessions.js';
 export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck session list
   codeck session checkpoint NAME --file NOTE.txt | --record NOTE.json
+  codeck workfiles list NAME
+  codeck workfiles add NAME --record FILE.json
   codeck session read NAME
   codeck session send NAME --file PROMPT.txt
   codeck session create NAME --provider codex --cwd /project [--worktree /path/to/new-worktree]
@@ -73,12 +75,21 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
   }
   const commandOptions = {
     'session:checkpoint': ['file', 'record'], 'session:list': [], 'session:read': [], 'session:send': ['file'], 'session:create': ['provider', 'cwd', 'worktree'],
+    'workfiles:list': [], 'workfiles:add': ['record'],
     'history:search': ['provider'], 'history:context': [], 'history:link': ['repo', 'commit', 'provider'], 'task:list': [], 'task:put': ['file'], 'task:remove': [], 'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
   }[area + ':' + action];
   if (!commandOptions || Object.keys(options).some(key => !commandOptions.includes(key))) throw new Error('未知命令或该命令不支持此参数');
   const name = positional[0];
   if (positional.length > 1) throw new Error('参数过多；正文请使用 --file');
   const call = (endpoint, method, body) => request(connection, endpoint, method, body);
+  if (area === 'workfiles') {
+    if (!name) throw new Error('请指定会话名');
+    const endpoint = `/api/sessions/${encodeURIComponent(name)}/workfiles`;
+    const current = await call(endpoint);
+    if (action === 'list') return current;
+    if (!options.record) throw new Error('请用 --record 指定资料或成果记录');
+    return call(endpoint, 'POST', { ...JSON.parse(await fs.readFile(options.record, 'utf8')), identity: current.identity });
+  }
   if (area === 'session') {
     if (action === 'list') return call('/api/sessions');
     if (!name) throw new Error('请指定会话名');

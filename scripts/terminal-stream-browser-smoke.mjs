@@ -66,21 +66,27 @@ try {
         } }); },
       });
     });
+    console.log('Viewport', width);
     const page = await context.newPage(); const errors = [];
+    page.setDefaultTimeout(15000);
+    await page.route('**/api/sessions/*/workfiles?*', route => route.fulfill({ json: { identity: 'fixture', items: [], pages: [], archives: [] } }));
     page.on('pageerror', e => errors.push(e.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     const screen = async name => page.waitForFunction(name => {
       const terminal = window.fixtureTerminal;
       if (!terminal) return false;
       return Array.from({ length: terminal.buffer.active.length }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true)).join('\n').includes('SCREEN:' + name);
-    }, name);
+    }, name, { timeout: 15000 });
     await page.getByText('● 本轮有新结果 · 已复现，正在验证', { exact: true }).waitFor({ state: 'attached' });
     await page.locator('[data-session="first"]').evaluate(el => el.click());
-    await screen('first');
+    await screen('first'); console.log(width, 'first frame');
+    await page.locator('#workfilesButton').click(); console.log(width, 'files opened');
+    await page.getByText('暂无资料。上传文件或添加本次使用的链接。', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '关闭工作文件', exact: true }).click();
     assert.equal(readNotices.at(-1)?.id, 'notice-1');
     const socket = terminalSockets.at(-1);
     await page.locator('[data-session="second"]').evaluate(el => el.click());
-    await screen('second');
+    await screen('second'); console.log(width, 'second frame');
     // An old clear-screen frame must not unlock an old stream after switching.
     socket.send(Buffer.from(JSON.stringify({ type: 'terminalOutput', flowId: '1', epoch: 999, seq: 2, data: '\x1bc', reset: true })));
     socket.send(Buffer.from(JSON.stringify({ type: 'terminalOutput', flowId: '1', epoch: 999, seq: 7, data: 'STALE' })));
@@ -88,7 +94,7 @@ try {
     socket.terminate();
     await new Promise(resolve => { const poll = setInterval(() => { if (terminalSockets.length > before) { clearInterval(poll); resolve(); } }, 50); setTimeout(() => { clearInterval(poll); resolve(); }, 5000).unref(); });
     await page.waitForFunction(() => document.querySelector('#terminalDisconnect').hidden, null, { timeout: 15000 });
-    await screen('second');
+    await screen('second'); console.log(width, 'second frame');
     assert.ok(terminalSockets.length > before, 'new transport established');
     const text = await page.evaluate(() => Array.from({ length: fixtureTerminal.buffer.active.length }, (_, i) => fixtureTerminal.buffer.active.getLine(i)?.translateToString(true)).join('\n'));
     assert.ok(!text.includes('STALE'));

@@ -1,3 +1,4 @@
+import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
 import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=3';
@@ -47,6 +48,8 @@ import {
   saveSessionFolderPrefixes,
   setSessionFolderExpanded,
 } from './session-visibility.js?v=2';
+
+let workfilesPanel;
 
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
@@ -438,7 +441,8 @@ async function collectDroppedFilesFromDataTransfer(dataTransfer) {
 }
 
 async function uploadFileBlob(file, relativePath) {
-  const params = new URLSearchParams({ name: file.name });
+  const params = uploadWorkContext(new URLSearchParams({ name: file.name }), state.sessions.find(item => item.name === state.active));
+  params.set('workTitle', file.name);
   if (relativePath) params.set('relativePath', relativePath);
   const response = await fetch(`/api/uploads/files?${params}`, {
     method: 'POST',
@@ -702,6 +706,7 @@ function bindSessionListDelegates(list) {
 let sessionRenderSignature = null;
 
 function renderSessions({ force = false } = {}) {
+  workfilesPanel?.sync();
   const progressSession = state.sessions.find(item => item.name === state.active);
   renderSessionProgress($('#sessionProgress'), progressSession?.checkpoint, { key: `${progressSession?.createdAt}:${progressSession?.checkpoint?.taskId || ''}`, onRespond: () => { state.terminal?.focus(); } });
   const list = $('#sessionList');
@@ -1157,6 +1162,7 @@ function connectedStateLabel() {
 }
 
 function syncTerminalAccess() {
+  workfilesPanel?.sync();
   const writable = state.canWrite && state.terminalInputReady;
   if (state.terminal) state.terminal.options.disableStdin = !writable;
   for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
@@ -1283,7 +1289,7 @@ async function pasteImages(event) {
   const draft = event.currentTarget === $('#terminalVoiceDraft') ? $('#terminalVoiceDraft') : null;
   setConnectionMessage(images.length > 1 ? `正在上传 ${images.length} 张图片…` : '正在上传图片…', false);
   try {
-    const uploads = await Promise.all(images.map((file) => api('/api/uploads/images', {
+    const uploads = await Promise.all(images.map((file) => api('/api/uploads/images?' + uploadWorkContext(new URLSearchParams({ workTitle: file.name || '图片' }), state.sessions.find(item => item.name === state.active)), {
       method: 'POST', headers: { 'Content-Type': file.type }, body: file,
     })));
     if (!isCurrentTerminalTarget(target)) throw new Error('会话已切换或断开，未插入上传路径');
@@ -2151,3 +2157,6 @@ document.addEventListener('click', event => {
 });
 
 bindHistorySearch({ token: () => state.token });
+
+workfilesPanel = bindWorkfiles({ button: document.getElementById('workfilesButton'), token: () => state.token, enabled: () => state.canManage, getTarget: () => state.sessions.find(item => item.name === state.active) });
+workfilesPanel.sync();

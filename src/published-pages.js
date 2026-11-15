@@ -7,7 +7,8 @@ import { feedbackControls, paragraphPicker } from './page-feedback-ui.js';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const fail = (message, status) => Object.assign(new Error(message), { status });
-const metadata = ({ id, title, createdAt, updatedAt, source, contentHash }) => ({ id, title, createdAt, updatedAt,
+const metadata = ({ id, title, createdAt, updatedAt, source, contentHash, evidence }, includeEvidence = false) => ({ id, title, createdAt, updatedAt,
+  ...(includeEvidence && evidence ? { evidence } : {}),
   ...(source ? { source } : {}), ...(contentHash ? { contentHash } : {}), url: `/pages/${id}` });
 function pageSource(value) {
   if (!value || typeof value.key !== 'string' || !value.key.trim() || value.key.length > 2000) throw fail('页面来源需要非空 key，最长2000字', 400);
@@ -43,13 +44,13 @@ export function createPageStore(directory) {
   }
   return {
     get,
-    async list() {
+    async list({ includeEvidence = false } = {}) {
       let names;
       try { names = await fs.readdir(directory); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
       const pages = [];
       for (const name of names) {
         if (!name.endsWith('.json') || !ID.test(name.slice(0, -5))) continue;
-        try { pages.push(metadata(await get(name.slice(0, -5)))); }
+        try { pages.push(metadata(await get(name.slice(0, -5)), includeEvidence)); }
         catch (error) { if (error.status !== 404) throw error; }
       }
       return pages.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));

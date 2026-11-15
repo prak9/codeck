@@ -5,6 +5,7 @@ import { createConditionalTasks } from './conditional-tasks.js';
 import { sessionRpc } from './session-rpc.js';
 import { sessionTarget } from './telegram-sessions.js';
 import { createCheckpoints } from './session-checkpoints.js';
+import { createWorkfiles, mountWorkfiles, workfileDownloadAuthorized, isWorkfileDownloadRequest } from './workfiles.js';
 import { userMessageText } from '../public/agent-model.js';
 import { sessionExecutionState } from '../public/execution-status.js';
 import crypto from 'node:crypto';
@@ -64,6 +65,8 @@ const app = express();
 const terminalHistoryLinks = createTerminalHistoryLinkReader();
 const sessionSnapshots = createSessionSnapshotLoader(listSessions);
 const checkpoints = await createCheckpoints(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'checkpoints.json'));
+const workfiles = createWorkfiles(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'workfiles'), { uploadRoot });
+const pageStore = createPageStore(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'pages'));
 const protocolEpoch = crypto.randomUUID();
 const sessionStatusByName = new Map();
 const sessionPaneExcerpts = new Map();
@@ -93,6 +96,8 @@ function setSecurityHeaders(_req, res, next) {
 function requestAuth(req) {
   const header = req.headers.authorization || '';
   if (header.startsWith('Bearer ')) return authenticateToken(accessToken, header.slice(7));
+  if (workfileDownloadAuthorized(req)) return { owner: true, session: null, canWrite: false };
+  if (webAuthEnabled && isWorkfileDownloadRequest(req) && requestHasWebSession(req)) return { owner: true, session: null, canWrite: false };
   if (webAuthEnabled && req.method === 'GET' && req.path === '/download' && requestHasWebSession(req)) {
     return { owner: true, session: null, canWrite: true };
   }
@@ -187,8 +192,9 @@ app.post('/api/web-logout', (_req, res) => {
 app.use('/api', authenticateApiRequest);
 const historySearch = createHistorySearch({ directory: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'history-search') });
 mountHistoryRoutes(app, { history: historySearch, ownerOnly });
+mountWorkfiles(app, { store: workfiles, pages: pageStore, sessions: () => sessionSnapshots.get(), ownerOnly });
 mountPublishedPages(app, {
-  store: createPageStore(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'pages')),
+  store: pageStore,
   resolveTarget: async name => sessionTarget(await sessionSnapshots.get(), name),
   sendFeedback: async (target, text, commandId) => {
     const live = sessionTarget(await listSessions(), target.tmuxSession);
@@ -377,11 +383,25 @@ app.post('/api/sessions/:name/share', ownerOnly, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+async function uploadWorkSession(req) {
+  if (!req.query.workSession) return null;
+  const session = (await sessionSnapshots.get()).find(item => item.name === req.query.workSession);
+  return session && String(session.createdAt) === req.query.workCreated
+    && (session.agent?.id || '') === req.query.workThread && (session.agent?.kind || '') === req.query.workProvider ? session : null;
+}
+async function uploadedFileResult(file, session, title) {
+  if (!session) return { path: file };
+  try {
+    await workfiles.put(session, { key: file, kind: 'source', title: typeof title === 'string' ? title : path.basename(file), path: file });
+    return { path: file };
+  } catch (error) { return { path: file, workfilesError: `文件已上传，工作文件登记失败：${error.message}` }; }
+}
 app.post('/api/uploads/images', ownerOnly, async (req, res, next) => {
   try {
     req.setTimeout(180_000);
     const contentType = req.headers['content-type']?.split(';')[0].trim().toLowerCase();
-    res.status(201).json({ path: await saveUploadStream(req, { contentType: contentType || 'application/octet-stream' }) });
+    const session = await uploadWorkSession(req);
+    res.status(201).json(await uploadedFileResult(await saveUploadStream(req, { contentType: contentType || 'application/octet-stream' }), session, req.query.workTitle));
   } catch (error) { next(error); }
 });
 
@@ -390,7 +410,8 @@ app.post('/api/uploads/files', ownerOnly, async (req, res, next) => {
     req.setTimeout(180_000);
     const fileName = req.query.name || req.get('x-file-name') || 'upload';
     const relativePath = req.query.relativePath || req.get('x-relative-path') || '';
-    res.status(201).json({ path: await saveUploadStream(req, { fileName, relativePath }) });
+    const session = await uploadWorkSession(req);
+    res.status(201).json(await uploadedFileResult(await saveUploadStream(req, { fileName, relativePath }), session, req.query.workTitle));
   } catch (error) { next(error); }
 });
 
