@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { scrollSession, clickSessionTranscript } from '../src/tmux.js';
 
-function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '', firstRow = 'Show details' } = {}) {
+function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '', firstRow = 'Show details', width = 80 } = {}) {
   const commands = [];
   return { commands, options: {
     isCurrent: () => current,
     execTmux: async args => {
       commands.push(args);
-      if (args[0] === 'display-message') return { stdout: `%7\t${Number(alternate)}\n` };
+      if (args[0] === 'display-message') return { stdout: `%7\t${Number(alternate)}\t${width}\n` };
       if (args[0] === 'capture-pane') return { stdout: codex
         ? ` ${firstRow}\n\n› ${draft}\n\n  GPT-6-Astra medium · ~/project\n  ${footer}`
         : 'shell$ ' };
@@ -25,6 +25,22 @@ test('Codex fullscreen scroll uses native wheel reports, not tmux scrollback or 
     assert.ok(send, 'mode is rechecked atomically before injecting native scroll');
     assert.ok(send.some(arg => arg.includes(lines > 0 ? '[<64;2;2M' : '[<65;2;2M')));
     assert.equal(f.commands.some(args => args.includes('scroll-up') || args.includes('scroll-down')), false);
+  }
+});
+
+test('right-aligned history overlay remains clickable alongside transcript text', async () => {
+  const banner = 'New activity · ↓ Back to bottom · esc';
+  const firstRow = `   资料来源${' '.repeat(80 - 11 - banner.length)}${banner}`;
+  const f = fixture({ firstRow });
+  await clickSessionTranscript('work', 65, 1, f.options);
+  assert.ok(f.commands.some(args => args[0] === 'if-shell'));
+  const body = fixture({ firstRow });
+  await clickSessionTranscript('work', 5, 1, body.options);
+  assert.equal(body.commands.some(args => args[0] === 'if-shell'), false);
+  for (const options of [{ readOnly: true }, { isCurrent: () => false }]) {
+    const blocked = fixture({ firstRow });
+    await clickSessionTranscript('work', 65, 1, { ...blocked.options, ...options });
+    assert.equal(blocked.commands.some(args => args[0] === 'if-shell'), false);
   }
 });
 

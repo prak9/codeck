@@ -2238,12 +2238,12 @@ export function scrollSession(name, lines, overrides = {}) {
 }
 
 async function codexFullscreenPane(name, execTmux, isCurrent) {
-  const pane = await execTmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_id}\t#{alternate_on}']);
-  const [paneId, alternate] = (pane?.stdout || '').trim().split('\t');
+  const pane = await execTmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_id}\t#{alternate_on}\t#{pane_width}']);
+  const [paneId, alternate, width] = (pane?.stdout || '').trim().split('\t');
   if (!isCurrent() || !PANE_ID.test(paneId || '') || alternate !== '1') return null;
   const screen = await execTmux(['capture-pane', '-p', '-e', '-t', paneId]);
   const rows = cleanScreenRows(screen?.stdout);
-  return isCurrent() && codexComposerFooterRow(rows) >= 0 ? { paneId, rows } : null;
+  return isCurrent() && codexComposerFooterRow(rows) >= 0 ? { paneId, rows, width: Number(width) } : null;
 }
 
 function sendCodexPointer(execTmux, paneId, bytes) {
@@ -2269,8 +2269,13 @@ export function clickSessionTranscript(name, column, row, overrides = {}) {
     const composer = pane.rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
     const line = pane.rows[row - 1] || '';
     const historyBanner = /^\s*(?:New activity\s*·\s*)?↓\s*Back to bottom\s*·\s*esc\s*$/iu.test(line);
+    // Codex also overlays this control at the right edge of a transcript row.
+    // Keep clicks on the underlying text local, including double-width CJK text.
+    const overlay = /\S {2,}((?:New activity\s*·\s*)?↓\s*Back to bottom\s*·\s*esc)$/iu.exec(line);
+    const historyOverlay = overlay && Number.isSafeInteger(pane.width)
+      && column > pane.width - overlay[1].length && column <= pane.width;
     if (composer < 0 || row - 1 >= composer
-      || (!historyBanner && !/Show (?:details|less|more)|Hide details/iu.test(line))) return;
+      || (!historyBanner && !historyOverlay && !/Show (?:details|less|more)|Hide details/iu.test(line))) return;
     await sendCodexPointer(execTmux, pane.paneId, `\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
   });
 }
