@@ -1,5 +1,5 @@
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
-const CLIENTS = new Set(['shell', 'codex', 'claude', 'qodercli']);
+const CLIENTS = new Set(['shell', 'codex', 'claude', 'qodercli', 'agy']);
 
 export function createRemoteSessionPayload({ name, provider, cwd, mode = 'new' }) {
   const sessionName = typeof name === 'string' ? name.trim() : '';

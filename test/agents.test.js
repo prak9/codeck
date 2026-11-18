@@ -1759,3 +1759,19 @@ test('a rollout with no live writer lock is refused', () => {
   const codex = { starts: [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', startedAt: startedAt + 3_000 }] };
   assert.equal(uniqueCodexStartMatch({ startedAt }, codex), null);
 });
+
+test('AGY pane detection preserves its native terminal identity without inventing a thread id', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeck-agy-proc-'));
+  try {
+    writeProcProcess(root, { pid: 10, ppid: 1, command: '/bin/bash', children: [11], cwd: root });
+    writeProcProcess(root, { pid: 11, ppid: 10, command: '/home/x/.local/bin/agy --dangerously-skip-permissions', startTicks: 100, cwd: root });
+    const result = await detectPaneAgents([{ session: 'agy-work', pid: 10, paneId: '%7' }], {}, {
+      procRoot: root, clockTicks: 100, now: 1000000, uptimeMs: 100000,
+    });
+    const agent = result.get('agy-work');
+    assert.equal(agent.kind, 'agy');
+    assert.equal(agent.id, null);
+    assert.equal(agent.cwd, root);
+    assert.equal(agent.paneId, '%7');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

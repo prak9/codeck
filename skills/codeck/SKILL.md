@@ -10,7 +10,7 @@ description: 通过本机 Codeck CLI 查询已有 Agent 会话、向指定会话
 - 记进度：简短记录用 `codeck session checkpoint NAME --file NOTE.txt`；目标、已验证成果、待办、需要用户判断及证据用 `--record NOTE.json`，格式见[进度便签](references/session-progress.md)。在基线建立、获得验证结果、阻塞或结束等关键节点更新同一份便签；用户修正目标时同步更新。先读已有记录，区分事实和未验证尝试，不将空闲当作完成；仅在明确新任务时设置 newTask。更新便签不发送消息、不授权、不续跑。
 - 查进展：`codeck session read NAME`。这是只读操作，不向 Agent 发送“继续”。历史尚未就绪时说明正在读取，不把空输出当作无任务。
 - 发任务：把完整文本写入文件，再用 `codeck session send NAME --file PROMPT.txt`。保留目标与边界，不追加自行扩大权限的提示。
-- 新会话：`codeck session create NAME --provider codex --cwd /project`。支持 codex、claude、qodercli；创建后先查列表确认 Agent 身份就绪，再单独发送用户任务。已有同名会话不要覆盖。并行修改代码时可追加 `--worktree /absolute/new-path` 从当前 HEAD 建独立 checkout；未提交改动、依赖、配置和端口不自动复制或隔离。失败时保留工作区供核实，不自动删除。
+- 新会话：`codeck session create NAME --provider codex --cwd /project`。支持 codex、claude、qodercli、agy；agy 默认通过本机7890代理并自动批准，当前使用原生终端，不支持本CLI的结构化read/send；创建后先查列表确认 Agent 身份就绪，再单独发送用户任务。已有同名会话不要覆盖。并行修改代码时可追加 `--worktree /absolute/new-path` 从当前 HEAD 建独立 checkout；未提交改动、依赖、配置和端口不自动复制或隔离。失败时保留工作区供核实，不自动删除。
 - 发布：`codeck page publish report.html --title '报告标题' --source-key '/project:reports/report.html' --session NAME --revision VERSION`。同一来源 key 持续更新同一链接；来源 key 应稳定、跨项目不冲突，不包含凭据。版本填实际代码版本或资料标识，不编造。也可以仅用 `--id ID` 更新固定页面，两种方式选一种。
 - 分享：`codeck page share ID` 返回免登录链接；再次调用会更换链接并使旧链接失效。`codeck page revoke ID` 撤销。默认发布不等于开启分享；向用户返回可访问的页面链接。
 

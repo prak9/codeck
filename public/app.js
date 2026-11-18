@@ -8,7 +8,7 @@ import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
 import { bindTranscriptClick } from './terminal-transcript-click.js?v=1';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { bindTerminalRecovery } from './terminal-recovery.js?v=1';
-import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=23';
+import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=24';
 import { clipboardFiles, readClipboardPayload } from './clipboard-files.js?v=1';
 import { bindTerminalPalette } from './terminal-palette.js?v=1';
 import { enableTerminalLinks } from './terminal-links.js?v=3';
@@ -138,7 +138,7 @@ const state = {
   openedShareLink: Boolean(sharedToken || storedShareToken),
 };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
-const agentLabels = { codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
+const agentLabels = { agy: { icon: 'G›', name: 'Antigravity' }, codex: { icon: 'C›', name: 'Codex' }, claude: { icon: 'A›', name: 'Claude' }, qodercli: { icon: 'Q›', name: 'Qoder CLI' } };
 let terminalVoiceBaseDraft = '';
 let terminalVoiceHadResult = false;
 
@@ -292,10 +292,11 @@ function rejectTerminalSubmit(message) {
   state.terminalSubmitPending?.reject(new Error(message));
 }
 
-function requestTerminalSubmit(target, data, { separateFinalEnter = false, replaceDraft = false } = {}) {
+function requestTerminalSubmit(target, data, { separateFinalEnter = false, replaceDraft = false, requireAgy = false } = {}) {
   if (state.terminalSubmitPending) throw new Error('上一笔输入仍在发送，请稍后重试');
   const message = {
     type: 'input', data, submit: true,
+    ...(requireAgy ? { requireAgy: true } : {}),
     ...(replaceDraft ? { replaceDraft: true } : {}),
     ...(separateFinalEnter ? { separateFinalEnter: true } : {}),
   };
@@ -796,12 +797,12 @@ async function refreshSessions() {
   if (state.canManage) connectSessionFeed();
 }
 
-function activeAgentSessionTarget() {
+function activeAgentSessionTarget({ nativeTerminal = false } = {}) {
   if (!state.canManage) return null;
   const session = state.sessions.find((item) => item.name === state.active);
   const provider = session?.agent?.kind;
   const threadId = session?.agent?.id;
-  if (!provider || provider === 'shell' || !threadId) return null;
+  if (!provider || provider === 'shell' || (!threadId && !(nativeTerminal && provider === 'agy'))) return null;
   return {
     provider, threadId, session,
     tmuxSession: session.name,
@@ -825,13 +826,14 @@ function activeAgentOutputTarget() {
 }
 
 function syncTerminalProgressButton() {
-  const target = state.canWrite ? activeAgentSessionTarget() : null;
+  const target = state.canWrite ? activeAgentSessionTarget({ nativeTerminal: true }) : null;
   const pending = Boolean(target && state.terminalProgressPending?.key === target.progressKey);
+  const ready = target?.provider === 'agy' ? isCurrentTerminalTarget(captureTerminalTarget()) : state.sessionFeedReady;
   for (const [id, action] of [['terminalProgressButton', '询问 Agent 进度'], ['terminalContinueButton', '确认并继续推进']]) {
     const button = $(`#${id}`);
     const label = target?.question ? '处理 Agent 等待的问题' : action;
     button.hidden = !target;
-    button.disabled = !target || pending || (!target.question && !state.sessionFeedReady);
+    button.disabled = !target || pending || (!target.question && !ready);
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-busy', String(pending));
     button.title = label;
@@ -841,33 +843,38 @@ function syncTerminalProgressButton() {
 async function askTerminalProgress({ confirm = false, planning = false } = {}) {
   const button = $(planning ? '#terminalAutonomyButton' : confirm ? '#terminalContinueButton' : '#terminalProgressButton');
   const action = planning ? '请求任务规划' : confirm ? '确认并请求继续推进' : '询问 Agent 进度';
-  const target = state.canWrite ? activeAgentSessionTarget() : null;
+  const target = state.canWrite ? activeAgentSessionTarget({ nativeTerminal: true }) : null;
   if (!target || button.hidden || button.disabled) return;
   if (target.question) {
     state.terminal?.focus();
     setConnectionMessage('Agent 正在等待回答，请在终端中处理。');
     return;
   }
+  const terminalTarget = target.provider === 'agy' ? captureTerminalTarget() : null;
+  if (terminalTarget && !isCurrentTerminalTarget(terminalTarget)) return;
   const attempt = { key: target.progressKey, commandId: crypto.randomUUID() };
   state.terminalProgressPending = attempt;
   syncTerminalProgressButton();
   setConnectionMessage(`正在${action}…`, false);
   try {
-    const result = await sessionFeedRequest('sendSessionMessage', {
-      provider: target.provider,
-      threadId: target.threadId,
-      tmuxSession: target.tmuxSession,
-      text: planning ? AUTONOMY_PLANNING_PROMPT : confirm ? CONTINUE_PROMPT : PROGRESS_PROMPT,
-      commandId: attempt.commandId,
-    });
-    if (activeAgentSessionTarget()?.progressKey !== attempt.key) return;
+    const text = planning ? AUTONOMY_PLANNING_PROMPT : confirm ? CONTINUE_PROMPT : PROGRESS_PROMPT;
+    const result = terminalTarget
+      ? await requestTerminalSubmit(terminalTarget, text + '\r', { separateFinalEnter: true, requireAgy: true })
+      : await sessionFeedRequest('sendSessionMessage', {
+        provider: target.provider,
+        threadId: target.threadId,
+        tmuxSession: target.tmuxSession,
+        text,
+        commandId: attempt.commandId,
+      });
+    if (activeAgentSessionTarget({ nativeTerminal: true })?.progressKey !== attempt.key) return;
     if (result?.submissionStatus === 'unconfirmed') {
       setConnectionMessage('消息提交未确认；请检查终端，勿重复点击。', false);
     } else {
       setConnectionMessage(`已${action}`);
     }
   } catch (error) {
-    if (activeAgentSessionTarget()?.progressKey === attempt.key) {
+    if (activeAgentSessionTarget({ nativeTerminal: true })?.progressKey === attempt.key) {
       setConnectionMessage(`${action}未确认：${error.message}。请检查终端后再试。`, false);
     }
   } finally {

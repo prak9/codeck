@@ -205,6 +205,7 @@ export async function handleTerminalConnection(ws, session, viewport, overrides 
       if (/[\r\n]/.test(message.data)) awaitingSessionActivity = true;
       await dependencies.submitTerminalInput(targetSession, message.data, {
         isCurrent,
+        ...(message.requireAgy === true ? { requireAgy: true } : {}),
         separateFinalEnter: message.separateFinalEnter === true,
         replaceDraft: message.replaceDraft === true,
         bracketedPaste: isNativePaste(message),

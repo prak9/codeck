@@ -62,8 +62,12 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   const prompt = path.join(directory, 'prompt.txt'); await fs.writeFile(prompt, 'only this task\n$() is text');
   await cli('session', 'send', 'fixture', '--file', prompt);
   assert.equal(sends.length, 1); assert.equal(sends[0].text, 'only this task\n$() is text');
-  await cli('session', 'create', 'new-task', '--provider', 'codex', '--cwd', directory);
-  assert.equal(creates.length, 1); assert.equal(creates[0].cwd, directory);
+  for (const provider of ['codex', 'agy']) {
+    await cli('session', 'create', `new-${provider}`, '--provider', provider, '--cwd', directory);
+    assert.equal(creates.at(-1).client, provider);
+    assert.equal(creates.at(-1).cwd, directory);
+  }
+  assert.equal(creates.length, 2);
   await fs.mkdir(path.join(directory, 'history-source'));
   await fs.writeFile(path.join(directory, 'history-source/thread.jsonl'), JSON.stringify({ type: 'assistant', sessionId: 'thread', message: { role: 'assistant', content: '可检索的历史结论' } }) + '\n');
   let search;

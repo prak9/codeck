@@ -64,7 +64,7 @@ test('normal creation keeps Shell and exposes an unchecked native resume control
   assert.doesNotMatch(resume, /\bchecked\b/);
 });
 
-for (const client of ['codex', 'claude', 'qodercli', 'shell']) {
+for (const client of ['codex', 'claude', 'qodercli', 'agy', 'shell']) {
   test(`normal ${client} creation defaults to new and preserves directory and attach order`, async () => {
     const f = fixture();
     f.selectClient(client);

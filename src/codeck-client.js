@@ -94,7 +94,7 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     if (action === 'list') return call('/api/sessions');
     if (!name) throw new Error('请指定会话名');
     if (action === 'create') {
-      if (!['codex', 'claude', 'qodercli'].includes(options.provider || 'codex')) throw new Error('未知 provider');
+      if (!['codex', 'claude', 'qodercli', 'agy'].includes(options.provider || 'codex')) throw new Error('未知 provider');
       return call('/api/sessions', 'POST', { name, client: options.provider || 'codex', cwd: options.cwd || process.cwd(), ...(options.worktree ? { worktree: options.worktree } : {}) });
     }
     if (!['read', 'send', 'checkpoint'].includes(action)) throw new Error('未知 session 命令');

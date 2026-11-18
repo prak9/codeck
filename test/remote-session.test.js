@@ -33,7 +33,7 @@ test('remote session creation rejects names tmux cannot safely address', () => {
 });
 
 test('remote session creation supports native resume and plain Shell without a resume mode', () => {
-  for (const provider of ['codex', 'claude', 'qodercli']) {
+  for (const provider of ['codex', 'claude', 'qodercli', 'agy']) {
     assert.deepEqual(createRemoteSessionPayload({ name: 'work', provider, mode: 'resume' }), {
       name: 'work', client: provider, mode: 'resume',
     });

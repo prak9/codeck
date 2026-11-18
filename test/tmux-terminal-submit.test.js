@@ -199,3 +199,27 @@ for (const provider of ['codex', 'claude', 'qodercli']) {
     assert.equal(calls.some(args => args.includes('Escape') || args.includes('C-c')), false);
   });
 }
+
+test('AGY shortcut rechecks the foreground process before Enter', async () => {
+  for (const finalCommand of ['agy', 'bash']) {
+    let command = 'agy';
+    const deps = submissionDependencies({
+      requireAgy: true, separateFinalEnter: true,
+      waitForInputSettle: async () => { command = finalCommand; },
+      execTmux: async args => {
+        deps.calls.push(args);
+        if (args[0] === 'display-message') assert.match(args.at(-1), /pane_current_command/);
+        return { stdout: 'work\t%17\t' + command + '\n' };
+      },
+    });
+    const sending = submitTerminalInput('work', '确认\r', deps);
+    if (finalCommand === 'agy') await sending;
+    else await assert.rejects(sending, /AGY/);
+    assert.equal(deps.calls.some(args => args.includes('Enter')), finalCommand === 'agy');
+  }
+});
+test('AGY shortcut stops before writing when its foreground CLI exited', async () => {
+  const deps = submissionDependencies({ requireAgy: true });
+  await assert.rejects(submitTerminalInput('work', '确认\r', deps), /AGY/);
+  assert.equal(deps.calls.some(args => args.includes('paste-buffer')), false);
+});

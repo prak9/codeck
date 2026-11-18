@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+import { CONTINUE_PROMPT } from '../public/continue-prompt.js';
 import { terminalDraftForSend, terminalDraftForHandoff } from '../public/terminal-compose.js';
 
 const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -65,11 +66,13 @@ function progressFixture({
     terminalAutonomy: { runFor: () => null },
     $: (selector) => selector === '#terminalProgressButton' ? button : selector === '#terminalContinueButton' ? confirmButton : selector === '#terminalAutonomyButton' ? planningButton : draft,
     crypto: { randomUUID: () => 'progress-command' },
+    CONTINUE_PROMPT, WebSocket: { OPEN: 1 },
+    requestTerminalSubmit: (target, data, options) => { requests.push({ target, data, options }); return request; },
     sessionFeedRequest: (type, payload) => { requests.push({ type, ...payload }); return request; },
     setConnectionMessage: (message, restore) => feedback.push({ message, restore }),
     PROGRESS_PROMPT: AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT,
   });
-  for (const name of ['activeAgentSessionTarget', 'syncTerminalProgressButton', 'askTerminalProgress']) {
+  for (const name of ['captureTerminalTarget', 'isCurrentTerminalTarget', 'activeAgentSessionTarget', 'syncTerminalProgressButton', 'askTerminalProgress']) {
     vm.runInContext(functionSource(source, name), context);
   }
   return {
@@ -289,5 +292,30 @@ test('a valid receipt clears its original draft even during a temporary input-re
     await pending;
     assert.equal(f.draft.value, '', `${property} changes cannot invalidate an acknowledged submission`);
     assert.equal(f.sent.length, 1);
+  }
+});
+
+test('native AGY shortcuts use the attached terminal, even without a thread or session feed', async () => {
+  for (const confirm of [false, true]) {
+    const f = progressFixture({ agentKind: 'agy', sessionFeedReady: false });
+    f.state.sessions[0].agent.id = null;
+    f.state.socket = { readyState: 1 };
+    f.state.connectionId = 7;
+    f.context.syncTerminalProgressButton();
+    assert.equal(f.button.hidden, false);
+    assert.equal(f.button.disabled, true);
+    f.state.terminalInputReady = true;
+    f.context.syncTerminalProgressButton();
+    const pending = f.context.askTerminalProgress({ confirm });
+    await f.context.askTerminalProgress({ confirm });
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests[0].data, (confirm ? CONTINUE_PROMPT : AUTONOMY_PROGRESS_PROMPT) + '\r');
+    assert.equal(f.requests[0].options.requireAgy, true);
+    assert.equal(f.requests[0].target.socket, f.state.socket);
+    f.state.active = 'two';
+    f.resolveRequest();
+    await pending;
+    assert.equal(f.draft.value, '尚未发送的草稿');
+    assert.equal(f.feedback.some(item => item.message.startsWith('已')), false);
   }
 });

@@ -16,7 +16,7 @@ const qoderQuestions = new QoderQuestionTracker();
 const SESSION_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const THREAD_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/;
 const PANE_ID = /^%\d+$/;
-const CLIENTS = ['shell', 'codex', 'claude', 'qodercli'];
+const CLIENTS = ['shell', 'codex', 'claude', 'qodercli', 'agy'];
 const AGENT_CLIENTS = new Set(CLIENTS.slice(1));
 const SHELL_COMMANDS = new Set([
   'bash',
@@ -64,6 +64,7 @@ const CODEX_BACKGROUND_WAIT = {
 // command" cannot pin the indicator on. Codex can retain a completed terminal count in
 // its footer, so resolveAgentBackgroundState verifies it against a live owned process.
 export const AGENT_SCREEN_MARKERS = {
+  agy: { busy: { lines: 1, patterns: [] }, background: { lines: 1, patterns: [] } },
   claude: {
     busy: { lines: 12, patterns: [/^[^\p{L}\n]{0,4}\p{L}+…\s*\(\d/u] },
     background: { lines: 1, patterns: [/\b\d+\s+(?:shell|monitor|task)s?\b/i] },
@@ -133,6 +134,12 @@ export function validateClient(client) {
 export function resolveSessionClientCommand(client, mode = 'new') {
   if (mode !== 'new' && mode !== 'resume') throw new Error('未知的会话启动方式');
   if (mode === 'resume' && client === 'shell') throw new Error('Shell 会话不支持恢复模式');
+  if (client === 'agy') {
+    const proxy = 'http://127.0.0.1:7890';
+    const environment = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']
+      .map(key => `${key}=${proxy}`).join(' ');
+    return `env ${environment} agy --dangerously-skip-permissions${mode === 'resume' ? ' --continue' : ''}`;
+  }
   const command = client === 'codex' ? 'codex --no-alt-screen -c check_for_update_on_startup=false' : client;
   return mode === 'resume' ? `${command} ${client === 'codex' ? 'resume' : '--resume'}` : command;
 }
@@ -1299,9 +1306,10 @@ export async function submitTerminalInput(sessionName, data, overrides = {}) {
     const currentPane = async () => {
       checkConnection();
       const { stdout } = await execTmux([
-        'display-message', '-p', '-t', `=${sessionName}:`, '#{session_name}\t#{pane_id}',
+        'display-message', '-p', '-t', `=${sessionName}:`, overrides.requireAgy ? '#{session_name}\t#{pane_id}\t#{pane_current_command}' : '#{session_name}\t#{pane_id}',
       ]);
       const [name, paneId, ...extra] = stdout.trim().split('\t');
+      if (overrides.requireAgy && extra.shift() !== 'agy') throw new Error('AGY 已退出或终端已切换，快捷消息未提交');
       if (name !== sessionName || !PANE_ID.test(paneId) || extra.length) {
         throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       }
@@ -2237,13 +2245,29 @@ export function scrollSession(name, lines, overrides = {}) {
   return queueSessionInput(name, () => runSessionScroll(name, lines, overrides));
 }
 
+function codexHistoryControl(line) {
+  // Codex centers this control in its transcript area. It can overwrite part of
+  // a CJK row, leaving transcript text on either side; it is not a right-edge label.
+  const banner = /(?:New activity\s*·\s*)?↓\s*Back to bottom(?:\s*·\s*esc)?|(?:New activity|New)\s*·\s*↓\s*Bottom|↓\s*Bottom(?:\s*·\s*esc)?/iu.exec(line);
+  if (!banner) return null;
+  const prefix = line.slice(0, banner.index);
+  const suffix = line.slice(banner.index + banner[0].length);
+  if ((prefix.trim() && !/\S {2,}$/u.test(prefix)) || (suffix.trim() && !/^ {2,}/u.test(suffix))) return null;
+  return { prefix, label: banner[0] };
+}
+
 async function codexFullscreenPane(name, execTmux, isCurrent) {
-  const pane = await execTmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_id}\t#{alternate_on}\t#{pane_width}']);
-  const [paneId, alternate, width] = (pane?.stdout || '').trim().split('\t');
+  const pane = await execTmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_id}\t#{alternate_on}']);
+  const [paneId, alternate] = (pane?.stdout || '').trim().split('\t');
   if (!isCurrent() || !PANE_ID.test(paneId || '') || alternate !== '1') return null;
   const screen = await execTmux(['capture-pane', '-p', '-e', '-t', paneId]);
   const rows = cleanScreenRows(screen?.stdout);
-  return isCurrent() && codexComposerFooterRow(rows) >= 0 ? { paneId, rows, width: Number(width) } : null;
+  // Full-height native history can replace the composer/footer entirely. Its
+  // bottom return control still identifies the viewport and must remain usable.
+  const historyRow = rows.findLastIndex(line => line.trim());
+  const historyOnly = codexHistoryControl(rows[historyRow] || '');
+  return isCurrent() && (codexComposerFooterRow(rows) >= 0 || historyOnly)
+    ? { paneId, rows } : null;
 }
 
 function sendCodexPointer(execTmux, paneId, bytes) {
@@ -2268,14 +2292,26 @@ export function clickSessionTranscript(name, column, row, overrides = {}) {
     if (!pane) return;
     const composer = pane.rows.findLastIndex(line => /^[»›>❯](?:\s|$)/u.test(line));
     const line = pane.rows[row - 1] || '';
-    const historyBanner = /^\s*(?:New activity\s*·\s*)?↓\s*Back to bottom\s*·\s*esc\s*$/iu.test(line);
-    // Codex also overlays this control at the right edge of a transcript row.
-    // Keep clicks on the underlying text local, including double-width CJK text.
-    const overlay = /\S {2,}((?:New activity\s*·\s*)?↓\s*Back to bottom\s*·\s*esc)$/iu.exec(line);
-    const historyOverlay = overlay && Number.isSafeInteger(pane.width)
-      && column > pane.width - overlay[1].length && column <= pane.width;
-    if (composer < 0 || row - 1 >= composer
-      || (!historyBanner && !historyOverlay && !/Show (?:details|less|more)|Hide details/iu.test(line))) return;
+    const control = codexHistoryControl(line);
+    let historyClick = false;
+    if (control) {
+      // Ask tmux for its own cell width, including CJK, combining marks and emoji.
+      // Literal-format escaping prevents transcript text from expanding formats
+      // or executing tmux's #(command) substitutions.
+      const literal = control.prefix.replaceAll('#', '##').replaceAll('}', '#}');
+      const measured = await execTmux(['display-message', '-p', '-t', pane.paneId, `#{w:#{l:${literal}}}`]);
+      const measuredWidth = measured.stdout.trim();
+      const start = /^\d+$/u.test(measuredWidth) ? Number(measuredWidth) + 1 : NaN;
+      if (!isCurrent()) return;
+      historyClick = Number.isSafeInteger(start) && start > 0
+        && column >= start && column < start + control.label.length;
+    }
+    if (!historyClick && (composer < 0 || row - 1 >= composer
+      || !/Show (?:details|less|more)|Hide details/iu.test(line))) return;
+    terminalDiagnostics.record(name, historyClick ? 'native-history-return' : 'native-history-disclosure', { column, row });
+    if (historyClick) console.info('[terminal-history-return]', JSON.stringify({
+      sessionName: name, events: terminalDiagnostics.read(name),
+    }));
     await sendCodexPointer(execTmux, pane.paneId, `\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
   });
 }
@@ -2293,6 +2329,9 @@ async function runSessionScroll(name, lines, overrides) {
       // Codex disables mouse capture when tmux mouse is off, but still handles
       // SGR wheel events. Send directly to the pane, never through paste-buffer
       // or cursor keys (which would edit the composer/history). Each tick is 3 rows.
+      terminalDiagnostics.record(name, 'native-history-scroll', {
+        lines, historyVisible: pane.rows.some(line => codexHistoryControl(line)),
+      });
       const wheel = `\x1b[<${lines > 0 ? 64 : 65};2;2M`.repeat(Math.ceil(count / 3));
       await sendCodexPointer(execTmux, pane.paneId, wheel);
       return;

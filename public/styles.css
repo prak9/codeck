@@ -223,7 +223,7 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .setting-row > span { display: grid; gap: 5px; }
 .setting-row strong { color: var(--ink); font-size: 12px; font-weight: 650; }
 .setting-row span span { color: var(--muted); font-size: 11px; line-height: 1.6; }
-.client-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.client-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
 .client-options label { margin: 0; cursor: pointer; }
 .client-options input { position: absolute; opacity: 0; }
 .client-options span { min-height: 62px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: #ffffff05; display: flex; flex-direction: column; gap: 4px; }

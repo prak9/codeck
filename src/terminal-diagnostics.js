@@ -1,4 +1,4 @@
-// Keep only geometry/lifecycle metadata, never keystrokes or terminal contents.
+// Keep only geometry/lifecycle/navigation metadata, never keystrokes or terminal contents.
 // Dump on a detected layout failure, rather than logging every resize indefinitely.
 export function createTerminalDiagnostics({ maxSessions = 32, maxEvents = 24 } = {}) {
   const sessions = new Map();

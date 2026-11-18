@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { scrollSession, clickSessionTranscript } from '../src/tmux.js';
 
-function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '', firstRow = 'Show details', width = 80 } = {}) {
+function fixture({ alternate = true, codex = true, current = true, footer = '? for shortcuts', draft = '', firstRow = 'Show details', width = 80, prefixWidth = 1 } = {}) {
   const commands = [];
   return { commands, options: {
     isCurrent: () => current,
     execTmux: async args => {
       commands.push(args);
+      if (args[0] === 'display-message' && args.at(-1).startsWith('#{w:')) return { stdout: String(prefixWidth) };
       if (args[0] === 'display-message') return { stdout: `%7\t${Number(alternate)}\t${width}\n` };
       if (args[0] === 'capture-pane') return { stdout: codex
         ? ` ${firstRow}\n\n› ${draft}\n\n  GPT-6-Astra medium · ~/project\n  ${footer}`
@@ -31,14 +32,14 @@ test('Codex fullscreen scroll uses native wheel reports, not tmux scrollback or 
 test('right-aligned history overlay remains clickable alongside transcript text', async () => {
   const banner = 'New activity · ↓ Back to bottom · esc';
   const firstRow = `   资料来源${' '.repeat(80 - 11 - banner.length)}${banner}`;
-  const f = fixture({ firstRow });
+  const f = fixture({ firstRow, prefixWidth: 45 });
   await clickSessionTranscript('work', 65, 1, f.options);
   assert.ok(f.commands.some(args => args[0] === 'if-shell'));
-  const body = fixture({ firstRow });
+  const body = fixture({ firstRow, prefixWidth: 45 });
   await clickSessionTranscript('work', 5, 1, body.options);
   assert.equal(body.commands.some(args => args[0] === 'if-shell'), false);
   for (const options of [{ readOnly: true }, { isCurrent: () => false }]) {
-    const blocked = fixture({ firstRow });
+    const blocked = fixture({ firstRow, prefixWidth: 45 });
     await clickSessionTranscript('work', 65, 1, { ...blocked.options, ...options });
     assert.equal(blocked.commands.some(args => args[0] === 'if-shell'), false);
   }
@@ -98,4 +99,60 @@ test('native back-to-bottom banner accepts a click without Escape, Enter or draf
   const quoted = fixture({ firstRow: 'Agent says: New activity · ↓ Back to bottom · esc' });
   await clickSessionTranscript('work', 20, 1, quoted.options);
   assert.equal(quoted.commands.some(args => args[0] === 'if-shell'), false);
+});
+
+test('history viewport without composer footer can return to latest and scroll natively', async () => {
+  const commands = [];
+  const options = { execTmux: async args => {
+    commands.push(args);
+    if (args[0] === 'display-message' && args.at(-1).startsWith('#{w:')) return { stdout: '45' };
+    if (args[0] === 'display-message') return { stdout: '%7\t1\t80\n' };
+    if (args[0] === 'capture-pane') return { stdout: 'Agent response\n'
+      + ' '.repeat(45) + 'New activity · ↓ Back to bottom · esc' };
+    return { stdout: '' };
+  } };
+  await clickSessionTranscript('work', 65, 2, options);
+  assert.ok(commands.some(args => args[0] === 'if-shell'), 'return control is reachable without a composer');
+  commands.length = 0;
+  await scrollSession('work', -6, options);
+  assert.ok(commands.some(args => args[0] === 'if-shell'), 'history stays in Codex instead of tmux copy-mode');
+  for (const guard of [{ readOnly: true }, { isCurrent: () => false }]) {
+    commands.length = 0;
+    await clickSessionTranscript('work', 65, 2, { ...options, ...guard });
+    assert.equal(commands.some(args => args[0] === 'if-shell'), false);
+  }
+  commands.length = 0;
+  await clickSessionTranscript('work', 5, 1, options);
+  assert.equal(commands.some(args => args[0] === 'if-shell'), false);
+});
+
+test('native return control can overlay the middle of a CJK row with text on both sides', async () => {
+  const firstRow = '资料来源  New activity · ↓ Back to bottom · esc  trailing transcript';
+  const f = fixture({ firstRow, prefixWidth: 11 });
+  await clickSessionTranscript('work', 25, 1, f.options);
+  assert.ok(f.commands.some(args => args[0] === 'if-shell'));
+  for (const column of [5, 60]) {
+    const body = fixture({ firstRow, prefixWidth: 11 });
+    await clickSessionTranscript('work', column, 1, body.options);
+    assert.equal(body.commands.some(args => args[0] === 'if-shell'), false);
+  }
+});
+
+test('return-control width queries treat transcript formats as literal text', async () => {
+  const f = fixture({ firstRow: '汉#{pane_width}  ↓ Back to bottom · esc', prefixWidth: 18 });
+  await clickSessionTranscript('work', 25, 1, f.options);
+  const measure = f.commands.find(args => args.at(-1).startsWith('#{w:'));
+  assert.equal(measure.at(-1), '#{w:#{l: 汉##{pane_width#}  }}');
+  assert.ok(f.commands.some(args => args[0] === 'if-shell'));
+});
+
+test('stale return clicks stop after the asynchronous cell-width query', async () => {
+  const f = fixture({ firstRow: '↓ Back to bottom · esc' });
+  let current = true;
+  await clickSessionTranscript('work', 8, 1, { isCurrent: () => current, execTmux: async args => {
+    const result = await f.options.execTmux(args);
+    if (args.at(-1).startsWith('#{w:')) current = false;
+    return result;
+  } });
+  assert.equal(f.commands.some(args => args[0] === 'if-shell'), false);
 });

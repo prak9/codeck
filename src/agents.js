@@ -97,6 +97,8 @@ function warnProcessListUnparsed() {
 export function agentKindFromCommand(command) {
   if (/(?:^|[ /])codex(?:\s|$)/i.test(command) && !/(?:^|\s)app-server(?:\s|$)/i.test(command)) return 'codex';
   if (/(?:^|[ /])claude(?:\s|$)/i.test(command)) return 'claude';
+  if (/(?:^|[ /])agy(?:\s|$)/i.test(command)
+    && !/(?:^|[ /])agy\s+(?:acp|mic-serve|remote-control|update|install|help|models|agents?|mcp|plugins?|changelog)(?:\s|$)/i.test(command)) return 'agy';
   if (/(?:^|[ /])qodercli(?:\s|$)/i.test(command)) return 'qodercli';
   return null;
 }
@@ -1196,6 +1198,9 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       }
       if (id) claimedCodexIds.add(id);
       agent = { kind: 'codex', id, name, ...runtime };
+    } else if (kind === 'agy') {
+      // Native terminal provider: no structured conversation identity is inferred.
+      agent = { kind: 'agy', id: null, name: pane.session, ...runtime };
     } else if (kind === 'claude') {
       const id = registered?.id || providerExplicitId;
       const name = findClaudeSlug(id, claudeHome, now) || pane.session;

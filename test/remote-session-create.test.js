@@ -68,7 +68,7 @@ test('Remote offers Shell only for session creation and preserves an open form a
   const f = fixture();
   f.$('#sessionProvider').value = 'shell';
   f.context.renderProviderControls();
-  assert.deepEqual(f.$('#sessionProvider').children.map(option => option.value), ['codex', 'claude', 'qodercli', 'shell']);
+  assert.deepEqual(f.$('#sessionProvider').children.map(option => option.value), ['codex', 'claude', 'qodercli', 'agy', 'shell']);
   assert.equal(f.$('#sessionProvider').value, 'shell');
   assert.deepEqual(f.$('#settingsProvider').children.map(option => option.value), ['codex', 'claude', 'qodercli']);
 });
@@ -144,4 +144,21 @@ test('cancel and repeated submissions cannot create extra sessions', async () =>
   assert.equal(f.created.length, 1);
   finish();
   await pending;
+});
+
+test('Remote AGY creation enters its native terminal without requesting structured history', async () => {
+  const f = fixture();
+  f.$('#sessionProvider').value = 'agy';
+  await f.submit();
+  assert.equal(f.created[0].client, 'agy');
+  assert.deepEqual(f.navigated, ['/?session=work']);
+  assert.equal(f.waited, 0);
+  assert.deepEqual(f.opened, []);
+});
+
+test('existing Remote AGY sessions open the exact native terminal', async () => {
+  const f = fixture();
+  await f.context.openListedThread({ provider: 'agy', id: 'tmux:agy:agy-work', tmux: { name: 'agy-work' } });
+  assert.deepEqual(f.navigated, ['/?session=agy-work']);
+  assert.deepEqual(f.opened, []);
 });

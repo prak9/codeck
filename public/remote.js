@@ -39,7 +39,7 @@ import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scro
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
 import { chooseStopScope } from './session-stop.js?v=1';
-import { autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=23';
+import { autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=24';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { acceptStreamCursor, acceptStreamFrame, matchesThreadStreamTarget } from './stream-state.js?v=3';
 import {
@@ -53,7 +53,7 @@ import {
   findCreatedRemoteSession,
   nextThreadAfterClose,
   suggestedRemoteSessionName,
-} from './remote-session.js?v=3';
+} from './remote-session.js?v=4';
 import {
   SESSION_FOLDER_EXPANSION_STORAGE_KEY,
   SESSION_FOLDER_PREFIXES_STORAGE_KEY,
@@ -75,6 +75,7 @@ const PROVIDERS = {
   codex: { name: 'Codex', sessionLabel: 'Codex', glyph: 'C›', short: 'Codex', description: 'OpenAI Codex App Server' },
   claude: { name: 'Claude Code', sessionLabel: 'Claude', glyph: 'A›', short: 'Claude', description: 'Anthropic Agent SDK' },
   qodercli: { name: 'QoderCLI', sessionLabel: 'Qoder CLI', glyph: 'Q›', short: 'Qoder', description: 'Qoder Agent SDK' },
+  agy: { name: 'Antigravity（原生终端）', sessionLabel: 'Antigravity', glyph: 'G›', short: 'AGY', description: 'Google Antigravity CLI' },
 };
 const SHELL_PROVIDER = { name: 'Shell', sessionLabel: 'Shell', glyph: '$_', short: 'Shell', description: 'tmux shell session' };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
@@ -675,7 +676,7 @@ async function handleReady(message) {
   state.providerCapabilities = new Map((message.providers || []).map((provider) => (
     [provider.id, provider.capabilities || {}]
   )));
-  if (!state.providers.length) state.providers = Object.keys(PROVIDERS);
+  if (!state.providers.length) state.providers = Object.keys(PROVIDERS).filter(provider => provider !== 'agy');
   if (!shellActive && !state.providers.includes(state.provider)) state.provider = state.providers[0];
   state.defaultCwd = message.defaultCwd || state.defaultCwd || '/';
   if (!state.cwd) state.cwd = state.defaultCwd;
@@ -1060,7 +1061,7 @@ async function loadThreads({ quiet = false } = {}) {
     const snapshot = queuedSnapshot || await validateOwnerToken(state.token);
     if (generation !== state.threadListGeneration) return;
     state.threads = tmuxSessionsToThreads(snapshot.sessions)
-      .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
+      .filter((thread) => thread.provider === 'shell' || thread.provider === 'agy' || state.providers.includes(thread.provider));
     const activeThread = findTmuxThreadTarget(state.threads, state.thread);
     if (activeThread?.tmux && state.thread) {
       const previousQuestion = state.thread.tmux?.question?.id;
@@ -1072,7 +1073,8 @@ async function loadThreads({ quiet = false } = {}) {
       if (previousQuestion !== state.thread.tmux?.question?.id) scheduleThreadRender(false);
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
-    if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
+    if (replacement?.provider === 'agy') await openListedThread(replacement, { quiet: true });
+    else if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
     else if (replacement?.tmux?.available === false) {
       openPendingThread(replacement, { quiet: true, refresh: false });
     }
@@ -1273,7 +1275,7 @@ function renderProviderControls() {
 
   for (const select of [$('#settingsProvider'), $('#sessionProvider')]) {
     const creating = select === $('#sessionProvider');
-    const providers = creating ? [...state.providers, 'shell'] : state.providers;
+    const providers = creating ? [...state.providers, 'agy', 'shell'] : state.providers;
     const selected = creating && $('#newSessionDialog').open ? select.value : selectedProvider;
     select.replaceChildren(...providers.map((provider) => {
       const option = element('option', '', provider === 'shell' ? 'Shell（纯终端）' : providerDetails(provider).name);
@@ -1287,6 +1289,10 @@ function renderProviderControls() {
 }
 
 function openListedThread(thread, { quiet = false } = {}) {
+  if (thread.provider === 'agy') {
+    location.assign(`/?session=${encodeURIComponent(thread.tmux.name)}`);
+    return Promise.resolve();
+  }
   if (thread.provider === 'shell') {
     openShellThread(thread, { quiet });
     return Promise.resolve();
@@ -3137,7 +3143,7 @@ async function waitForCreatedSession(name, provider, timeoutMs = 8_000) {
   while (true) {
     const snapshot = await validateOwnerToken(state.token);
     threads = tmuxSessionsToThreads(snapshot.sessions)
-      .filter((thread) => thread.provider === 'shell' || state.providers.includes(thread.provider));
+      .filter((thread) => thread.provider === 'shell' || thread.provider === 'agy' || state.providers.includes(thread.provider));
     const created = findCreatedRemoteSession(threads, name, provider);
     if (created) {
       state.threads = threads;
@@ -3361,7 +3367,7 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
   try {
     await requestSessionCreation(payload);
     created = true;
-    if (payload.mode === 'resume') {
+    if (payload.mode === 'resume' || payload.client === 'agy') {
       // The CLI owns its history picker; it has no thread identity until selection.
       $('#newSessionDialog').close();
       location.assign(`/?session=${encodeURIComponent(payload.name)}`);

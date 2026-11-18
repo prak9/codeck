@@ -326,7 +326,7 @@ sockets.on('connection', socket => {
   });
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.CODECK_BROWSER_EXECUTABLE ? { executablePath: process.env.CODECK_BROWSER_EXECUTABLE } : {}) });
 const results = [];
 try {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1365, height: 900 }]) {
@@ -353,6 +353,14 @@ try {
       assert.equal(fixture.sent.length, 0);
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
+      await page.locator('#drawerNewButton').evaluate(el => el.click());
+      await page.locator('#sessionProvider option[value="agy"]').waitFor({ state: 'attached' });
+      await page.locator('#sessionProvider').selectOption('agy');
+      assert.equal(await page.locator('#sessionMode').isDisabled(), false);
+      await page.screenshot({ path: path.join(artifacts, `${provider}-${viewport.width}-agy-create.png`) });
+      await page.locator('#newSessionDialog button[value="cancel"]').first().click();
+
+      await page.waitForSelector('[data-turn-id="turn-80"]');
       await page.locator('#workfilesButton').click();
       await page.getByText('暂无资料。上传文件或添加本次使用的链接。', { exact: true }).waitFor();
       await page.getByRole('button', { name: '关闭工作文件', exact: true }).click();
@@ -364,6 +372,7 @@ try {
         assert.equal(await page.locator('#progressDialog').evaluate(el => el.open), false, 'the summary only enters the session');
         if (viewport.width < 720) await page.locator('#drawerButton').click();
         const note = page.locator('.thread-progress-button').first();
+        await note.scrollIntoViewIfNeeded();
         const bounds = await note.boundingBox();
         assert.ok(bounds.width >= 44 && bounds.height >= 44, 'dedicated note hit area');
         await note.click();

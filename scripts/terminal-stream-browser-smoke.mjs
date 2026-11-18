@@ -52,7 +52,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.CODECK_BROWSER_EXECUTABLE ? { executablePath: process.env.CODECK_BROWSER_EXECUTABLE } : {}) });
 try {
   for (const width of [390, 1365]) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
@@ -72,6 +72,14 @@ try {
     await page.route('**/api/sessions/*/workfiles?*', route => route.fulfill({ json: { identity: 'fixture', items: [], pages: [], archives: [] } }));
     page.on('pageerror', e => errors.push(e.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.locator('#newButton').evaluate(el => el.click());
+    await page.locator('input[name="client"][value="agy"]').check();
+    const dialog = page.locator('#newDialog');
+    assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+    assert.equal(await page.locator('#resumeSessionInput').isDisabled(), false);
+    await page.screenshot({ path: path.join(artifacts, `${width}-agy-create.png`) });
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+
     const screen = async name => page.waitForFunction(name => {
       const terminal = window.fixtureTerminal;
       if (!terminal) return false;
