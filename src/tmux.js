@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { access, constants, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
 import { clampTerminalGrid } from '../public/terminal-utils.js';
@@ -2153,7 +2155,19 @@ export async function createSession({ name, client = 'shell', cwd, mode = 'new' 
   const command = resolveSessionClientCommand(client, mode);
 
   const args = ['new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}'];
-  if (cwd) args.push('-c', cwd);
+  if (cwd != null && cwd !== '') {
+    if (typeof cwd !== 'string' || cwd.includes('\0')) throw new Error('工作目录无效');
+    const requested = cwd === '~' || cwd.startsWith('~/') ? homedir() + cwd.slice(1) : cwd;
+    try {
+      // tmux silently falls back to HOME on chdir failure. '/.' also rejects files.
+      const directory = await realpath(requested + '/.');
+      await access(directory, constants.X_OK);
+      args.push('-c', directory.replaceAll('#', '##'));
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP', 'ENAMETOOLONG'].includes(error.code)) throw error;
+      throw new Error(`工作目录无效，请确认目录存在且可进入：${cwd}`, { cause: error });
+    }
+  }
   const created = await execCommand('tmux', args);
   if (client !== 'shell') {
     try {

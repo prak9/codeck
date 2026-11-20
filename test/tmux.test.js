@@ -1885,13 +1885,13 @@ test('starts each Agent in its native resume picker inside the requested tmux di
     ['qodercli', 'qodercli --resume'],
   ]) {
     const calls = [];
-    await createSession({ name: 'restore', client, mode: 'resume', cwd: '/srv/project' }, async (...args) => {
+    await createSession({ name: 'restore', client, mode: 'resume', cwd: process.cwd() }, async (...args) => {
       calls.push(args);
       return { stdout: '%23\n' };
     });
 
     assert.deepEqual(calls, [
-      ['tmux', ['new-session', '-d', '-s', 'restore', '-P', '-F', '#{pane_id}', '-c', '/srv/project']],
+      ['tmux', ['new-session', '-d', '-s', 'restore', '-P', '-F', '#{pane_id}', '-c', process.cwd()]],
       ['tmux', ['send-keys', '-l', '-t', '%23', command]],
       ['tmux', ['send-keys', '-t', '%23', 'Enter']],
     ], client);

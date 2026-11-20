@@ -24,8 +24,24 @@ test('AGY starts with proxy variables and explicit permission bypass in both lau
       assert.equal(actual.noProxy, 'localhost,internal.test');
       assert.ok(Object.values(actual.proxy).every(value => value === 'http://127.0.0.1:7890'));
       const calls = [];
-      await createSession({ name: 'agy-work', client: 'agy', cwd: '/srv/project', mode }, async (...args) => { calls.push(args); return { stdout: '%27\n' }; });
+      await createSession({ name: 'agy-work', client: 'agy', cwd: directory, mode }, async (...args) => { calls.push(args); return { stdout: '%27\n' }; });
+      assert.equal(calls[0][1].at(-1), directory);
       assert.deepEqual(calls[1], ['tmux', ['send-keys', '-l', '-t', '%27', command]]);
+    }
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('a missing directory or regular file cannot silently start AGY in the home directory', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-agy-cwd-'));
+  try {
+    const file = path.join(directory, 'file');
+    await fs.writeFile(file, '');
+    for (const cwd of [file, path.join(directory, 'missing')]) {
+      const calls = [];
+      await assert.rejects(createSession({ name: 'agy-work', client: 'agy', cwd }, async (...args) => {
+        calls.push(args); return { stdout: '%27\n' };
+      }), /工作目录无效/);
+      assert.deepEqual(calls, []);
     }
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
