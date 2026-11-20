@@ -1773,5 +1773,17 @@ test('AGY pane detection preserves its native terminal identity without inventin
     assert.equal(agent.id, null);
     assert.equal(agent.cwd, root);
     assert.equal(agent.paneId, '%7');
+    const locks = path.join(root, '.gemini/antigravity-cli/presence');
+    const fd = path.join(root, '11/fd');
+    fs.mkdirSync(locks, { recursive: true });
+    fs.mkdirSync(fd, { recursive: true });
+    const id = '11111111-2222-3333-4444-555555555555';
+    fs.symlinkSync(path.join(locks, id + '.lock'), path.join(fd, '7'));
+    const detect = () => detectPaneAgents([{ session: 'agy-work', pid: 10, paneId: '%7' }], { HOME: root }, {
+      procRoot: root, clockTicks: 100, now: 1000000, uptimeMs: 100000,
+    });
+    assert.equal((await detect()).get('agy-work').id, id);
+    fs.symlinkSync(path.join(locks, '22222222-2222-3333-4444-555555555555.lock'), path.join(fd, '8'));
+    assert.equal((await detect()).get('agy-work').id, null, 'ambiguous ownership must not open either conversation');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

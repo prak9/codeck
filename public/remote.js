@@ -1,6 +1,7 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=1';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
@@ -75,7 +76,7 @@ const PROVIDERS = {
   codex: { name: 'Codex', sessionLabel: 'Codex', glyph: 'C›', short: 'Codex', description: 'OpenAI Codex App Server' },
   claude: { name: 'Claude Code', sessionLabel: 'Claude', glyph: 'A›', short: 'Claude', description: 'Anthropic Agent SDK' },
   qodercli: { name: 'QoderCLI', sessionLabel: 'Qoder CLI', glyph: 'Q›', short: 'Qoder', description: 'Qoder Agent SDK' },
-  agy: { name: 'Antigravity（原生终端）', sessionLabel: 'Antigravity', glyph: 'G›', short: 'AGY', description: 'Google Antigravity CLI' },
+  agy: { name: 'Antigravity', sessionLabel: 'Antigravity', glyph: 'G›', short: 'AGY', description: 'Google Antigravity CLI' },
 };
 const SHELL_PROVIDER = { name: 'Shell', sessionLabel: 'Shell', glyph: '$_', short: 'Shell', description: 'tmux shell session' };
 const relativeTime = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
@@ -91,6 +92,7 @@ let transcriptScrollFrame = 0;
 let transcriptScrollRevision = 0;
 
 let workfilesPanel;
+let alwaysOnPanel;
 
 const state = {
   loadingEarlier: false,
@@ -1073,8 +1075,7 @@ async function loadThreads({ quiet = false } = {}) {
       if (previousQuestion !== state.thread.tmux?.question?.id) scheduleThreadRender(false);
     }
     const replacement = findTmuxThreadReplacement(state.threads, state.thread);
-    if (replacement?.provider === 'agy') await openListedThread(replacement, { quiet: true });
-    else if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
+    if (replacement?.provider === 'shell') openShellThread(replacement, { quiet: true });
     else if (replacement?.tmux?.available === false) {
       openPendingThread(replacement, { quiet: true, refresh: false });
     }
@@ -1275,7 +1276,7 @@ function renderProviderControls() {
 
   for (const select of [$('#settingsProvider'), $('#sessionProvider')]) {
     const creating = select === $('#sessionProvider');
-    const providers = creating ? [...state.providers, 'agy', 'shell'] : state.providers;
+    const providers = creating ? [...state.providers, 'shell'] : state.providers;
     const selected = creating && $('#newSessionDialog').open ? select.value : selectedProvider;
     select.replaceChildren(...providers.map((provider) => {
       const option = element('option', '', provider === 'shell' ? 'Shell（纯终端）' : providerDetails(provider).name);
@@ -1289,10 +1290,6 @@ function renderProviderControls() {
 }
 
 function openListedThread(thread, { quiet = false } = {}) {
-  if (thread.provider === 'agy') {
-    location.assign(`/?session=${encodeURIComponent(thread.tmux.name)}`);
-    return Promise.resolve();
-  }
   if (thread.provider === 'shell') {
     openShellThread(thread, { quiet });
     return Promise.resolve();
@@ -1484,6 +1481,7 @@ $('#sessionSearch').addEventListener('input', () => renderThreadList());
 
 function renderThreadList() {
   workfilesPanel?.sync();
+  alwaysOnPanel?.sync();
   renderSessionProgress($('#sessionProgress'), state.thread?.tmux?.checkpoint, { key: `${state.thread?.tmux?.name}:${state.thread?.tmux?.checkpoint?.taskId || ''}`, onRespond: () => { if ($('#progressDialog').open) $('#progressDialog').close(); closeDrawer(); $('#composerInput').focus(); } });
   const list = $('#threadList');
   const scrollTop = list.scrollTop;
@@ -2484,6 +2482,7 @@ function currentThreadWaitingForInput() {
 
 function renderComposerState() {
   workfilesPanel?.sync();
+  alwaysOnPanel?.sync();
   const input = $('#composerInput');
   const sendButton = $('#sendButton');
   if (!input || !sendButton) return;
@@ -3339,7 +3338,7 @@ $('#newSessionForm').addEventListener('submit', async (event) => {
   try {
     await requestSessionCreation(payload);
     created = true;
-    if (payload.mode === 'resume' || payload.client === 'agy') {
+    if (payload.mode === 'resume' && payload.client !== 'agy') {
       // The CLI owns its history picker; it has no thread identity until selection.
       $('#newSessionDialog').close();
       location.assign(`/?session=${encodeURIComponent(payload.name)}`);
@@ -3520,3 +3519,11 @@ function currentWorkfilesTarget() {
 
 workfilesPanel = bindWorkfiles({ button: document.getElementById('workfilesButton'), token: () => state.token, getTarget: currentWorkfilesTarget });
 workfilesPanel.sync();
+alwaysOnPanel = bindAlwaysOnPanel({
+  button: document.getElementById('alwaysOnButton'),
+  badge: document.getElementById('alwaysOnBadge'),
+  token: () => state.token,
+  enabled: () => Boolean(state.token),
+  activeSession: () => state.thread?.tmuxSession || null,
+});
+alwaysOnPanel.sync();

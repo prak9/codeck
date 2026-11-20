@@ -1,5 +1,12 @@
 import { createHistorySearch } from './history-search.js';
 import { mountHistoryRoutes } from './history-routes.js';
+import { AlwaysOnStore } from './always-on-store.js';
+import { createAlwaysOnRuntime } from './always-on-runtime.js';
+import { createMemoryStore } from './always-on-memory.js';
+import { createOutboxDispatcher } from './always-on-outbox.js';
+import { createButlerOrchestrator } from './always-on-butler.js';
+import { createApprovalGate, createCredentialProxy } from './always-on-permissions.js';
+import { mountAlwaysOnRoutes } from './always-on-routes.js';
 import { createIsolatedWorkspace } from './isolated-workspace.js';
 import { createConditionalTasks } from './conditional-tasks.js';
 import { sessionRpc } from './session-rpc.js';
@@ -64,9 +71,19 @@ const publicDir = path.join(dirname, '../public');
 const app = express();
 const terminalHistoryLinks = createTerminalHistoryLinkReader();
 const sessionSnapshots = createSessionSnapshotLoader(listSessions);
-const checkpoints = await createCheckpoints(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'checkpoints.json'));
-const workfiles = createWorkfiles(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'workfiles'), { uploadRoot });
-const pageStore = createPageStore(path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'pages'));
+const dataDir = process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck');
+const checkpoints = await createCheckpoints(path.join(dataDir, 'checkpoints.json'));
+const workfiles = createWorkfiles(path.join(dataDir, 'workfiles'), { uploadRoot });
+const pageStore = createPageStore(path.join(dataDir, 'pages'));
+const alwaysOnStore = new AlwaysOnStore(path.join(dataDir, 'super-agent.db'));
+const alwaysOnMemory = createMemoryStore({ directory: path.join(dataDir, 'memory') });
+const alwaysOnOutbox = createOutboxDispatcher({
+  store: alwaysOnStore,
+  memory: alwaysOnMemory,
+});
+const alwaysOnProxy = createCredentialProxy({
+  secretsDir: path.join(dataDir, 'secrets'),
+});
 const protocolEpoch = crypto.randomUUID();
 const sessionStatusByName = new Map();
 const sessionPaneExcerpts = new Map();
@@ -199,6 +216,12 @@ mountPublishedPages(app, {
   sendFeedback: async (target, text, commandId) => {
     const live = sessionTarget(await listSessions(), target.tmuxSession);
     if (live.provider !== target.provider || live.threadId !== target.threadId) throw new Error('来源会话身份已变化，未发送');
+    alwaysOnStore.enqueueEvent({
+      scopeKey: `session:${target.tmuxSession}`,
+      source: 'annotation',
+      dedupeKey: `annotation:${commandId}`,
+      payload: { tmuxSession: target.tmuxSession, provider: target.provider, threadId: target.threadId, commandId, summary: text.slice(0, 200) },
+    });
     return sessionRpc({ url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) }, { type: 'sendSessionMessage', ...target, text, commandId });
   },
   apiAuth: (_req, _res, next) => next(), // Already authenticated by the /api middleware above.
@@ -222,6 +245,27 @@ app.put('/api/tasks/:id', ownerOnly, async (req, res, next) => {
 });
 app.delete('/api/tasks/:id', ownerOnly, async (req, res, next) => {
   try { await conditionalTasks.remove(req.params.id); res.sendStatus(204); } catch (error) { next(error); }
+});
+mountAlwaysOnRoutes(app, {
+  store: alwaysOnStore,
+  memory: alwaysOnMemory,
+  outboxDispatcher: alwaysOnOutbox,
+  butler: {
+    isEnabled: () => alwaysOnButler.isEnabled(),
+    setEnabled: next => alwaysOnButler.setEnabled(next),
+  },
+  approvalGate: {
+    requestApproval: (...args) => alwaysOnApprovals.requestApproval(...args),
+    resolveApproval: (...args) => alwaysOnApprovals.resolveApproval(...args),
+  },
+  credentialProxy: alwaysOnProxy,
+  runtime: {
+    enqueueAndWake: (...args) => alwaysOnRuntime.enqueueAndWake(...args),
+    wake: (...args) => alwaysOnRuntime.wake(...args),
+    tickTimers: (...args) => alwaysOnRuntime.tickTimers(...args),
+  },
+  resolveSessionTarget: async name => sessionTarget(await listSessions(), name),
+  ownerOnly,
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -557,12 +601,67 @@ const conditionalTasks = await createConditionalTasks({
     return (result?.thread?.turns || []).some(turn => ['completed', 'failed', 'errored', 'interrupted', 'cancelled'].includes(turn.status)
       && (turn.items || []).some(item => item.type === 'userMessage' && userMessageText(item).includes(last.commandId)));
   },
-  send: async (task, commandId, event) => sessionRpc({ url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) }, {
-    type: 'sendSessionMessage', provider: task.provider, threadId: task.threadId, tmuxSession: task.session,
-    text: `${task.prompt}\n\n条件检查事件：${event}\n调度请求标识：${commandId}`, commandId,
-  }),
+  send: async (task, commandId, event) => {
+    alwaysOnStore.enqueueEvent({
+      scopeKey: `session:${task.session}`,
+      source: 'conditional_task',
+      dedupeKey: `conditional:${task.id}:${event}`,
+      payload: { taskId: task.id, sessionName: task.session, provider: task.provider, threadId: task.threadId, commandId, event },
+    });
+    return sessionRpc({ url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) }, {
+      type: 'sendSessionMessage', provider: task.provider, threadId: task.threadId, tmuxSession: task.session,
+      text: `${task.prompt}\n\n条件检查事件：${event}\n调度请求标识：${commandId}`, commandId,
+    });
+  },
+});
+const alwaysOnRuntime = createAlwaysOnRuntime({
+  store: alwaysOnStore,
+  batchWindowMs: 1500,
+  handleScope: async (scopeKey, batch, helpers) => {
+    // Mirror-only events already dispatched by legacy synchronous paths complete immediately.
+    const actionable = batch.filter(e => !['annotation', 'conditional_task'].includes(e.source));
+    if (!actionable.length) return { status: 'done' };
+    if (scopeKey.startsWith('session:')) {
+      const sessionName = scopeKey.slice('session:'.length);
+      const sessions = await listSessions();
+      const target = sessionTarget(sessions, sessionName);
+      const session = sessions.find(s => s.name === sessionName);
+      if (sessionExecutionState({ ...session, status: resolveSessionStatus(session) }) !== 'idle') {
+        return { status: 'requeue' };
+      }
+      const first = actionable[0];
+      if (first.payload?.provider && first.payload.provider !== target.provider) throw new Error('目标会话 provider 已变化，未发送');
+      if (first.payload?.threadId && first.payload.threadId !== target.threadId) throw new Error('目标会话身份已变化，未发送');
+      const commandId = `alwayson-${crypto.randomUUID()}`;
+      const body = actionable.map(e => `- [${e.source}] ${e.payload?.reason || e.payload?.text || JSON.stringify(e.payload)}`).join('\n');
+      helpers.markSubmitting(commandId, actionable.map(e => e.id));
+      await sessionRpc({ url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) }, {
+        type: 'sendSessionMessage', ...target, text: `【定时跟进/事件唤醒】\n${body}\n\n调度请求标识：${commandId}`, commandId,
+      });
+      return { status: 'done' };
+    }
+    // Butler scope: ephemeral on-demand orchestrator (Scheme A).
+    return alwaysOnButler.handleBatch(actionable, helpers);
+  },
+});
+const alwaysOnButler = createButlerOrchestrator({
+  store: alwaysOnStore,
+  memory: alwaysOnMemory,
+  outboxDispatcher: alwaysOnOutbox,
+  listSessions: async () => (await sessionSnapshotForAuth({ owner: true })).sessions,
+  dispatchSession: async ({ session, prompt, commandId }) => {
+    const target = sessionTarget([session], session.name);
+    return sessionRpc({ url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) }, {
+      type: 'sendSessionMessage', ...target, text: `${prompt}\n\n调度请求标识：${commandId}`, commandId,
+    });
+  },
+});
+const alwaysOnApprovals = createApprovalGate({
+  store: alwaysOnStore,
+  runtime: alwaysOnRuntime,
 });
 let taskTimer;
+let alwaysOnTimer;
 let checkpointTimer;
 let telegram;
 
@@ -621,7 +720,10 @@ wss.on('connection', (ws, session, viewport, terminalAccess) => handleTerminalCo
 agentWss.on('connection', (ws, options) => agentHub.handleConnection(ws, options));
 server.on('close', () => {
   historySearch.close().catch(() => {});
+  alwaysOnRuntime.close();
+  alwaysOnStore.close();
   clearInterval(taskTimer);
+  clearInterval(alwaysOnTimer);
   clearInterval(checkpointTimer);
   telegram?.stop();
   sessionFeed.close();
@@ -644,8 +746,14 @@ function startConfiguredTelegram() {
 }
 server.listen(port, host, () => {
   startConfiguredTelegram();
+  alwaysOnRuntime.recoverOnStartup();
   taskTimer = setInterval(() => conditionalTasks.tick().catch(error => console.error('Conditional tasks:', error.message)), 30_000);
   taskTimer.unref();
+  alwaysOnTimer = setInterval(() => {
+    alwaysOnRuntime.tickTimers().catch(error => console.error('AlwaysOn timers:', error.message));
+    alwaysOnOutbox.tick().catch(error => console.error('AlwaysOn outbox:', error.message));
+  }, 15_000);
+  alwaysOnTimer.unref();
   checkpointTimer = setInterval(() => sessionSnapshotForAuth({ owner: true }).catch(error => console.error('Session checkpoints:', error.message)), 10_000);
   checkpointTimer.unref();
   console.log(`Codeck is running at https://${host}:${port}`);

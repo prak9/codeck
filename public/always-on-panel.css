@@ -1,0 +1,199 @@
+.always-on-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: calc(100% - 24px);
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.always-on-entry:hover {
+  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(30, 41, 59, 0.72);
+}
+.always-on-entry[hidden] {
+  display: none;
+}
+.always-on-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #111827;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.always-on-badge[hidden] {
+  display: none;
+}
+.always-on-dialog {
+  width: min(860px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  overflow: hidden;
+}
+.always-on-dialog::backdrop {
+  background: rgba(2, 6, 23, 0.7);
+}
+.always-on-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.always-on-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  flex-wrap: wrap;
+}
+.always-on-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.always-on-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.always-on-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  overflow-x: auto;
+}
+.always-on-tabs button {
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.always-on-tabs button[aria-selected="true"] {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #f8fafc;
+}
+.always-on-status {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #94a3b8;
+  min-height: 20px;
+}
+.always-on-body {
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.always-on-card {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(30, 41, 59, 0.52);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.always-on-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.always-on-pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  color: #e2e8f0;
+}
+.always-on-pill.urgent {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fde68a;
+}
+.always-on-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.always-on-btn {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(30, 41, 59, 0.9);
+  color: #e2e8f0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.always-on-btn.primary {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #fff;
+}
+.always-on-btn.danger {
+  background: rgba(220, 38, 38, 0.22);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+}
+.always-on-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.always-on-form input,
+.always-on-editor textarea {
+  background: #020617;
+  color: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+.always-on-editor textarea {
+  width: 100%;
+  min-height: 200px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}
+.always-on-empty {
+  color: #94a3b8;
+  font-size: 13px;
+  margin: 4px 0;
+}
+@media (max-width: 640px) {
+  .always-on-dialog {
+    width: calc(100vw - 12px);
+    max-height: calc(100dvh - 16px);
+  }
+}

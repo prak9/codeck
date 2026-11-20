@@ -850,6 +850,24 @@ function codexRolloutIsSubagent(file, id) {
   }
 }
 
+function agyPresenceId(pid, procRoot, home) {
+  const directory = path.join(procRoot, String(pid), 'fd');
+  let locks, entries;
+  try {
+    locks = fs.realpathSync.native(path.join(home, '.gemini/antigravity-cli/presence'));
+    entries = fs.readdirSync(directory);
+  } catch { return null; }
+  const ids = new Set();
+  for (const entry of entries) {
+    let target;
+    try { target = fs.readlinkSync(path.join(directory, entry)); } catch { continue; }
+    if (path.dirname(target) !== locks) continue;
+    const match = path.basename(target).match(new RegExp(`^(${UUID})\\.lock$`, 'i'));
+    if (match) ids.add(match[1]);
+  }
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
 export function findCodexOpenSessionId(processes, codexHome, { procRoot = '/proc' } = {}) {
   if (!processes?.length || !codexHome) return null;
   let locksRoot;
@@ -1052,7 +1070,8 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
     const explicitId = kind === 'claude' || kind === 'qodercli'
       ? parseResumedSessionId(agentProcess.command)
       : null;
-    const openSessionId = kind === 'codex'
+    const openSessionId = kind === 'agy' ? agyPresenceId(agentProcess.pid, procRoot, env.HOME || os.homedir())
+      : kind === 'codex'
       ? findCodexOpenSessionId(tree, codexHome, { procRoot })
       : kind === 'qodercli' && !registered?.id && !explicitId
         ? findQoderOpenSessionId(tree, qoderHome, registered?.cwd || cwd, { procRoot })
@@ -1199,8 +1218,7 @@ export async function detectPaneAgents(panes, env = process.env, options = {}) {
       if (id) claimedCodexIds.add(id);
       agent = { kind: 'codex', id, name, ...runtime };
     } else if (kind === 'agy') {
-      // Native terminal provider: no structured conversation identity is inferred.
-      agent = { kind: 'agy', id: null, name: pane.session, ...runtime };
+      agent = { kind: 'agy', id: openSessionId, name: pane.session, ...runtime };
     } else if (kind === 'claude') {
       const id = registered?.id || providerExplicitId;
       const name = findClaudeSlug(id, claudeHome, now) || pane.session;

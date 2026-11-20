@@ -22,7 +22,7 @@ codeck page share source-ID
 codeck page revoke source-ID
 ```
 
-`session create --provider agy` 启动 Google Antigravity 原生终端，默认通过本机 `http://127.0.0.1:7890` 代理，使用 `--dangerously-skip-permissions` 自动批准工具操作；恢复模式使用 `--continue` 继续最近会话。普通模式可直接创建；Remote 创建或选择 AGY 时进入同一终端。终端右上角的 `？` 和 `✓` 分别发送目标与进展问询、确认继续的提示词。AGY 暂未接入结构化历史与 `session send/read`，首次使用在终端完成 Google 登录。
+`session create --provider agy` 启动 Google Antigravity 原生终端，默认通过本机 `http://127.0.0.1:7890` 代理，使用 `--dangerously-skip-permissions` 自动批准工具操作；恢复模式使用 `--continue` 继续最近会话。普通模式可直接创建；Remote 创建或选择 AGY 时进入对话页，读取该进程绑定的用户消息与 Agent 回复，输入发往原终端。终端右上角的 `？` 和 `✓` 分别发送目标与进展问询、确认继续的提示词。AGY 暂不支持 CLI 的 `session send/read`，首次使用在终端完成 Google 登录。
 
 `session create` 只创建并启动 CLI，不附加任务；Agent 身份就绪后再 send。命令支持 `--json`；默认输出可读文字。读取不触发新轮次。创建失败先查列表，发送失败按错误中的 commandId 核对，不自动重放。会话创建、消息发送和网页操作沿用服务端权限。
 

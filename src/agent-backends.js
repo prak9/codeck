@@ -18,6 +18,7 @@ import { CodexAppServer } from './codex-app-server.js';
 import { imageReferences } from './agent-images.js';
 import { CodexDeliveryRecovery } from './codex-delivery-recovery.js';
 import { SdkAgentBackend } from './sdk-agent-backend.js';
+import { AgyAgentBackend } from './agy-agent-backend.js';
 import { QoderAgentBackend } from './qoder-agent-backend.js';
 import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
@@ -710,6 +711,7 @@ async function readTranscriptRange(file, start, end) {
 export function createAgentBackends() {
   return {
     codex: new CodexAgentBackend(),
+    agy: new AgyAgentBackend(),
     claude: new SdkAgentBackend({
       provider: 'claude',
       label: 'Claude Code',

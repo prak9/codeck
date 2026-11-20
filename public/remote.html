@@ -26,6 +26,7 @@
   <link rel="stylesheet" href="/history-search.css?v=1">
   <link rel="stylesheet" href="/session-progress.css?v=1">
   <link rel="stylesheet" href="/workfiles.css?v=2">
+  <link rel="stylesheet" href="/always-on-panel.css?v=1">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -47,6 +48,7 @@
       </div>
       <div class="session-search"><input id="sessionSearch" type="search" placeholder="搜索会话名称" aria-label="搜索会话名称" aria-controls="threadList" autocomplete="off" spellcheck="false"></div>
       <button id="historySearchButton" class="history-search-entry" type="button">搜索历史内容</button>
+      <button id="alwaysOnButton" class="always-on-entry" type="button" hidden><span>个人行动台</span><span class="always-on-badge" id="alwaysOnBadge" hidden></span></button>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
         <span><i class="connection-dot" id="drawerConnectionDot"></i><span id="drawerConnectionText">正在连接</span></span>
@@ -239,6 +241,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=158"></script>
+  <script type="module" src="/remote.js?v=160"></script>
 </body>
 </html>

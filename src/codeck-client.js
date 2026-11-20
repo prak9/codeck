@@ -21,6 +21,15 @@ export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck task list
   codeck task put ID --file TASK.json
   codeck task remove ID
+  codeck timer list
+  codeck timer followup --in 30m --reason TEXT [--session NAME]
+  codeck timer pause ID
+  codeck timer resume ID
+  codeck timer remove ID
+  codeck memory list
+  codeck memory read PATH
+  codeck memory write PATH --file CONTENT.md
+  codeck memory dream
   codeck page list
   codeck page publish FILE.html --title TITLE [--id ID | --source-key KEY] [--session NAME] [--revision VERSION] [--evidence RECORD.json]
   codeck page share ID
@@ -66,7 +75,7 @@ export function clientRequest(connection, endpoint, method = 'GET', body) {
 export async function runCodeck(argv, connection, { request = clientRequest, rpc = sessionRpc } = {}) {
   const [area, action, ...args] = argv.filter(a => a !== '--json');
   const positional = [], options = {};
-  const allowed = new Set(['file', 'record', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision']);
+  const allowed = new Set(['file', 'record', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision', 'in', 'at', 'reason']);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     const key = args[i].slice(2), value = args[++i];
@@ -76,7 +85,11 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
   const commandOptions = {
     'session:checkpoint': ['file', 'record'], 'session:list': [], 'session:read': [], 'session:send': ['file'], 'session:create': ['provider', 'cwd', 'worktree'],
     'workfiles:list': [], 'workfiles:add': ['record'],
-    'history:search': ['provider'], 'history:context': [], 'history:link': ['repo', 'commit', 'provider'], 'task:list': [], 'task:put': ['file'], 'task:remove': [], 'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
+    'history:search': ['provider'], 'history:context': [], 'history:link': ['repo', 'commit', 'provider'],
+    'task:list': [], 'task:put': ['file'], 'task:remove': [],
+    'timer:list': [], 'timer:followup': ['in', 'at', 'reason', 'session', 'id'], 'timer:pause': [], 'timer:resume': [], 'timer:remove': [],
+    'memory:list': [], 'memory:read': [], 'memory:write': ['file'], 'memory:dream': [],
+    'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
   }[area + ':' + action];
   if (!commandOptions || Object.keys(options).some(key => !commandOptions.includes(key))) throw new Error('未知命令或该命令不支持此参数');
   const name = positional[0];
@@ -126,6 +139,34 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     if (!options.file) throw new Error('任务配置需 --file');
     return call(`/api/tasks/${encodeURIComponent(name)}`, 'PUT', JSON.parse(await fs.readFile(options.file, 'utf8')));
   }
+  if (area === 'timer') {
+    if (action === 'list') return call('/api/always-on/timers');
+    if (action === 'followup') {
+      if (!options.reason || (!options.in && !options.at)) throw new Error('followup 需要 --reason，以及 --in 或 --at');
+      return call('/api/always-on/timers/followup', 'POST', {
+        ...(options.id ? { id: options.id } : {}),
+        ...(options.in ? { in: options.in } : {}),
+        ...(options.at ? { at: options.at } : {}),
+        reason: options.reason,
+        ...(options.session ? { session: options.session } : {}),
+      });
+    }
+    if (!name) throw new Error('请指定定时器 ID');
+    if (action === 'remove') { await call(`/api/always-on/timers/${encodeURIComponent(name)}`, 'DELETE'); return { removed: name }; }
+    if (action === 'pause' || action === 'resume') return call(`/api/always-on/timers/${encodeURIComponent(name)}`, 'PATCH', { action });
+    throw new Error('未知 timer 命令');
+  }
+  if (area === 'memory') {
+    if (action === 'list') return call('/api/always-on/memory');
+    if (action === 'dream') return call('/api/always-on/memory/dream', 'POST');
+    if (!name) throw new Error('请指定记忆路径（如 instructions.md 或 notes/prefs.md）');
+    if (action === 'read') return call('/api/always-on/memory/file?' + new URLSearchParams({ path: name }));
+    if (action === 'write') {
+      if (!options.file) throw new Error('写入记忆需 --file');
+      return call('/api/always-on/memory/file', 'PUT', { path: name, content: await fs.readFile(options.file, 'utf8') });
+    }
+    throw new Error('未知 memory 命令');
+  }
   if (area === 'page') {
     if (action === 'list') return call('/api/pages');
     if (action === 'publish') {
@@ -151,6 +192,7 @@ export function formatClientResult(value) {
   if (value.url) return value.url;
   if (value.sessions) return value.sessions.map(s => `${s.name}\t${s.agent?.kind || 'shell'}\t${executionLabel(sessionExecutionState(s))}`).join('\n') || '暂无会话';
   if (value.pages) return value.pages.map(p => `${p.id}\t${p.title}\t${p.url}`).join('\n') || '暂无页面';
+  if (value.timers) return value.timers.map(t => `${t.id}\t${t.kind}\t${t.status}\t${new Date(t.dueAt).toISOString()}\t${t.scopeKey}\t${t.reason}`).join('\n') || '暂无定时器';
   if (value.thread) {
     if (value.thread.historyError) return `历史读取失败：${value.thread.historyError}`;
     if (value.thread.historyLoading) return '历史正在读取，请稍后查询；未发送任何输入';

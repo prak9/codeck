@@ -32,7 +32,7 @@ function fixture() {
   $('#sessionMode').value = 'new';
   $('#sessionCwdInput').value = '/srv/project';
   $('#newSessionDialog').open = true;
-  const state = { provider: 'codex', providers: ['codex', 'claude', 'qodercli'], defaultCwd: '/srv', threads: [], sessionCreationPending: false };
+  const state = { provider: 'codex', providers: ['codex', 'claude', 'qodercli', 'agy'], defaultCwd: '/srv', threads: [], sessionCreationPending: false };
   const created = [], opened = [], navigated = [], saved = [];
   let waited = 0;
   const context = vm.createContext({
@@ -70,7 +70,7 @@ test('Remote offers Shell only for session creation and preserves an open form a
   f.context.renderProviderControls();
   assert.deepEqual(f.$('#sessionProvider').children.map(option => option.value), ['codex', 'claude', 'qodercli', 'agy', 'shell']);
   assert.equal(f.$('#sessionProvider').value, 'shell');
-  assert.deepEqual(f.$('#settingsProvider').children.map(option => option.value), ['codex', 'claude', 'qodercli']);
+  assert.deepEqual(f.$('#settingsProvider').children.map(option => option.value), ['codex', 'claude', 'qodercli', 'agy']);
 });
 
 test('Remote resume enters the terminal picker without waiting for Agent identity', async () => {
@@ -146,19 +146,19 @@ test('cancel and repeated submissions cannot create extra sessions', async () =>
   await pending;
 });
 
-test('Remote AGY creation enters its native terminal without requesting structured history', async () => {
+for (const mode of ['new', 'resume']) test(`Remote AGY ${mode} opens its conversation without navigating away`, async () => {
   const f = fixture();
   f.$('#sessionProvider').value = 'agy';
+  f.$('#sessionMode').value = mode;
   await f.submit();
   assert.equal(f.created[0].client, 'agy');
-  assert.deepEqual(f.navigated, ['/?session=work']);
-  assert.equal(f.waited, 0);
-  assert.deepEqual(f.opened, []);
+  assert.deepEqual(f.navigated, []);
+  assert.deepEqual(f.opened, ['agent:agy']);
 });
 
-test('existing Remote AGY sessions open the exact native terminal', async () => {
+test('existing AGY conversation opens through the Remote thread reader', async () => {
   const f = fixture();
-  await f.context.openListedThread({ provider: 'agy', id: 'tmux:agy:agy-work', tmux: { name: 'agy-work' } });
-  assert.deepEqual(f.navigated, ['/?session=agy-work']);
-  assert.deepEqual(f.opened, []);
+  await f.context.openListedThread({ provider: 'agy', id: 'conversation-id', tmux: { name: 'agy-work' } });
+  assert.deepEqual(f.opened, ['agent:agy']);
+  assert.deepEqual(f.navigated, []);
 });

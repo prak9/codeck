@@ -54,3 +54,46 @@ test('AGY CLI is identified without treating its management commands as active a
     assert.equal(agentKindFromCommand(command), null);
   }
 });
+
+test('AGY history pages contain only user input and visible assistant replies', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { AgyAgentBackend } = await import('../src/agy-agent-backend.js');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-agy-history-'));
+  const id = '11111111-2222-3333-4444-555555555555';
+  try {
+    const db = new DatabaseSync(path.join(root, id + '.db'));
+    try {
+      db.exec('CREATE TABLE steps(idx INTEGER PRIMARY KEY,step_type INTEGER,step_format INTEGER,step_payload BLOB)');
+      const insert = db.prepare('INSERT INTO steps VALUES(?,?,0,?)');
+      // Wire fixtures: user input (19.2), thought (20.3), visible response (20.1).
+      for (const [idx, type, hex] of [[0,14,'9a0103120141'],[1,15,'a201031a0158'],[2,15,'a201030a0142'],[3,14,'9a0103120143']]) {
+        insert.run(idx, type, Buffer.from(hex, 'hex'));
+      }
+    } finally { db.close(); }
+    const backend = new AgyAgentBackend(root);
+    const latest = backend.openThread(id, { turnLimit: 1 }).thread;
+    assert.equal(latest.truncated, true);
+    assert.equal(latest.turns[0].items[0].content[0].text, 'C');
+    const older = backend.loadThreadHistory(id, { beforeTurnId: latest.oldestTurnId, limit: 2 });
+    assert.equal(older.truncated, false);
+    assert.deepEqual(older.turns[0].items.map(i => i.text || i.content[0].text), ['A','B']);
+    assert.throws(() => backend.openThread('../other'), /无效/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('Remote sends AGY multiline input to its bound conversation and checks identity before Enter', async () => {
+  const { sendSessionMessage } = await import('../src/tmux.js');
+  for (const switched of [true, false]) {
+    const keys = [];
+    let id = 'first';
+    const result = await sendSessionMessage({ provider: 'agy', sessionName: 'work', threadId: id, text: 'one\ntwo', replaceDraft: true }, {
+      listTmuxSessions: async () => [{ name: 'work', agent: { id, kind: 'agy', paneId: '%7' } }],
+      loadBuffer: async (_, text) => assert.equal(text, 'one\ntwo'),
+      waitForPaste: async () => { if (switched) id = 'replacement'; },
+      execTmux: async args => keys.push(args),
+    });
+    assert.equal(keys.filter(args => args.includes('paste-buffer') && args.includes('-p')).length, 1);
+    assert.equal(keys.some(args => args.includes('Enter')), !switched);
+    assert.equal(result.submissionStatus, switched ? 'unconfirmed' : undefined);
+  }
+});

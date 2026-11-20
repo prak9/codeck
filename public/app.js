@@ -1,6 +1,7 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=1';
 import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
@@ -50,6 +51,7 @@ import {
 } from './session-visibility.js?v=2';
 
 let workfilesPanel;
+let alwaysOnPanel;
 
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
@@ -708,6 +710,7 @@ let sessionRenderSignature = null;
 
 function renderSessions({ force = false } = {}) {
   workfilesPanel?.sync();
+  alwaysOnPanel?.sync();
   const progressSession = state.sessions.find(item => item.name === state.active);
   renderSessionProgress($('#sessionProgress'), progressSession?.checkpoint, { key: `${progressSession?.createdAt}:${progressSession?.checkpoint?.taskId || ''}`, onRespond: () => { state.terminal?.focus(); } });
   const list = $('#sessionList');
@@ -1170,6 +1173,7 @@ function connectedStateLabel() {
 
 function syncTerminalAccess() {
   workfilesPanel?.sync();
+  alwaysOnPanel?.sync();
   const writable = state.canWrite && state.terminalInputReady;
   if (state.terminal) state.terminal.options.disableStdin = !writable;
   for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
@@ -2167,3 +2171,11 @@ bindHistorySearch({ token: () => state.token });
 
 workfilesPanel = bindWorkfiles({ button: document.getElementById('workfilesButton'), token: () => state.token, enabled: () => state.canManage, getTarget: () => state.sessions.find(item => item.name === state.active) });
 workfilesPanel.sync();
+alwaysOnPanel = bindAlwaysOnPanel({
+  button: document.getElementById('alwaysOnButton'),
+  badge: document.getElementById('alwaysOnBadge'),
+  token: () => state.token,
+  enabled: () => state.canManage,
+  activeSession: () => state.active,
+});
+alwaysOnPanel.sync();

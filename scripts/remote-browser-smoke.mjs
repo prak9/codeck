@@ -194,7 +194,7 @@ sockets.on('connection', socket => {
     scopedSessionStop: true,
     autonomy: fixture.autonomy.snapshots(),
     protocol: { version: 1, epoch: fixture.epoch, commandReceiptTtlMs: 600_000 },
-    providers: providers.map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
+    providers: [...providers, 'agy'].map(id => ({ id, capabilities: { attachments: true, slashCommands: true, turnImages: id === 'codex', ...sessionCommandCapabilities(id) } })) });
   socket.on('message', async raw => {
     const request = JSON.parse(raw);
     const reply = result => send(socket, { id: request.id, ok: true, result });

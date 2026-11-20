@@ -1412,6 +1412,24 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         return current.paneId === paneId && (!isCurrent || isCurrent());
       } catch { return false; }
     };
+    if (provider === 'agy') {
+      const buffer = `codeck_agy_${process.pid}_${++inputBufferSequence}`;
+      await (overrides.loadBuffer || loadTmuxBuffer)(buffer, text);
+      let attempted = false;
+      try {
+        if (!await verifyPane()) throw new Error('AGY 对话已切换，消息未发送');
+        attempted = true;
+        await execTmux(exitPaneModeThen(paneId, ['paste-buffer', '-p', '-r', '-d', '-b', buffer, '-t', paneId]));
+        await waitForPaste(PASTE_SUBMIT_DELAY_MS);
+        if (!await verifyPane()) return { submissionStatus: 'unconfirmed' };
+        await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+        return {};
+      } catch (error) {
+        await execTmux(['delete-buffer', '-b', buffer]).catch(() => {});
+        if (attempted) return { submissionStatus: 'unconfirmed' };
+        throw error;
+      }
+    }
     const captureInputPane = overrides.capturePane
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
     const checkWriter = screen => {
