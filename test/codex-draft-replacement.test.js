@@ -109,3 +109,15 @@ test('a draft equal to the placeholder is also replaced', async () => {
   await sendSessionMessage({ provider: 'codex', sessionName: 'replacement', threadId: 'one', text: 'Continue' }, f.overrides);
   assert.deepEqual(f.sent, ['Continue']);
 });
+
+test('Codex writer lock in a narrow pane rejects Remote input before any keys reach its retry/fork menu', async () => {
+  const screen = '  🔒  This conversation is open in\n  another app\n  r to retry\n      Close it there and press R to\n      continue here.\n\n   r retry   f fork   esc/^c/q exit\n  ^t transcript';
+  for (const [text, nonInterrupting] of [['重新训练', false], ['/status', false], ['核对目标', true]]) {
+    const f = fixture();
+    f.overrides.capturePane = async () => screen;
+    await assert.rejects(sendSessionMessage({ provider: 'codex', sessionName: 'replacement', threadId: 'one',
+      text, replaceDraft: true, nonInterrupting }, f.overrides), /其他客户端.*未发送/);
+    assert.deepEqual(f.keys, []);
+    assert.deepEqual(f.sent, []);
+  }
+});

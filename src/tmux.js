@@ -1412,10 +1412,19 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     };
     const captureInputPane = overrides.capturePane
       || ((pane, { joinWrapped } = {}) => capturePane(pane, exec, joinWrapped, provider === 'codex' || provider === 'qodercli'));
+    const checkWriter = screen => {
+      if (provider === 'codex') {
+        const footer = cleanScreenRows(screen).slice(-16).join(' ').replace(/\s+/gu, ' ').trim();
+        if (/This conversation is open in another app.*\br retry\s+f fork\s+esc\/\^c\/q exit(?:\s+\^t transcript)?$/iu.test(footer)) {
+          throw new Error('此对话正由其他客户端占用，消息未发送。请在原客户端关闭该对话，然后在普通终端按 R 重试。');
+        }
+      }
+      return screen;
+    };
     const captureCommandPane = overrides.captureSlashPane || overrides.capturePane
       || ((pane) => capturePaneHistory(pane, exec));
     if (provider === 'codex' && nonInterrupting && replaceDraft && !requireIdle && !session.agent?.question) {
-      const screen = await captureInputPane(paneId, { joinWrapped: true });
+      const screen = checkWriter(await captureInputPane(paneId, { joinWrapped: true }));
       if (agentComposerState(screen, '') === 'unknown' && !hasCodexInputModal(screen)) {
         if (!await verifyPane()) throw new Error('终端会话已变化，消息未发送');
         // Capture the events preceding recovery: the redraw itself destroys the
@@ -1429,7 +1438,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
           throw new Error('终端输入区域恢复失败，消息未发送；请重新连接终端后重试');
         }
         if (!await verifyPane()) throw new Error('终端会话已变化，消息未发送');
-        if (agentComposerState(await captureInputPane(paneId, { joinWrapped: true }), '') === 'unknown') {
+        if (agentComposerState(checkWriter(await captureInputPane(paneId, { joinWrapped: true })), '') === 'unknown') {
           throw new Error('终端输入区域尚未恢复，消息未发送；请重新连接终端后重试');
         }
       }
@@ -1439,10 +1448,10 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
     // follow-up rounds do not inherit permission to erase later human input.
     if (replaceDraft && provider !== 'shell' && (provider !== 'codex' || requireIdle || nonInterrupting)) {
       await replaceComposerDraft({ provider, paneId, execTmux, question: session.agent?.question,
-        read: () => captureInputPane(paneId, { joinWrapped: true }), verify: verifyPane, wait: () => waitForPaste(pasteDelay) });
+        read: async () => checkWriter(await captureInputPane(paneId, { joinWrapped: true })), verify: verifyPane, wait: () => waitForPaste(pasteDelay) });
     }
     if (requireIdle || nonInterrupting) {
-      const screen = await captureInputPane(paneId, { joinWrapped: true });
+      const screen = checkWriter(await captureInputPane(paneId, { joinWrapped: true }));
       const signals = resolveScreenSignals(screen, AGENT_SCREEN_MARKERS[provider]);
       const composer = provider === 'qodercli' ? qoderComposerState(screen, '') : agentComposerState(screen, '', provider);
       const empty = composer === 'empty';
@@ -1462,6 +1471,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       try {
         screen = await captureInputPane(paneId, { joinWrapped: true });
       } catch { /* Screen recognition is not an authorization gate for input. */ }
+      checkWriter(screen);
       if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
       if ((requireIdle || nonInterrupting) && agentComposerState(screen, '') !== 'empty') {
         throw new Error('终端出现草稿或弹窗，自主消息未发送');
@@ -1478,7 +1488,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Escape']));
         await waitForPaste(pasteDelay);
         if (!await verifyPane()) throw new Error('终端会话 pane 已变化，请重新连接后再发送');
-        screen = await captureInputPane(paneId, { joinWrapped: true });
+        screen = checkWriter(await captureInputPane(paneId, { joinWrapped: true }));
         if (hasCodexInputModal(screen)) throw new Error('终端弹窗尚未关闭，消息未发送，请先取消弹窗后重试');
       }
       if (matchingDraft && (agentComposerState(screen, matchingDraft) === 'draft'
@@ -1500,6 +1510,7 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         await waitForPaste(pasteDelay);
         let next = '';
         try { next = await captureInputPane(paneId, { joinWrapped: true }); } catch { /* Best effort. */ }
+        checkWriter(next);
         if (hasCodexInputModal(next)) throw new Error('终端弹窗尚未关闭，消息未发送，请先取消弹窗后重试');
         const state = agentComposerState(next, '');
         const rows = cleanScreenRows(next);
