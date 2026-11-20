@@ -66,17 +66,16 @@ test('an uncertain retry reuses its command id while the server epoch is unchang
   assert.equal(retry.baselineMatchingTextCount, 0);
 });
 
-test('an uncertain delivery is blocked after a server restart', () => {
+test('manual submission starts a fresh command after a server restart', () => {
   const first = prepareDeliveryAttempt(null, input, {
     serverEpoch: 'epoch-1', createId: () => 'command-12345678',
   });
   const retry = prepareDeliveryAttempt(first, input, {
-    serverEpoch: 'epoch-2', createId: () => 'should-not-run',
+    serverEpoch: 'epoch-2', createId: () => 'fresh-command',
   });
 
-  assert.equal(retry.commandId, first.commandId);
-  assert.equal(retry.blocked, true);
-  assert.equal(retry.blockReason, 'serverRestart');
+  assert.equal(retry.commandId, 'fresh-command');
+  assert.equal(retry.blocked, false);
 });
 
 test('a legacy attempt is not replayed after reconnecting to a sequenced server', () => {
@@ -84,11 +83,11 @@ test('a legacy attempt is not replayed after reconnecting to a sequenced server'
     serverEpoch: '', createId: () => 'command-12345678',
   });
   const retry = prepareDeliveryAttempt(first, input, {
-    serverEpoch: 'epoch-1', createId: () => 'should-not-run',
+    serverEpoch: 'epoch-1', createId: () => 'fresh-command',
   });
 
-  assert.equal(retry.commandId, first.commandId);
-  assert.equal(retry.blocked, true);
+  assert.equal(retry.commandId, 'fresh-command');
+  assert.equal(retry.blocked, false);
 });
 
 test('only transport failures preserve an uncertain delivery attempt', () => {
@@ -104,17 +103,16 @@ test('uncertain attempts remain isolated by tmux session', () => {
   );
 });
 
-test('an uncertain attempt is blocked after the server receipt window expires', () => {
+test('manual submission starts a fresh command after the receipt expires', () => {
   const first = prepareDeliveryAttempt(null, input, {
     serverEpoch: 'epoch-1', receiptTtlMs: 1_000, now: () => 5_000,
     createId: () => 'command-12345678',
   });
   const retry = prepareDeliveryAttempt(first, input, {
     serverEpoch: 'epoch-1', receiptTtlMs: 1_000, now: () => 6_000,
-    createId: () => 'should-not-run',
+    createId: () => 'fresh-command',
   });
 
-  assert.equal(retry.commandId, first.commandId);
-  assert.equal(retry.blocked, true);
-  assert.equal(retry.blockReason, 'receiptExpired');
+  assert.equal(retry.commandId, 'fresh-command');
+  assert.equal(retry.blocked, false);
 });

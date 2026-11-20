@@ -42,7 +42,7 @@ test('unknown delivery has an explicit terminal-check warning instead of a waiti
   load(context, 'itemNode');
   for (const status of ['accepted', 'unknown']) {
     const node = context.itemNode({ type: 'userMessage', delivery: { status } });
-    assert.match(node.children[0].text, status === 'unknown' ? /状态未知.*勿重复发送/ : /等待 Agent 确认/);
+    assert.match(node.children[0].text, status === 'unknown' ? /状态未知.*可再次发送/ : /等待 Agent 确认/);
   }
 });
 

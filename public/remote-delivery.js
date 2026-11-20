@@ -13,15 +13,10 @@ export function prepareDeliveryAttempt(current, input, {
   createId = () => crypto.randomUUID(),
 } = {}) {
   const key = deliveryAttemptKey(input);
-  if (current?.key === key) {
-    if (current.serverEpoch !== serverEpoch) {
-      return current.blocked ? current : { ...current, blocked: true, blockReason: 'serverRestart' };
-    }
-    if (current.expiresAt <= now()) {
-      return current.blocked ? current : { ...current, blocked: true, blockReason: 'receiptExpired' };
-    }
-    return current;
-  }
+  // Only an unresolved transport request with a live server receipt can be
+  // retried under its original ID. A new user submission owns a fresh ID otherwise.
+  if (current?.key === key && !current.blocked && current.serverEpoch === serverEpoch
+    && current.expiresAt > now()) return current;
   return {
     key,
     provider: input.provider,

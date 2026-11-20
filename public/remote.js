@@ -32,7 +32,7 @@ import {
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
-import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=5';
+import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=6';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
 import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=6';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
@@ -84,7 +84,7 @@ const THREAD_REFRESH_FALLBACK_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_MS = 10_000;
 const THREAD_COMPLETION_REFRESH_TICK_MS = 1_000;
 const THREAD_VIEW_CACHE_LIMIT = 6;
-const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，请检查终端，勿重复发送；可从右上角切换到终端模式。';
+const SUBMISSION_UNCONFIRMED_MESSAGE = '提交未确认，草稿已保留，可再次发送。';
 const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT;
 let viewportFrame = 0;
 let transcriptScrollFrame = 0;
@@ -1852,12 +1852,12 @@ function itemNode(item, turn) {
       node.append(element('small', 'message-delivery-status', item.delivery.status === 'received'
         ? 'Agent 已接收'
         : item.delivery.status === 'unknown'
-        ? '送达状态未知，请检查终端，勿重复发送'
+        ? '送达状态未知，可再次发送'
         : item.delivery.submissionStatus === 'unconfirmed'
-        ? '等待 Agent 确认 · 提交未确认，请检查终端，勿重复发送'
+        ? '提交未确认，可再次发送'
         : '等待 Agent 确认'));
     }
-    if (item.delivery?.status === 'unknown' && item.id?.startsWith('delivery:') && state.thread?.tmux?.name) {
+    if ((item.delivery?.status === 'unknown' || (item.delivery?.status === 'accepted' && item.delivery.submissionStatus === 'unconfirmed')) && item.id?.startsWith('delivery:') && state.thread?.tmux?.name) {
       const target = { provider: state.provider, threadId: state.thread.id, tmuxSession: state.thread.tmux.name };
       const button = element('button', 'delivery-dismiss', '清除此提示');
       button.type = 'button'; button.title = '只清理未知回执，不重发消息、不删除对话记录';
@@ -2735,17 +2735,6 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
       });
       if (usesPreset) delivery.preserveComposer = true;
       state.pendingDeliveries.set(deliveryKey, delivery);
-      if (delivery.blocked) {
-        if (delivery.blockReason === 'submissionUnconfirmed') {
-          setLiveMessage(SUBMISSION_UNCONFIRMED_MESSAGE);
-          return;
-        }
-        const reason = delivery.blockReason === 'receiptExpired'
-          ? '安全重试时限已过'
-          : delivery.blockReason === 'unsupported' ? '当前服务不支持安全重试' : '服务器已重启';
-        setLiveMessage(`${reason}，上一条消息发送状态未知；请先确认终端输出，再修改内容后发送。`);
-        return;
-      }
       const paths = await uploadAttachments(attachments);
       if (
         state.provider !== targetProvider
@@ -2755,23 +2744,6 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
       let message = attachmentMessage({ provider: targetProvider, text, paths });
       if (!message) throw new Error('请输入要发送的内容');
       delivery.text = message;
-      const unconfirmedItem = state.thread.turns?.flatMap((turn) => turn.items || []).find((item) => (
-        (item.delivery?.submissionStatus === 'unconfirmed' || item.delivery?.status === 'unknown')
-        && item.delivery?.status !== 'received'
-        && userMessageText(item) === message
-        && !isUserMessageDeliveryReceived(state.thread, { text: message, ...item.delivery })
-      ));
-      if (unconfirmedItem) {
-        state.pendingDeliveries.set(deliveryKey, {
-          ...delivery, ...unconfirmedItem.delivery,
-          commandId: unconfirmedItem.id?.startsWith('delivery:') ? unconfirmedItem.id.slice(9) : delivery.commandId,
-          provider: targetProvider, threadId: targetThreadId, tmuxSession: targetSessionName, text: message,
-          draft, attachmentIds: attachments.map(attachment => attachment.id),
-          blocked: true, blockReason: 'submissionUnconfirmed',
-        });
-        setLiveMessage(SUBMISSION_UNCONFIRMED_MESSAGE);
-        return;
-      }
       if (attachments.length) setLiveMessage('附件已上传，正在发送…');
       if (sessionName) {
         const previousStatus = state.thread.tmux.status;
@@ -2892,7 +2864,7 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
       }
       const retryHint = state.protocolEpoch
         ? '再次点击将使用同一命令安全确认。'
-        : '当前服务不支持安全重试，请先确认终端输出。';
+        : '可再次发送。';
       const errorMessage = uncertain ? `${error.message}；发送状态未知，${retryHint}` : error.message;
       const pendingAttempt = state.pendingDeliveries.get(deliveryKey);
       if (pendingAttempt) pendingAttempt.errorMessage = errorMessage;

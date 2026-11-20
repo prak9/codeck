@@ -29,6 +29,7 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
     autonomyDisplayText, autonomyKey, AUTONOMY_PLANNING_PROMPT,
     chooseStopScope: async () => 'foreground',
     ...model, ...composer, ...delivery, ...commands,
+    localStorage: { getItem: () => null, setItem() {} },
     state, crypto: { randomUUID: () => `command-${sent.length + 1}` },
     Date, setTimeout, clearTimeout,
     $: () => input,
@@ -47,7 +48,7 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
       return typeof result === 'function' ? await result() : await result;
     },
     element(tag, className, text) {
-      return { tag, className, textContent: text, children: [], append(...nodes) { this.children.push(...nodes); } };
+      return { tag, className, textContent: text, children: [], addEventListener(type, callback) { this[type] = callback; }, append(...nodes) { this.children.push(...nodes); } };
     },
   });
   const constant = source.match(/^const SUBMISSION_UNCONFIRMED_MESSAGE = .*;$/m)?.[0] || '';
@@ -59,20 +60,21 @@ function fixture(result = { submissionStatus: 'unconfirmed' }) {
   return { context, state, input, sent, get message() { return liveMessage; } };
 }
 
-test('unconfirmed submission preserves the draft and original command without claiming work or retrying', async () => {
+test('unconfirmed submission preserves the draft and a second manual send gets a new command', async () => {
   const f = fixture();
   await f.context.submitComposer();
   assert.equal(f.input.value, draft);
   assert.equal(f.state.thread.tmux.status, 'done');
-  assert.match(f.message, /提交未确认.*勿重复发送/);
+  assert.match(f.message, /提交未确认.*可再次发送/);
   const attempt = [...f.state.pendingDeliveries.values()][0];
   assert.equal(attempt.commandId, f.sent[0].commandId);
   assert.equal(attempt.blockReason, 'submissionUnconfirmed');
   assert.equal(f.state.thread.turns.at(-1).items[0].delivery.submissionStatus, 'unconfirmed');
   await f.context.submitComposer();
-  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent.length, 2);
+  assert.notEqual(f.sent[0].commandId, f.sent[1].commandId);
   assert.equal(f.input.value, draft);
-  assert.match(f.message, /提交未确认.*勿重复发送/);
+  assert.match(f.message, /提交未确认.*可再次发送/);
 });
 
 test('background-only stop chooses a scope; cancelling or switching sessions sends no interrupt', async () => {
@@ -250,15 +252,15 @@ test('a late confirmed response cannot clear an identical draft in another sessi
   assert.equal(f.message, 'Other session');
 });
 
-test('restored unconfirmed transcript receipts also block same-text submission', async () => {
+test('restored unconfirmed transcript receipts allow a fresh same-text submission', async () => {
   const f = fixture();
   f.state.thread.turns.push({ id: 'receipt-turn', status: 'completed', deliveryOnly: true,
     items: [{ ...user('delivery:original-command'), delivery: { status: 'accepted', submissionStatus: 'unconfirmed' } }] });
   await f.context.submitComposer();
-  assert.equal(f.sent.length, 0);
+  assert.equal(f.sent.length, 1);
   assert.equal(f.input.value, draft);
-  assert.match(f.message, /提交未确认.*勿重复发送/);
-  assert.equal([...f.state.pendingDeliveries.values()][0].commandId, 'original-command');
+  assert.match(f.message, /提交未确认.*可再次发送/);
+  assert.notEqual(f.sent[0].commandId, 'original-command');
 });
 
 test('a real transcript removes the marker and releases the unconfirmed retry block', async () => {
@@ -487,4 +489,25 @@ test('deferred successful cleanup preserves a newer draft and newer attachments'
   assert.equal(f.input.value, '下一条草稿');
   assert.deepEqual(f.state.attachments, [nextAttachment]);
   assert.equal(f.state.pendingDeliveries.size, 0);
+});
+
+test('explicitly clearing an unconfirmed receipt releases its draft for a fresh manual send', async () => {
+  const f = fixture();
+  await f.context.submitComposer();
+  const item = f.state.thread.turns.at(-1).items[0];
+  const button = f.context.itemNode(item, {}).children.find(node => node.className === 'delivery-dismiss');
+  assert.ok(button);
+  const original = f.context.agentRequest;
+  f.context.agentRequest = async (type, payload) => {
+    if (type !== 'dismissSessionDelivery') return original(type, payload);
+    assert.equal(payload.deliveryId, item.delivery.commandId);
+    return { dismissedDeliveryIds: [payload.deliveryId] };
+  };
+  await button.click();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.input.value, draft);
+  assert.equal(f.state.pendingDeliveries.size, 0);
+  await f.context.submitComposer();
+  assert.equal(f.sent.length, 2);
+  assert.notEqual(f.sent[0].commandId, f.sent[1].commandId);
 });
