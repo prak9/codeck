@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 const BASELINE_FILES = new Set(['instructions.md', 'index.md', 'reported.md']);
-const SUBDIRS = new Set(['notes', 'progress', 'archive']);
+const SUBDIRS = new Set(['notes', 'progress', 'archive', 'blueprints']);
 const SAFE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}\.md$/;
 const LOCK_MARKER = '<!-- locked -->';
 const DEFAULT_MAX_BASELINE_BYTES = 16 * 1024;
@@ -35,7 +35,7 @@ export function normalizeMemoryPath(relPath) {
   if (BASELINE_FILES.has(clean)) return clean;
   const parts = clean.split('/');
   if (parts.length !== 2 || !SUBDIRS.has(parts[0]) || !SAFE_NAME.test(parts[1])) {
-    throw new Error('记忆路径仅允许基线文件或 notes/、progress/、archive/ 下的 .md 文件');
+    throw new Error('记忆路径仅允许基线文件或 notes/、progress/、archive/、blueprints/ 下的 .md 文件');
   }
   return `${parts[0]}/${parts[1]}`;
 }
@@ -158,16 +158,18 @@ export function createMemoryStore({ directory, maxBaselineBytes = DEFAULT_MAX_BA
         locked: text.includes(LOCK_MARKER),
       });
     }
-    const [notes, progress, archive] = await Promise.all([
+    const [notes, progress, archive, blueprints] = await Promise.all([
       listDirEntries('notes'),
       listDirEntries('progress'),
       listDirEntries('archive'),
+      listDirEntries('blueprints'),
     ]);
     return {
       baseline,
       notes,
       progress,
       archive,
+      blueprints,
       baselineBytes,
       maxBaselineBytes,
       withinBudget: baselineBytes <= maxBaselineBytes,

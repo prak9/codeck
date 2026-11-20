@@ -259,6 +259,11 @@ mountAlwaysOnRoutes(app, {
     resolveApproval: (...args) => alwaysOnApprovals.resolveApproval(...args),
   },
   credentialProxy: alwaysOnProxy,
+  listSessions: async () => (await sessionSnapshotForAuth({ owner: true })).sessions,
+  publishCollectorPage: async ({ title, html, sourceKey, session }) => {
+    const saved = await pageStore.publish({ title, html, source: { key: sourceKey, ...(session ? { session } : {}) } });
+    return { id: saved.id, url: `/pages/${saved.id}` };
+  },
   runtime: {
     enqueueAndWake: (...args) => alwaysOnRuntime.enqueueAndWake(...args),
     wake: (...args) => alwaysOnRuntime.wake(...args),

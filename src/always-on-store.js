@@ -13,6 +13,9 @@ const VALID_CHANNELS = new Set(['web', 'telegram', 'all']);
 const VALID_OUTBOX_STATUS = new Set(['pending', 'sent', 'suppressed', 'failed', 'digested']);
 const VALID_APPROVAL_RISK = new Set(['guard', 'defer']);
 const VALID_APPROVAL_STATUS = new Set(['pending', 'approved', 'rejected', 'expired']);
+const VALID_BLUEPRINT_STATUS = new Set(['draft', 'active', 'paused', 'archived']);
+const VALID_PROPOSAL_STATUS = new Set(['pending', 'accepted', 'rejected']);
+const VALID_ENTITY_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_.:/#-]{0,127}$/;
 
 function parseJson(text, fallback = {}) {
   try { return JSON.parse(text); } catch { return fallback; }
@@ -94,6 +97,56 @@ function hydrateApproval(row) {
     summary: row.summary,
     action: parseJson(row.action_json, {}),
     risk: row.risk,
+    status: row.status,
+    decisionNote: row.decision_note,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
+  };
+}
+
+function hydrateBlueprint(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    goal: row.goal,
+    processMd: row.process_md,
+    tacitRulesMd: row.tacit_rules_md,
+    sourceOfTruth: row.source_of_truth,
+    doneCriteria: row.done_criteria,
+    feedbackSources: parseJson(row.feedback_sources_json, []),
+    entityKey: row.entity_key,
+    targetSession: row.target_session,
+    status: row.status,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function hydrateEntityLink(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    entityKey: row.entity_key,
+    refType: row.ref_type,
+    refId: row.ref_id,
+    summary: row.summary,
+    meta: parseJson(row.meta_json, {}),
+    createdAt: row.created_at,
+  };
+}
+
+function hydrateProposal(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    blueprintId: row.blueprint_id,
+    entityKey: row.entity_key,
+    title: row.title,
+    rationale: row.rationale,
+    suggestedPatch: parseJson(row.suggested_patch_json, {}),
     status: row.status,
     decisionNote: row.decision_note,
     createdAt: row.created_at,
@@ -189,6 +242,50 @@ export class AlwaysOnStore {
         resolved_at INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_approvals_status_created ON approvals(status, created_at);
+
+      CREATE TABLE IF NOT EXISTS blueprints (
+        id TEXT PRIMARY KEY,
+        slug TEXT UNIQUE NOT NULL,
+        title TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        process_md TEXT NOT NULL,
+        tacit_rules_md TEXT NOT NULL,
+        source_of_truth TEXT NOT NULL,
+        done_criteria TEXT NOT NULL,
+        feedback_sources_json TEXT NOT NULL,
+        entity_key TEXT NOT NULL,
+        target_session TEXT,
+        status TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_blueprints_status_updated ON blueprints(status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS entity_links (
+        id TEXT PRIMARY KEY,
+        entity_key TEXT NOT NULL,
+        ref_type TEXT NOT NULL,
+        ref_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        meta_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_entity_links_key_created ON entity_links(entity_key, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS proposals (
+        id TEXT PRIMARY KEY,
+        blueprint_id TEXT,
+        entity_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        suggested_patch_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        decision_note TEXT,
+        created_at INTEGER NOT NULL,
+        resolved_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_proposals_status_created ON proposals(status, created_at DESC);
     `);
   }
 
@@ -568,6 +665,133 @@ export class AlwaysOnStore {
     return hydrateApproval(this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id));
   }
 
+  putBlueprint({
+    id,
+    slug,
+    title,
+    goal,
+    processMd = '',
+    tacitRulesMd = '',
+    sourceOfTruth = '',
+    doneCriteria = '',
+    feedbackSources = [],
+    entityKey = null,
+    targetSession = null,
+    status = 'paused',
+    now = Date.now(),
+  }) {
+    const cleanSlug = String(slug || '').trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(cleanSlug)) throw new Error('无效的蓝图 slug');
+    if (typeof title !== 'string' || !title.trim()) throw new Error('蓝图标题不能为空');
+    if (typeof goal !== 'string' || !goal.trim()) throw new Error('蓝图终局目标（goal）不能为空');
+    if (!VALID_BLUEPRINT_STATUS.has(status)) throw new Error('无效的蓝图状态');
+    const cleanEntity = String(entityKey || `mission:${cleanSlug}`).trim();
+    if (!VALID_ENTITY_KEY.test(cleanEntity)) throw new Error('无效的 entityKey');
+
+    const existing = this.db.prepare('SELECT * FROM blueprints WHERE slug = ?').get(cleanSlug);
+    const bpId = existing ? existing.id : (id || `bp-${crypto.randomUUID().slice(0, 12)}`);
+    const nextVersion = existing ? existing.version + 1 : 1;
+    const createdAt = existing ? existing.created_at : now;
+
+    this.db.prepare(`
+      INSERT OR REPLACE INTO blueprints
+        (id, slug, title, goal, process_md, tacit_rules_md, source_of_truth, done_criteria, feedback_sources_json, entity_key, target_session, status, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      bpId, cleanSlug, title.trim(), goal.trim(), String(processMd ?? ''), String(tacitRulesMd ?? ''),
+      String(sourceOfTruth ?? ''), String(doneCriteria ?? ''), JSON.stringify(Array.isArray(feedbackSources) ? feedbackSources : []),
+      cleanEntity, targetSession || null, status, nextVersion, createdAt, now,
+    );
+    return hydrateBlueprint(this.db.prepare('SELECT * FROM blueprints WHERE id = ?').get(bpId));
+  }
+
+  getBlueprintBySlug(slug) {
+    return hydrateBlueprint(this.db.prepare('SELECT * FROM blueprints WHERE slug = ?').get(String(slug || '').trim().toLowerCase()));
+  }
+
+  getBlueprintById(id) {
+    return hydrateBlueprint(this.db.prepare('SELECT * FROM blueprints WHERE id = ?').get(id));
+  }
+
+  listBlueprints({ status = null, limit = 50 } = {}) {
+    const where = status ? 'WHERE status = ?' : '';
+    const params = status ? [status] : [];
+    return this.db.prepare(`SELECT * FROM blueprints ${where} ORDER BY updated_at DESC LIMIT ?`).all(...params, Math.max(1, Math.min(200, limit))).map(hydrateBlueprint);
+  }
+
+  updateBlueprintStatus(slug, status, now = Date.now()) {
+    if (!VALID_BLUEPRINT_STATUS.has(status)) throw new Error('无效的蓝图状态');
+    const result = this.db.prepare('UPDATE blueprints SET status = ?, updated_at = ? WHERE slug = ?').run(status, now, String(slug || '').trim().toLowerCase());
+    if (result.changes === 0) return null;
+    return this.getBlueprintBySlug(slug);
+  }
+
+  addEntityLink({ id, entityKey, refType, refId, summary, meta = {}, now = Date.now() }) {
+    const cleanKey = String(entityKey || '').trim();
+    if (!VALID_ENTITY_KEY.test(cleanKey)) throw new Error('无效的 entityKey');
+    if (typeof refType !== 'string' || !refType.trim()) throw new Error('refType 不能为空');
+    if (typeof refId !== 'string' || !refId.trim()) throw new Error('refId 不能为空');
+    const linkId = id || `ent-${crypto.randomUUID().slice(0, 12)}`;
+    this.db.prepare(`
+      INSERT INTO entity_links (id, entity_key, ref_type, ref_id, summary, meta_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(linkId, cleanKey, refType.trim(), refId.trim(), String(summary || '').trim(), JSON.stringify(meta ?? {}), now);
+    return hydrateEntityLink(this.db.prepare('SELECT * FROM entity_links WHERE id = ?').get(linkId));
+  }
+
+  listEntityLinks({ entityKey = null, refType = null, limit = 50 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (entityKey) { clauses.push('entity_key = ?'); params.push(entityKey); }
+    if (refType) { clauses.push('ref_type = ?'); params.push(refType); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return this.db.prepare(`SELECT * FROM entity_links ${where} ORDER BY created_at DESC, rowid DESC LIMIT ?`).all(...params, Math.max(1, Math.min(200, limit))).map(hydrateEntityLink);
+  }
+
+  listEntityKeys(limit = 50) {
+    return this.db.prepare(`
+      SELECT entity_key, COUNT(*) AS count, MAX(created_at) AS last_at
+      FROM entity_links
+      GROUP BY entity_key
+      ORDER BY last_at DESC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(200, limit))).map(r => ({ entityKey: r.entity_key, count: r.count, lastAt: r.last_at }));
+  }
+
+  createProposal({ id, blueprintId = null, entityKey, title, rationale, suggestedPatch = {}, now = Date.now() }) {
+    const cleanKey = String(entityKey || '').trim();
+    if (!VALID_ENTITY_KEY.test(cleanKey)) throw new Error('无效的 entityKey');
+    if (typeof title !== 'string' || !title.trim()) throw new Error('提案标题不能为空');
+    const propId = id || `prop-${crypto.randomUUID().slice(0, 12)}`;
+    this.db.prepare(`
+      INSERT INTO proposals (id, blueprint_id, entity_key, title, rationale, suggested_patch_json, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(propId, blueprintId, cleanKey, title.trim(), String(rationale || '').trim(), JSON.stringify(suggestedPatch ?? {}), now);
+    return hydrateProposal(this.db.prepare('SELECT * FROM proposals WHERE id = ?').get(propId));
+  }
+
+  listProposals({ status = null, blueprintId = null, limit = 50 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (status) {
+      if (!VALID_PROPOSAL_STATUS.has(status)) throw new Error('无效的提案状态');
+      clauses.push('status = ?'); params.push(status);
+    }
+    if (blueprintId) { clauses.push('blueprint_id = ?'); params.push(blueprintId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return this.db.prepare(`SELECT * FROM proposals ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, Math.max(1, Math.min(200, limit))).map(hydrateProposal);
+  }
+
+  resolveProposal(id, { status, decisionNote = null, now = Date.now() }) {
+    if (!['accepted', 'rejected'].includes(status)) throw new Error('无效的提案结论');
+    const result = this.db.prepare(`
+      UPDATE proposals SET status = ?, decision_note = ?, resolved_at = ?
+      WHERE id = ? AND status = 'pending'
+    `).run(status, decisionNote, now, id);
+    if (result.changes === 0) return null;
+    return hydrateProposal(this.db.prepare('SELECT * FROM proposals WHERE id = ?').get(id));
+  }
+
   stats() {
     const count = (sql, ...p) => this.db.prepare(sql).get(...p)?.c || 0;
     return {
@@ -588,6 +812,13 @@ export class AlwaysOnStore {
       },
       approvals: {
         pending: count("SELECT COUNT(*) AS c FROM approvals WHERE status = 'pending'"),
+      },
+      blueprints: {
+        active: count("SELECT COUNT(*) AS c FROM blueprints WHERE status = 'active'"),
+        paused: count("SELECT COUNT(*) AS c FROM blueprints WHERE status = 'paused'"),
+      },
+      proposals: {
+        pending: count("SELECT COUNT(*) AS c FROM proposals WHERE status = 'pending'"),
       },
     };
   }

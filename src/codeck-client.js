@@ -30,6 +30,14 @@ export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck memory read PATH
   codeck memory write PATH --file CONTENT.md
   codeck memory dream
+  codeck blueprint list
+  codeck blueprint get SLUG
+  codeck blueprint put SLUG --file BLUEPRINT.json
+  codeck blueprint dry-run SLUG
+  codeck entity timeline KEY
+  codeck proposal list
+  codeck proposal accept ID
+  codeck proposal reject ID
   codeck page list
   codeck page publish FILE.html --title TITLE [--id ID | --source-key KEY] [--session NAME] [--revision VERSION] [--evidence RECORD.json]
   codeck page share ID
@@ -89,6 +97,9 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     'task:list': [], 'task:put': ['file'], 'task:remove': [],
     'timer:list': [], 'timer:followup': ['in', 'at', 'reason', 'session', 'id'], 'timer:pause': [], 'timer:resume': [], 'timer:remove': [],
     'memory:list': [], 'memory:read': [], 'memory:write': ['file'], 'memory:dream': [],
+    'blueprint:list': [], 'blueprint:get': [], 'blueprint:put': ['file'], 'blueprint:dry-run': [],
+    'entity:timeline': [],
+    'proposal:list': [], 'proposal:accept': [], 'proposal:reject': [],
     'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
   }[area + ':' + action];
   if (!commandOptions || Object.keys(options).some(key => !commandOptions.includes(key))) throw new Error('未知命令或该命令不支持此参数');
@@ -166,6 +177,32 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
       return call('/api/always-on/memory/file', 'PUT', { path: name, content: await fs.readFile(options.file, 'utf8') });
     }
     throw new Error('未知 memory 命令');
+  }
+  if (area === 'blueprint') {
+    if (action === 'list') return call('/api/always-on/blueprints');
+    if (!name) throw new Error('请指定蓝图 slug');
+    if (action === 'get') return call(`/api/always-on/blueprints/${encodeURIComponent(name)}`);
+    if (action === 'dry-run') return call(`/api/always-on/blueprints/${encodeURIComponent(name)}/dry-run`, 'POST');
+    if (action === 'put') {
+      if (!options.file) throw new Error('更新蓝图需 --file');
+      return call(`/api/always-on/blueprints/${encodeURIComponent(name)}`, 'PUT', JSON.parse(await fs.readFile(options.file, 'utf8')));
+    }
+    throw new Error('未知 blueprint 命令');
+  }
+  if (area === 'entity') {
+    if (action === 'timeline') {
+      if (!name) throw new Error('请指定 entityKey');
+      return call(`/api/always-on/entities/${encodeURIComponent(name)}/timeline`);
+    }
+    throw new Error('未知 entity 命令');
+  }
+  if (area === 'proposal') {
+    if (action === 'list') return call('/api/always-on/proposals');
+    if (!name) throw new Error('请指定提案 ID');
+    if (action === 'accept' || action === 'reject') {
+      return call(`/api/always-on/proposals/${encodeURIComponent(name)}/resolve`, 'POST', { decision: action === 'accept' ? 'accepted' : 'rejected' });
+    }
+    throw new Error('未知 proposal 命令');
   }
   if (area === 'page') {
     if (action === 'list') return call('/api/pages');

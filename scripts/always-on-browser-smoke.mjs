@@ -101,13 +101,15 @@ try {
       const dialog = page.locator('dialog.always-on-dialog[open]');
       await dialog.waitFor({ state: 'visible', timeout: 5000 });
 
-      // Check tabs: timers, memory, events
+      // Check tabs: blueprints (Architect), timers, memory, events (Entity Timeline)
+      await dialog.locator('[data-tab="blueprints"]').click();
+      await dialog.locator('text=Codeck Architect').waitFor({ state: 'visible', timeout: 3000 });
       await dialog.locator('[data-tab="timers"]').click();
       await dialog.locator('input[name="reason"]').waitFor({ state: 'visible', timeout: 3000 });
       await dialog.locator('[data-tab="memory"]').click();
       await dialog.locator('textarea').waitFor({ state: 'visible', timeout: 3000 });
       await dialog.locator('[data-tab="events"]').click();
-      await dialog.locator('text=已注册 Credential Proxy').waitFor({ state: 'visible', timeout: 3000 });
+      await dialog.locator('text=跨源实体时间线').waitFor({ state: 'visible', timeout: 3000 });
 
       // Close cleanly
       await dialog.locator('[data-close]').click();

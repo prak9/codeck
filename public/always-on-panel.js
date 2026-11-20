@@ -17,10 +17,11 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
       </div>
     </header>
     <nav class="always-on-tabs" role="tablist">
-      <button type="button" role="tab" data-tab="overview" aria-selected="true">待拍板与汇报</button>
+      <button type="button" role="tab" data-tab="overview" aria-selected="true">待拍板与提案</button>
+      <button type="button" role="tab" data-tab="blueprints" aria-selected="false">目标蓝图</button>
       <button type="button" role="tab" data-tab="timers" aria-selected="false">定时器</button>
       <button type="button" role="tab" data-tab="memory" aria-selected="false">个人记忆</button>
-      <button type="button" role="tab" data-tab="events" aria-selected="false">事件与代理</button>
+      <button type="button" role="tab" data-tab="events" aria-selected="false">事件与实体</button>
     </nav>
     <p class="always-on-status" role="status"></p>
     <section class="always-on-body"></section>
@@ -34,6 +35,10 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
 
   let currentTab = 'overview';
   let activeMemoryPath = 'instructions.md';
+  let selectedEntityKey = null;
+  let architectAnalysis = null;
+  let architectQIndex = 0;
+  let lastDryRun = null;
   let pollTimer = null;
 
   async function apiFetch(url, options = {}) {
@@ -64,7 +69,7 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
 
   function updateBadge(stats) {
     if (!badge || !stats) return;
-    const count = (stats.approvals?.pending || 0) + (stats.outbox?.urgentPending || 0);
+    const count = (stats.approvals?.pending || 0) + (stats.outbox?.urgentPending || 0) + (stats.proposals?.pending || 0);
     if (count > 0) {
       badge.textContent = String(count);
       badge.hidden = false;
@@ -91,9 +96,9 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
     const summary = el('div', { class: 'always-on-row' });
     summary.append(
       el('span', { class: 'always-on-pill urgent' }, `待审批 ${data.stats.approvals.pending}`),
+      el('span', { class: 'always-on-pill urgent' }, `改进提案 ${data.stats.proposals?.pending || 0}`),
+      el('span', { class: 'always-on-pill' }, `活跃蓝图 ${data.stats.blueprints?.active || 0}`),
       el('span', { class: 'always-on-pill' }, `活跃定时 ${data.stats.timers.active}`),
-      el('span', { class: 'always-on-pill' }, `待发简报 ${data.stats.outbox.digestPending}`),
-      el('span', { class: 'always-on-pill' }, `待处理事件 ${data.stats.events.pending}`),
       el('button', {
         type: 'button',
         class: 'always-on-btn primary',
@@ -106,6 +111,18 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
           } catch (e) { statusEl.textContent = e.message; }
         },
       }, '立即生成简报'),
+      el('button', {
+        type: 'button',
+        class: 'always-on-btn',
+        onclick: async () => {
+          statusEl.textContent = '正在扫描反馈生成改进提案…';
+          try {
+            const res = await apiFetch('/api/always-on/proposals/generate', { method: 'POST' });
+            statusEl.textContent = res.generated ? `生成 ${res.generated} 条改进提案` : '暂无新的可提议改进';
+            await renderCurrentTab();
+          } catch (e) { statusEl.textContent = e.message; }
+        },
+      }, '复盘生成提案'),
     );
     bodyEl.append(summary);
 
@@ -151,17 +168,252 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
       }
     }
 
+    bodyEl.append(el('h3', {}, '流程改进提案（Feedback Proposals）'));
+    const proposals = data.pendingProposals || [];
+    if (!proposals.length) {
+      bodyEl.append(el('p', { class: 'always-on-empty' }, '暂无待审改进提案。'));
+    } else {
+      for (const prop of proposals) {
+        const card = el('article', { class: 'always-on-card' });
+        const head = el('div', { class: 'always-on-card-head' });
+        head.append(el('strong', {}, prop.title), el('span', { class: 'always-on-pill urgent' }, prop.entityKey));
+        const actions = el('div', { class: 'always-on-row' });
+        actions.append(
+          el('button', {
+            type: 'button',
+            class: 'always-on-btn primary',
+            onclick: async () => {
+              await apiFetch(`/api/always-on/proposals/${encodeURIComponent(prop.id)}/resolve`, {
+                method: 'POST',
+                body: JSON.stringify({ decision: 'accepted' }),
+              });
+              statusEl.textContent = `已采纳提案并更新蓝图：${prop.title}`;
+              await renderCurrentTab();
+            },
+          }, '采纳并更新蓝图'),
+          el('button', {
+            type: 'button',
+            class: 'always-on-btn',
+            onclick: async () => {
+              await apiFetch(`/api/always-on/proposals/${encodeURIComponent(prop.id)}/resolve`, {
+                method: 'POST',
+                body: JSON.stringify({ decision: 'rejected' }),
+              });
+              statusEl.textContent = `已忽略提案：${prop.title}`;
+              await renderCurrentTab();
+            },
+          }, '忽略'),
+        );
+        card.append(head, el('p', { class: 'always-on-empty' }, prop.rationale), actions);
+        bodyEl.append(card);
+      }
+    }
+
     bodyEl.append(el('h3', {}, '最近汇报（Outbox）'));
     if (!data.recentOutbox.length) {
       bodyEl.append(el('p', { class: 'always-on-empty' }, '暂无外发或静默记录。'));
     } else {
-      for (const item of data.recentOutbox.slice(0, 10)) {
+      for (const item of data.recentOutbox.slice(0, 8)) {
         const card = el('article', { class: 'always-on-card' });
         const head = el('div', { class: 'always-on-card-head' });
         head.append(el('strong', {}, item.title), el('span', { class: 'always-on-pill' }, `${item.priority} · ${item.status}`));
         card.append(head, el('p', { class: 'always-on-empty' }, item.contentMd.slice(0, 220)));
         bodyEl.append(card);
       }
+    }
+  }
+
+  async function renderBlueprints() {
+    const data = await apiFetch('/api/always-on/blueprints');
+    bodyEl.replaceChildren();
+
+    // Codeck Architect guided onboarding card
+    const archCard = el('article', { class: 'always-on-card' });
+    archCard.append(el('strong', {}, 'Codeck Architect：访谈式创建自动化目标（先确认、先演练、再上线）'));
+    const brainInput = el('textarea', {
+      placeholder: '随便说说你想让 Agent 负责什么目标、你平时怎么做、看哪些数据源…（支持语音输入）',
+      rows: '3',
+    });
+    brainInput.style.width = '100%';
+    brainInput.style.background = '#020617';
+    brainInput.style.color = '#f8fafc';
+    brainInput.style.border = '1px solid rgba(148,163,184,0.28)';
+    brainInput.style.borderRadius = '8px';
+    brainInput.style.padding = '8px';
+
+    const archRow = el('div', { class: 'always-on-row' });
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRec) {
+      let rec = null;
+      const micBtn = el('button', {
+        type: 'button',
+        class: 'always-on-btn',
+        onclick: () => {
+          if (rec) { rec.stop(); rec = null; micBtn.textContent = '🎤 语音脑暴'; return; }
+          rec = new SpeechRec();
+          rec.lang = 'zh-CN';
+          rec.continuous = false;
+          micBtn.textContent = '⏹ 停止录音';
+          rec.onresult = e => {
+            const transcript = [...e.results].map(r => r[0]?.transcript || '').join('');
+            brainInput.value = `${brainInput.value}${brainInput.value ? ' ' : ''}${transcript}`.trim();
+          };
+          rec.onend = () => { rec = null; micBtn.textContent = '🎤 语音脑暴'; };
+          rec.start();
+        },
+      }, '🎤 语音脑暴');
+      archRow.append(micBtn);
+    }
+
+    archRow.append(el('button', {
+      type: 'button',
+      class: 'always-on-btn primary',
+      onclick: async () => {
+        if (!brainInput.value.trim()) { statusEl.textContent = '请先输入或口述目标与流程'; return; }
+        statusEl.textContent = 'Architect 正在拆分 Goal 与 Process…';
+        try {
+          architectAnalysis = await apiFetch('/api/always-on/architect/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ text: brainInput.value.trim() }),
+          });
+          architectQIndex = 0;
+          statusEl.textContent = '已生成复述草案与逐题访谈';
+          await renderBlueprints();
+        } catch (e) { statusEl.textContent = e.message; }
+      },
+    }, '拆解 Goal 与 Process'));
+    archCard.append(brainInput, archRow);
+
+    if (architectAnalysis) {
+      if (architectAnalysis.processConfusionWarning) {
+        archCard.append(el('p', { class: 'always-on-pill urgent' }, architectAnalysis.processConfusionWarning));
+      }
+      archCard.append(el('pre', { class: 'always-on-empty' }, architectAnalysis.restatement));
+
+      const q = architectAnalysis.questions?.[architectQIndex];
+      if (q) {
+        const qBox = el('div', { class: 'always-on-card' });
+        qBox.append(el('strong', {}, `逐题访谈 (${architectQIndex + 1}/${architectAnalysis.questions.length})：${q.question}`));
+        const ansInput = el('input', { type: 'text', placeholder: q.placeholder || '输入你的回答' });
+        const qRow = el('div', { class: 'always-on-row' });
+        qRow.append(
+          ansInput,
+          el('button', {
+            type: 'button',
+            class: 'always-on-btn primary',
+            onclick: async () => {
+              const val = ansInput.value.trim();
+              if (val) {
+                if (q.field === 'tacitRulesMd') architectAnalysis.draft.tacitRulesMd += `\n- ${val}`;
+                else if (q.field === 'scheduleHint') architectAnalysis.draft.scheduleHint = val;
+                else architectAnalysis.draft[q.field] = val;
+              }
+              architectQIndex++;
+              await renderBlueprints();
+            },
+          }, '下一题'),
+        );
+        qBox.append(qRow);
+        archCard.append(qBox);
+      } else {
+        const edgeBox = el('div', { class: 'always-on-card' });
+        edgeBox.append(el('strong', {}, '异常边界预演确认'));
+        for (const c of architectAnalysis.edgeCases || []) {
+          edgeBox.append(el('small', {}, `• ${c.title}：${c.proposedHandling}`));
+        }
+        const matRow = el('div', { class: 'always-on-row' });
+        const recInput = el('input', { type: 'text', placeholder: '可选周期如 60m / 1d' });
+        matRow.append(
+          recInput,
+          el('button', {
+            type: 'button',
+            class: 'always-on-btn primary',
+            onclick: async () => {
+              await apiFetch('/api/always-on/architect/materialize', {
+                method: 'POST',
+                body: JSON.stringify({
+                  draft: { ...architectAnalysis.draft, targetSession: architectAnalysis.draft.targetSession || activeSession() || null },
+                  ...(recInput.value.trim() ? { recurrence: recInput.value.trim() } : {}),
+                }),
+              });
+              architectAnalysis = null;
+              statusEl.textContent = '已实例化目标蓝图（默认 paused，建议先跑 Dry-Run 演练）';
+              await renderBlueprints();
+            },
+          }, '确认并生成目标蓝图'),
+          el('button', {
+            type: 'button',
+            class: 'always-on-btn',
+            onclick: () => { architectAnalysis = null; renderBlueprints(); },
+          }, '放弃草案'),
+        );
+        edgeBox.append(matRow);
+        archCard.append(edgeBox);
+      }
+    }
+    bodyEl.append(archCard);
+
+    if (lastDryRun) {
+      const dryCard = el('article', { class: 'always-on-card' });
+      dryCard.append(
+        el('strong', {}, `Dry-Run 演练报告（${lastDryRun.blueprintSlug} v${lastDryRun.blueprintVersion} · 零外部副作用）`),
+        el('small', {}, `预计风险：${lastDryRun.predictedRisk} · 实体：${lastDryRun.entityKey}`),
+      );
+      for (const w of lastDryRun.warnings || []) dryCard.append(el('span', { class: 'always-on-pill urgent' }, `⚠ ${w}`));
+      for (const step of lastDryRun.predictedActions || []) dryCard.append(el('small', {}, step));
+      bodyEl.append(dryCard);
+    }
+
+    bodyEl.append(el('h3', {}, `已有目标蓝图（${data.blueprints.length}）`));
+    if (!data.blueprints.length) {
+      bodyEl.append(el('p', { class: 'always-on-empty' }, '暂无目标蓝图，可使用上方 Architect 引导创建。'));
+      return;
+    }
+    for (const bp of data.blueprints) {
+      const card = el('article', { class: 'always-on-card' });
+      const head = el('div', { class: 'always-on-card-head' });
+      head.append(el('strong', {}, `${bp.title} (v${bp.version})`), el('span', { class: 'always-on-pill' }, `${bp.status} · ${bp.entityKey}`));
+      const actions = el('div', { class: 'always-on-row' });
+      actions.append(
+        el('button', {
+          type: 'button',
+          class: 'always-on-btn',
+          onclick: async () => {
+            const nextStatus = bp.status === 'active' ? 'paused' : 'active';
+            await apiFetch(`/api/always-on/blueprints/${encodeURIComponent(bp.slug)}/status`, {
+              method: 'PATCH',
+              body: JSON.stringify({ status: nextStatus }),
+            });
+            statusEl.textContent = `蓝图 ${bp.slug} 已切换为 ${nextStatus}`;
+            await renderBlueprints();
+          },
+        }, bp.status === 'active' ? '暂停' : '启用'),
+        el('button', {
+          type: 'button',
+          class: 'always-on-btn primary',
+          onclick: async () => {
+            statusEl.textContent = `正在对 ${bp.slug} 执行只读 Dry-Run…`;
+            lastDryRun = await apiFetch(`/api/always-on/blueprints/${encodeURIComponent(bp.slug)}/dry-run`, { method: 'POST' });
+            statusEl.textContent = `Dry-Run 完成（零外部副作用）`;
+            await renderBlueprints();
+          },
+        }, 'Dry-Run 演练'),
+        el('button', {
+          type: 'button',
+          class: 'always-on-btn',
+          onclick: async () => {
+            const res = await apiFetch(`/api/always-on/collectors/${encodeURIComponent(bp.slug)}/publish`, { method: 'POST', body: JSON.stringify({}) });
+            statusEl.textContent = res.url ? `已生成微型采集页：${res.url}` : `已生成采集页 HTML（${bp.slug}）`;
+          },
+        }, '生成微型采集页'),
+      );
+      card.append(
+        head,
+        el('p', { class: 'always-on-empty' }, `Goal：${bp.goal}`),
+        el('small', {}, `权威源：${bp.sourceOfTruth || '未指定'} · 验收：${bp.doneCriteria || '未指定'}`),
+        actions,
+      );
+      bodyEl.append(card);
     }
   }
 
@@ -230,7 +482,7 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
 
   async function renderMemory() {
     const list = await apiFetch('/api/always-on/memory');
-    const allFiles = [...list.baseline, ...list.notes, ...list.progress, ...list.archive];
+    const allFiles = [...list.baseline, ...(list.blueprints || []), ...list.notes, ...list.progress, ...list.archive];
     if (!allFiles.some(f => f.path === activeMemoryPath)) activeMemoryPath = 'instructions.md';
     const current = await apiFetch('/api/always-on/memory/file?' + new URLSearchParams({ path: activeMemoryPath }));
 
@@ -287,11 +539,40 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
   }
 
   async function renderEvents() {
-    const [eventsData, proxyData] = await Promise.all([
+    const [eventsData, proxyData, entitiesData] = await Promise.all([
       apiFetch('/api/always-on/events?limit=25'),
       apiFetch('/api/always-on/proxy/services'),
+      apiFetch('/api/always-on/entities'),
     ]);
     bodyEl.replaceChildren();
+
+    bodyEl.append(el('h3', {}, `跨源实体时间线（Entity Keys：${entitiesData.entities.length}）`));
+    if (!entitiesData.entities.length) {
+      bodyEl.append(el('p', { class: 'always-on-empty' }, '暂无实体关联记录。'));
+    } else {
+      const entityRow = el('div', { class: 'always-on-row' });
+      for (const item of entitiesData.entities) {
+        entityRow.append(el('button', {
+          type: 'button',
+          class: selectedEntityKey === item.entityKey ? 'always-on-btn primary' : 'always-on-btn',
+          onclick: async () => {
+            selectedEntityKey = item.entityKey;
+            await renderEvents();
+          },
+        }, `${item.entityKey} (${item.count})`));
+      }
+      bodyEl.append(entityRow);
+      if (selectedEntityKey) {
+        const tl = await apiFetch(`/api/always-on/entities/${encodeURIComponent(selectedEntityKey)}/timeline`);
+        const tlCard = el('article', { class: 'always-on-card' });
+        tlCard.append(el('strong', {}, `实体时间线：${tl.entityKey}`));
+        for (const link of tl.links) {
+          tlCard.append(el('small', {}, `[${new Date(link.createdAt).toLocaleString()}] (${link.refType}) ${link.summary}`));
+        }
+        bodyEl.append(tlCard);
+      }
+    }
+
     bodyEl.append(el('h3', {}, `已注册 Credential Proxy 服务（${proxyData.services.length}）`));
     if (!proxyData.services.length) {
       bodyEl.append(el('p', { class: 'always-on-empty' }, '当前仅启用代理框架，未注册外部生产服务。'));
@@ -300,6 +581,7 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
         bodyEl.append(el('div', { class: 'always-on-card' }, `${s.name} → ${s.baseUrl}${s.allowedPathPrefix} [${s.allowedMethods.join(',')}]`));
       }
     }
+
     bodyEl.append(el('h3', {}, '最近事件流（Event Inbox）'));
     if (!eventsData.events.length) {
       bodyEl.append(el('p', { class: 'always-on-empty' }, '暂无事件记录。'));
@@ -319,6 +601,7 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
     statusEl.textContent = '正在加载…';
     try {
       if (currentTab === 'overview') await renderOverview();
+      else if (currentTab === 'blueprints') await renderBlueprints();
       else if (currentTab === 'timers') await renderTimers();
       else if (currentTab === 'memory') await renderMemory();
       else await renderEvents();

@@ -1,7 +1,7 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { bindAlwaysOnPanel } from './always-on-panel.js?v=1';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=2';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';

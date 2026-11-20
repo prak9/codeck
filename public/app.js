@@ -1,7 +1,7 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { bindAlwaysOnPanel } from './always-on-panel.js?v=1';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=2';
 import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
