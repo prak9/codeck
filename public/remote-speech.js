@@ -33,6 +33,7 @@ export function createSpeechInput({
   // stop() 之后完全依赖浏览器回调 onend 才会释放。iOS 上切后台、或识别其实从未
   // 真正启动时, onend 可能不来, 那个对象就一直握着麦克风。
   releaseTimeoutMs = 1_500,
+  availabilityTimeoutMs = 1_500,
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (timer) => clearTimeout(timer),
 } = {}) {
@@ -41,12 +42,20 @@ export function createSpeechInput({
   let instance = null;
   let listening = false;
   let started = false;
+  let usingLocal = false;
   let releaseTimer = null;
+  let availabilityTimer = null;
 
   function clearReleaseTimer() {
     if (releaseTimer === null) return;
     cancel(releaseTimer);
     releaseTimer = null;
+  }
+
+  function clearAvailabilityTimer() {
+    if (availabilityTimer === null) return;
+    cancel(availabilityTimer);
+    availabilityTimer = null;
   }
 
   function setListening(next) {
@@ -60,6 +69,7 @@ export function createSpeechInput({
   // 回调, 避免已经作废的识别对象被闭包留住。
   function release(active) {
     clearReleaseTimer();
+    clearAvailabilityTimer();
     active.onstart = null;
     active.onresult = null;
     active.onerror = null;
@@ -83,6 +93,7 @@ export function createSpeechInput({
     if (recognition !== active) return;
     recognition = null;
     started = false;
+    usingLocal = false;
     setListening(false);
     release(active);
   }
@@ -112,26 +123,39 @@ export function createSpeechInput({
   async function beginWithLocalRecognition(active, availability, retried = false) {
     let local = false;
     try {
-      const result = await availability;
+      const timeoutPromise = new Promise((resolve) => {
+        clearAvailabilityTimer();
+        availabilityTimer = schedule(() => {
+          availabilityTimer = null;
+          resolve('timeout');
+        }, availabilityTimeoutMs);
+      });
+      const result = await Promise.race([availability, timeoutPromise]);
+      clearAvailabilityTimer();
       if (recognition !== active) return;
       local = result === 'available';
       if (!local && (result === 'downloadable' || result === 'downloading') && typeof Recognition.install === 'function') {
         onStatus('正在下载本地语音识别语言包…');
         local = await Recognition.install({ langs: [lang], processLocally: true, quality: 'dictation' });
       }
-    } catch { /* Fall back to the browser's online recognizer. */ }
+    } catch { clearAvailabilityTimer(); /* Fall back to the browser's online recognizer. */ }
     if (recognition !== active) return;
     if (local) {
-      try { active.processLocally = true; }
-      catch { local = false; }
+      try { active.processLocally = true; usingLocal = true; }
+      catch { local = false; usingLocal = false; }
     }
-    if (!local) onStatus('本地识别不可用，正在使用浏览器在线识别…');
+    if (!local) {
+      usingLocal = false;
+      onStatus('本地识别不可用，正在使用浏览器在线识别…');
+    }
     begin(active, retried);
   }
 
-  function start(retried = false) {
+  function start(retried = false, { forceOnline = false } = {}) {
     if (!Recognition || recognition) return false;
     const active = recognizer();
+    usingLocal = false;
+    try { active.processLocally = false; } catch { /* ignore unsupported property */ }
     active.onstart = () => recognition === active && setListening(true);
     active.onresult = (event) => {
       if (recognition !== active) return;
@@ -146,12 +170,21 @@ export function createSpeechInput({
     };
     active.onerror = (event) => {
       if (recognition !== active) return;
+      const code = event?.error;
+      if (usingLocal && !retried && ['language-not-supported', 'service-not-allowed', 'network'].includes(code)) {
+        // Local recognizer failed at runtime: drop stale instance and fall back to online once.
+        finish(active);
+        instance = null;
+        onStatus('本地识别失败，已切换为浏览器在线识别…');
+        start(true, { forceOnline: true });
+        return;
+      }
       finish(active);
-      if (event?.error !== 'aborted') onError(speechRecognitionError(event));
+      if (code !== 'aborted') onError(speechRecognitionError(event));
     };
     active.onend = () => finish(active);
     recognition = active;
-    if (typeof Recognition.available === 'function') {
+    if (!forceOnline && typeof Recognition.available === 'function') {
       onStatus('正在检查本地语音识别…');
       let availability;
       try {

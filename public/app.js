@@ -1,7 +1,7 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { bindAlwaysOnPanel } from './always-on-panel.js?v=2';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=3';
 import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
@@ -27,7 +27,7 @@ import {
   isTerminalCopyShortcut,
   resetTerminalInput,
 } from './terminal-utils.js?v=19';
-import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=7';
 import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';

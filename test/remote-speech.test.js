@@ -338,3 +338,55 @@ test('releasing because the page was hidden reports it', async () => {
 
   assert.ok(statuses.some((m) => m.includes('已释放麦克风')), statuses.join(' | '));
 });
+
+test('stalled local availability check times out and falls back to online recognition', async () => {
+  const timers = [];
+  const statuses = [];
+  const scope = fakeScope();
+  scope.SpeechRecognition.available = () => new Promise(() => {}); // never resolves
+  const speech = createSpeechInput({
+    scope,
+    availabilityTimeoutMs: 500,
+    schedule: (fn) => { timers.push(fn); return timers.length; },
+    cancel: () => {},
+    onStatus: (m) => statuses.push(m),
+  });
+
+  speech.start();
+  assert.equal(timers.length, 1);
+  timers[0]();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const rec = FakeRecognition.instances.at(-1);
+  assert.equal(rec.started, true);
+  assert.equal(rec.processLocally, false);
+  assert.ok(statuses.some((m) => m.includes('在线识别')));
+});
+
+test('local recognition runtime failure falls back to online recognition once', async () => {
+  const statuses = [];
+  const errors = [];
+  const scope = fakeScope();
+  scope.SpeechRecognition.available = async () => 'available';
+  const speech = createSpeechInput({
+    scope,
+    onStatus: (m) => statuses.push(m),
+    onError: (m) => errors.push(m),
+  });
+
+  speech.start();
+  await Promise.resolve();
+  await Promise.resolve();
+  const first = FakeRecognition.instances.at(-1);
+  assert.equal(first.processLocally, true);
+
+  // Simulate local recognizer failing at runtime
+  first.onerror({ error: 'language-not-supported' });
+  const second = FakeRecognition.instances.at(-1);
+  assert.notEqual(second, first);
+  assert.equal(second.processLocally, false);
+  assert.equal(second.started, true);
+  assert.equal(errors.length, 0);
+  assert.ok(statuses.some((m) => m.includes('切换为浏览器在线识别')));
+});

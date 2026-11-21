@@ -34,7 +34,7 @@ test('Both 普通模式 (index.html/app.js) and Remote 模式 (remote.html/remot
   assert.match(remoteJs, /bindAlwaysOnPanel/, 'remote.js binds alwaysOnPanel');
   assert.match(panelJs, /data-butler-toggle/, 'panel exposes Scheme A Butler toggle');
   assert.match(panelJs, /approvals\/\$\{encodeURIComponent\(item\.id\)\}\/resolve/, 'panel supports deferred approval resolution');
-  assert.match(panelCss, /@media\s*\(max-width:\s*640px\)/, 'panel includes mobile responsive rule for 390px viewport');
+  assert.match(panelCss, /@media\s*\(max-width:\s*600px\)/, 'panel includes mobile responsive rule for 390px viewport');
 });
 
 test('All /api/always-on/* routes enforce strict ownerOnly isolation and work end-to-end', async () => {

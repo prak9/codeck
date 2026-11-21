@@ -1,7 +1,7 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { bindAlwaysOnPanel } from './always-on-panel.js?v=2';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=3';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
@@ -38,7 +38,7 @@ import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v
 import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=6';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
-import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=6';
+import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=7';
 import { chooseStopScope } from './session-stop.js?v=1';
 import { autonomyDisplayText, AUTONOMY_PROGRESS_PROMPT, AUTONOMY_PLANNING_PROMPT } from './remote-autonomy.js?v=25';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';

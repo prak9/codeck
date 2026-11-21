@@ -101,15 +101,17 @@ try {
       const dialog = page.locator('dialog.always-on-dialog[open]');
       await dialog.waitFor({ state: 'visible', timeout: 5000 });
 
-      // Check tabs: blueprints (Architect), timers, memory, events (Entity Timeline)
+      // Check cleaner 4 tabs: overview, blueprints (+ 新建目标), timers (+ 新增提醒), memory
       await dialog.locator('[data-tab="blueprints"]').click();
-      await dialog.locator('text=Codeck Architect').waitFor({ state: 'visible', timeout: 3000 });
+      await dialog.locator('button:has-text("新建目标")').click();
+      await dialog.locator('text=告诉我你想自动化什么').waitFor({ state: 'visible', timeout: 3000 });
       await dialog.locator('[data-tab="timers"]').click();
+      await dialog.locator('button:has-text("新增提醒")').click();
       await dialog.locator('input[name="reason"]').waitFor({ state: 'visible', timeout: 3000 });
       await dialog.locator('[data-tab="memory"]').click();
       await dialog.locator('textarea').waitFor({ state: 'visible', timeout: 3000 });
-      await dialog.locator('[data-tab="events"]').click();
-      await dialog.locator('text=跨源实体时间线').waitFor({ state: 'visible', timeout: 3000 });
+      await dialog.locator('[data-tab="overview"]').click();
+      await dialog.locator('text=运行记录与实体时间线').waitFor({ state: 'visible', timeout: 3000 });
 
       // Close cleanly
       await dialog.locator('[data-close]').click();
