@@ -38,3 +38,21 @@ test('native question answers and approvals require the matching live request', 
   requests.length = 0;
   await assert.rejects(adapter.act('approve', target, { id: 12, decision: 'accept' }), /过期/);
 });
+
+test('workstation and Telegram identify the same live question without fetching history; a recreated session cannot answer it', async () => {
+  const request = { id: 7, method: 'item/tool/requestUserInput', params: { threadId: 'thread',
+    questions: [{ id: 'unit', question: '使用哪一种口径？', options: [{ label: '季度' }] }] } };
+  const session = { name: 'research', createdAt: 5, agent: { id: 'thread', kind: 'codex' } };
+  const target = { tmuxSession: 'research', threadId: 'thread', provider: 'codex' };
+  const calls = [];
+  const adapter = createTelegramSessionAdapter({ connection: {}, list: async () => [session], read: async () => { throw Error('history read'); },
+    pendingRequests: () => [{ provider: 'codex', request }], rpc: async (_, message) => calls.push(message) });
+  const [pending] = await adapter.pending();
+  assert.equal(pending.label, '使用哪一种口径？');
+  assert.deepEqual(pending.options, ['季度']);
+  await adapter.act('answer', target, { ...pending, answer: '季度' });
+  assert.deepEqual(calls[0].answers, { unit: ['季度'] });
+  session.createdAt = 6;
+  await assert.rejects(adapter.act('answer', target, { ...pending, answer: '季度' }), /变化|过期/);
+  assert.equal(calls.length, 1);
+});

@@ -6,6 +6,7 @@ description: 通过本机 Codeck CLI 查询已有 Agent 会话、向指定会话
 使用 `codeck --help` 查看当前命令。若 PATH 尚未注册，在 Codeck 仓库执行 `node scripts/codeck.mjs`。沿用用户指定的目标、范围与权限；读取可直接进行，创建、发送及开启分享需来自用户当前或已有授权。
 
 - 查会话：`codeck session list --json`。以精确名称选定会话，歧义时澄清，不猜测接收人。
+- 工作台 Bot：用 `codeck bot list` 和 `codeck telegram list` 核对双方。新建独立 Bot 时，选用或创建同名主会话；只有用户指定其他主会话时才复用它。等会话有实际 Agent 对话 ID 后，用 `codeck bot create NAME --session SESSION` 登记，`codeck bot bind-telegram NAME --telegram @USERNAME` 绑定。用 `codeck bot show NAME` 核对主会话名、对话 ID 和 Telegram 用户名。同名 Bot 用 ID 指定。解绑需指定两端：`codeck bot unbind-telegram NAME --telegram @USERNAME`。Token 使用服务端私有配置。
 - 工作文件：`codeck workfiles list NAME --json` 查看资料与成果；实际使用的重要来源和明确交付的文件用 `codeck workfiles add NAME --record RECORD.json` 登记。kind为source/result，key稳定，title为具体名称，url/path二选一，可填group、date、revision。文件用当前项目或上传目录内的绝对路径；登记保存快照。同一成果沿用key；不把临时输出或未核验结论包装成已验证成果，不保存凭据。关联session的发布页自动列入成果。见[工作文件](../../docs/workfiles.md)。
 - 记进度：简短记录用 `codeck session checkpoint NAME --file NOTE.txt`；目标、已验证成果、待办、需要用户判断及证据用 `--record NOTE.json`，格式见[进度便签](references/session-progress.md)。在基线建立、获得验证结果、阻塞或结束等关键节点更新同一份便签；用户修正目标时同步更新。先读已有记录，区分事实和未验证尝试，不将空闲当作完成；仅在明确新任务时设置 newTask。更新便签不发送消息、不授权、不续跑。
 - 查进展：`codeck session read NAME`。这是只读操作，不向 Agent 发送“继续”。历史尚未就绪时说明正在读取，不把空输出当作无任务。

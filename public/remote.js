@@ -1,7 +1,8 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { bindAlwaysOnPanel } from './always-on-panel.js?v=3';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=4';
+import { bindWorkstation, sameWorkstationTarget, workstationTarget } from './workstation.js?v=9';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
@@ -93,6 +94,8 @@ let transcriptScrollRevision = 0;
 
 let workfilesPanel;
 let alwaysOnPanel;
+let workstation;
+let workstationOwnerToken = '';
 
 const state = {
   loadingEarlier: false,
@@ -517,6 +520,8 @@ async function validateOwnerToken(token) {
   if (!response.ok) throw new Error(`无法连接 Codeck（${response.status}）`);
   const data = await response.json();
   if (data.capabilities?.canManage === false) throw new Error('远程 Agent 需要 owner 令牌，分享令牌只有终端只读权限。');
+  workstationOwnerToken = token;
+  workstation?.sync();
   return data;
 }
 
@@ -1421,7 +1426,8 @@ function threadRow(thread, index) {
     presence,
   );
   if (tmux.available === false) button.title = '已连接终端，可直接参与';
-  button.addEventListener('click', () => {
+  button.addEventListener('click', async () => {
+    if (workstation?.visible()) await workstation.close();
     if (tmux.checkpoint?.attention?.id) fetch(`/api/sessions/${encodeURIComponent(tmux.name)}/attention/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` }, body: JSON.stringify({ id: tmux.checkpoint.attention.id }) }).catch(() => {});
     openListedThread(thread).catch((error) => setLiveMessage(error.message));
   });
@@ -1434,7 +1440,8 @@ function threadRow(thread, index) {
   progress.dataset.tmuxSession = tmux.name || '';
   progress.title = `查看 ${title} 的进度便签`;
   progress.setAttribute('aria-label', progress.title);
-  progress.addEventListener('click', () => {
+  progress.addEventListener('click', async () => {
+    if (workstation?.visible()) await workstation.close();
     openListedThread(thread).then(() => {
       if (state.provider === thread.provider && state.thread?.tmux?.name === tmux.name) {
         const details = $('#sessionProgress details'); if (details) details.open = true;
@@ -1482,6 +1489,7 @@ $('#sessionSearch').addEventListener('input', () => renderThreadList());
 function renderThreadList() {
   workfilesPanel?.sync();
   alwaysOnPanel?.sync();
+  workstation?.sync();
   renderSessionProgress($('#sessionProgress'), state.thread?.tmux?.checkpoint, { key: `${state.thread?.tmux?.name}:${state.thread?.tmux?.checkpoint?.taskId || ''}`, onRespond: () => { if ($('#progressDialog').open) $('#progressDialog').close(); closeDrawer(); $('#composerInput').focus(); } });
   const list = $('#threadList');
   const scrollTop = list.scrollTop;
@@ -1973,6 +1981,13 @@ function renderTurn(turn) {
       const duration = Number.isFinite(turn.durationMs) ? ` · ${Math.max(.1, turn.durationMs / 1000).toFixed(1)} 秒` : '';
       foot.textContent = `${turnStatusLabel(turn.status)}${duration}`;
     }
+    const target = workstationTarget(currentWorkfilesTarget());
+    if (target && workstation?.canTrack() && turn.id) {
+      const title = userMessageText((turn.items || []).find(item => item.type === 'userMessage') || {}).trim().slice(0, 256);
+      const track = element('button', 'message-copy-button', '加入 Tasks'); track.type = 'button';
+      track.addEventListener('click', () => workstation.track({ target, anchor: 'turn:' + turn.id, title }, track));
+      foot.append(track);
+    }
     section.append(foot);
   }
   if (state.providerCapabilities.get(state.provider)?.turnImages === true) {
@@ -2255,7 +2270,7 @@ async function resolveInteraction(key, entry, questions, form) {
         delete state.thread.tmux.question;
       }
     } else await agentRequest('resolveInteraction', {
-      provider: entry.provider,
+      provider: entry.provider, threadId: entry.request.params?.threadId,
       requestId: entry.request.id,
       answers,
     });
@@ -2276,7 +2291,7 @@ async function resolveApproval(key, entry, decision, card) {
   for (const button of card.querySelectorAll('button')) button.disabled = true;
   try {
     await agentRequest('resolveApproval', {
-      provider: entry.provider,
+      provider: entry.provider, threadId: entry.request.params?.threadId,
       requestId: entry.request.id,
       decision,
     });
@@ -2483,6 +2498,7 @@ function currentThreadWaitingForInput() {
 function renderComposerState() {
   workfilesPanel?.sync();
   alwaysOnPanel?.sync();
+  workstation?.sync();
   const input = $('#composerInput');
   const sendButton = $('#sendButton');
   if (!input || !sendButton) return;
@@ -3402,6 +3418,8 @@ $('#settingsForm').addEventListener('submit', (event) => {
 $('#forgetTokenButton').addEventListener('click', () => {
   localStorage.removeItem('codeck-token');
   state.token = '';
+  workstationOwnerToken = '';
+  workstation?.sync();
   state.sessionSnapshot = null;
   state.socketGeneration += 1;
   state.socket?.close();
@@ -3418,6 +3436,7 @@ $('#tokenForm').addEventListener('submit', async (event) => {
   try {
     state.sessionSnapshot = await validateOwnerToken(token);
     state.token = token;
+    workstation?.sync();
     localStorage.setItem('codeck-token', token);
     $('#tokenDialog').close();
     connectSocket();
@@ -3520,10 +3539,40 @@ function currentWorkfilesTarget() {
 workfilesPanel = bindWorkfiles({ button: document.getElementById('workfilesButton'), token: () => state.token, getTarget: currentWorkfilesTarget });
 workfilesPanel.sync();
 alwaysOnPanel = bindAlwaysOnPanel({
-  button: document.getElementById('alwaysOnButton'),
-  badge: document.getElementById('alwaysOnBadge'),
+  button: document.getElementById('legacyStationButton'),
   token: () => state.token,
-  enabled: () => Boolean(state.token),
+  enabled: () => Boolean(state.token) && workstationOwnerToken === state.token,
   activeSession: () => state.thread?.tmuxSession || null,
 });
 alwaysOnPanel.sync();
+
+workstation = bindWorkstation({
+  host: $('.conversation-shell'), token: () => state.token, enabled: () => workstationOwnerToken === state.token,
+  sessions: () => state.threads.map(thread => ({ name: thread.tmux?.name, createdAt: thread.tmux?.createdAt,
+    agent: { kind: thread.provider, id: thread.id.startsWith('tmux:') ? '' : thread.id }, checkpoint: thread.tmux?.checkpoint })),
+  active: () => ({ target: workstationTarget(currentWorkfilesTarget()) }),
+  openSession: async (target, anchor) => {
+    const match = state.threads.find(thread => sameWorkstationTarget({
+      session: thread.tmux?.name, createdAt: thread.tmux?.createdAt, provider: thread.provider,
+      threadId: thread.id.startsWith('tmux:') ? '' : thread.id,
+    }, target));
+    if (!match) throw new Error('来源会话已变化，请刷新会话列表。');
+    const same = () => sameWorkstationTarget(workstationTarget(currentWorkfilesTarget()), target);
+    if (!same()) await openListedThread(match);
+    if (!same() || !anchor?.startsWith('turn:')) return;
+    const turnId = anchor.slice(5);
+    let previous;
+    while (same() && !state.thread.turns?.some(turn => turn.id === turnId) && state.thread.truncated) {
+      const cursor = state.thread.historyCursor || state.thread.oldestTurnId;
+      if (previous === cursor) break;
+      previous = cursor; await loadEarlierTurns();
+    }
+    if (!same()) return;
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const row = [...$('#turns').children].find(node => node.dataset.turnId === turnId);
+    if (row) row.scrollIntoView({ block: 'start' });
+    else setLiveMessage('已打开来源会话，原消息暂不可定位。');
+  },
+  openDrawer, closeDrawer, newSession: openNewSession, openLegacy: (tab, opener) => alwaysOnPanel.open(tab, opener),
+});
+workstation.sync();

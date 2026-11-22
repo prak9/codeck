@@ -1807,3 +1807,57 @@ test('routes command choices and their exact menu through the selected session',
     option: 'View analytics', menuText: 'menu snapshot' }]);
   assert.equal(socket.sent.find(message => message.id === 8).ok, true);
 });
+
+test('a delayed decision for the previous thread cannot consume a reused provider request ID', async () => {
+  const { backends, hub } = setup();
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  backends.codex.emit('serverRequest', { id: 91, method: 'item/commandExecution/requestApproval',
+    params: { threadId: 'replacement', command: 'npm test' } });
+  send(socket, { type: 'resolveApproval', id: 1, provider: 'codex', threadId: 'original', requestId: 91, decision: 'accept' });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  assert.equal(socket.sent.find(message => message.id === 1).ok, false);
+  assert.equal(backends.codex.responses.length, 0);
+  send(socket, { type: 'resolveApproval', id: 2, provider: 'codex', threadId: 'replacement', requestId: 91, decision: 'decline' });
+  await waitFor(() => socket.sent.some(message => message.id === 2));
+  assert.deepEqual(backends.codex.responses, [{ id: 91, result: { decision: 'decline' } }]);
+});
+
+test('Tasks and a Telegram reply racing on the same approval reach the provider once', async t => {
+  const { default: express } = await import('express');
+  const { createTelegramSessionAdapter } = await import('../src/telegram-session-adapter.js');
+  const { mountWorkstationActions } = await import('../src/workstation-actions.js');
+  const { backends, hub } = setup();
+  const session = { name: 'demo', agent: { id: 't', kind: 'codex' }, createdAt: 11 };
+  let waiting = 0, release;
+  const permit = new Promise(resolve => { release = resolve; });
+  const sessions = createTelegramSessionAdapter({ list: async () => [session], pendingRequests: () => [...hub.pendingRequests.values()],
+    rpc: async (_config, message) => {
+      if (++waiting === 2) release();
+      await permit;
+      const socket = new FakeSocket(); hub.handleConnection(socket);
+      send(socket, { ...message, id: 1 });
+      await waitFor(() => socket.sent.some(r => r.id === 1));
+      const reply = socket.sent.find(r => r.id === 1);
+      socket.close();
+      if (!reply.ok) throw new Error(reply.error);
+    },
+  });
+  backends.codex.emit('serverRequest', { id: 7, method: 'item/commandExecution/requestApproval', params: { threadId: 't', reason: '允许执行？' } });
+  const app = express(); app.use(express.json());
+  mountWorkstationActions(app, { ownerOnly: (req, res, next) => req.get('Authorization') === 'Bearer test' ? next() : res.sendStatus(403), interactions: sessions });
+  app.use((err, _req, res, _next) => res.status(409).json({ error: err.message }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = 'http://127.0.0.1:' + server.address().port;
+  assert.equal((await fetch(url + '/pending')).status, 403);
+  const headers = { Authorization: 'Bearer test', 'Content-Type': 'application/json' };
+  const { items: [item] } = await (await fetch(url + '/pending', { headers })).json();
+  const [web, telegram] = await Promise.all([fetch(url + '/pending/answer', { method: 'POST', headers,
+    body: JSON.stringify({ key: item.key, target: item.target, decision: 'accept' }) }),
+  sessions.act('approve', { provider: 'codex', threadId: 't', tmuxSession: 'demo' }, { ...item, decision: 'accept' }).then(() => true, () => false)]);
+  assert.equal(Number(web.ok) + Number(telegram), 1);
+  assert.deepEqual(backends.codex.responses, [{ id: 7, result: { decision: 'accept' } }]);
+  assert.deepEqual(await sessions.pending(), []);
+});

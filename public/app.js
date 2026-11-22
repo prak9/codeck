@@ -1,7 +1,8 @@
 import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
-import { bindAlwaysOnPanel } from './always-on-panel.js?v=3';
+import { bindAlwaysOnPanel } from './always-on-panel.js?v=4';
+import { bindWorkstation, workstationTarget } from './workstation.js?v=9';
 import { sessionExecutionState, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { createTerminalStream } from './terminal-stream.js?v=1';
 import { bindMobileScroll } from './mobile-scroll.js?v=1';
@@ -52,6 +53,8 @@ import {
 
 let workfilesPanel;
 let alwaysOnPanel;
+let workstation;
+let workstationOwnerToken = '';
 
 const { Terminal } = globalThis;
 const { FitAddon } = globalThis.FitAddon;
@@ -696,7 +699,10 @@ function bindSessionListDelegates(list) {
     const row = event.target.closest?.('.session-row');
     if (row && list.contains(row)) {
       event.preventDefault();
-      if (row.dataset.session) connect(row.dataset.session);
+      if (row.dataset.session) {
+        if (workstation?.visible()) workstation.close().then(() => connect(row.dataset.session));
+        else connect(row.dataset.session);
+      }
     }
   });
   // toggle 不冒泡, 只能在捕获阶段代理。
@@ -711,6 +717,7 @@ let sessionRenderSignature = null;
 function renderSessions({ force = false } = {}) {
   workfilesPanel?.sync();
   alwaysOnPanel?.sync();
+  workstation?.sync();
   const progressSession = state.sessions.find(item => item.name === state.active);
   renderSessionProgress($('#sessionProgress'), progressSession?.checkpoint, { key: `${progressSession?.createdAt}:${progressSession?.checkpoint?.taskId || ''}`, onRespond: () => { state.terminal?.focus(); } });
   const list = $('#sessionList');
@@ -781,7 +788,7 @@ function syncTerminalSessionLocation(session) {
   if (session) params.set('session', session);
   else params.delete('session');
   const query = params.toString();
-  history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash || ''}`);
+  history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash || ''}`);
 }
 
 function terminalSessionForReconnect() {
@@ -1029,6 +1036,7 @@ function applySessionSnapshot(data, previousActiveSession = state.sessions.find(
     || activeSession.height !== previousActiveSession?.height
   );
   state.canManage = data.capabilities?.canManage !== false;
+  workstationOwnerToken = state.canManage ? state.token : '';
   state.canWrite = data.capabilities?.canWrite ?? state.canManage;
   state.canSwitchSession = data.capabilities?.canSwitchSession === true;
   state.terminalSubmitSupported = data.capabilities?.terminalSubmit === true;
@@ -1174,6 +1182,7 @@ function connectedStateLabel() {
 function syncTerminalAccess() {
   workfilesPanel?.sync();
   alwaysOnPanel?.sync();
+  workstation?.sync();
   const writable = state.canWrite && state.terminalInputReady;
   if (state.terminal) state.terminal.options.disableStdin = !writable;
   for (const control of document.querySelectorAll('.mobile-keybar [data-terminal-key], .mobile-keybar [data-terminal-action="paste"]')) {
@@ -2172,10 +2181,19 @@ bindHistorySearch({ token: () => state.token });
 workfilesPanel = bindWorkfiles({ button: document.getElementById('workfilesButton'), token: () => state.token, enabled: () => state.canManage, getTarget: () => state.sessions.find(item => item.name === state.active) });
 workfilesPanel.sync();
 alwaysOnPanel = bindAlwaysOnPanel({
-  button: document.getElementById('alwaysOnButton'),
-  badge: document.getElementById('alwaysOnBadge'),
+  button: document.getElementById('legacyStationButton'),
   token: () => state.token,
   enabled: () => state.canManage,
   activeSession: () => state.active,
 });
 alwaysOnPanel.sync();
+
+workstation = bindWorkstation({
+  host: $('#workspace'), token: () => state.token, enabled: () => state.canManage && workstationOwnerToken === state.token,
+  sessions: () => state.sessions,
+  active: () => ({ target: workstationTarget(state.sessions.find(session => session.name === state.active)) }),
+  openSession: target => connect(target.session), newSession: openNewDialog,
+  closeDrawer: () => { $('#sidebar').classList.remove('open'); $('#menuButton').setAttribute('aria-expanded', 'false'); },
+  openLegacy: (tab, opener) => alwaysOnPanel.open(tab, opener),
+});
+workstation.sync();

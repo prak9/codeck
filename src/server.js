@@ -1,3 +1,7 @@
+import { WorkstationStore } from './workstation-store.js';
+import { mountWorkstationRoutes } from './workstation-routes.js';
+import { createWorkstationAutomations } from './workstation-automations.js';
+import { mountWorkstationActions } from './workstation-actions.js';
 import { createHistorySearch } from './history-search.js';
 import { mountHistoryRoutes } from './history-routes.js';
 import { AlwaysOnStore } from './always-on-store.js';
@@ -76,6 +80,7 @@ const checkpoints = await createCheckpoints(path.join(dataDir, 'checkpoints.json
 const workfiles = createWorkfiles(path.join(dataDir, 'workfiles'), { uploadRoot });
 const pageStore = createPageStore(path.join(dataDir, 'pages'));
 const alwaysOnStore = new AlwaysOnStore(path.join(dataDir, 'super-agent.db'));
+const workstation = new WorkstationStore(alwaysOnStore.db);
 const alwaysOnMemory = createMemoryStore({ directory: path.join(dataDir, 'memory') });
 const alwaysOnOutbox = createOutboxDispatcher({
   store: alwaysOnStore,
@@ -246,6 +251,8 @@ app.put('/api/tasks/:id', ownerOnly, async (req, res, next) => {
 app.delete('/api/tasks/:id', ownerOnly, async (req, res, next) => {
   try { await conditionalTasks.remove(req.params.id); res.sendStatus(204); } catch (error) { next(error); }
 });
+const workstationRouter = express.Router();
+app.use('/api/workstation', workstationRouter);
 mountAlwaysOnRoutes(app, {
   store: alwaysOnStore,
   memory: alwaysOnMemory,
@@ -572,7 +579,12 @@ const threadFeed = createSnapshotFeed(
       deferCompactionRestore: provider === 'qodercli',
     });
     const session = (await sessionSnapshots.get()).find(s => s.name === tmuxSession && s.agent?.id === threadId && s.agent?.kind === provider);
-    if (session && !result?.thread?.historyLoading && !result?.thread?.historyError) await checkpoints.observeTurn(session, result?.thread?.turns?.at(-1));
+    if (session && result?.thread && !result.thread.historyLoading && !result.thread.historyError) {
+      await checkpoints.observeTurn(session, result.thread.turns?.at(-1));
+      // A failure to record evidence for Tasks must not suppress the live conversation.
+      try { workstationAutomations.observeThread(session, result.thread); }
+      catch (error) { console.error('Workstation receipt:', error.message); }
+    }
     return windowedThread(withPaneExcerpt(result, tmuxSession));
   },
   {
@@ -619,10 +631,17 @@ const conditionalTasks = await createConditionalTasks({
     });
   },
 });
+const workstationAutomations = createWorkstationAutomations({
+  store: alwaysOnStore, tracking: workstation, listSessions, scriptDirectory: path.join(dataDir, 'automation-scripts'),
+  send: ({ target, text, commandId }) => sessionRpc({ url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) },
+    { type: 'sendSessionMessage', ...target, text, commandId }),
+  wake: scopeKey => alwaysOnRuntime.wake(scopeKey),
+});
 const alwaysOnRuntime = createAlwaysOnRuntime({
   store: alwaysOnStore,
   batchWindowMs: 1500,
   handleScope: async (scopeKey, batch, helpers) => {
+    if (scopeKey.startsWith('workstation:')) return workstationAutomations.dispatch(scopeKey, batch, helpers);
     // Mirror-only events already dispatched by legacy synchronous paths complete immediately.
     const actionable = batch.filter(e => !['annotation', 'conditional_task'].includes(e.source));
     if (!actionable.length) return { status: 'done' };
@@ -736,17 +755,23 @@ server.on('close', () => {
   agentRegistry.close();
 });
 
+const sessionActions = createTelegramSessionAdapter({
+  connection: { url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) },
+  list: async () => (await sessionSnapshotForAuth({ owner: true })).sessions,
+  read: async target => (await threadFeed.refresh(target))?.snapshot,
+  pendingRequests: () => [...agentHub.pendingRequests.values()],
+  create: async task => { const result = await createTelegramTask(task); await invalidateSessionSnapshots(); return result; },
+});
+
+mountWorkstationRoutes(workstationRouter, { store: workstation, workfiles, sessions: listSessions, ownerOnly, base: '',
+  telegramChannels: () => telegram?.channels || [] });
+mountWorkstationActions(workstationRouter, { ownerOnly, interactions: sessionActions, automations: workstationAutomations, conditionalTasks });
+
 function startConfiguredTelegram() {
   if (process.env.CODECK_TELEGRAM_CONFIG) {
-    const sessions = createTelegramSessionAdapter({
-      connection: { url: `https://127.0.0.1:${port}`, token: accessToken, ca: String(tls.cert) },
-      list: async () => (await sessionSnapshotForAuth({ owner: true })).sessions,
-      read: async target => (await threadFeed.refresh(target))?.snapshot,
-      pendingRequests: () => [...agentHub.pendingRequests.values()],
-      create: async task => { const result = await createTelegramTask(task); await invalidateSessionSnapshots(); return result; },
-    });
     telegram = startTelegramService({ configFile: process.env.CODECK_TELEGRAM_CONFIG,
-      directory: path.join(process.env.CODECK_DATA_DIR || path.join(os.homedir(), '.codeck'), 'telegram'), sessions, understand: understandTelegram });
+      directory: path.join(dataDir, 'telegram'), sessions: sessionActions, understand: understandTelegram,
+      binding: id => workstation.telegramBinding(id) });
   }
 }
 server.listen(port, host, () => {
@@ -756,6 +781,7 @@ server.listen(port, host, () => {
   taskTimer.unref();
   alwaysOnTimer = setInterval(() => {
     alwaysOnRuntime.tickTimers().catch(error => console.error('AlwaysOn timers:', error.message));
+    workstationAutomations.reconcile().catch(error => console.error('Workstation runs:', error.message));
     alwaysOnOutbox.tick().catch(error => console.error('AlwaysOn outbox:', error.message));
   }, 15_000);
   alwaysOnTimer.unref();

@@ -20,6 +20,7 @@ import { interruptSession } from '../src/tmux.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
+const switchMode = process.argv.includes('--session-switch');
 const commandMode = process.env.CODECK_BROWSER_COMMANDS === '1';
 const simpleMode = process.env.CODECK_BROWSER_CORE !== '1' && !commandMode;
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -131,7 +132,8 @@ function snapshot() {
   return { capabilities: { canManage: true }, sessions: [{ name: 'fixture', status: fixture.status, checkpoint: { taskId: 'demo', progress: { goal: '修复断线后的输入与翻页', verified: '基线已复现', current: '浏览器回归中', next: '通过后部署', needsUser: '是否接受较高计算成本验证候选？', evidence: [{ label: '验证页面', url: '/pages/example', version: 'fixture' }] }, text: '已建立基线', updatedAt: '2026-11-07T10:00:00Z', attention: { id: 'read-1', kind: 'review' } },
     agent: { kind: fixture.provider, id: 'fixture-thread', name: 'Remote fixture',
       hasBackgroundProcess: fixture.background || fixture.status === 'background',
-      ...(fixture.question ? { question: fixture.question } : {}) } }] };
+      ...(fixture.question ? { question: fixture.question } : {}) } },
+    ...(switchMode ? [{ name: 'other', status: 'done', agent: { kind: fixture.provider, id: 'other-thread' } }] : [])] };
 }
 function thread() {
   return withoutDismissedDeliveries({ id: 'fixture-thread', provider: fixture.provider, readOnly: true, turns: fixture.turns.slice(-20),
@@ -214,6 +216,14 @@ sockets.on('connection', socket => {
       publishThread(); publishSessions(); return reply({});
     }
     if (request.type === 'openThread') {
+      if (switchMode) {
+        if (request.tmuxSession === 'other') {
+          assert.equal(request.threadId, 'other-thread');
+          return reply({ thread: { id: 'other-thread', provider: fixture.provider, turns: [turn(900)] } });
+        }
+        assert.equal(request.tmuxSession, 'fixture');
+        assert.equal(request.threadId, 'fixture-thread');
+      }
       for (const id of request.dismissedDeliveryIds || []) { fixture.dismissed.add(id); fixture.recovery?.dismiss('fixture-thread', id); }
       for (const receipt of request.deliveryReceipts || []) {
         if (!fixture.dismissed.has(receipt.commandId)) fixture.recovery?.record({ ...receipt, threadId: 'fixture-thread', restored: true });
@@ -276,6 +286,7 @@ sockets.on('connection', socket => {
         commandOutput: normalizeSessionCommandOutput(fixture.provider, '/usage', { terminalOutput }) });
     }
     if (request.type === 'sendSessionMessage') {
+      if (switchMode) assert.deepEqual([request.tmuxSession, request.threadId], ['fixture', 'fixture-thread']);
       fixture.sent.push(request);
       if (request.text.startsWith('/')) {
         if (request.text === '/clear' && fixture.provider === 'codex') {
@@ -292,7 +303,7 @@ sockets.on('connection', socket => {
       }
       const accepted = { id: `sent-${fixture.sent.length}`, status: 'completed', items: [
         { id: `sent-user-${fixture.sent.length}`, type: 'userMessage', content: [{ type: 'text', text: request.text }] },
-        { id: `sent-answer-${fixture.sent.length}`, type: 'agentMessage', text: '已处理 fixture 消息' },
+        { id: `sent-answer-${fixture.sent.length}`, type: 'agentMessage', text: switchMode ? '收到 ' + request.text : '已处理 fixture 消息' },
       ] };
       fixture.recovery?.record(request);
       if (request.text === 'lost response') {
@@ -330,7 +341,7 @@ const browser = await chromium.launch({ headless: true, ...(process.env.CODECK_B
 const results = [];
 try {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1365, height: 900 }]) {
-    for (const provider of providers) {
+    for (const provider of switchMode ? [...providers, 'agy'] : providers) {
       reset(provider);
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 500,
         hasTouch: viewport.width < 500, reducedMotion: 'reduce', permissions: ['clipboard-read', 'clipboard-write'] });
@@ -353,6 +364,38 @@ try {
       assert.equal(fixture.sent.length, 0);
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
+      if (switchMode) {
+        const marker = '切回验证-' + crypto.randomUUID();
+        const select = async name => {
+          if (viewport.width < 720) await page.locator('#drawerButton').click();
+          await page.locator(`.thread-row[data-tmux-session="${name}"]`).click();
+        };
+        const transcript = page.locator('#transcript');
+        await page.locator('#composerInput').fill(marker);
+        await page.locator('#sendButton').click();
+        await transcript.getByText('收到 ' + marker, { exact: true }).waitFor();
+        await select('other');
+        await transcript.getByText('问题 900', { exact: true }).waitFor();
+        // Deliver a late snapshot from the first session, then a session-list update as a fence.
+        publishThread();
+        fixture.status = 'working'; publishSessions();
+        await page.waitForFunction(() => document.querySelector('.thread-row[data-tmux-session="fixture"] .presence.working'));
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await transcript.getByText(marker, { exact: true }).count(), 0);
+        assert.equal(await transcript.getByText('收到 ' + marker, { exact: true }).count(), 0);
+        assert.equal(await transcript.getByText('问题 900', { exact: true }).count(), 1);
+        await select('fixture');
+        await transcript.getByText('收到 ' + marker, { exact: true }).waitFor();
+        assert.equal(await transcript.getByText('收到 ' + marker, { exact: true }).count(), 1);
+        assert.equal(await transcript.getByText(marker, { exact: true }).count(), 1);
+        assert.equal(await transcript.getByText('问题 900', { exact: true }).count(), 0);
+        assert.equal(fixture.sent.length, 1);
+        assert.equal(fixture.sent[0].text, marker);
+        assert.deepEqual(errors, []);
+        await page.screenshot({ path: path.join(artifacts, provider + '-' + viewport.width + '-switch.png') });
+        results.push({ provider, viewport: viewport.width, journeys: 'send/switch/late-snapshot/return-once', errors: 0 });
+        await context.close(); continue;
+      }
       await page.locator('#drawerNewButton').evaluate(el => el.click());
       await page.locator('#sessionProvider option[value="agy"]').waitFor({ state: 'attached' });
       await page.locator('#sessionProvider').selectOption('agy');

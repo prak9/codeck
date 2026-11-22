@@ -76,3 +76,52 @@ test('disabled service makes no network requests and has an explicit status', as
   const service = startTelegramService({ ...f, apiFactory: () => { throw new Error('must not connect'); } });
   await service.done; assert.equal(service.status, 'disabled');
 });
+
+test('two configured Telegram accounts deliver owner messages to separate fixed sessions with independent offsets', { timeout: 6000 }, async t => {
+  const f = await fixture(t);
+  const extra = path.join(f.directory, 'second');
+  await fs.writeFile(extra, '8:extra_fixture_secret_0123456789', { mode: 0o600 });
+  const settings = JSON.parse(await fs.readFile(f.configFile, 'utf8'));
+  await fs.writeFile(f.configFile, JSON.stringify({ ...settings, additionalTokenFiles: [path.join(f.directory, 'missing'), extra, extra], localInboxBotIds: ['8'] }));
+  const inbox = path.join(f.directory, '8', 'incoming');
+  await fs.mkdir(inbox, { recursive: true });
+  await fs.writeFile(path.join(inbox, '11.json'), JSON.stringify({ update_id: 11, message: { date: 5, message_id: 11,
+    text: '任务 8', from: { id: 42 }, chat: { type: 'private', id: 42 } } }));
+  const names = { 12345: 'research', 8: 'report' };
+  const actions = [], replies = [];
+  const ready = Promise.withResolvers();
+  const service = startTelegramService({ ...f, logger: { info() {}, warn() {} },
+    sessions: { list: async () => Object.values(names).map(name => ({ name, createdAt: 22, agent: { kind: 'codex', id: name + '-thread' } })),
+      read: async () => ({ thread: { turns: [] } }), act: async (kind, target, args) => {
+        actions.push([target.tmuxSession, args.text, args.commandId]); return { submissionStatus: 'submitted' };
+      } },
+    binding: id => ({ key: 'bound-' + id, name: names[id], since: 0,
+      target: { session: names[id], provider: 'codex', threadId: names[id] + '-thread', createdAt: 22 } }),
+    apiFactory: ({ token }, { signal }) => async (method, payload) => {
+      const id = Number(token.split(':')[0]);
+      if (method === 'getMe') return { id, username: names[id] + '_bot' };
+      if (method === 'getWebhookInfo') return {};
+      if (method === 'sendChatAction') return true;
+      if (method === 'sendMessage') { replies.push([id, payload.text]); return { message_id: 20 }; }
+      assert.equal(method, 'getUpdates');
+      assert.notEqual(id, 8, 'the existing poller owns Telegram getUpdates');
+      if (!payload.offset) return [{ update_id: 11, message: { date: 5, message_id: 11, text: '任务 ' + id, from: { id: 42 }, chat: { type: 'private', id: 42 } } }];
+      ready.resolve();
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(Error('stopped')), { once: true }));
+    } });
+  t.after(async () => { service.stop(); await service.done; });
+  await ready.promise;
+  for (let i = 0; i < 60; i++) {
+    if (!(await fs.readdir(inbox)).includes('11.json')) break;
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  assert.deepEqual(await fs.readdir(inbox), []);
+  assert.deepEqual(service.channels.map(c => c.username).sort(), ['report_bot', 'research_bot']);
+  assert.deepEqual(actions.map(([session, body, cmd]) => [session, body.split('\n').at(-1), cmd]).sort(),
+    [['report', '任务 8', 'telegram-8-11'], ['research', '任务 12345', 'telegram-12345-11']]);
+  assert.deepEqual(replies, []);
+  for (const id of Object.keys(names)) {
+    const saved = JSON.parse(await fs.readFile(path.join(f.directory, id, 'sessions.json'), 'utf8'));
+    assert.equal(saved.offset, 12); assert.equal(saved.selected.tmuxSession, names[id]);
+  }
+});

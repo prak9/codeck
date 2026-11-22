@@ -162,3 +162,88 @@ test('a slow new Agent gets one readiness notice without a second creation', asy
   f.advance(61000); await f.bot.tick(); f.advance(12000); await f.bot.tick();
   assert.equal(creates, 1); assert.equal(f.sent.filter(m => m.text.includes('Agent 尚未就绪')).length, 1);
 });
+
+test('a fixed Telegram bot addresses only its workstation Bot and expires old replies on rebinding', async t => {
+  const f = await fixture(t);
+  const home = name => ({ session: name, provider: 'codex', threadId: 'thread-' + name, createdAt: 77 });
+  let binding = { key: 'one', name: '投研助手', target: home('a'), since: 1 };
+  const list = f.options.sessions.list;
+  f.options.sessions.list = async () => (await list()).map(row => ({ ...row, createdAt: 77 }));
+  const options = { ...f.options, binding: () => binding, understand: () => assert.fail('bound chats bypass routing') };
+  const bot = new TelegramSessions(options); await bot.load();
+  f.input('核对季报', { date: 5 }); await bot.tick();
+  assert.equal(f.actions.length, 1);
+  assert.equal(f.actions[0].target.tmuxSession, 'a');
+  const old = f.sent.length + 100;
+  f.input('/use b'); await bot.tick();
+  assert.equal(bot.state.selected.tmuxSession, 'a');
+  binding = { key: 'two', name: '审核助手', target: home('b'), since: 6000 };
+  f.input('先前积压的消息', { date: 4 });
+  f.input('回答旧通知', { date: 8, reply_to_message: { message_id: old } });
+  const resumed = new TelegramSessions(options); await resumed.load(); await resumed.tick();
+  assert.equal(f.actions.length, 1);
+  f.input('第二份报告', { date: 9 }); await resumed.tick();
+  assert.deepEqual(f.actions.map(a => a.target.tmuxSession), ['a', 'b']);
+  f.options.sessions.list = async () => (await list()).map(row => ({ ...row, createdAt: 78 }));
+  f.input('重建后不能串会话', { date: 10 }); await resumed.tick();
+  binding = { key: 'detached', target: null };
+  f.input('解绑后不能派工'); await resumed.tick();
+  assert.equal(f.actions.length, 2);
+});
+
+test('a bound private chat shows typing and only its own answer, including late final text', async t => {
+  const f = await fixture(t), typing = [];
+  const options = { ...f.options, webUrl: 'https://localhost/remote.html',
+    binding: () => ({ key: 'fixed', name: 'Joe', since: 0, target: { session: 'a', provider: 'codex', threadId: 'thread-a' } }),
+    api: async (method, args) => method === 'sendChatAction' ? typing.push(args.action) : f.options.api(method, args) };
+  const bot = new TelegramSessions(options); await bot.load();
+  f.input('下周关注什么？'); await bot.tick();
+  const user = { type: 'userMessage', content: f.actions[0].args.text };
+  const turn = { id: 'mine', status: 'completed', items: [user, { type: 'agentMessage', phase: 'commentary', text: '查看数据中' }] };
+  f.snapshots.set('a', { thread: { turns: [
+    { id: 'abort', status: 'interrupted', items: [] },
+    { id: 'web', status: 'completed', items: [{ type: 'agentMessage', text: '浏览器的回答' }] }, turn,
+  ] } });
+  f.advance(12000); await bot.tick();
+  assert.deepEqual(f.sent, []);
+  assert.ok(typing.includes('typing'));
+  turn.items.push({ type: 'agentMessage', phase: 'final_answer', text: '周一先看库存数据。' });
+  const resumed = new TelegramSessions(options); await resumed.load(); await resumed.tick();
+  f.advance(12000); await resumed.tick();
+  assert.deepEqual(f.sent, [{ chat_id: 42, text: '周一先看库存数据。' }]);
+  assert.equal(f.actions.length, 1);
+});
+
+test('bound questions open the native reply composer; replying to a current daily report gives the agent its context', async t => {
+  const f = await fixture(t);
+  const options = { ...f.options,
+    binding: () => ({ key: 'fixed', name: 'Joe', since: 4000, target: { session: 'a', provider: 'codex', threadId: 'thread-a' } }),
+    api: (method, args) => method === 'sendChatAction' ? Promise.resolve(true) : f.options.api(method, args) };
+  const bot = new TelegramSessions(options); await bot.load();
+  f.snapshots.get('a').interactions = [{ kind: 'question', id: 2, actionable: true, label: '看哪个市场？', options: ['期货', '股票'], text: '看哪个市场？\n期货 / 股票\n直接回复此消息：/answer 答案' }];
+  await bot.tick();
+  assert.equal(f.sent[0].reply_markup.force_reply, true);
+  assert.match(f.sent[0].text, /期货/); assert.doesNotMatch(f.sent[0].text, /\/answer|\[a\]/);
+  f.input('期货', { reply_to_message: { message_id: 101 } }); await bot.tick();
+  assert.equal(f.actions[0].kind, 'answer'); assert.equal(f.actions[0].args.answer, '期货');
+  assert.equal(f.sent.length, 1);
+  f.input('这份报告怎么看？', { reply_to_message: { message_id: 47, date: 5, from: { id: 7 }, caption: '周五的期货日报' } }); await bot.tick();
+  assert.equal(f.actions[1].kind, 'send');
+  assert.match(f.actions[1].args.text, /周五的期货日报/);
+});
+
+test('a fixed chat warns once on a missing receipt and can still deliver a late answer without replaying input', async t => {
+  const f = await fixture(t);
+  f.options.sessions.act = async (kind, target, args) => { f.actions.push(args); throw Error('ACK lost'); };
+  const opts = { ...f.options, binding: () => ({ key: 'fixed', since: 0, target: { session: 'a', provider: 'codex', threadId: 'thread-a' } }),
+    api: (method, args) => method === 'sendChatAction' ? Promise.resolve(true) : f.options.api(method, args) };
+  const bot = new TelegramSessions(opts); await bot.load(); f.input('检查库存'); await bot.tick();
+  assert.deepEqual(f.sent, []);
+  f.snapshots.get('a').thread.historyLoading = true;
+  f.advance(61000); await bot.tick(); assert.match(f.sent[0].text, /无法确认/);
+  f.advance(12000); await bot.tick(); assert.equal(f.sent.length, 1);
+  const resumed = new TelegramSessions(opts); await resumed.load();
+  f.snapshots.get('a').thread.historyLoading = false;
+  f.snapshots.get('a').thread.turns = [{ id: 'late', status: 'completed', items: [{ type: 'userMessage', content: f.actions[0].text }, { type: 'agentMessage', text: '库存已核实。' }] }];
+  await resumed.tick(); assert.equal(f.sent[1].text, '库存已核实。'); assert.equal(f.actions.length, 1);
+});

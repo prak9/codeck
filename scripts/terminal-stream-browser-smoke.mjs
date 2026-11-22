@@ -1,4 +1,4 @@
-// Real terminal UI with isolated PTYs: switch, stale frames and network recovery; no real session input.
+// Real terminal UI with fixture terminals: switch, stale frames and network recovery; no real session input.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -9,7 +9,7 @@ import { WebSocketServer } from 'ws';
 import { handleTerminalConnection } from '../src/terminal-connection.js';
 const { chromium } = await import(process.env.CODECK_PLAYWRIGHT_MODULE || 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
-const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-services-browser-'));
+const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-terminal-stream-'));
 let enabled = true;
 const readNotices = [];
 const vendors = { '/vendor/xterm/xterm.js': '@xterm/xterm/lib/xterm.js', '/vendor/xterm.css': '@xterm/xterm/css/xterm.css',
@@ -45,8 +45,9 @@ wss.on('connection', (ws, req) => {
     writeTerminalInput: async (name, data) => input.push({ name, data }),
     scrollSession: async () => {},
     createTerminal: name => {
+      const frame = 'SCREEN:' + name + '/' + terminalSockets.length;
       let timer;
-      return { onData(callback) { timer = setTimeout(() => callback('SCREEN:' + name + '\r\n$ '), 20); },
+      return { onData(callback) { timer = setTimeout(() => callback(frame + '\r\n$ '), 20); },
         onExit() {}, write() {}, resize() {}, kill() { clearTimeout(timer); } };
     },
   });
@@ -55,6 +56,7 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const browser = await chromium.launch({ headless: true, ...(process.env.CODECK_BROWSER_EXECUTABLE ? { executablePath: process.env.CODECK_BROWSER_EXECUTABLE } : {}) });
 try {
   for (const width of [390, 1365]) {
+    const inputStart = input.length;
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     await context.addInitScript(() => {
       localStorage.setItem('codeck-token', 'fixture');
@@ -72,6 +74,44 @@ try {
     await page.route('**/api/sessions/*/workfiles?*', route => route.fulfill({ json: { identity: 'fixture', items: [], pages: [], archives: [] } }));
     page.on('pageerror', e => errors.push(e.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    const screen = async name => page.waitForFunction(name => {
+      const terminal = window.fixtureTerminal;
+      if (!terminal) return false;
+      return Array.from({ length: terminal.buffer.active.length }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true)).join('\n').includes('SCREEN:' + name);
+    }, name, { timeout: 20_000 });
+    if (process.argv.includes('--idle-input')) {
+      await page.locator('[data-session="second"]').evaluate(el => el.click());
+      await screen('second');
+      // A suspended tab can return with an apparently open socket that lost its peer.
+      const silent = terminalSockets.at(-1);
+      const send = silent.send.bind(silent);
+      silent.send = (value, ...args) => {
+        if (Buffer.isBuffer(value) && value.toString().includes('"type":"pong"')) return;
+        return send(value, ...args);
+      };
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      const expectedSocket = terminalSockets.length + 1;
+      // Observe the terminal frame on the new transport; the session feed reconnects independently.
+      await page.evaluate(() => {
+        delete document.hidden;
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await screen('second/' + expectedSocket);
+      assert.equal(input.length, inputStart, 'wake and reconnection must not synthesize a key');
+      const key = 'k';
+      await page.waitForFunction(() => document.activeElement === fixtureTerminal.textarea && !fixtureTerminal.options.disableStdin);
+      await page.keyboard.type(key);
+      for (let i = 0; i < 100 && input.length === inputStart; i++) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.deepEqual(input.slice(inputStart), [{ name: 'second', data: key }]);
+      await page.screenshot({ path: path.join(artifacts, width + '-idle-input.png') });
+      assert.deepEqual(errors, []);
+      await context.close();
+      console.log('PASS', width, 'background wake and first key on recovered session');
+      continue;
+    }
     await page.locator('#newButton').evaluate(el => el.click());
     await page.locator('input[name="client"][value="agy"]').check();
     const dialog = page.locator('#newDialog');
@@ -80,11 +120,6 @@ try {
     await page.screenshot({ path: path.join(artifacts, `${width}-agy-create.png`) });
     await dialog.getByRole('button', { name: '关闭', exact: true }).click();
 
-    const screen = async name => page.waitForFunction(name => {
-      const terminal = window.fixtureTerminal;
-      if (!terminal) return false;
-      return Array.from({ length: terminal.buffer.active.length }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true)).join('\n').includes('SCREEN:' + name);
-    }, name, { timeout: 15000 });
     await page.getByText('● 本轮有新结果 · 已复现，正在验证', { exact: true }).waitFor({ state: 'attached' });
     await page.locator('[data-session="first"]').evaluate(el => el.click());
     await screen('first'); console.log(width, 'first frame');
@@ -106,7 +141,8 @@ try {
     assert.ok(terminalSockets.length > before, 'new transport established');
     const text = await page.evaluate(() => Array.from({ length: fixtureTerminal.buffer.active.length }, (_, i) => fixtureTerminal.buffer.active.getLine(i)?.translateToString(true)).join('\n'));
     assert.ok(!text.includes('STALE'));
-    assert.equal(input.length, 0, 'recovery never injects user input');
+    assert.equal(input.length, inputStart, 'recovery never injects user input');
+
     await page.screenshot({ path: path.join(artifacts, `${width}-recovery.png`) });
     assert.deepEqual(errors, []); await context.close();
     console.log(`PASS ${width}: identified output, session switch, stale reset rejected, disconnect recovery without input replay`);

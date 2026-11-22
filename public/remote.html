@@ -27,6 +27,7 @@
   <link rel="stylesheet" href="/session-progress.css?v=1">
   <link rel="stylesheet" href="/workfiles.css?v=2">
   <link rel="stylesheet" href="/always-on-panel.css?v=2">
+  <link rel="stylesheet" href="/workstation.css?v=5">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -38,7 +39,7 @@
         <span class="remote-label">REMOTE</span>
       </div>
       <div class="drawer-heading">
-        <div><p class="eyebrow">WORKSPACES</p><h1>运行中的会话</h1></div>
+        <h1>运行中的会话</h1>
         <div class="sidebar-heading-actions">
           <button class="icon-button session-visibility-button" id="sessionVisibilityButton" type="button" aria-haspopup="dialog" aria-controls="sessionVisibilityDialog" aria-label="设置会话显示">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg><span class="session-visibility-count" id="sessionVisibilityRuleCount" hidden></span>
@@ -46,9 +47,18 @@
           <button class="icon-button" id="drawerNewButton" type="button" aria-label="新建会话">＋</button>
         </div>
       </div>
-      <div class="session-search"><input id="sessionSearch" type="search" placeholder="搜索会话名称" aria-label="搜索会话名称" aria-controls="threadList" autocomplete="off" spellcheck="false"></div>
-      <button id="historySearchButton" class="history-search-entry" type="button">搜索历史内容</button>
-      <button id="alwaysOnButton" class="always-on-entry" type="button" hidden><span>个人行动台</span><span class="always-on-badge" id="alwaysOnBadge" hidden></span></button>
+      <div class="session-search"><input id="sessionSearch" type="search" placeholder="搜索会话名称" aria-label="搜索会话名称" aria-controls="threadList" autocomplete="off" spellcheck="false">
+        <button id="historySearchButton" class="history-search-entry" type="button" aria-label="搜索历史内容" title="搜索历史内容"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.5 7M3 5v6h6m3-4v5l3 2"/></svg></button>
+      </div>
+      <div id="legacyStationEntry" hidden><button id="legacyStationButton" class="always-on-entry" type="button">个人行动台</button></div>
+      <nav id="workstationNav" class="station-nav" aria-label="工作台" hidden>
+        <button id="tasksButton" class="station-entry" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/></svg>Tasks<span id="alwaysOnBadge" class="always-on-badge" aria-label="待你处理" hidden></span></button>
+        <button id="alwaysOnButton" class="station-entry" data-tab="timers" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10V5H4v15h8M8 3v4m8-4v4M4 9h16"/><circle cx="17.5" cy="16.5" r="4.5"/><path d="M17.5 14v2.5l1.5 1"/></svg>Automations</button>
+        <div class="station-bots-head"><button id="botsToggle" class="station-entry" type="button" aria-controls="stationBots" aria-expanded="true"><span class="station-chevron" aria-hidden="true"></span>Bots</button><button id="bindBotButton" class="station-plus" type="button" aria-label="绑定 Bot" title="绑定 Bot">＋</button></div>
+        <div id="stationBots" class="station-bots"></div>
+        <button id="pagesToggle" class="station-entry" type="button" aria-controls="stationPages" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Pages</button>
+        <div id="stationPages" class="station-bots" hidden></div>
+      </nav>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
         <span><i class="connection-dot" id="drawerConnectionDot"></i><span id="drawerConnectionText">正在连接</span></span>
@@ -241,6 +251,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=163"></script>
+  <script type="module" src="/remote.js?v=171"></script>
 </body>
 </html>

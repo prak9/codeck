@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { checkAutomationTimer } from './workstation-automation-schedule.js';
 import { runPrecheck } from './conditional-tasks.js';
 
 export function parseDurationMs(input) {
@@ -37,37 +38,43 @@ export function createAlwaysOnRuntime({
     activeScopes.add(scopeKey);
     try {
       while (!closed) {
-        const batch = store.claimBatch({ scopeKey, workerId, leaseMs, limit: batchLimit, now: now() });
+        const batch = store.claimBatch({ scopeKey, workerId, leaseMs, limit: scopeKey.startsWith('workstation:') ? 1 : batchLimit, now: now() });
         if (!batch.length) break;
         const ids = batch.map(e => e.id);
         let finalized = false;
         const helpers = {
           markSubmitting: (commandId, targetIds = ids) => {
-            store.markEventsSubmitting(targetIds, commandId, now());
+            store.markEventsSubmitting(targetIds, commandId, now(), workerId);
           },
           requeue: (targetIds = ids) => {
-            store.completeEvents(targetIds, { status: 'pending', error: null, now: now() });
+            store.completeEvents(targetIds, { status: 'pending', error: null, now: now(), workerId });
             finalized = true;
           },
           markUnknown: (message, targetIds = ids) => {
-            store.completeEvents(targetIds, { status: 'unknown', error: message || '投递结果未确认', now: now() });
+            store.completeEvents(targetIds, { status: 'unknown', error: message || '投递结果未确认', now: now(), workerId });
             finalized = true;
           },
           complete: (targetIds = ids) => {
-            store.completeEvents(targetIds, { status: 'done', error: null, now: now() });
+            store.completeEvents(targetIds, { status: 'done', error: null, now: now(), workerId });
             finalized = true;
           },
         };
+        const renew = batch[0].payload?.workstation?.script && setInterval(() => {
+          if (!closed) store.db.prepare("UPDATE events SET lease_until=? WHERE id=? AND status='processing' AND lease_owner=?")
+            .run(now() + leaseMs, ids[0], workerId);
+        }, Math.max(1, Math.floor(leaseMs / 3))).unref();
         try {
           const outcome = await handleScope(scopeKey, batch, helpers);
           if (!finalized) {
             if (outcome?.status === 'requeue') {
-              store.completeEvents(ids, { status: 'pending', error: null, now: now() });
+              store.completeEvents(ids, { status: 'pending', error: null, now: now(), workerId });
               break;
+            } else if (outcome?.status === 'failed') {
+              store.completeEvents(ids, { status: 'failed', error: outcome.error, now: now(), workerId });
             } else if (outcome?.status === 'unknown') {
-              store.completeEvents(ids, { status: 'unknown', error: outcome.error || '投递结果未确认', now: now() });
+              store.completeEvents(ids, { status: 'unknown', error: outcome.error || '投递结果未确认', now: now(), workerId });
             } else {
-              store.completeEvents(ids, { status: 'done', error: null, now: now() });
+              store.completeEvents(ids, { status: 'done', error: null, now: now(), workerId });
             }
           }
         } catch (error) {
@@ -80,20 +87,20 @@ export function createAlwaysOnRuntime({
               store.completeEvents(submittedIds, {
                 status: 'unknown',
                 error: error?.message || '投递异常，结果未确认，未自动重放',
-                now: now(),
+                now: now(), workerId,
               });
             }
             if (unsubmittedIds.length) {
               store.completeEvents(unsubmittedIds, {
                 status: 'failed',
                 error: error?.message || '事件处理失败',
-                now: now(),
+                now: now(), workerId,
               });
             }
           }
           logger.warn?.(`AlwaysOn worker [${scopeKey}]: ${error?.message || error}`);
           break;
-        }
+        } finally { if (renew) clearInterval(renew); }
       }
     } finally {
       activeScopes.delete(scopeKey);
@@ -133,70 +140,14 @@ export function createAlwaysOnRuntime({
       let errors = 0;
       for (const timer of due) {
         if (closed) break;
-        const nextDue = timer.kind === 'schedule'
-          ? Math.max(currentNow + timer.recurrenceMs, timer.dueAt + timer.recurrenceMs)
-          : timer.dueAt;
-        try {
-          let eventKey = null;
-          if (timer.check) {
-            eventKey = await precheck({ check: timer.check, cwd: timer.cwd });
-            if (!eventKey) {
-              store.updateTimerState(timer.id, {
-                status: timer.kind === 'follow_up' ? 'done' : 'active',
-                dueAt: nextDue,
-                lastStatus: 'skipped',
-                lastError: null,
-                now: now(),
-              });
-              skipped++;
-              continue;
-            }
-          }
-
-          const dedupeKey = eventKey
-            ? `timer:${timer.id}:check:${eventKey}`
-            : `timer:${timer.id}:due:${timer.dueAt}`;
-          const enqueued = store.enqueueEvent({
-            scopeKey: timer.scopeKey,
-            source: 'timer',
-            dedupeKey,
-            payload: {
-              timerId: timer.id,
-              timerKind: timer.kind,
-              reason: timer.reason,
-              sessionName: timer.sessionName,
-              provider: timer.provider,
-              threadId: timer.threadId,
-              eventKey,
-              ...timer.payload,
-            },
-            now: now(),
-          });
-
-          store.updateTimerState(timer.id, {
-            status: timer.kind === 'follow_up' ? 'done' : 'active',
-            dueAt: nextDue,
-            lastStatus: enqueued.inserted ? 'enqueued' : 'deduped',
-            lastError: null,
-            lastFiredAt: now(),
-            now: now(),
-          });
-
-          if (enqueued.inserted) {
-            fired++;
-            wake(timer.scopeKey).catch(() => {});
-          } else {
-            skipped++;
-          }
-        } catch (error) {
+        const result = await checkAutomationTimer(store, timer, { now, precheck });
+        if (result.inserted) {
+          fired++;
+          wake(timer.scopeKey).catch(() => {});
+        } else if (result.status === 'check_error') {
           errors++;
-          store.updateTimerState(timer.id, {
-            status: timer.kind === 'follow_up' ? 'done' : 'active',
-            dueAt: nextDue,
-            lastStatus: 'check_error',
-            lastError: error?.message || String(error),
-            now: now(),
-          });
+        } else {
+          skipped++;
         }
       }
       // Also wake any recovered pending scopes.

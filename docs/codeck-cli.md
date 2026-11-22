@@ -26,6 +26,18 @@ codeck page revoke source-ID
 
 `session create` 只创建并启动 CLI，不附加任务；Agent 身份就绪后再 send。命令支持 `--json`；默认输出可读文字。读取不触发新轮次。创建失败先查列表，发送失败按错误中的 commandId 核对，不自动重放。会话创建、消息发送和网页操作沿用服务端权限。
 
+## 将已有 Telegram 机器人绑定到工作台 Bot
+
+先用 `codeck telegram list` 核对 Telegram 用户名。若要为 `@codeckbot` 设置独立主会话，先建立名为 `codeckbot` 的会话，在其中开始第一轮对话。用 `codeck session list` 核对该会话已有 Agent 对话 ID，然后绑定：
+
+```sh
+codeck bot create codeckbot --session codeckbot
+codeck bot bind-telegram codeckbot --telegram @codeckbot
+codeck bot show codeckbot
+```
+
+`codeck bot list` 列出 Bot 名称、主会话和 ID。同名 Bot 用 ID 指定。用户名也可以替换为 Telegram 的数字 ID。要解除绑定，使用 `codeck bot unbind-telegram codeckbot --telegram @codeckbot`。这些命令复用网页的主账号权限，绑定和解绑都只操作指定关系。接入新 Telegram 账号见[配置指南](telegram.md#绑定工作台-bot)。
+
 发布返回页面 ID、链接、source 和 contentHash。无来源时使用 `--id`；有来源时使用 `--source-key`，不要同时传两者。同一 key 在重启及并发发布后仍指向同一页面，正文、标题和来源版本按串行写入顺序更新，已有分享保持不变。key 是来源身份，不应把每次变化的 commit/hash 放进 key；变化版本写到 revision。
 
 配套 Skill 位于 `skills/codeck/SKILL.md`，本机通过 Codex Skill 目录的符号链接安装。无需新增常驻 Agent 或后台服务。

@@ -6,6 +6,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import { sessionRpc } from './session-rpc.js';
 import { sessionTarget } from './telegram-sessions.js';
+import { runBotCommand } from './codeck-bot-client.js';
 
 export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck session list
@@ -15,6 +16,12 @@ export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck session read NAME
   codeck session send NAME --file PROMPT.txt
   codeck session create NAME --provider codex --cwd /project [--worktree /path/to/new-worktree]
+  codeck telegram list
+  codeck bot list
+  codeck bot create NAME --session SESSION [--purpose TEXT]
+  codeck bot show NAME_OR_ID
+  codeck bot bind-telegram NAME_OR_ID --telegram @USERNAME_OR_ID
+  codeck bot unbind-telegram NAME_OR_ID --telegram @USERNAME_OR_ID
   codeck history search QUERY [--provider codex]
   codeck history context ID
   codeck history link SESSION --repo /project --commit SHA
@@ -38,8 +45,8 @@ export const CLI_HELP = `Codeck：复用现有服务、授权和会话
   codeck proposal list
   codeck proposal accept ID
   codeck proposal reject ID
-  codeck page list
-  codeck page publish FILE.html --title TITLE [--id ID | --source-key KEY] [--session NAME] [--revision VERSION] [--evidence RECORD.json]
+  codeck page list [--folder NAME|/]
+  codeck page publish FILE.html --title TITLE [--folder NAME|/] [--id ID | --source-key KEY] [--session NAME] [--revision VERSION] [--evidence RECORD.json]
   codeck page share ID
   codeck page revoke ID
 配置：~/.config/codeck/client.json（url、tokenFile、caFile），或 CODECK_URL / CODECK_TOKEN / CODECK_CA_FILE。
@@ -83,7 +90,7 @@ export function clientRequest(connection, endpoint, method = 'GET', body) {
 export async function runCodeck(argv, connection, { request = clientRequest, rpc = sessionRpc } = {}) {
   const [area, action, ...args] = argv.filter(a => a !== '--json');
   const positional = [], options = {};
-  const allowed = new Set(['file', 'record', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'revision', 'in', 'at', 'reason']);
+  const allowed = new Set(['folder', 'file', 'record', 'repo', 'commit', 'evidence', 'provider', 'worktree', 'cwd', 'title', 'id', 'source-key', 'session', 'purpose', 'telegram', 'revision', 'in', 'at', 'reason']);
   for (let i = 0; i < args.length; i++) {
     if (!args[i].startsWith('--')) { positional.push(args[i]); continue; }
     const key = args[i].slice(2), value = args[++i];
@@ -91,6 +98,8 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     options[key] = value;
   }
   const commandOptions = {
+    'telegram:list': [], 'bot:list': [], 'bot:create': ['session', 'purpose'], 'bot:show': [],
+    'bot:bind-telegram': ['telegram'], 'bot:unbind-telegram': ['telegram'],
     'session:checkpoint': ['file', 'record'], 'session:list': [], 'session:read': [], 'session:send': ['file'], 'session:create': ['provider', 'cwd', 'worktree'],
     'workfiles:list': [], 'workfiles:add': ['record'],
     'history:search': ['provider'], 'history:context': [], 'history:link': ['repo', 'commit', 'provider'],
@@ -100,12 +109,13 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     'blueprint:list': [], 'blueprint:get': [], 'blueprint:put': ['file'], 'blueprint:dry-run': [],
     'entity:timeline': [],
     'proposal:list': [], 'proposal:accept': [], 'proposal:reject': [],
-    'page:list': [], 'page:publish': ['title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
+    'page:list': ['folder'], 'page:publish': ['folder', 'title', 'id', 'source-key', 'session', 'revision', 'evidence'], 'page:share': [], 'page:revoke': [],
   }[area + ':' + action];
   if (!commandOptions || Object.keys(options).some(key => !commandOptions.includes(key))) throw new Error('未知命令或该命令不支持此参数');
   const name = positional[0];
   if (positional.length > 1) throw new Error('参数过多；正文请使用 --file');
   const call = (endpoint, method, body) => request(connection, endpoint, method, body);
+  if (area === 'bot' || area === 'telegram') return runBotCommand(call, area, action, name, options);
   if (area === 'workfiles') {
     if (!name) throw new Error('请指定会话名');
     const endpoint = `/api/sessions/${encodeURIComponent(name)}/workfiles`;
@@ -205,12 +215,15 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
     throw new Error('未知 proposal 命令');
   }
   if (area === 'page') {
-    if (action === 'list') return call('/api/pages');
+    if (action === 'list') {
+      const result = await call('/api/pages');
+      return options.folder ? { pages: result.pages.filter(page => (page.folder || '/') === options.folder) } : result;
+    }
     if (action === 'publish') {
       if (!name || !options.title || (!options.id && !options['source-key'])) throw new Error('发布需文件、--title，以及 --id 或 --source-key');
       if (options.id && options['source-key']) throw new Error('--id 与 --source-key 请选择一个');
       if (!options['source-key'] && (options.session || options.revision)) throw new Error('来源信息需要 --source-key');
-      const body = { title: options.title, html: await fs.readFile(name, 'utf8'),
+      const body = { title: options.title, ...(options.folder ? { folder: options.folder === '/' ? null : options.folder } : {}), html: await fs.readFile(name, 'utf8'),
         ...(options.evidence ? { evidence: JSON.parse(await fs.readFile(options.evidence, 'utf8')) } : {}),
         ...(options['source-key'] ? { source: { key: options['source-key'], session: options.session, revision: options.revision } } : {}) };
       const result = options.id ? await call(`/api/pages/${encodeURIComponent(options.id)}`, 'PUT', body)
@@ -225,6 +238,14 @@ export async function runCodeck(argv, connection, { request = clientRequest, rpc
 }
 
 export function formatClientResult(value) {
+  if (value.channels) return value.channels.map(c => `@${c.username}\t${c.id}\t${c.status}\t${c.botId || '未绑定'}`).join('\n') || '暂无已接入的 Telegram 机器人';
+  if (value.bots) return value.bots.map(b => `${b.name}\t${b.target.session}\t${b.id}`).join('\n') || '暂无工作台 Bot';
+  if (value.bot) {
+    const lines = [`Bot ${value.bot.name}（${value.bot.id}）`, `主会话 ${value.bot.target.session} · ${value.bot.target.provider}`];
+    if (Object.hasOwn(value, 'telegram')) lines.push(value.telegram ? `Telegram @${value.telegram.username} · ${value.telegram.status}` : 'Telegram 未绑定');
+    if (value.bot.purpose) lines.push(value.bot.purpose);
+    return lines.join('\n');
+  }
   if (value.results) return [value.status?.indexing ? '索引中，结果尚不完整' : value.status?.error || '', ...value.results.map(r => `${r.id}\t${r.provider}/${r.threadId}\n${r.excerpt}`)].filter(Boolean).join('\n\n');
   if (value.url) return value.url;
   if (value.sessions) return value.sessions.map(s => `${s.name}\t${s.agent?.kind || 'shell'}\t${executionLabel(sessionExecutionState(s))}`).join('\n') || '暂无会话';

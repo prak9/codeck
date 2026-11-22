@@ -853,7 +853,7 @@ export class AgentHub {
       if (!['accept', 'acceptForSession', 'decline', 'cancel'].includes(message.decision)) {
         throw new Error('Invalid approval decision');
       }
-      await this.#respondOnce(provider, cleanRequestId(message.requestId), { decision: message.decision });
+      await this.#respondOnce(provider, cleanRequestId(message.requestId), { decision: message.decision }, message.threadId);
       return {};
     }
     if (message.type === 'answerSessionQuestion') {
@@ -869,7 +869,7 @@ export class AgentHub {
       return result;
     }
     if (message.type === 'resolveInteraction') {
-      await this.#respondOnce(provider, cleanRequestId(message.requestId), { answers: cleanAnswers(message.answers) });
+      await this.#respondOnce(provider, cleanRequestId(message.requestId), { answers: cleanAnswers(message.answers) }, message.threadId);
       return {};
     }
     throw new Error(`Unknown agent message type: ${message.type || '(empty)'}`);
@@ -1215,9 +1215,12 @@ export class AgentHub {
     }
   }
 
-  async #respondOnce(provider, requestId, result) {
+  async #respondOnce(provider, requestId, result, threadId) {
     const key = approvalKey(provider, requestId);
     if (this.resolvedRequests.has(key)) throw new Error('Request was already resolved');
+    if (threadId != null && this.pendingRequests.get(key)?.request.params?.threadId !== threadId) {
+      throw new Error('待决请求已变化，回答未发送');
+    }
     this.resolvedRequests.add(key);
     if (this.resolvedRequests.size > 1_024) this.resolvedRequests.delete(this.resolvedRequests.values().next().value);
     try {

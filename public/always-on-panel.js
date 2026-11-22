@@ -1,7 +1,7 @@
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=7';
 
 export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, activeSession = () => null }) {
-  if (!button) return { sync() {} };
+  if (!button) return { sync() {}, open() {} };
 
   const dialog = document.createElement('dialog');
   dialog.className = 'always-on-dialog';
@@ -79,7 +79,7 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
 
   function updateBadge(stats) {
     if (!badge || !stats) return;
-    const count = (stats.approvals?.pending || 0) + (stats.outbox?.urgentPending || 0) + (stats.proposals?.pending || 0);
+    const count = (stats.approvals?.pending || 0) + (stats.proposals?.pending || 0);
     if (count > 0) {
       badge.textContent = String(count);
       badge.hidden = false;
@@ -484,6 +484,7 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
 
   async function renderTimers() {
     const data = await apiFetch('/api/always-on/timers');
+    data.timers = data.timers.filter(timer => !timer.scopeKey.startsWith('workstation:'));
     bodyEl.replaceChildren();
 
     const head = el('div', { class: 'always-on-section-head' });
@@ -655,18 +656,25 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
 
   dialog.querySelector('[data-refresh]').onclick = () => renderCurrentTab();
   dialog.querySelector('[data-close]').onclick = () => dialog.close();
-  dialog.addEventListener('close', () => { stopSpeech(); button.focus(); });
+  let opener = button;
+  dialog.addEventListener('close', () => { stopSpeech(); if (opener?.isConnected) opener.focus(); });
 
-  button.onclick = () => {
-    if (!enabled()) return;
-    dialog.showModal();
+  function open(tab = 'overview', trigger = button) {
+    if (!enabled() || !token()) return;
+    const selected = tabButtons.find(b => b.dataset.tab === tab);
+    if (!selected) return;
+    currentTab = tab;
+    opener = trigger;
+    for (const b of tabButtons) b.setAttribute('aria-selected', String(b === selected));
+    if (!dialog.open) dialog.showModal();
     renderCurrentTab();
-  };
+  }
+  button.onclick = () => open(button.dataset.tab || 'overview');
 
   function sync() {
     const visible = Boolean(enabled() && token());
     button.hidden = !visible;
-    if (visible && !pollTimer) {
+    if (visible && badge && !pollTimer) {
       refreshBadge();
       pollTimer = setInterval(refreshBadge, 30_000);
     } else if (!visible && pollTimer) {
@@ -675,5 +683,5 @@ export function bindAlwaysOnPanel({ button, badge, token, enabled = () => true, 
     }
   }
 
-  return { sync, refreshBadge };
+  return { sync, refreshBadge, open };
 }

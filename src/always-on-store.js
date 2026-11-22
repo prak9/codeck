@@ -208,6 +208,17 @@ export class AlwaysOnStore {
       );
       CREATE INDEX IF NOT EXISTS idx_timers_status_due ON timers(status, due_at);
 
+      CREATE TABLE IF NOT EXISTS timer_checks (
+        timer_id TEXT NOT NULL, occurrence TEXT NOT NULL, due_at INTEGER NOT NULL, checked_at INTEGER NOT NULL,
+        status TEXT NOT NULL, error TEXT, event_id TEXT, task_id TEXT, session_name TEXT, dispatch_status TEXT,
+        pane_id TEXT, launched_after INTEGER, launched_before INTEGER,
+        PRIMARY KEY (timer_id, occurrence)
+      );
+      CREATE INDEX IF NOT EXISTS idx_timer_checks_event ON timer_checks(event_id);
+      CREATE INDEX IF NOT EXISTS idx_timer_checks_session ON timer_checks(session_name);
+      CREATE INDEX IF NOT EXISTS idx_timer_checks_recent ON timer_checks(timer_id, checked_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_timer_checks_unbound ON timer_checks(dispatch_status) WHERE dispatch_status = 'launched' AND task_id IS NULL;
+
       CREATE TABLE IF NOT EXISTS outbox (
         id TEXT PRIMARY KEY,
         scope_key TEXT NOT NULL,
@@ -408,14 +419,17 @@ export class AlwaysOnStore {
     }
   }
 
-  markEventsSubmitting(eventIds, commandId, now = Date.now()) {
+  markEventsSubmitting(eventIds, commandId, now = Date.now(), workerId = null) {
     if (!Array.isArray(eventIds) || !eventIds.length || !commandId) return;
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const stmt = this.db.prepare(`
         UPDATE events SET command_id = ?, updated_at = ? WHERE id = ?
+          AND (? IS NULL OR (status = 'processing' AND lease_owner = ? AND lease_until > ?))
       `);
-      for (const id of eventIds) stmt.run(commandId, now, id);
+      for (const id of eventIds) {
+        if (!stmt.run(commandId, now, id, workerId, workerId, now).changes) throw new Error('事件租约已变化，未开始投递');
+      }
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -423,7 +437,7 @@ export class AlwaysOnStore {
     }
   }
 
-  completeEvents(eventIds, { status = 'done', error = null, now = Date.now() } = {}) {
+  completeEvents(eventIds, { status = 'done', error = null, now = Date.now(), workerId = null } = {}) {
     if (!VALID_EVENT_STATUS.has(status)) throw new Error('无效的事件状态');
     if (!Array.isArray(eventIds) || !eventIds.length) return;
     const processedAt = status === 'pending' ? null : now;
@@ -432,9 +446,9 @@ export class AlwaysOnStore {
       const stmt = this.db.prepare(`
         UPDATE events
         SET status = ?, lease_owner = NULL, lease_until = NULL, error = ?, updated_at = ?, processed_at = ?
-        WHERE id = ?
+        WHERE id = ? AND (? IS NULL OR (status = 'processing' AND lease_owner = ?))
       `);
-      for (const id of eventIds) stmt.run(status, error, now, processedAt, id);
+      for (const id of eventIds) stmt.run(status, error, now, processedAt, id, workerId, workerId);
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');

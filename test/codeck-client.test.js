@@ -17,13 +17,16 @@ import { mountHistoryRoutes } from '../src/history-routes.js';
 import { createConditionalTasks } from '../src/conditional-tasks.js';
 import { createCheckpoints } from '../src/session-checkpoints.js';
 import { runCodeck, loadClientConnection } from '../src/codeck-client.js';
+import { AlwaysOnStore } from '../src/always-on-store.js';
+import { WorkstationStore } from '../src/workstation-store.js';
+import { mountWorkstationRoutes } from '../src/workstation-routes.js';
 const exec = promisify(execFile);
 
 test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a stable source through subprocesses', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-cli-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const tls = loadTlsOptions({ CODECK_DATA_DIR: directory });
-  const sessions = [{ name: 'fixture', status: 'done', agent: { id: 'thread', kind: 'qodercli' } }];
+  const sessions = [{ name: 'fixture', createdAt: 101, status: 'done', agent: { id: 'thread', kind: 'qodercli' } }];
   const sends = [], creates = [];
   const backend = new EventEmitter();
   backend.openThread = async () => ({ thread: { id: 'thread', turns: [{ id: 't1', status: 'completed', items: [{ type: 'agentMessage', text: '已验证结果' }] }] } });
@@ -33,6 +36,10 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   const app = express(); app.use(express.json({ limit: '20mb' }));
   const auth = (req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-secret') return res.sendStatus(401); req.auth = { owner: true }; next(); };
   app.get('/api/sessions', auth, (_req, res) => res.json({ sessions }));
+  const db = new AlwaysOnStore(':memory:');
+  t.after(() => db.close());
+  mountWorkstationRoutes(app, { store: new WorkstationStore(db.db), ownerOnly: auth, sessions: async () => sessions,
+    telegramChannels: () => [{ id: '17', username: 'fixture_bot', status: 'connected' }] });
   app.post('/api/sessions', auth, (req, res) => { creates.push(req.body); res.status(201).json({ ok: true }); });
   const checkpoints = await createCheckpoints(path.join(directory, 'checkpoints.json'));
   app.put('/api/sessions/:name/checkpoint', auth, async (req, res) => { await checkpoints.set(sessions[0], req.body); res.json(checkpoints.get(sessions[0])); });
@@ -58,6 +65,19 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
   const env = { ...process.env, CODECK_CLIENT_CONFIG: configFile, CODECK_TOKEN: '', CODECK_URL: '', CODECK_CA_FILE: '' };
   const cli = async (...args) => JSON.parse((await exec(process.execPath, ['scripts/codeck.mjs', ...args, '--json'], { env })).stdout);
   assert.equal((await cli('session', 'list')).sessions[0].name, 'fixture');
+  assert.equal((await cli('telegram', 'list')).channels[0].username, 'fixture_bot');
+  assert.deepEqual((await cli('bot', 'list')).bots, []);
+  const { bot } = await cli('bot', 'create', 'fixture_bot', '--session', 'fixture');
+  assert.equal(bot.target.createdAt, 101);
+  assert.equal((await cli('bot', 'create', 'fixture_bot', '--session', 'fixture')).bot.id, bot.id);
+  await cli('bot', 'bind-telegram', bot.id, '--telegram', '@Fixture_Bot');
+  assert.equal((await cli('bot', 'bind-telegram', bot.name, '--telegram', '17')).telegram.username, 'fixture_bot');
+  assert.equal((await cli('bot', 'show', bot.name)).telegram.id, '17');
+  await assert.rejects(cli('bot', 'unbind-telegram', bot.name, '--telegram', '@other'), /不匹配/);
+  assert.equal((await cli('telegram', 'list')).channels[0].botId, bot.id);
+  assert.equal((await cli('bot', 'unbind-telegram', bot.name, '--telegram', '17')).telegram, null);
+  assert.equal((await cli('bot', 'show', bot.name)).telegram, null);
+  assert.equal(sends.length, 0); assert.equal(creates.length, 0);
   assert.equal((await cli('session', 'read', 'fixture')).thread.turns[0].items[0].text, '已验证结果');
   const prompt = path.join(directory, 'prompt.txt'); await fs.writeFile(prompt, 'only this task\n$() is text');
   await cli('session', 'send', 'fixture', '--file', prompt);
@@ -96,6 +116,12 @@ test('documented CLI journey uses authenticated HTTPS/AgentHub and publishes a s
 });
 
 test('CLI refuses ignored options, unavailable agents, and never resends after a lost acknowledgement', async t => {
+  await assert.rejects(runCodeck(['bot', 'bind-telegram', 'review', '--telegram', '@review_bot'], {}, {
+    request: async (_c, endpoint) => {
+      assert.equal(endpoint, '/api/workstation/bots');
+      return { bots: [{ id: '1', name: 'review' }, { id: '2', name: 'review' }] };
+    },
+  }), /同名 Bot/);
   await assert.rejects(loadClientConnection({ CODECK_URL: 'http://example.com', CODECK_TOKEN: 'secret' }), /HTTPS/);
   await assert.rejects(runCodeck(['session', 'create', 'x', '--file', 'ignored'], {}), /不支持/);
   await assert.rejects(runCodeck(['session', 'send', 'shell', '--file', 'anything'], {}, { request: async () => ({ sessions: [{ name: 'shell' }] }) }), /Shell/);

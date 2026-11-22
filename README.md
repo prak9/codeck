@@ -2,6 +2,8 @@
 
 一个轻量级的服务器 Agent 桌面：既可在浏览器中管理 tmux 终端，也可用适合手机的对话界面远程操作 Codex、Claude Code 和 QoderCLI。
 
+普通与 Remote 侧栏可以用 Tasks 跟踪某件事、用 Automations 安排检查、用 Bots 回到常用助手的主会话。[工作台使用指南](docs/workstation.md)
+
 ## 启动
 
 ```bash
@@ -128,6 +130,8 @@ Remote 输入框左侧的 `＋` 支持从相册、相机或文件选择器添加
 ```bash
 npm test
 ```
+
+发送后切回、闲置恢复和会话历史归属可用 `node scripts/verify-session.mjs` 一次验收。场景、运行环境和证据范围见[会话验收](docs/session-verification.md)。
 
 Remote 浏览器回归使用真实页面和隔离的模拟 API/WebSocket，不发送到用户的 CLI。需另行准备 Playwright 和 Chromium，不修改项目依赖：
 

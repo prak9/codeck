@@ -12,6 +12,7 @@ function fixture() {
   const dialog = { open: false, showModal() { shown++; this.open = true; } };
   const details = { open: false };
   const context = vm.createContext({
+    workstation: null,
     state: { provider: 'codex', thread, sessionClosePending: false },
     isThreadActive: () => true, providerDetails: () => ({ glyph: 'C' }),
     threadExecutionState: () => 'idle', executionLabel: () => '已就绪', timeAgo: () => '',

@@ -28,8 +28,8 @@ function output(turn) {
 
 // A serialized durable inbox/outbox, not an Agent or a task scheduler.
 export class TelegramSessions {
-  constructor({ directory, ownerId, botId, api, sessions, understand, now = Date.now, webUrl, signal }) {
-    Object.assign(this, { directory, ownerId, botId, api, sessions, understand, now, webUrl, signal });
+  constructor({ directory, ownerId, botId, api, sessions, understand, binding = () => null, now = Date.now, webUrl, signal }) {
+    Object.assign(this, { directory, ownerId, botId, api, sessions, understand, binding, now, webUrl, signal });
     this.file = path.join(directory, 'sessions.json');
     this.state = { ownerId, botId, offset: 0, inbox: [], outbox: [], bindings: {}, selected: null, watches: {} };
     this.pending = null;
@@ -70,15 +70,42 @@ export class TelegramSessions {
     if (!this.pending) this.pending = this.run().finally(() => { this.pending = null; });
     return this.pending;
   }
+  async syncBinding() {
+    const fixed = this.binding();
+    if ((fixed?.key ?? null) !== (this.state.bindingKey ?? null)) {
+      // Keep Telegram's durable update offset. The inbox, replies and subscription baseline belong to one binding.
+      const t = fixed?.target;
+      const target = t && { tmuxSession: t.session, provider: t.provider, threadId: t.threadId, createdAt: t.createdAt };
+      await this.change(s => Object.assign(s, { bindingKey: fixed?.key ?? null, selected: target || null, inbox: [],
+        outbox: [], bindings: {}, clarification: null, watches: target ? { [key(target)]: { target, seen: null, interactions: [] } } : {} }));
+      this.nextScan = 0;
+      if (target) await this.watch(target);
+    }
+    return fixed;
+  }
+  requireCurrentBinding() {
+    if ((this.binding()?.key ?? null) !== (this.state.bindingKey ?? null)) throw new Error('Telegram 绑定已变化，请重新发送');
+  }
   async run() {
-    const updates = await this.api('getUpdates', { offset: this.state.offset, limit: 100, timeout: this.state.outbox.length ? 2 : 10, allowed_updates: ['message'] });
+    await this.syncBinding();
+    const waiting = () => this.state.inbox.some(e => e.delivery?.chat && !e.delivery.finished && !e.delivery.warned && this.now() - e.delivery.at < 180_000);
+    const updates = await this.api('getUpdates', { offset: this.state.offset, limit: 100, timeout: this.state.outbox.length || waiting() ? 2 : 10, allowed_updates: ['message'] });
     if (!Array.isArray(updates)) throw new Error('Invalid updates');
+    const fixed = await this.syncBinding();
     if (updates.length) await this.change(s => {
       for (const u of [...updates].sort((a, b) => a.update_id - b.update_id)) {
         if (!Number.isSafeInteger(u.update_id) || u.update_id < s.offset) continue;
         const m = u.message;
         if (m?.from?.id === this.ownerId && !m.from.is_bot && m.chat?.type === 'private' && m.chat.id === this.ownerId && Number.isSafeInteger(m.message_id)) {
-          s.inbox.push({ id: u.update_id, messageId: m.message_id, text: m.text?.trim() || '', replyTo: m.reply_to_message?.message_id, status: 'received' });
+          if (fixed?.target && Number.isSafeInteger(m.date) && m.date < Math.ceil(fixed.since / 1000)) {
+            this.queue(s, 'old:' + u.update_id, '这条消息发于绑定切换前后，请在当前对话重新发送。', null, m.message_id);
+          } else {
+            const quoted = m.reply_to_message;
+            // Reports delivered by the same Bot outside Codeck may also start a conversation.
+            const sameBotPost = fixed?.target && quoted?.from?.id === this.botId && quoted.date >= Math.ceil(fixed.since / 1000);
+            s.inbox.push({ id: u.update_id, messageId: m.message_id, text: m.text?.trim() || '', replyTo: quoted?.message_id,
+              ...(sameBotPost && !s.bindings[quoted.message_id] && { quotedText: quoted.text || quoted.caption }), status: 'received' });
+          }
         }
         s.offset = u.update_id + 1;
       }
@@ -86,13 +113,13 @@ export class TelegramSessions {
     // A crash after journaling a mutation must never replay it.
     for (const e of this.state.inbox.filter(e => e.status === 'dispatching')) await this.notice(e, `操作结果未确认，请检查 ${e.action?.name || e.target?.tmuxSession || '原会话'}；不会自动重发或重复创建。`, e.target);
     for (const e of this.state.inbox.filter(e => e.status === 'received')) { this.signal?.throwIfAborted(); await this.dispatch(e); }
-    if (this.now() >= this.nextScan) { await this.scan(); this.nextScan = this.now() + 10_000; }
+    if (this.now() >= this.nextScan) { await this.scan(); this.nextScan = this.now() + (waiting() ? 2_000 : 10_000); }
     await this.flush();
     if (this.state.inbox.length > 200) await this.change(s => { s.inbox = s.inbox.filter((e, i) => e.status !== 'done' || i >= s.inbox.length - 200); });
   }
   async resolve(entry) {
     const binding = entry.replyTo != null ? this.state.bindings[entry.replyTo] : null;
-    if (entry.replyTo != null && !binding?.target) throw new Error('这条回复无法关联原会话，请用 /use 重新选择后发送新消息。');
+    if (entry.replyTo != null && !binding?.target && !(entry.quotedText && this.binding()?.target)) throw new Error('这条回复无法关联原会话，请用 /use 重新选择后发送新消息。');
     const target = binding?.target || this.state.selected;
     if (!target) throw new Error('请先用 /sessions 查看，再用 /use 会话名 选择。');
     const live = await this.liveTarget(target);
@@ -102,14 +129,16 @@ export class TelegramSessions {
     const sessions = await this.sessions.list();
     const live = sessionTarget(sessions, target.tmuxSession);
     const session = sessions.find(s => s.name === target.tmuxSession);
-    if (target.threadId ? key(live) !== key(target) : !target.paneId || session.paneId !== target.paneId || live.provider !== target.provider) {
+    this.requireCurrentBinding();
+    if ((target.createdAt != null && session.createdAt !== target.createdAt) ||
+      (target.threadId ? key(live) !== key(target) : !target.paneId || session.paneId !== target.paneId || live.provider !== target.provider)) {
       throw new Error('会话身份已变化，请重新选择；没有发送。');
     }
-    return live;
+    return target.createdAt == null ? live : { ...live, createdAt: target.createdAt };
   }
   async watch(target) {
     let snapshot;
-    try { snapshot = await this.sessions.read(target); } catch { /* Baseline when history becomes available. */ }
+    try { snapshot = await this.sessions.read(target.createdAt == null ? target : await this.liveTarget(target)); } catch { /* Baseline when history becomes available. */ }
     const ready = snapshot?.thread && !snapshot.thread.historyLoading && !snapshot.thread.historyError;
     await this.change(s => { s.watches[key(target)] = { target, seen: ready ? (snapshot.thread.turns || []).filter(t => terminal(t.status)).map(t => t.id) : null, interactions: [] }; });
   }
@@ -140,6 +169,7 @@ export class TelegramSessions {
     if (a.kind === 'create') {
       await this.change(s => { s.inbox.find(e => e.id === entry.id).status = 'dispatching'; });
       this.signal?.throwIfAborted();
+      this.requireCurrentBinding();
       try {
         const target = await this.sessions.create(a);
         await this.change(s => {
@@ -162,6 +192,12 @@ export class TelegramSessions {
   async dispatch(entry) {
     let text = entry.text;
     try {
+      this.requireCurrentBinding();
+      const fixed = this.binding();
+      if (fixed && !fixed.target) return await this.notice(entry, '此 Telegram 机器人尚未绑定，请在工作台的「管理 Bot → Telegram」中选择它。');
+      if (fixed && (!text || /^\/(?:help|start|sessions|use|watch|unwatch)(?:\s|$)/.test(text))) {
+        return await this.notice(entry, `当前绑定「${fixed.name}」· ${fixed.target.session}。直接发消息，或使用 /status、/stop。回复待确认通知即可处理。`, this.state.selected);
+      }
       if (entry.action) return await this.dispatchAction(entry);
       if (this.state.clarification && /^(取消|算了|cancel)$/i.test(text)) {
         await this.change(s => { s.clarification = null; }); return this.notice(entry, '已取消这次规划，没有执行任务。');
@@ -173,7 +209,7 @@ export class TelegramSessions {
           else if (/^(拒绝|不同意|不可以|no)$/i.test(text)) text = '/deny';
         } else text = `/answer ${text}`;
       }
-      if (this.understand && text && !text.startsWith('/') && !interaction && !entry.direct) return await this.route(entry);
+      if (!fixed && this.understand && text && !text.startsWith('/') && !interaction && !entry.direct) return await this.route(entry);
       if (!text || ['/start', '/help'].includes(text)) return await this.notice(entry, HELP);
       if (text === '/sessions') {
         const list = (await this.sessions.list()).filter(s => ['codex', 'claude', 'qodercli'].includes(s.agent?.kind));
@@ -197,9 +233,10 @@ export class TelegramSessions {
         const result = await this.sessions.read(target);
         if (result.thread?.historyLoading || result.thread?.historyError) return await this.notice(entry, '历史尚未就绪，请稍后再查。', target);
         const turn = result.thread?.turns?.at(-1);
-        return await this.notice(entry, `[${target.tmuxSession}] ${executionLabel(threadExecutionState(result.thread))} · ${turnStatusLabel(turn?.status)}\n${output(turn) || '暂无文本输出。'}`, target);
+        return await this.notice(entry, `${fixed ? '' : '[' + target.tmuxSession + '] '}${executionLabel(threadExecutionState(result.thread))} · ${turnStatusLabel(turn?.status)}\n${output(turn) || '暂无文本输出。'}`, target);
       }
       let kind = 'send', args = { text: `来自 Telegram（消息 ${entry.id}）\n${text}` };
+      if (entry.quotedText) args.text += '\n\n引用的消息：\n' + entry.quotedText;
       if (text === '/stop') { kind = 'stop'; args = {}; }
       else if (/^\/(approve|deny)$/.test(text)) {
         if (!nativeInteraction || nativeInteraction.kind !== 'approval') throw new Error('请直接回复一条待审批通知，使用 /approve 或 /deny。');
@@ -207,24 +244,50 @@ export class TelegramSessions {
       } else if (text.startsWith('/answer ')) {
         if (!nativeInteraction || nativeInteraction.kind !== 'question') throw new Error('请直接回复一条待回答通知，使用 /answer 选项或答案。');
         kind = 'answer'; args = { ...nativeInteraction, answer: text.slice(8).trim() };
-      } else if (text.startsWith('/')) throw new Error(HELP);
+      } else if (text.startsWith('/')) throw new Error(fixed ? '可用命令：/status、/stop。审批或提问请回复原通知。' : HELP);
       else if (nativeInteraction) throw new Error('这是原生交互通知，请按通知中的 /answer、/approve 或 /deny 指令回复。');
-      await this.change(s => Object.assign(s.inbox.find(e => e.id === entry.id), { status: 'dispatching', target, kind, args }));
+      const chatSend = fixed && kind === 'send';
+      await this.change(s => Object.assign(s.inbox.find(e => e.id === entry.id), { status: 'dispatching', target, kind, args,
+        ...(chatSend && { delivery: { text: args.text, at: this.now(), confirmed: false, chat: true } }) }));
       this.signal?.throwIfAborted();
+      this.requireCurrentBinding();
       try {
+        if (chatSend) this.typing();
         const result = await this.sessions.act(kind, target, { ...args, commandId: `telegram-${this.botId}-${entry.id}` });
         const status = result?.submissionStatus;
+        if (chatSend) {
+          await this.change(s => { s.inbox.find(e => e.id === entry.id).status = 'done'; });
+          this.nextScan = 0;
+          return;
+        }
+        if (fixed && ['answer', 'approve'].includes(kind)) {
+          await this.change(s => { s.inbox.find(e => e.id === entry.id).status = 'done'; });
+          this.nextScan = 0;
+          return;
+        }
         await this.notice(entry, kind === 'send'
           ? `[${target.tmuxSession}] ${status === 'submitted' ? '已尝试发送，等待会话回执；不要重复发送。' : '发送未确认，请检查终端；不会自动重发。'}`
-          : `[${target.tmuxSession}] 操作已处理。`, target);
+          : fixed && kind === 'stop' ? '已请求停止。' : `[${target.tmuxSession}] 操作已处理。`, target);
         if (kind === 'send') await this.change(s => { s.inbox.find(e => e.id === entry.id).delivery = { text: args.text, at: this.now(), confirmed: false }; });
         this.nextScan = 0;
-      } catch { await this.notice(entry, `[${target.tmuxSession}] 操作结果未确认，请检查原会话；不会自动重发。`, target); }
+      } catch (error) {
+        if (chatSend && !error.notStarted) {
+          // A transport failure can follow a successful submit. Reconcile the journaled message before warning.
+          await this.change(s => { s.inbox.find(e => e.id === entry.id).status = 'done'; });
+          this.nextScan = 0;
+        } else await this.notice(entry, fixed ? '这次操作未能确认。可以用 /status 查看当前情况。' : `[${target.tmuxSession}] 操作结果未确认，请检查原会话；不会自动重发。`, target);
+      }
     } catch (error) {
       // Read/validation failures cannot have injected a mutation.
       if (this.state.inbox.find(e => e.id === entry.id)?.status === 'dispatching') throw error;
       await this.notice(entry, error.message || '操作失败。');
     }
+  }
+  typing() {
+    if (this.typingRequest || this.now() < (this.nextTyping || 0)) return;
+    this.nextTyping = this.now() + 4000;
+    // Telegram clears this transient indicator automatically. Its failure must not change delivery.
+    this.typingRequest = this.api('sendChatAction', { chat_id: this.ownerId, action: 'typing' }).catch(() => {}).finally(() => { this.typingRequest = null; });
   }
   async scan() {
     for (const watch of Object.values(this.state.watches)) {
@@ -253,12 +316,14 @@ export class TelegramSessions {
         continue;
       }
       const thread = snapshot?.thread;
+      const fixed = this.binding()?.target;
+      this.requireCurrentBinding();
       if (!thread || thread.historyLoading || thread.historyError) continue;
       await this.change(s => {
         const w = s.watches[key(target)]; if (!w) return;
         if (w.seen === null) w.seen = (thread.turns || []).filter(t => terminal(t.status)).map(t => t.id);
         for (const turn of thread.turns || []) {
-          if (!terminal(turn.status) || w.seen.includes(turn.id)) continue;
+          if (fixed || !terminal(turn.status) || w.seen.includes(turn.id)) continue;
           const label = turnStatusLabel(turn.status);
           this.queue(s, `${key(target)}:${turn.id}:end`, `[${target.tmuxSession}] ${label}\n${output(turn) || '暂无文本输出，请查看终端。'}`, target);
           w.seen.push(turn.id);
@@ -267,26 +332,60 @@ export class TelegramSessions {
         for (const interaction of snapshot.interactions || []) {
           const id = `${interaction.kind}:${interaction.id}`;
           if (w.interactions.includes(id)) continue;
-          this.queue(s, `${key(target)}:${id}`, `[${target.tmuxSession}] 待确认\n${interaction.text}`, target, null, interaction);
+          const prompt = fixed && interaction.actionable
+            ? [interaction.label, interaction.kind === 'approval' ? '回复“同意”或“拒绝”。' : interaction.options?.join(' / ')].filter(Boolean).join('\n')
+            : interaction.text;
+          this.queue(s, `${key(target)}:${id}`, fixed ? prompt : `[${target.tmuxSession}] 待确认\n${interaction.text}`, target, null, interaction);
           w.interactions.push(id);
         }
         w.interactions = w.interactions.slice(-100);
         for (const e of s.inbox) {
-          if (!e.delivery || e.delivery.confirmed || !e.target || key(e.target) !== key(target)) continue;
+          if (!e.delivery || !e.target || key(e.target) !== key(target)) continue;
+          if (fixed) {
+            const d = e.delivery;
+            if (!d.chat || d.finished) continue;
+            const turn = thread.turns?.find(t => !t.deliveryOnly && !t.localOnly && ((d.turnId && t.id === d.turnId) ||
+              t.items?.some(i => i.type === 'userMessage' && !i.delivery && !String(i.id).startsWith('delivery:') && userMessageText(i) === d.text)));
+            if (turn) {
+              d.turnId = turn.id; d.confirmed = true;
+              if (terminal(turn.status)) {
+                const final = output({ items: turn.items?.filter(i => !i.phase || i.phase === 'final_answer') }).trim();
+                if (final) {
+                  this.queue(s, `${key(target)}:${turn.id}:end`, final, target);
+                  d.finished = true;
+                } else if (['failed', 'errored'].includes(turn.status)) {
+                  this.queue(s, 'error:' + e.id, '处理这条消息时出错了。可以发一条新消息重试。', target, e.messageId);
+                  d.finished = true;
+                }
+              }
+            }
+            if (!d.finished && !d.warned && (!turn || !terminal(turn.status)) && this.now() - d.at < 180_000) this.typing();
+            continue;
+          }
+          if (e.delivery.confirmed) continue;
           const received = thread.turns?.some(t => t.items?.some(i => i.type === 'userMessage' && userMessageText(i) === e.delivery.text && !i.delivery));
           if (received) { e.delivery.confirmed = true; this.queue(s, `receipt:${e.id}`, `[${target.tmuxSession}] 已确认收到消息。`, target, e.messageId); }
         }
       });
     }
+    const overdue = this.state.inbox.filter(e => e.delivery?.chat && !e.delivery.confirmed && !e.delivery.warned && this.now() - e.delivery.at >= 60_000);
+    if (overdue.length) await this.change(s => {
+      for (const entry of overdue) {
+        s.inbox.find(e => e.id === entry.id).delivery.warned = true;
+        this.queue(s, 'unconfirmed:' + entry.id, '暂时无法确认是否收到这条消息。可以用 /status 查看。', entry.target, entry.messageId);
+      }
+    });
   }
   async flush() {
     while (this.state.outbox.length) {
+      this.requireCurrentBinding();
       const m = this.state.outbox[0];
       const href = this.webUrl && m.target ? new URL(`/remote.html?session=${encodeURIComponent(m.target.tmuxSession)}`, this.webUrl).href : this.webUrl;
       const result = await this.api('sendMessage', { chat_id: this.ownerId, text: m.chunks[m.index],
         ...(m.replyTo ? { reply_parameters: { message_id: m.replyTo, allow_sending_without_reply: true } } : {}),
         ...(m.index ? { disable_notification: true } : {}),
-        ...(href ? { reply_markup: { inline_keyboard: [[{ text: '打开会话', url: href }]] } } : {}),
+        ...(this.binding()?.target && m.interaction?.actionable && m.index === m.chunks.length - 1 ? { reply_markup: { force_reply: true } } :
+          href && (!this.binding()?.target || m.interaction?.actionable === false) ? { reply_markup: { inline_keyboard: [[{ text: '打开会话', url: href }]] } } : {}),
       });
       await this.change(s => {
         if (Number.isSafeInteger(result.message_id)) s.bindings[result.message_id] = { target: m.target, interaction: m.interaction };

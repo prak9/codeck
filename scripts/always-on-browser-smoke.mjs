@@ -9,6 +9,15 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import { WebSocketServer } from 'ws';
+import { handleTerminalConnection } from '../src/terminal-connection.js';
+import { WorkstationStore } from '../src/workstation-store.js';
+import { mountWorkstationRoutes } from '../src/workstation-routes.js';
+import { mountWorkstationActions } from '../src/workstation-actions.js';
+import { createConditionalTasks } from '../src/conditional-tasks.js';
+import { createWorkstationAutomations } from '../src/workstation-automations.js';
+import { createTelegramSessionAdapter } from '../src/telegram-session-adapter.js';
+import { createWorkfiles, mountWorkfiles, workfileDownloadAuthorized } from '../src/workfiles.js';
 import { AlwaysOnStore } from '../src/always-on-store.js';
 import { createAlwaysOnRuntime } from '../src/always-on-runtime.js';
 import { createMemoryStore } from '../src/always-on-memory.js';
@@ -45,16 +54,35 @@ const app = express();
 app.use(express.json());
 app.use('/api', (req, _res, next) => {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/, '');
-  req.auth = { owner: token === 'owner-token', canWrite: token === 'owner-token' };
+  req.auth = { owner: token === 'owner-token' || workfileDownloadAuthorized(req), canWrite: token === 'owner-token' };
   next();
 });
 const ownerOnly = (req, res, next) => (req.auth.owner ? next() : res.status(403).json({ error: 'forbidden' }));
-app.get('/api/sessions', (req, res) => {
-  res.json({
-    sessions: [{ name: 'demo', windows: 1, attached: 0, createdAt: Date.now(), activityAt: Date.now(), status: 'done', executionState: 'idle', agent: { kind: 'codex', id: 'thr-demo', name: 'Demo' } }],
-    capabilities: { flexibleSize: true, canManage: req.auth.owner, canWrite: req.auth.canWrite, canSwitchSession: req.auth.owner, terminalSubmit: true },
-  });
-});
+const session = { name: 'demo', cwd: dir, windows: 1, attached: 0, createdAt: Date.now(), activityAt: Date.now(), status: 'done',
+  executionState: 'idle', agent: { kind: 'codex', id: 'thr-demo', name: 'Demo', cwd: dir } };
+const sessions = async () => [session];
+app.get('/api/sessions', (req, res) => res.json({ sessions: [session], capabilities: { flexibleSize: true, canManage: req.auth.owner,
+  canWrite: req.auth.canWrite, canSwitchSession: req.auth.owner, terminalSubmit: true } }));
+const tracking = new WorkstationStore(store.db);
+const workfiles = createWorkfiles(path.join(dir, 'files'));
+await fs.writeFile(path.join(dir, 'filing.txt'), 'Q3-v1');
+await workfiles.put(session, { key: 'filing', title: '季报对照', kind: 'result', revision: 'v1', path: path.join(dir, 'filing.txt') });
+mountWorkfiles(app, { store: workfiles, pages: { list: async () => [] }, sessions, ownerOnly });
+mountWorkstationRoutes(app, { store: tracking, workfiles, sessions, ownerOnly,
+  telegramChannels: () => [{ id: '12', username: 'demo_research_bot', status: 'connected' }] });
+let question, answers = 0, inputs = 0, agentConnections = 0;
+const interactions = createTelegramSessionAdapter({ list: sessions, pendingRequests: () => question ? [question] : [], rpc: async (_c, msg) => {
+  assert.equal(msg.type, 'resolveInteraction'); assert.equal(msg.threadId, session.agent.id); assert.equal(msg.requestId, question.request.id);
+  assert.deepEqual(msg.answers, { basis: ['单季度'] }); question = null; answers++;
+} });
+const automations = createWorkstationAutomations({ store, tracking, listSessions: sessions,
+  wake: async () => {}, create: async () => { inputs++; throw Error('unexpected session launch'); },
+  send: async () => { inputs++; throw Error('unexpected agent input'); } });
+const router = express.Router();
+const conditionalTasks = await createConditionalTasks({ directory: path.join(dir, 'conditions'), precheck: async () => null,
+  idle: async () => true, send: async () => { inputs++; throw Error('unexpected condition dispatch'); } });
+mountWorkstationActions(router, { ownerOnly, interactions, automations, conditionalTasks });
+app.use('/api/workstation', router);
 mountAlwaysOnRoutes(app, { store, runtime, memory, outboxDispatcher, butler, approvalGate, credentialProxy, ownerOnly });
 app.use('/vendor', express.static(path.resolve('node_modules/@xterm/xterm/css')));
 app.use('/vendor/xterm', express.static(path.resolve('node_modules/@xterm/xterm/lib')));
@@ -66,6 +94,31 @@ app.use('/fonts/noto-sans-sc', express.static(path.resolve('node_modules/@fontso
 app.use(express.static(path.resolve('public')));
 
 const server = http.createServer(app);
+const sockets = new WebSocketServer({ server });
+sockets.on('connection', (ws, req) => {
+  const url = new URL(req.url, 'http://fixture');
+  if (url.pathname === '/ws') {
+    return void handleTerminalConnection(ws, 'demo', { width: 100, height: 30 }, {
+      canSwitchSession: true, outputFlowControl: true, outputFlowId: url.searchParams.get('flowId'), outputProtocol: 1,
+      getLinkedWindowSessions: async () => [], preferLatestClientSize: async () => true, clampViewport: (x, y) => [x, y],
+      submitTerminalInput: async () => { inputs++; }, writeTerminalInput: async () => { inputs++; },
+      createTerminal: () => {
+        let timer;
+        return { onData(fn) { timer = setTimeout(() => fn('测试终端\r\n$ '), 20); }, onExit() {}, write() {}, resize() {}, kill() { clearTimeout(timer); } };
+      },
+    });
+  }
+  ws.agentTransport = true; agentConnections++;
+  ws.send(JSON.stringify({ type: 'ready', hostname: 'fixture', protocol: { version: 1, epoch: 'test' },
+    providers: [{ id: 'codex', capabilities: {} }] }));
+  ws.on('message', raw => {
+    const m = JSON.parse(raw);
+    if (m.type === 'sendMessage' || m.type === 'sendSessionMessage') inputs++;
+    const result = m.type === 'openThread' ? { thread: { id: 'thr-demo', provider: 'codex', turns: [{ id: 'turn-1', status: 'completed',
+      items: [{ type: 'agentMessage', id: 'msg-1', text: '上次季度研究已经整理。' }] }] } } : {};
+    if (m.id != null) ws.send(JSON.stringify({ id: m.id, ok: true, result }));
+  });
+});
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const baseUrl = `http://127.0.0.1:${server.address().port}`;
 const executablePath = process.env.CODECK_CHROMIUM_BIN || undefined;
@@ -77,16 +130,30 @@ try {
     for (const vp of [{ name: 'mobile-390', width: 390, height: 844 }, { name: 'desktop-1365', width: 1365, height: 900 }]) {
       const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
       await context.addInitScript(() => {
-        localStorage.setItem('codeck-token', 'owner-token');
-        sessionStorage.setItem('codeck-token', 'owner-token');
+        const credential = location.search.includes('readonly-test') ? 'share-token' : 'owner-token';
+        localStorage.setItem('codeck-token', credential);
+        localStorage.setItem('codeck-local-input', '1');
+        sessionStorage.setItem('codeck-token', credential);
       });
       const page = await context.newPage();
       const pageErrors = [];
       page.on('pageerror', err => pageErrors.push(err.message));
 
-      await page.goto(`${baseUrl}${mode.path}`, { waitUntil: 'domcontentloaded' });
+      page.setDefaultTimeout(6500);
+      const titles = { normal: ['核对季度指引', '复核营收与财报口径'], remote: ['核对估值表的来源', '更新季报对照表'] };
+      async function capture(stage) {
+        if (!process.env.CODECK_SCREENSHOT_DIR) return;
+        await fs.mkdir(process.env.CODECK_SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.CODECK_SCREENSHOT_DIR, [mode.name, vp.width, stage].join('-') + '.png') });
+      }
+      const title = titles[mode.name][vp.width === 390 ? 0 : 1];
+      question = { provider: 'codex', request: { id: title, method: 'item/tool/requestUserInput', params: {
+        threadId: 'thr-demo', questions: [{ id: 'basis', question: '按哪个口径比较？', options: [{ label: '单季度' }] }] } } };
+      await page.goto(`${baseUrl}${mode.path}?session=demo`, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(400);
 
+      const draft = page.locator(mode.name === 'normal' ? '#terminalVoiceDraft' : '#composerInput');
+      await draft.fill('尚未发送的研究草稿');
       // Open drawer on mobile if needed
       if (vp.width === 390) {
         const menuBtn = page.locator(mode.name === 'normal' ? '#menuButton' : '#drawerButton');
@@ -94,7 +161,161 @@ try {
         await page.waitForTimeout(200);
       }
 
-      const btn = page.locator('#alwaysOnButton');
+      const panel = page.locator('.station-panel');
+      const backToSession = async () => {
+        for (let i = 0; i < 12 && await panel.isVisible(); i++) {
+          const moved = page.evaluate(() => new Promise(resolve => window.addEventListener('popstate', () => resolve(true), { once: true })));
+          await panel.locator('.station-heading').getByRole('button', { name: /^返回(会话)?$/ }).click();
+          await moved;
+        }
+        await panel.waitFor({ state: 'hidden' });
+      };
+      const nav = async id => {
+        if (vp.width === 390) {
+          const menu = page.locator(mode.name === 'normal' ? '#menuButton' : '#drawerButton');
+          const stationMenu = panel.locator('#stationMenu');
+          if (await panel.isVisible() && await stationMenu.isVisible()) await stationMenu.click();
+          else if (await menu.getAttribute('aria-expanded') !== 'true') await menu.click();
+        }
+        await page.locator(id).click();
+      };
+      await nav('#tasksButton');
+      await panel.getByRole('button', { name: '单季度', exact: true }).waitFor();
+      await capture('tasks');
+      const before = answers;
+      await panel.getByRole('button', { name: '单季度', exact: true }).click();
+      await page.waitForFunction(() => ![...document.querySelectorAll('.station-panel button')].some(b => b.textContent === '单季度'));
+      assert.equal(answers, before + 1);
+      await panel.getByRole('button', { name: '从会话加入任务' }).click();
+      await panel.getByLabel('任务标题').fill(title);
+      await panel.getByRole('button', { name: '加入 Tasks', exact: true }).click();
+      await panel.getByRole('heading', { name: title, exact: true }).waitFor();
+      await panel.getByRole('button', { name: '关联成果版本' }).click();
+      await panel.getByRole('button', { name: '关联此版本' }).click();
+      const [download] = await Promise.all([page.waitForEvent('download'), panel.getByRole('button', { name: '下载此版本' }).click()]);
+      assert.equal(await fs.readFile(await download.path(), 'utf8'), 'Q3-v1');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, title);
+      await capture('result');
+      await nav('#bindBotButton');
+      // Reusing the same home identity binds back to the existing Bot on every viewport.
+      await panel.getByLabel('Bot 名称').fill('投研助手');
+      await panel.getByLabel('职责').fill('季报核验');
+      const homePicker = panel.getByLabel('主会话', { exact: true });
+      assert.equal(await homePicker.inputValue(), '', '创建 Bot 必须显式选择主会话');
+      await homePicker.selectOption({ label: 'demo' });
+      await panel.getByRole('button', { name: '绑定 Bot', exact: true }).click();
+      await panel.getByRole('heading', { name: '投研助手', exact: true }).waitFor();
+      await panel.locator('summary').filter({ hasText: /^Telegram/ }).click();
+      await panel.getByLabel('Telegram 机器人').selectOption('12');
+      await panel.getByRole('button', { name: '绑定 Telegram', exact: true }).click();
+      await panel.getByText('@demo_research_bot · 已连接', { exact: true }).waitFor();
+      await panel.locator('summary').filter({ hasText: /^Telegram/ }).click();
+      await nav('#stationBots .station-twist');
+      const manage = page.locator('#stationBots').getByRole('button', { name: '管理 Bot' });
+      await manage.waitFor();
+      const hierarchy = await page.evaluate(() => {
+        const controls = ['#botsToggle', '.station-bot', '.station-child[data-focus-key^="manage:"]'].map(s => document.querySelector(s));
+        return controls.map(button => {
+          const text = [...button.childNodes].find(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+          const range = document.createRange(); range.selectNodeContents(text);
+          return { x: range.getBoundingClientRect().x, height: button.getBoundingClientRect().height };
+        });
+      });
+      assert.ok(hierarchy.every((row, i) => !i || row.x >= hierarchy[i - 1].x + 12), JSON.stringify(hierarchy));
+      if (vp.width === 390) assert.ok(hierarchy.every(row => row.height >= 44));
+      await capture('sidebar');
+      await manage.focus();
+      await page.keyboard.press('Enter');
+      assert.equal(await page.locator('#tasksButton').getAttribute('aria-current'), null);
+      assert.equal(await manage.getAttribute('aria-current'), 'page');
+      await panel.locator('summary').getByText('@demo_research_bot · 已连接', { exact: true }).waitFor();
+      await capture('bot');
+      await panel.locator('summary').filter({ hasText: /^Telegram/ }).click();
+      await panel.getByRole('button', { name: '解除 Telegram 绑定' }).click();
+      await panel.getByLabel('Telegram 机器人').waitFor();
+      await nav('#alwaysOnButton');
+      await panel.getByRole('button', { name: '新建规则' }).click();
+      await panel.getByLabel('执行事项').fill(title);
+      await panel.getByLabel('触发时间').selectOption('weekdays');
+      await panel.getByLabel('时区').fill('Asia/Shanghai');
+      await panel.getByRole('button', { name: '试算', exact: true }).click();
+      await panel.getByText(/新建独立任务会话/).waitFor();
+      await capture('rule');
+      assert.equal(automations.list().filter(t => t.reason === title).length, 0);
+      if (mode.name === 'normal' && vp.width === 390) {
+        // The database saved the rule, but the client lost the response. Retry the unchanged form.
+        const saveUrl = '**/api/workstation/automations';
+        await page.route(saveUrl, async route => {
+          assert.equal(route.request().method(), 'POST');
+          const saved = await route.fetch();
+          assert.ok(saved.ok());
+          await saved.dispose();
+          await route.abort('failed');
+        }, { times: 1 });
+        const lost = page.waitForEvent('requestfailed', r => r.url().endsWith('/api/workstation/automations'));
+        await panel.getByRole('button', { name: '保存规则' }).click();
+        await lost;
+        assert.equal(automations.list().filter(t => t.reason === title).length, 1);
+      }
+      await panel.getByRole('button', { name: '保存规则' }).click();
+      const rule = panel.locator('article').filter({ has: page.getByText(title, { exact: true }) });
+      await rule.getByRole('button', { name: '暂停' }).click();
+      assert.equal(automations.list().filter(t => t.reason === title).length, 1);
+      await rule.getByText('已暂停', { exact: true }).waitFor();
+      await rule.getByRole('button', { name: '运行记录' }).click();
+      await rule.getByText('暂无运行记录').waitFor();
+      assert.equal(inputs, 0);
+      // Drop the agent transport while reading the rule. Navigation and drafts must survive reconnect.
+      const previousConnections = agentConnections;
+      for (const ws of sockets.clients) if (ws.agentTransport) ws.close(1012);
+      const deadline = Date.now() + 8000;
+      while (agentConnections === previousConnections && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
+      assert.ok(agentConnections > previousConnections, 'agent feed reconnected');
+      await rule.getByText('已暂停', { exact: true }).waitFor();
+      await rule.getByRole('button', { name: '编辑', exact: true }).click();
+      assert.equal(await panel.getByLabel('执行事项').inputValue(), title);
+      assert.equal(await panel.getByLabel('触发时间').inputValue(), 'weekdays');
+      await panel.getByLabel('执行事项').fill(title + '（修订）');
+      await panel.getByLabel('触发时间').selectOption('daily');
+      await panel.getByLabel('执行时间', { exact: true }).fill('18:45');
+      await capture('edit-automation');
+      await panel.getByRole('button', { name: '保存规则' }).click();
+      const changed = panel.locator('article').filter({ has: page.getByText(title + '（修订）', { exact: true }) });
+      await changed.getByText('已暂停', { exact: true }).waitFor();
+      await changed.getByText(/每天 18:45/).waitFor();
+      await changed.getByText('更多操作').click();
+      page.once('dialog', dialog => dialog.dismiss());
+      await changed.getByRole('button', { name: '删除', exact: true }).click();
+      await changed.waitFor();
+      page.once('dialog', dialog => dialog.accept());
+      await changed.getByRole('button', { name: '删除', exact: true }).click();
+      await changed.waitFor({ state: 'detached' });
+      if (mode.name === 'remote' && vp.width === 390) {
+        await panel.getByText('更多', { exact: true }).click();
+        await panel.getByRole('button', { name: '新建条件规则' }).click();
+        await panel.getByLabel('执行事项').fill('检查原会话');
+        await panel.getByLabel('执行会话').selectOption('demo');
+        await panel.getByLabel('条件检查命令及参数').fill('["/bin/true"]');
+        await panel.getByRole('button', { name: '保存规则' }).click();
+        const condition = panel.locator('article').filter({ has: page.getByText('检查原会话', { exact: true }) });
+        await condition.getByRole('button', { name: '立即运行' }).click();
+        await condition.getByText('手动检查 · 无变化').waitFor();
+        await condition.getByRole('button', { name: '编辑' }).click();
+        assert.equal(await panel.getByLabel('间隔（分钟）').inputValue(), '30');
+        await panel.getByLabel('间隔（分钟）').fill('5');
+        await panel.getByRole('button', { name: '保存规则' }).click();
+        await condition.getByText(/每 5 分钟/).waitFor();
+        await condition.getByRole('button', { name: '运行记录' }).click();
+        assert.equal((await conditionalTasks.list())[0].history.length, 1);
+        await condition.getByText('更多操作').click();
+        page.once('dialog', d => d.accept());
+        await condition.getByRole('button', { name: '删除', exact: true }).click();
+        await condition.waitFor({ state: 'detached' });
+      }
+
+      assert.equal(inputs, 0);
+      await nav('#tasksButton');
+      const btn = panel.getByRole('button', { name: '审批与设置' });
       await btn.waitFor({ state: 'visible', timeout: 5000 });
       await btn.click();
 
@@ -117,6 +338,35 @@ try {
       await dialog.locator('[data-close]').click();
       await dialog.waitFor({ state: 'hidden', timeout: 3000 });
 
+      await backToSession();
+      assert.equal(await draft.inputValue(), '尚未发送的研究草稿');
+      assert.equal(inputs, 0);
+      if (mode.name === 'remote') {
+        await page.locator('[data-turn-id="turn-1"]').getByRole('button', { name: '加入 Tasks' }).click();
+        await panel.getByLabel('任务标题').fill('核对原消息');
+        await panel.getByRole('button', { name: '加入 Tasks', exact: true }).click();
+        await panel.getByRole('button', { name: '打开来源会话' }).click();
+        await panel.waitFor({ state: 'hidden' });
+        assert.equal(tracking.overview().tasks.filter(t => t.anchor === 'turn:turn-1').length, 1);
+        assert.equal(await draft.inputValue(), '尚未发送的研究草稿');
+      }
+      await nav('#historySearchButton');
+      const historySearch = page.getByRole('dialog', { name: '搜索历史对话' });
+      await historySearch.getByLabel('对话内容').waitFor();
+      await historySearch.getByRole('button', { name: '关闭历史搜索' }).click();
+      await historySearch.waitFor({ state: 'hidden' });
+      await page.goto(baseUrl + mode.path + '?workstation=legacy');
+      if (vp.width === 390) await page.locator(mode.name === 'normal' ? '#menuButton' : '#drawerButton').click();
+      await page.locator('#legacyStationButton').waitFor({ state: 'visible' });
+      assert.equal(await page.locator('#workstationNav').isVisible(), false);
+      for (const path of ['/pending', '', '/automations']) {
+        const denied = await context.request.get(baseUrl + '/api/workstation' + path, { headers: { authorization: 'Bearer share-token' } });
+        assert.equal(denied.status(), 403);
+      }
+      // A shared terminal must never reveal owner task or bot names, even with legacy navigation requested.
+      await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname === '/api/sessions'), page.goto(baseUrl + mode.path + '?workstation=legacy&readonly-test')]);
+      assert.equal(await page.locator('#workstationNav').isVisible(), false);
+      assert.equal(await page.locator('#legacyStationButton').isVisible(), false);
       assert.equal(pageErrors.length, 0, `${mode.name}/${vp.name} pageErrors: ${pageErrors.join('; ')}`);
       checks.push({ mode: mode.name, viewport: vp.name, ok: true });
       await context.close();
@@ -125,6 +375,8 @@ try {
   console.log(JSON.stringify({ ok: true, checks }, null, 2));
 } finally {
   await browser.close();
+  for (const ws of sockets.clients) ws.terminate();
+  sockets.close();
   runtime.close();
   store.close();
   await new Promise(resolve => server.close(resolve));

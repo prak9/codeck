@@ -40,7 +40,7 @@ export async function createConditionalTasks({ directory, send, idle, precheck =
     try { await fs.writeFile(temp, JSON.stringify(next), { mode: 0o600 }); await fs.rename(temp, file); tasks = next; }
     finally { await fs.rm(temp, { force: true }); }
   }
-  async function run() {
+  async function run(onlyId = null, requestId = null) {
     const reserved = new Set();
     for (const task of Object.values(tasks)) {
       if (!['accepted', 'dispatching', 'unknown'].includes(task.last?.status)) continue;
@@ -49,11 +49,15 @@ export async function createConditionalTasks({ directory, send, idle, precheck =
         try { finished = await settled(task, task.last); } catch { /* Unknown remains reserved. */ }
       }
       if (finished) {
-        const next = structuredClone(tasks); next[task.id].last.status = 'finished'; await save(next);
+        const next = structuredClone(tasks), current = next[task.id];
+        current.last.status = 'finished';
+        const record = current.history?.findLast(row => row.commandId === task.last.commandId);
+        if (record) record.status = 'finished';
+        await save(next);
       } else reserved.add(JSON.stringify([task.provider, task.threadId, task.session]));
     }
     for (const task of Object.values(tasks)) {
-      if (!task.enabled || task.nextAt > now() || ['dispatching', 'unknown'].includes(task.last?.status)) continue;
+      if (!task.enabled || (onlyId ? task.id !== onlyId : task.nextAt > now()) || ['dispatching', 'unknown'].includes(task.last?.status)) continue;
       const targetKey = JSON.stringify([task.provider, task.threadId, task.session]);
       if (reserved.has(targetKey)) continue;
       const next = structuredClone(tasks), current = next[task.id];
@@ -65,7 +69,7 @@ export async function createConditionalTasks({ directory, send, idle, precheck =
         else if (!await idle(task)) current.last = { status: 'busy', at: now() };
         else {
           const commandId = `schedule-${crypto.randomUUID()}`;
-          current.last = { status: 'dispatching', at: now(), event, commandId };
+          current.last = { status: 'dispatching', at: now(), event, commandId, ...(requestId && { requestId }) };
           current.events.push(event);
           // Persist intent before crossing the external-effect boundary. Crash means unknown.
           await save(next); reserved.add(targetKey);
@@ -75,27 +79,59 @@ export async function createConditionalTasks({ directory, send, idle, precheck =
           } catch (error) { current.last.status = 'unknown'; current.last.error = error.message; }
         }
       } catch (error) { current.last = { status: 'check_error', error: error.message, at: now() }; }
+      if (requestId) current.last.requestId = requestId;
+      current.history = [...(task.history ?? (task.last ? [task.last] : [])), current.last].slice(-100);
       await save(next);
+      if (onlyId) return structuredClone(current.last);
     }
+  }
+  function existing(id, version) {
+    if (!Object.hasOwn(tasks, id)) throw Object.assign(new Error('条件规则不存在'), { status: 404 });
+    if (version !== undefined && version !== (tasks[id].version ?? 0)) throw Object.assign(new Error('规则已修改，请返回列表重新打开'), { status: 409 });
+    return tasks[id];
   }
   return {
     async list() { await queue.catch(() => {}); return structuredClone(Object.values(tasks)); },
-    put(id, value) { return serialize(async () => {
+    put(id, value, { version, createOnly = false } = {}) { return serialize(async () => {
+      if (createOnly && Object.hasOwn(tasks, id)) throw Object.assign(new Error('该规则已保存，请返回列表查看'), { status: 409 });
+      if (version !== undefined) existing(id, version);
       if (!validId.test(id) || !Number.isFinite(value?.everyMinutes) || value.everyMinutes <= 0
         || typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > 12000
         || !Array.isArray(value.check) || !value.check.length || value.check.some(v => typeof v !== 'string' || v.includes('\0'))
         || !path.isAbsolute(value.check[0]) || !path.isAbsolute(value.cwd || '')
-        || !value.session || !value.threadId || !['codex', 'claude', 'qodercli'].includes(value.provider)) throw new Error('无效的条件任务参数');
+        || !value.session || !value.threadId || !['codex', 'claude', 'qodercli'].includes(value.provider)) throw Object.assign(new Error('无效的条件任务参数'), { status: 400 });
       const next = structuredClone(tasks), old = Object.hasOwn(next, id) ? next[id] : null;
-      if (['accepted', 'dispatching', 'unknown'].includes(old?.last?.status)) throw new Error('上次投递未确认，请核实会话；删除任务后才可重新配置');
+      if (['accepted', 'dispatching', 'unknown'].includes(old?.last?.status)
+        && (!Number.isInteger(version) || ['session', 'provider', 'threadId'].some(key => old[key] !== value[key]))) {
+        throw Object.assign(new Error('上次投递仍待核实，请核实后更换执行会话'), { status: 409 });
+      }
       Object.defineProperty(next, id, { enumerable: true, writable: true, configurable: true, value: {
         id, everyMinutes: value.everyMinutes, session: value.session, threadId: value.threadId, provider: value.provider,
-        prompt: value.prompt, check: value.check, cwd: value.cwd, enabled: value.enabled !== false,
-        nextAt: now(), events: old?.events || [], last: old?.last || null,
+        prompt: value.prompt, check: value.check, cwd: value.cwd, enabled: version !== undefined ? old.enabled : value.enabled !== false,
+        nextAt: old && version !== undefined ? (old.everyMinutes === value.everyMinutes ? old.nextAt : now() + value.everyMinutes * 60_000) : now(),
+        version: (old?.version ?? 0) + 1, events: old?.events || [], last: old?.last || null, history: old?.history ?? (old?.last ? [old.last] : []),
       } });
       await save(next); return structuredClone(next[id]);
     }); },
-    remove(id) { return serialize(async () => { const next = structuredClone(tasks); delete next[id]; await save(next); }); },
-    tick() { if (!ticking) ticking = serialize(run).finally(() => { ticking = null; }); return ticking; },
+    setEnabled(id, enabled) { return serialize(async () => {
+      if (typeof enabled !== 'boolean') throw new Error('启停参数无效');
+      if (!Object.hasOwn(tasks, id)) throw Object.assign(new Error('条件规则不存在'), { status: 404 });
+      const next = structuredClone(tasks);
+      next[id].enabled = enabled;
+      await save(next);
+      return structuredClone(next[id]);
+    }); },
+    runNow(id, requestId) { return serialize(async () => {
+      if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,96}$/.test(requestId)) throw Object.assign(new Error('缺少本次执行的请求标识'), { status: 400 });
+      const rule = existing(id);
+      const previous = [rule.last, ...(rule.history || [])].find(entry => entry?.requestId === requestId);
+      if (previous) return structuredClone(previous);
+      if (!rule.enabled || ['unknown', 'dispatching'].includes(rule.last?.status)) throw Object.assign(new Error('规则已暂停或上次投递待核实'), { status: 409 });
+      const result = await run(id, requestId);
+      if (!result) throw Object.assign(new Error('目标会话仍有在途任务'), { status: 409 });
+      return result;
+    }); },
+    remove(id, version) { return serialize(async () => { if (version !== undefined) existing(id, version); const next = structuredClone(tasks); delete next[id]; await save(next); }); },
+    tick() { if (!ticking) ticking = serialize(() => run()).finally(() => { ticking = null; }); return ticking; },
   };
 }
