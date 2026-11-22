@@ -7,7 +7,8 @@ import { feedbackControls, paragraphPicker } from './page-feedback-ui.js';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const fail = (message, status) => Object.assign(new Error(message), { status });
-const metadata = ({ id, title, createdAt, updatedAt, source, contentHash, evidence }, includeEvidence = false) => ({ id, title, createdAt, updatedAt,
+const metadata = ({ id, title, createdAt, updatedAt, source, contentHash, evidence, folder }, includeEvidence = false) => ({ id, title, createdAt, updatedAt,
+  ...(folder ? { folder } : {}),
   ...(includeEvidence && evidence ? { evidence } : {}),
   ...(source ? { source } : {}), ...(contentHash ? { contentHash } : {}), url: `/pages/${id}` });
 function pageSource(value) {
@@ -66,6 +67,8 @@ export function createPageStore(directory) {
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
       let previous;
       try { previous = await get(id); } catch (error) { if (error.status !== 404) throw error; }
+      const folder = value.folder === undefined ? previous?.folder : value.folder;
+      if (folder != null && (typeof folder !== 'string' || !/^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$/u.test(folder))) throw fail('无效的 Pages 文件夹名', 400);
       const source = value.source === undefined ? previous?.source : pageSource({ ...previous?.source, ...value.source });
       if (source && (sourceId(source) !== id || (previous && previous.source?.key !== source.key))) throw fail('页面来源与标识不匹配', 409);
       const contentHash = crypto.createHash('sha256').update(value.html).digest('hex');
@@ -73,7 +76,8 @@ export function createPageStore(directory) {
         ? (previous?.contentHash === contentHash && previous?.source?.revision === source?.revision ? previous.evidence : undefined)
         : normalizeEvidence(value.evidence, contentHash);
       const now = new Date().toISOString();
-      const page = { ...(evidence ? { evidence } : {}), ...(previous?.comments ? { comments: previous.comments } : {}), ...(source ? { source } : {}), contentHash, ...(previous?.shareHash ? { shareHash: previous.shareHash } : {}), id, title: value.title.trim(), html: value.html, createdAt: previous?.createdAt || now, updatedAt: now };
+      const loginOnly = folder === null || Boolean(folder) || previous?.loginOnly;
+      const page = { ...(loginOnly ? { loginOnly: true } : {}), ...(folder ? { folder } : {}), ...(evidence ? { evidence } : {}), ...(previous?.comments ? { comments: previous.comments } : {}), ...(source ? { source } : {}), contentHash, ...(!loginOnly && previous?.shareHash ? { shareHash: previous.shareHash } : {}), id, title: value.title.trim(), html: value.html, createdAt: previous?.createdAt || now, updatedAt: now };
       await save(page);
       return metadata(page);
     }); },
@@ -112,6 +116,7 @@ export function createPageStore(directory) {
     }); },
     createShare(id) { return mutate(id, async () => {
       const page = await get(id);
+      if (page.loginOnly || page.folder) throw fail('目录页面仅允许登录查看', 403);
       const token = crypto.randomBytes(32).toString('base64url');
       page.shareHash = crypto.createHash('sha256').update(token).digest('hex');
       await save(page);
@@ -125,7 +130,7 @@ export function createPageStore(directory) {
     async readSharedPage(id, token) {
       if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
       const page = await get(id);
-      if (!page.shareHash) return false;
+      if (page.loginOnly || page.folder || !page.shareHash) return false;
       const actual = crypto.createHash('sha256').update(token).digest();
       const expected = Buffer.from(page.shareHash, 'hex');
       return actual.length === expected.length && crypto.timingSafeEqual(actual, expected) ? page : null;
@@ -178,9 +183,11 @@ function shareControls(shared, nonce) {
   </script>`;
 }
 
+const homeLink = '<a class="home-link" href="/">← 返回主界面</a>';
+
 function document(title, body) {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)} · Codeck</title><style>
-html,body{margin:0;height:100%;font:15px system-ui,sans-serif;color:#eee;background:#19191b}body{display:flex;flex-direction:column}header{padding:14px 20px;display:flex;gap:18px;align-items:center;border-bottom:1px solid #38383c}a{color:inherit;text-decoration:none}header b{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}main{max-width:880px;width:calc(100% - 40px);margin:32px auto}h1{font-size:24px}ul{padding:0;list-style:none}li{padding:16px 0;border-bottom:1px solid #38383c}small{display:block;color:#999;margin-top:8px}.share-controls{display:flex;gap:8px;margin-left:auto;flex-shrink:0}button{font:inherit;color:inherit;background:#28282b;border:1px solid #444448;border-radius:8px;padding:7px 12px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}[hidden]{display:none!important}#share-result{padding:10px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #38383c}#share-link{flex:1;min-width:120px;color:inherit;background:#28282b;border:1px solid #444448;border-radius:6px;padding:8px}#share-status{font-size:13px;color:#aaa}@media(max-width:480px){header{padding:12px;gap:8px}button{padding:7px 9px;font-size:13px}#share-result{padding:10px 12px}}iframe{flex:1;width:100%;border:0;background:white;min-height:0}</style></head><body>${body}</body></html>`;
+html,body{margin:0;height:100%;font:15px system-ui,sans-serif;color:#eee;background:#19191b}body{display:flex;flex-direction:column}header{padding:14px 20px;display:flex;gap:18px;align-items:center;border-bottom:1px solid #38383c}a{color:inherit;text-decoration:none}header b{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}main{max-width:880px;width:calc(100% - 40px);margin:32px auto}h1{font-size:24px}ul{padding:0;list-style:none}li{padding:16px 0;border-bottom:1px solid #38383c}small{display:block;color:#999;margin-top:8px}.share-controls{display:flex;gap:8px;margin-left:auto;flex-shrink:0}button,.home-link{font:inherit;color:inherit;background:#28282b;border:1px solid #444448;border-radius:8px;padding:7px 12px;cursor:pointer}.home-link{white-space:nowrap}button:disabled{opacity:.5;cursor:wait}[hidden]{display:none!important}#share-result{padding:10px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #38383c}#share-link{flex:1;min-width:120px;color:inherit;background:#28282b;border:1px solid #444448;border-radius:6px;padding:8px}#share-status{font-size:13px;color:#aaa}@media(max-width:480px){header{padding:12px;gap:8px}button,.home-link{padding:7px 9px;font-size:13px}#share-result{padding:10px 12px}}iframe{flex:1;width:100%;border:0;background:white;min-height:0}</style></head><body>${body}</body></html>`;
 }
 
 export function mountPublishedPages(app, { store, apiAuth, pageAuth, resolveTarget, sendFeedback }) {
@@ -251,19 +258,27 @@ export function mountPublishedPages(app, { store, apiAuth, pageAuth, resolveTarg
   app.post('/pages/:id/comments', feedbackAction, run(async (req, res) => res.status(201).json(await add(req))));
   app.patch('/pages/:id/comments/:comment', feedbackAction, run(async (req, res) => res.json(await store.resolveComment(req.params.id, req.params.comment, req.body?.resolved))));
   app.post('/pages/:id/feedback', feedbackAction, run(async (req, res) => res.json(await feedback(req))));
-  app.get('/pages', run(async (_req, res) => {
+  app.get('/pages', run(async (req, res) => {
     const pages = await store.list();
-    res.type('html').send(document('发布页面', `<header><a href="/">Codeck</a><b>发布页面</b></header><main><h1>发布页面</h1>${pages.length ? `<ul>${pages.map(p => `<li><a href="${p.url}">${escape(p.title)}</a><small>${escape(p.updatedAt)}</small></li>`).join('')}</ul>` : '<p>暂无发布页面。Agent 可通过页面 API 发布报告或交互页面。</p>'}</main>`));
+    const folder = req.query.folder;
+    const folders = [...new Set(pages.map(p => p.folder || ''))].sort();
+    if (folder != null && !folders.includes(folder)) throw fail('文件夹不存在', 404);
+    const items = folder === undefined ? folders.filter(Boolean).map(name =>
+      `<li><a href="/pages?folder=${encodeURIComponent(name)}">${escape(name)}</a></li>`) : [];
+    for (const page of pages.filter(p => (p.folder || '') === (folder || ''))) {
+      items.push(`<li><a href="${page.url}">${escape(page.title)}</a><small>${escape(page.updatedAt)}</small></li>`);
+    }
+    res.type('html').send(document('Pages', `<header>${homeLink}<a href="/pages">Pages</a></header><main><h1>${escape(folder ?? 'Pages') || '未归档'}</h1><ul>${items.join('')}</ul></main>`));
   }));
   app.get('/pages/:id', run(async (req, res) => {
     const page = req.sharedPage || await store.get(req.params.id);
     const nonce = crypto.randomBytes(18).toString('base64');
     if (!req.pageShare) res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; style-src 'unsafe-inline'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`);
-    const controls = req.pageShare ? '' : shareControls(Boolean(page.shareHash), nonce);
-    const split = controls.indexOf('<div id="share-result"');
+    const controls = req.pageShare || page.loginOnly || page.folder ? '' : shareControls(Boolean(page.shareHash), nonce);
+    const split = controls ? controls.indexOf('<div id="share-result"') : 0;
     const buttons = split < 0 ? '' : controls.slice(0, split);
     const panel = split < 0 ? '' : controls.slice(split);
-    res.type('html').send(document(page.title, `<header>${req.pageShare ? '' : '<a href="/pages">← 页面</a>'}<b>${escape(page.title)}</b>${buttons}</header>${panel}${req.pageShare ? '' : evidencePanel(page) + feedbackControls(nonce, page.contentHash)}<iframe title="${escape(page.title)}" sandbox="allow-scripts" referrerpolicy="no-referrer" src="/pages/${page.id}/content${req.pageShare ? `?share=${req.pageShare}` : `?revision=${page.contentHash}`}"></iframe>`));
+    res.type('html').send(document(page.title, `<header>${req.pageShare ? '' : homeLink + '<a href="/pages">Pages</a>'}<b>${escape(page.title)}</b>${buttons}</header>${panel}${req.pageShare ? '' : evidencePanel(page) + feedbackControls(nonce, page.contentHash)}<iframe title="${escape(page.title)}" sandbox="allow-scripts" referrerpolicy="no-referrer" src="/pages/${page.id}/content${req.pageShare ? `?share=${req.pageShare}` : `?revision=${page.contentHash}`}"></iframe>`));
   }));
   app.get('/pages/:id/content', run(async (req, res) => {
     const page = req.sharedPage || await store.get(req.params.id);

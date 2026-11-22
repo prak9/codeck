@@ -189,3 +189,36 @@ test('evidence is bound to exact content and revision, escapes markup and stays 
   await f.store.publish({ title:'结果', html:'<p>v2</p>', source, evidence });
   await f.store.publish({ title:'结果', html:'<p>v2</p>', source:{...source,revision:'def5678'} });assert.equal((await f.store.get(a.id)).evidence,undefined);
 });
+
+test('folder publications retain their directory on update and require login even after a previous share', async t => {
+  const f = await fixture(t);
+  const value = { title: 'Weekly', html: '<p>report</p>' };
+  await f.store.put('week', value);
+  const old = await f.store.createShare('week');
+  await f.store.put('week', { ...value, folder: 'weekly_report' });
+  await f.store.put('week', value);
+  assert.equal((await f.store.list())[0].folder, 'weekly_report');
+  await assert.rejects(f.store.createShare('week'), { status: 403 });
+  assert.equal((await fetch(f.base + old.url)).status, 404);
+  for (const route of ['/pages?folder=weekly_report','/pages/week','/pages/week/content']) {
+    assert.equal((await fetch(f.base + route, { redirect: 'manual' })).status, 302);
+  }
+  const listing = await fetch(f.base + '/pages?folder=weekly_report', { headers: { Cookie: 'fixture-login=yes' } });
+  assert.match(await listing.text(), /href="\/pages\/week"/);
+});
+
+test('moving a private report to Pages root preserves its login requirement and direct link', async t => {
+  const f = await fixture(t);
+  const report = { title: 'Weekly', html: '<p>data</p>' };
+  await f.store.put('week', { ...report, folder: 'weekly_report' });
+  await f.store.put('week', { ...report, folder: null });
+  await f.store.put('week', report);
+  assert.equal((await f.store.list())[0].folder, undefined);
+  await assert.rejects(f.store.createShare('week'), { status: 403 });
+  const index = await fetch(f.base + '/pages', { headers: { Cookie: 'fixture-login=yes' } });
+  const html = await index.text();
+  const reportPage = await fetch(f.base + '/pages/week', { headers: { Cookie: 'fixture-login=yes' } });
+  for (const body of [html, await reportPage.text()]) assert.match(body, /href="\/">← 返回主界面<\/a>/);
+  assert.match(html, /href="\/pages\/week"/);
+  assert.doesNotMatch(html, /未归档|weekly_report/);
+});
