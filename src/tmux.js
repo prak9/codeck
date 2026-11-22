@@ -66,7 +66,10 @@ const CODEX_BACKGROUND_WAIT = {
 // command" cannot pin the indicator on. Codex can retain a completed terminal count in
 // its footer, so resolveAgentBackgroundState verifies it against a live owned process.
 export const AGENT_SCREEN_MARKERS = {
-  agy: { busy: { lines: 1, patterns: [] }, background: { lines: 1, patterns: [] } },
+  agy: {
+    busy: { patterns: [/…\s*\((?:[^()]+ · )?esc to cancel\)$/iu] },
+    background: { patterns: [/^●\s+\[\d{2}:\d{2}:\d{2}\]\s+.+\s+running$/u] },
+  },
   claude: {
     busy: { lines: 12, patterns: [/^[^\p{L}\n]{0,4}\p{L}+…\s*\(\d/u] },
     background: { lines: 1, patterns: [/\b\d+\s+(?:shell|monitor|task)s?\b/i] },
@@ -357,7 +360,29 @@ function codexStatusEnd(rows) {
   return composer;
 }
 
+function agyMarkerRow(rows, marker) {
+  const composer = rows.findLastIndex((line, i) => /^>(?:\s|$)/u.test(line.trim())
+    && SCREEN_SEPARATOR.test(rows[i - 1]?.trim() || ''));
+  if (composer < 0) return -1;
+  const matches = line => marker.patterns.some(pattern => pattern.test(line.trim()));
+  if (marker === AGENT_SCREEN_MARKERS.agy.busy) {
+    const row = rows.slice(0, composer - 1).findLastIndex(line => line.trim());
+    return row >= 0 && matches(rows[row]) ? row : -1;
+  }
+  // AGY lists tasks between separators below the input. The /tasks count alone
+  // doesn't identify which tasks are running, and the transcript can quote either.
+  const start = rows.findIndex((line, i) => i > composer && SCREEN_SEPARATOR.test(line.trim()));
+  const end = rows.findLastIndex(line => SCREEN_SEPARATOR.test(line.trim()));
+  if (start < 0 || end <= start) return -1;
+  const footer = rows.slice(end + 1).map(line => line.trim()).filter(Boolean);
+  if (footer.length > 1 || (footer.length && !/^(?:\? for shortcuts|esc to cancel)\b|(?:^|·\s*)\d+ task\(s\) · \/tasks$/iu.test(footer[0]))) return -1;
+  return rows.findIndex((line, i) => i > start && i < end && matches(line));
+}
+
 function markerRow(rows, marker) {
+  if (marker === AGENT_SCREEN_MARKERS.agy.busy || marker === AGENT_SCREEN_MARKERS.agy.background) {
+    return agyMarkerRow(rows, marker);
+  }
   const codex = marker === AGENT_SCREEN_MARKERS.codex.busy || marker === AGENT_SCREEN_MARKERS.codex.background;
   const candidates = (codex ? rows.slice(0, codexStatusEnd(rows)) : rows)
     .map((line, index) => ({ index, text: line.trim() }))
@@ -728,7 +753,7 @@ export function resolveWorkingState({ agentKind, screenSignals, paneCommands }) 
 export function resolveAgentBackgroundState({ agent, screenSignals }) {
   if (!agent) return false;
   if (agent.hasBackgroundProcess) return true;
-  return (agent.kind === 'claude' || agent.kind === 'qodercli') && Boolean(screenSignals?.background);
+  return (agent.kind === 'claude' || agent.kind === 'qodercli' || agent.kind === 'agy') && Boolean(screenSignals?.background);
 }
 
 export async function listSessions({ refreshAgentIdentities = false, refreshPaneSession = null } = {}) {
@@ -821,7 +846,8 @@ export async function listSessions({ refreshAgentIdentities = false, refreshPane
         } : null;
         const shellLiveOutput = !agent ? resolveShellLiveOutput(screenBySession.get(session.name)) : '';
         const paneScreen = paneScreenCache.get(session.name);
-        if (paneScreen) paneScreen.working = Boolean(detectedAgent && (hasRunningProcess || question));
+        if (paneScreen) paneScreen.working = Boolean(detectedAgent && (hasRunningProcess || question
+          || (agentKind === 'agy' && hasBackgroundProcess)));
         return {
           ...session,
           agent,

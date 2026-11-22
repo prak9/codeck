@@ -2038,6 +2038,28 @@ const CODEX_BACKGROUND = `
 
 const signals = (output, kind) => resolveScreenSignals(output, AGENT_SCREEN_MARKERS[kind]);
 
+test('AGY keeps a live task in background after the foreground reply ends', () => {
+  const rule = '────────────────────────────';
+  const composer = [rule, '>', rule];
+  const footer = '? for shortcuts    Gemini 4 Neon · medium';
+  const taskFooter = footer + ' · 1 task(s) · /tasks';
+  const task = '  ● [13:51:41] ssh worker run-job running';
+  const panel = [...composer, task, rule, taskFooter];
+  const status = (lines, animating = false) => {
+    const screenSignals = { ...signals(lines.join('\n'), 'agy'), animating };
+    return resolveSessionStatus({
+      hasRunningProcess: resolveWorkingState({ agentKind: 'agy', screenSignals }),
+      agent: { hasBackgroundProcess: resolveAgentBackgroundState({ agent: { kind: 'agy' }, screenSignals }) },
+    });
+  };
+  assert.equal(status(panel), 'background');
+  assert.equal(status(panel, true), 'background', 'a repaint alone is not a foreground turn');
+  assert.equal(status(['⠋ Thinking… (2s · esc to cancel)', ...panel]), 'working');
+  assert.equal(status([...composer, task.replace(/running$/, 'completed'), rule, taskFooter]), 'done');
+  assert.equal(status([...panel, ...composer, footer]), 'done', 'a stale task panel in history');
+  assert.equal(status([rule, '> draft', task, rule, footer]), 'done', 'a task line pasted into the composer');
+});
+
 test('reads the claude turn-in-flight marker from the footer', () => {
   assert.deepEqual(signals(CLAUDE_BUSY, 'claude'), { busy: true, background: false });
   assert.deepEqual(signals(CLAUDE_IDLE, 'claude'), { busy: false, background: false });
