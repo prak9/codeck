@@ -7,6 +7,7 @@ import { currentCommandOutput, setCommandOutput, normalizeSessionCommandOutput, 
 const source = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
 function load(context, name) {
   Object.assign(context, { currentCommandOutput, setCommandOutput });
+  if (name === 'selectionCommandDialog') load(context, 'revealCommandCursor');
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'));
   vm.runInContext(source.slice(start, start + source.slice(start).search(/^}$/m) + 1), context);
 }
@@ -108,4 +109,79 @@ test('a same-session snapshot refresh does not discard a command choice result',
   context.selectionCommandDialog(commandOutput);
   await nodes.find(n => n.tag === 'button').click();
   assert.equal(state.thread.tmux.commandOutput.text, 'Latest usage');
+});
+
+test('AGY menu arrow keys and Enter follow native selection in order and leave text editing alone', async () => {
+  const makeMenu = index => ({ command: '/permissions', text: ['> Project\n  User', '  Project\n> User'][index],
+    kind: 'commandSelection', parsed: { heading: 'Permissions', dashboard: true, notes: [],
+      items: [{ label: '↑', key: 'Up' }, { label: '↓', key: 'Down' }, { label: 'Enter', key: 'Enter' }] } });
+  const state = { provider: 'agy', thread: { id: 'thread', provider: 'agy', tmux: { name: 'label' }, nativeCommand: makeMenu(0) } };
+  const requests = [];
+  let release;
+  const first = new Promise(resolve => { release = resolve; });
+  const context = vm.createContext({ state, normalizeSessionCommandOutput,
+    element(tag, cls, text) {
+      const node = element(tag, cls, text);
+      node.addEventListener = (type, fn) => { node[type] = fn; };
+      node.replaceChildren = (...children) => { node.children = children; };
+      return node;
+    },
+    composerRequestGate: { pending: false, async run(fn) { this.pending = true; try { await fn(); } finally { this.pending = false; } } },
+    agentRequest: async (_, payload) => {
+      requests.push([payload.option, payload.menuText]);
+      if (requests.length === 1) await first;
+      if (payload.option === 'Enter') return { completed: true };
+      const next = makeMenu(payload.option === '↓' ? 1 : 0);
+      return { terminalOutput: next.text, commandOutput: next };
+    }, scheduleThreadRender() {}, dismissCommandDialog() {}, setLiveMessage() {},
+  });
+  vm.runInContext('let pendingMenuNavigation = null;', context);
+  load(context, 'selectionCommandDialog');
+  const view = context.selectionCommandDialog(state.thread.nativeCommand);
+  assert.equal(view.focusSelector, '.command-output-body');
+  const press = (key, editing = false) => {
+    let prevented = false;
+    view.content.keydown({ key, target: { closest: () => editing }, preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  assert.equal(press('ArrowDown', true), false);
+  assert.equal(press('ArrowDown'), true);
+  assert.equal(press('ArrowUp'), true);
+  assert.equal(press('Enter'), true);
+  assert.equal(press('Enter'), true);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, [['↓', makeMenu(0).text], ['↑', makeMenu(1).text], ['Enter', makeMenu(0).text]]);
+});
+
+test('refreshing an open AGY picker keeps its search input and uses the latest pane text for actions', async () => {
+  const menu = text => ({ command: '/permissions', kind: 'commandSelection', text, parsed: { dashboard: true,
+    textEntry: true, heading: 'Permissions', items: [{ label: 'Enter', key: 'Enter' }], notes: [] } });
+  const first = menu('> Project\n  User'), second = menu('  Project\n> User');
+  const state = { provider: 'agy', thread: { id: 'thread', provider: 'agy', tmux: { name: 'label' }, nativeCommand: first } };
+  const nodes = [], requests = [];
+  const context = vm.createContext({ state, normalizeSessionCommandOutput,
+    element(tag, cls, text) {
+      const node = element(tag, cls, text);
+      node.addEventListener = (type, fn) => { node[type] = fn; };
+      node.replaceChildren = (...children) => { node.children = children; };
+      node.setAttribute = () => {};
+      nodes.push(node); return node;
+    },
+    composerRequestGate: { pending: false, run: fn => fn() },
+    agentRequest: async (_, params) => { requests.push(params.menuText); return { completed: true }; },
+    dismissCommandDialog() {},
+  });
+  load(context, 'selectionCommandDialog');
+  const view = context.selectionCommandDialog(first);
+  const input = nodes.find(n => n.tag === 'input');
+  input.value = 'my draft';
+  state.thread.nativeCommand = second;
+  assert.equal(view.update(second), true);
+  assert.deepEqual(nodes.filter(n => n.tag === 'input'), [input]);
+  assert.equal(input.value, 'my draft');
+  assert.equal(nodes.find(n => n.tag === 'pre').children[1].text, '> User');
+  await nodes.find(n => n.tag === 'button' && n.click).click();
+  assert.deepEqual(requests, [second.text]);
+  assert.equal(view.update({ ...second, parsed: { ...second.parsed, heading: 'Edit Rule' } }), false);
 });

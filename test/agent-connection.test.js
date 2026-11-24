@@ -1976,3 +1976,23 @@ test('Tasks and a Telegram reply racing on the same approval reach the provider 
   assert.deepEqual(backends.codex.responses, [{ id: 7, result: { decision: 'accept' } }]);
   assert.deepEqual(await sessions.pending(), []);
 });
+
+test('AGY menu actions invalidate both pane and thread snapshots before replying', async () => {
+  const sessionFeed = new FakeSnapshotFeed(), threadFeed = new FakeSnapshotFeed();
+  const registry = new AgentRegistry({ agy: new FakeBackend('agy') }, {
+    selectTmuxCommand: async () => ({ completed: true }),
+    dismissTmuxCommand: async () => ({ dismissed: true }),
+  });
+  const hub = new AgentHub(registry, { sessionFeed, threadFeed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  const target = { provider: 'agy', threadId: 'thread', tmuxSession: 'label' };
+  for (const [id, type] of ['selectSessionCommand', 'dismissSessionCommand'].entries()) {
+    send(socket, { type, id: id + 1, ...target, command: '/model', option: '↓', menuText: 'Switch Model' });
+    await waitFor(() => socket.sent.some(msg => msg.id === id + 1));
+    assert.ok(socket.sent.find(msg => msg.id === id + 1).result);
+    assert.deepEqual(sessionFeed.invalidations.splice(0), ['sessions']);
+    assert.deepEqual(threadFeed.invalidations.splice(0), [target]);
+  }
+  socket.close();
+});

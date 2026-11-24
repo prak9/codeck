@@ -746,7 +746,7 @@ export class AgentHub {
             ...baseline,
           });
         this.#invalidateSessionFeed();
-        if (receiptRecorded) this.#invalidateThreadSubscription(target);
+        if (receiptRecorded || (provider === 'agy' && result?.commandOutput)) this.#invalidateThreadSubscription(target);
         else this.#refreshThreadSubscription(target);
         return result;
       });
@@ -762,24 +762,29 @@ export class AgentHub {
         ...(message.menuText != null ? { menuText: message.menuText } : {}),
       });
     }
-    if (message.type === 'selectSessionCommand') {
+    if (message.type === 'selectSessionCommand' || message.type === 'dismissSessionCommand') {
       const threadId = cleanId(message.threadId, 'Thread');
       const sessionName = cleanId(message.tmuxSession, 'tmux session');
-      if (typeof message.menuText !== 'string' || message.menuText.length > 64_000) throw new Error('无效的命令菜单');
-      this.#ensureThreadSubscription(socket, { provider, threadId, tmuxSession: sessionName });
-      return this.registry.selectSessionCommand(provider, {
-        threadId, sessionName, command: cleanId(message.command, 'Command'),
-        option: cleanId(message.option, 'Command option'), menuText: message.menuText,
-        ...(provider === 'agy' && message.input !== undefined ? { input: message.input } : {}),
-      });
-    }
-    if (message.type === 'dismissSessionCommand') {
-      return this.registry.dismissSessionCommand(provider, {
-        threadId: cleanId(message.threadId, 'Thread'),
-        sessionName: cleanId(message.tmuxSession, 'tmux session'),
-        command: cleanId(message.command, 'Command'),
-        ...(provider === 'agy' ? { menuText: message.menuText } : {}),
-      });
+      const target = { provider, threadId, tmuxSession: sessionName };
+      const params = { threadId, sessionName, command: cleanId(message.command, 'Command') };
+      let result;
+      if (message.type === 'selectSessionCommand') {
+        if (typeof message.menuText !== 'string' || message.menuText.length > 64_000) throw new Error('无效的命令菜单');
+        this.#ensureThreadSubscription(socket, target);
+        result = await this.registry.selectSessionCommand(provider, {
+          ...params, option: cleanId(message.option, 'Command option'), menuText: message.menuText,
+          ...(provider === 'agy' && message.input !== undefined ? { input: message.input } : {}),
+        });
+      } else {
+        result = await this.registry.dismissSessionCommand(provider, {
+          ...params, ...(provider === 'agy' ? { menuText: message.menuText } : {}),
+        });
+      }
+      if (provider === 'agy') {
+        this.#invalidateSessionFeed();
+        this.#invalidateThreadSubscription(target);
+      }
+      return result;
     }
     if (message.type === 'interruptSession') {
       const target = {

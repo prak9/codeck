@@ -223,6 +223,7 @@ a.header-button { text-decoration: none; }
 .model-scope select { flex: 1; min-width: 0; }
 .command-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; }
 .command-tabs button { min-height: 44px; }
+.command-cursor { color: var(--ink); background: var(--accent-soft); font-weight: 700; }
 .model-row { min-width: 0; width: 100%; padding: 11px 11px 10px; border: 0; border-top: 1px solid #ffffff08; background: transparent; color: inherit; display: grid; grid-template-columns: minmax(112px, 32%) minmax(0, 1fr); gap: 10px; align-items: start; text-align: left; }
 .model-row:first-child { border-top: 0; }
 .model-row:hover, .model-row:focus-visible { background: #ffffff0c; }

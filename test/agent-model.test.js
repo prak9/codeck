@@ -1341,3 +1341,13 @@ test('an uncertain identity replaces old history and can resolve again without l
   assert.equal(findTmuxThreadReplacement([resolved], pending), resolved);
   assert.equal(findTmuxThreadReplacement([{ ...pending, tmux: { ...pending.tmux, name: 'report' } }], current), null);
 });
+
+test('an AGY history-only refresh preserves its menu until the pane reports a change', () => {
+  const thread = { provider: 'agy', id: 'one', tmux: { name: 'label' }, turns: [] };
+  const menu = { command: '/model', text: 'Switch Model' };
+  const current = { ...thread, nativeCommand: menu };
+  const history = { ...thread, preview: 'new history' };
+  assert.equal(reconcileAgentThreadRefresh(current, history).nativeCommand, menu);
+  assert.equal(reconcileAgentThreadRefresh(current, { ...history, nativeCommand: null }).nativeCommand, null);
+  assert.equal(reconcileAgentThreadRefresh(current, { ...history, tmux: { name: 'other' } }).nativeCommand, undefined);
+});

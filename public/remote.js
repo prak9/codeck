@@ -31,7 +31,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=53';
+} from './agent-model.js?v=54';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
@@ -1731,44 +1731,109 @@ function commandDialogPresentation(commandOutput) {
   };
 }
 
+let pendingMenuNavigation = null;
+
+function revealCommandCursor(cursor) {
+  const output = cursor?.parentElement;
+  if (!output?.isConnected) return;
+  const { top, bottom } = cursor.getBoundingClientRect(), bounds = output.getBoundingClientRect();
+  if (top < bounds.top || bottom > bounds.bottom) output.scrollTop += top - bounds.top - output.clientHeight / 2;
+}
+
 function selectionCommandDialog(commandOutput) {
   const panel = element('div', 'model-panel');
   const { parsed } = commandOutput;
   const list = element('div', parsed.dashboard ? 'command-tabs' : 'model-list');
   const thread = state.thread;
   const target = { provider: state.provider, threadId: thread.id, tmuxSession: thread.tmux.name };
-  const current = () => state.provider === target.provider && state.thread?.id === target.threadId
-    && state.thread?.tmux?.name === target.tmuxSession && currentCommandOutput(state.thread)?.text === commandOutput.text;
+  const native = target.provider === 'agy' && parsed.dashboard;
+  const current = (menu) => state.provider === target.provider && state.thread?.id === target.threadId
+    && state.thread?.tmux?.name === target.tmuxSession && currentCommandOutput(state.thread)?.text === menu.text;
   const choose = async (option, input) => {
-    if (composerRequestGate.pending || state.threadOpening || !current()) return;
+    if (state.threadOpening || !current(commandOutput)) return;
+    const move = native && (option === '↑' || option === '↓');
+    if (composerRequestGate.pending) {
+      if (native && (move || option === 'Enter')) pendingMenuNavigation?.(option);
+      return;
+    }
     await composerRequestGate.run(async () => {
+      let menu = commandOutput;
+      const choices = [option];
+      if (move) {
+        // Serialize rapid arrows against the menu returned by the preceding key.
+        // A confirmation ends the sequence; nothing may spill into a submenu.
+        pendingMenuNavigation = next => {
+          if (!current(menu)) return;
+          choices.push(next);
+          if (next === 'Enter') pendingMenuNavigation = null;
+        };
+      }
       try {
-        const result = await agentRequest('selectSessionCommand', { ...target, command: commandOutput.command,
-          option, menuText: commandOutput.text, ...(input !== undefined ? { input } : {}) });
-        if (!current()) return;
-        if (result.unconfirmed) {
-          dismissCommandDialog();
-          setLiveMessage('选择已发送但结果尚未确认，请检查终端，勿重复提交。');
-        } else if (result.terminalOutput) {
-          setCommandOutput(state.thread, normalizeSessionCommandOutput(target.provider, commandOutput.command, result));
-          scheduleThreadRender(true);
-        } else if (result.completed) dismissCommandDialog();
+        while (choices.length && current(menu)) {
+          const choice = choices.shift();
+          const result = await agentRequest('selectSessionCommand', { ...target, command: menu.command,
+            option: choice, menuText: menu.text, ...(input !== undefined ? { input } : {}) });
+          const next = result.terminalOutput && normalizeSessionCommandOutput(target.provider, menu.command, result);
+          if (!current(menu) && !(native && next && current(next))) return;
+          if (result.unconfirmed) {
+            dismissCommandDialog();
+            setLiveMessage('选择已发送但结果尚未确认，请检查终端，勿重复提交。');
+          } else if (next) {
+            setCommandOutput(state.thread, next);
+            scheduleThreadRender(!native);
+            if (move && next.command === menu.command && next.parsed?.heading === menu.parsed.heading) {
+              menu = next;
+              continue;
+            }
+          } else if (result.completed) dismissCommandDialog();
+          return;
+        }
       } catch (error) {
-        if (current()) {
+        if (current(menu)) {
           $('#commandDialogSummary').textContent = error.message;
           setLiveMessage(error.message);
         }
+      } finally {
+        if (move) pendingMenuNavigation = null;
       }
     });
   };
+  if (native) {
+    panel.addEventListener('keydown', event => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+        || event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key === 'Enter' && event.target.closest('button')) return;
+      const key = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Enter: 'Enter' }[event.key];
+      const item = key && parsed.items.find(action => action.key === key);
+      if (!item) return;
+      event.preventDefault();
+      if (!event.repeat || (!composerRequestGate.pending && key !== 'Enter')) choose(item.label);
+    });
+  }
+  let models, output;
   if (parsed.models?.length) {
-    const models = element('select', 'action-button');
+    models = element('select', 'action-button');
     models.setAttribute('aria-label', '预选模型');
     for (const name of parsed.models) models.add(new Option(name, name, false, name === parsed.highlighted));
     models.addEventListener('change', () => choose(models.value));
     panel.append(models);
   }
-  if (parsed.dashboard) panel.append(element('pre', 'terminal-live-output command-output-body', commandOutput.text));
+  if (native) panel.append(list);
+  const renderPane = text => {
+    const row = /^[ \t]*> [^\n]+/m.exec(text);
+    if (!row) { output.textContent = text; return; }
+    const cursor = element('mark', 'command-cursor', row[0]);
+    output.replaceChildren(text.slice(0, row.index), cursor, text.slice(row.index + row[0].length));
+    revealCommandCursor(cursor);
+  };
+  if (parsed.dashboard) {
+    output = element('pre', 'terminal-live-output command-output-body', commandOutput.text);
+    if (native) {
+      output.tabIndex = 0;
+      renderPane(commandOutput.text);
+    }
+    panel.append(output);
+  }
   if (parsed.textEntry) {
     const form = element('form', 'command-tabs');
     const input = element('input', 'action-button');
@@ -1790,27 +1855,52 @@ function selectionCommandDialog(commandOutput) {
     button.addEventListener('click', () => choose(item.label));
     list.append(button);
   });
-  panel.append(list);
+  if (!native) panel.append(list);
   if (parsed.notes.length) panel.append(element('pre', 'terminal-live-output', parsed.notes.join('\n')));
   return { kicker: 'COMMAND', title: commandOutput.command, summary: parsed.heading, content: panel,
-    focusSelector: parsed.dashboard ? '.command-tabs button' : '.model-row.primary, .model-row' };
+    update: native && (next => {
+      const p = next.parsed;
+      if (!p?.dashboard || next.kind !== 'commandSelection' || p.heading !== parsed.heading
+        || p.textEntry !== parsed.textEntry || Boolean(p.models?.length) !== Boolean(models)
+        || JSON.stringify(p.items) !== JSON.stringify(parsed.items) || JSON.stringify(p.notes) !== JSON.stringify(parsed.notes)) return false;
+      if (models) {
+        if (JSON.stringify(p.models) !== JSON.stringify(commandOutput.parsed.models)) {
+          models.replaceChildren(...p.models.map(name => new Option(name, name)));
+        }
+        if (models.value !== p.highlighted) models.value = p.highlighted;
+      }
+      commandOutput = next;
+      renderPane(next.text);
+      return true;
+    }),
+    focusSelector: native ? '.command-output-body' : parsed.dashboard ? '.command-tabs button' : '.model-row.primary, .model-row' };
 }
 
 function openCommandDialog(commandOutput) {
   const dialog = $('#commandDialog');
-  const commandKey = `${state.provider}:${state.thread?.id || ''}:${state.thread?.tmux?.name || ''}:${commandOutput.command}:${commandOutput.text}`;
+  const viewKey = JSON.stringify([state.provider, state.thread?.id, state.thread?.tmux?.name, commandOutput.command]);
+  const commandKey = `${viewKey}:${commandOutput.text}`;
   if (dialog.open && dialog.dataset.commandKey === commandKey) return;
+  if (dialog.open && dialog.dataset.viewKey === viewKey && dialog._updateMenu?.(commandOutput)) {
+    dialog.dataset.commandKey = commandKey;
+    $('#commandDialogSummary').textContent = commandOutput.parsed.heading;
+    return;
+  }
   const presentation = commandDialogPresentation(commandOutput);
   $('#commandDialogKicker').textContent = presentation.kicker;
   $('#commandDialogTitle').textContent = presentation.title;
   $('#commandDialogSummary').textContent = presentation.summary;
   $('#commandDialogContent').replaceChildren(presentation.content);
+  dialog._updateMenu = presentation.update || null;
+  dialog.dataset.viewKey = viewKey;
   dialog.dataset.commandKey = commandKey;
   if (!dialog.open) {
     $('#composerInput').blur();
     dialog.showModal();
   }
   requestAnimationFrame(() => {
+    if (!dialog.open || !presentation.content.isConnected) return;
+    revealCommandCursor(dialog.querySelector('.command-cursor'));
     const target = (presentation.focusSelector && dialog.querySelector(presentation.focusSelector))
       || $('#commandDialogClose');
     target.focus({ preventScroll: true });
@@ -1860,6 +1950,7 @@ function dismissCommandDialog({ restoreFocus = true } = {}) {
     delete state.thread.tmux.commandOutput;
   }
   if (dialog.open) dialog.close();
+  dialog._updateMenu = null;
   dialog.dataset.commandKey = '';
   $('#commandDialogContent').replaceChildren();
   scheduleThreadRender(false);
@@ -1873,6 +1964,7 @@ function syncCommandDialog(commandOutput) {
     return;
   }
   if (dialog.open) dialog.close();
+  dialog._updateMenu = null;
   dialog.dataset.commandKey = '';
   $('#commandDialogContent').replaceChildren();
 }

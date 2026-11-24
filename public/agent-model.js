@@ -367,6 +367,10 @@ export function reconcileAgentThreadRefresh(current, refreshed) {
   if (!current || current.id !== refreshed?.id
     || (current.provider && refreshed?.provider && current.provider !== refreshed.provider)
     || (current.tmux?.name && refreshed?.tmux?.name && current.tmux.name !== refreshed.tmux.name)) return refreshed;
+  // AGY history reads omit pane state. Only a pane snapshot can close its menu.
+  if (current.provider === 'agy' && current.nativeCommand && !Object.hasOwn(refreshed, 'nativeCommand')) {
+    refreshed = { ...refreshed, nativeCommand: current.nativeCommand };
+  }
   if (asArray(current.receivedDeliveryIds).length) {
     refreshed = { ...refreshed, receivedDeliveryIds: [...new Set([
       ...current.receivedDeliveryIds, ...asArray(refreshed.receivedDeliveryIds),
