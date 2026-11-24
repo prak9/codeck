@@ -5,9 +5,8 @@ import path from 'node:path';
 
 const conversationId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 
-// AGY's steps table stores protobuf messages. Read only the length-delimited
-// fields for user input and visible assistant text, skipping metadata and tools.
-function bytesField(bytes, wanted) {
+// Read a single protobuf field from AGY's stored step, skipping unrelated fields.
+function stepField(bytes, wanted, wireType = 2) {
   let offset = 0;
   function varint() {
     let value = 0;
@@ -21,13 +20,16 @@ function bytesField(bytes, wanted) {
   while (offset < bytes.length) {
     const tag = varint();
     const wire = tag % 8;
-    if (wire === 0) varint();
+    if (wire === 0) {
+      const value = varint();
+      if (wireType === 0 && Math.floor(tag / 8) === wanted) return value;
+    }
     else if (wire === 2) {
       const length = varint();
       const start = offset;
       offset += length;
       if (offset > bytes.length) throw new Error('AGY 历史字段超出记录范围');
-      if (Math.floor(tag / 8) === wanted) return bytes.subarray(start, offset);
+      if (wireType === 2 && Math.floor(tag / 8) === wanted) return bytes.subarray(start, offset);
     } else if (wire === 1 || wire === 5) offset += wire === 1 ? 8 : 4;
     else throw new Error('AGY 历史字段格式不受支持');
   }
@@ -59,19 +61,32 @@ export class AgyAgentBackend extends EventEmitter {
       const turns = [];
       if (anchors.length) {
         const first = anchors[Math.min(limit, anchors.length) - 1].idx;
-        const rows = db.prepare('SELECT idx, step_type, step_format, step_payload FROM steps WHERE idx >= ? AND idx < ? AND step_type IN (14,15) ORDER BY idx');
+        const rows = db.prepare('SELECT idx, step_type, step_format, step_payload FROM steps WHERE idx >= ? AND idx < ? AND step_type IN (14,15,17) ORDER BY idx');
         for (const row of rows.iterate(first, before)) {
           if (row.step_format !== 0) throw new Error('AGY 对话记录版本不受支持');
+          const itemId = 'agy-step-' + row.idx;
+          if (row.step_type === 17) {
+            const errorMessage = stepField(row.step_payload, 24);
+            if (!errorMessage || !stepField(errorMessage, 5, 0)) continue;
+            // Only user_error_message is public. Other fields can contain raw requests and internal diagnostics.
+            const details = stepField(errorMessage, 3);
+            const message = details && stepField(details, 1);
+            const text = message && Buffer.from(message).toString('utf8').trim();
+            turns.at(-1).items.push({ id: itemId, type: 'agentError', text: text || 'AGY 执行出错，未提供详细说明。' });
+            continue;
+          }
           const user = row.step_type === 14;
-          const payload = bytesField(row.step_payload, user ? 19 : 20);
-          const body = payload && bytesField(payload, user ? 2 : 1);
+          const payload = stepField(row.step_payload, user ? 19 : 20);
+          const body = payload && stepField(payload, user ? 2 : 1);
           const text = body && Buffer.from(body).toString('utf8');
           if (user) turns.push({ id: String(row.idx), items: [] });
           if (!text) continue;
-          const itemId = 'agy-step-' + row.idx;
           turns.at(-1).items.push(user
             ? { id: itemId, type: 'userMessage', content: [{ type: 'text', text }] }
             : { id: itemId, type: 'agentMessage', text });
+        }
+        for (const turn of turns) {
+          if (turn.items.at(-1)?.type === 'agentError') turn.status = 'failed';
         }
       }
       return { turns, truncated: anchors.length > limit, oldestTurnId: turns[0]?.id || null };

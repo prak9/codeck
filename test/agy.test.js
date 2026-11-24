@@ -55,7 +55,7 @@ test('AGY CLI is identified without treating its management commands as active a
   }
 });
 
-test('AGY history pages contain only user input and visible assistant replies', async () => {
+test('AGY history pages preserve public errors in order and keep internal retries private', async () => {
   const { DatabaseSync } = await import('node:sqlite');
   const { AgyAgentBackend } = await import('../src/agy-agent-backend.js');
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-agy-history-'));
@@ -65,8 +65,14 @@ test('AGY history pages contain only user input and visible assistant replies', 
     try {
       db.exec('CREATE TABLE steps(idx INTEGER PRIMARY KEY,step_type INTEGER,step_format INTEGER,step_payload BLOB)');
       const insert = db.prepare('INSERT INTO steps VALUES(?,?,0,?)');
-      // Wire fixtures: user input (19.2), thought (20.3), visible response (20.1).
-      for (const [idx, type, hex] of [[0,14,'9a0103120141'],[1,15,'a201031a0158'],[2,15,'a201030a0142'],[3,14,'9a0103120143']]) {
+      // AGY ErrorMessage (24) contains ErrorDetails (3) and should_show_user (5).
+      for (const [idx, type, hex] of [
+        [0,14,'9a0103120141'], [1,15,'a201031a0158'],
+        [2,17,'c2010a1a060a01451201582801'], // public "E", internal "X"
+        [3,15,'a201030a0142'], [4,14,'9a0103120143'],
+        [5,17,'c201081a060a0148120158'], // hidden retry, even with a user text
+        [6,17,'c2010a28011a060a0151120158'], // public "Q", flag before details
+      ]) {
         insert.run(idx, type, Buffer.from(hex, 'hex'));
       }
     } finally { db.close(); }
@@ -74,9 +80,12 @@ test('AGY history pages contain only user input and visible assistant replies', 
     const latest = backend.openThread(id, { turnLimit: 1 }).thread;
     assert.equal(latest.truncated, true);
     assert.equal(latest.turns[0].items[0].content[0].text, 'C');
+    assert.deepEqual(latest.turns[0].items.slice(1), [{ id: 'agy-step-6', type: 'agentError', text: 'Q' }]);
+    assert.equal(latest.turns[0].status, 'failed');
     const older = backend.loadThreadHistory(id, { beforeTurnId: latest.oldestTurnId, limit: 2 });
     assert.equal(older.truncated, false);
-    assert.deepEqual(older.turns[0].items.map(i => i.text || i.content[0].text), ['A','B']);
+    assert.deepEqual(older.turns[0].items.map(i => i.text || i.content[0].text), ['A','E','B']);
+    assert.notEqual(older.turns[0].status, 'failed', 'a subsequent public reply supersedes the failure');
     assert.throws(() => backend.openThread('../other'), /无效/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

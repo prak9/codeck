@@ -1882,6 +1882,7 @@ function changeReplyFormat(format) {
 }
 
 function itemNode(item, turn) {
+  if (item.type === 'agentError') return element('div', 'turn-error', item.text);
   if (item.type === 'userMessage') {
     const node = element('div', 'message user-message', autonomyDisplayText(userMessageText(item)));
     for (const ref of item.codeckImages || []) node.append(imageRenderer().figure(ref));
