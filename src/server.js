@@ -341,6 +341,7 @@ async function sessionSnapshotForAuth(auth) {
         id: session.agent.id,
         name: session.agent.name,
         activity: session.agent.activity,
+        ...(auth.owner && session.agent.cwd ? { cwd: session.agent.cwd } : {}),
         ...(auth.owner && session.agent.question ? { question: session.agent.question } : {}),
         ...(auth.owner && threadless && session.agent.liveOutput
           ? { liveOutput: session.agent.liveOutput } : {}),

@@ -46,7 +46,7 @@ function threadUserMessages(thread) {
   return threadUserMessageEntries(thread).map((entry) => entry.item);
 }
 
-function usersAfterDeliveryBaseline(thread, delivery) {
+export function usersAfterDeliveryBaseline(thread, delivery) {
   if (delivery?.baselineVersion !== 2) return null;
   const incoming = threadUserMessageEntries(thread).filter((entry) => !entry.item.delivery);
   if (delivery.baselineUserMessageId) {
@@ -300,7 +300,7 @@ export function userMessageDeliveryBaseline(thread, text) {
 // Include failed-RPC attempts as well as accepted cards; an accepted send may
 // have left pendingDeliveries before the server lost its confirmation cache.
 export function sessionDeliveryReceipts(thread, attempts, target) {
-  if (target?.provider !== 'codex') return [];
+  if (!['codex', 'agy'].includes(target?.provider)) return [];
   const matching = candidate => candidate?.provider === target.provider
     && (candidate.threadId || candidate.id) === target.threadId
     && (candidate.tmuxSession || candidate.tmux?.name || '') === (target.tmuxSession || '');
@@ -352,6 +352,7 @@ function renderedThreadMetadata(thread) {
     thread?.deliveryConfirmations,
     thread?.deliveryConfirmationMode,
     thread?.receivedDeliveryIds,
+    thread?.dismissedDeliveryIds,
     thread?.unconfirmedDeliveryIds,
     thread?.historyError,
     thread?.historyLoading,
@@ -553,7 +554,7 @@ export function applyAcceptedUserMessage(currentThread, {
   turnId, text, commandId, baselineVersion, baselineUserMessageId, baselineTurnId,
   baselineMatchingTextCount, baselineLastItemId, inputWasQueued = false, submissionStatus,
 } = {}) {
-  if (!currentThread || !commandId || typeof text !== 'string' || !text.trim()) {
+  if (!currentThread || !commandId || currentThread.dismissedDeliveryIds?.includes(commandId) || typeof text !== 'string' || !text.trim()) {
     return currentThread;
   }
   const id = `delivery:${commandId}`;

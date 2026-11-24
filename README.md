@@ -2,7 +2,7 @@
 
 一个轻量级的服务器 Agent 桌面：既可在浏览器中管理 tmux 终端，也可用适合手机的对话界面远程操作 Codex、Claude Code 和 QoderCLI。
 
-普通与 Remote 侧栏可以用 Tasks 跟踪某件事、用 Automations 安排检查、用 Bots 回到常用助手的主会话。[工作台使用指南](docs/workstation.md)
+展开普通或 Remote 侧栏的「工作台」，可以用 Automations 安排检查、用 Bots 回到助手主会话，或从 Pages 打开已发布的页面。[工作台使用指南](docs/workstation.md)
 
 ## 启动
 

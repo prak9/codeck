@@ -2193,6 +2193,15 @@ export async function interruptSession({ provider, sessionName, threadId, expect
   });
 }
 
+export async function resolveSessionDirectory(cwd) {
+  if (typeof cwd !== 'string' || !cwd || cwd.includes('\0')) throw new Error('工作目录无效');
+  const requested = cwd === '~' || cwd.startsWith('~/') ? homedir() + cwd.slice(1) : cwd;
+  // tmux silently falls back to HOME on chdir failure. '/.' also rejects files.
+  const directory = await realpath(requested + '/.');
+  await access(directory, constants.X_OK);
+  return directory;
+}
+
 export async function createSession({ name, client = 'shell', cwd, mode = 'new' }, execCommand = exec) {
   if (!validateSessionName(name)) throw new Error('会话名只能包含字母、数字、点、短横线或下划线，最长 64 个字符');
   if (!validateClient(client)) throw new Error('未知的终端类型');
@@ -2200,12 +2209,8 @@ export async function createSession({ name, client = 'shell', cwd, mode = 'new' 
 
   const args = ['new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}'];
   if (cwd != null && cwd !== '') {
-    if (typeof cwd !== 'string' || cwd.includes('\0')) throw new Error('工作目录无效');
-    const requested = cwd === '~' || cwd.startsWith('~/') ? homedir() + cwd.slice(1) : cwd;
     try {
-      // tmux silently falls back to HOME on chdir failure. '/.' also rejects files.
-      const directory = await realpath(requested + '/.');
-      await access(directory, constants.X_OK);
+      const directory = await resolveSessionDirectory(cwd);
       args.push('-c', directory.replaceAll('#', '##'));
     } catch (error) {
       if (!['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP', 'ENAMETOOLONG'].includes(error.code)) throw error;

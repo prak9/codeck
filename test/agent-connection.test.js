@@ -6,6 +6,7 @@ import { createSnapshotFeed } from '../src/snapshot-feed.js';
 import { applySnapshotPatch, createSnapshotPatch } from '../public/snapshot-patch.js';
 import { SdkAgentBackend } from '../src/sdk-agent-backend.js';
 import { CodexAgentBackend } from '../src/agent-backends.js';
+import { AUTONOMY_PROGRESS_PROMPT } from '../public/remote-autonomy.js';
 import { sendSessionMessage } from '../src/tmux.js';
 import { isUserMessageDeliveryConfirmed, normalizeAgentThread } from '../public/agent-model.js';
 
@@ -970,6 +971,119 @@ test('Codex reconnect restores confirmation hints without injecting terminal inp
   backend.close();
 });
 
+test('AGY retires only a duplicate answered progress check after the conversation moves on', async () => {
+  for (const text of [AUTONOMY_PROGRESS_PROMPT, '执行下一步']) {
+    const agy = new FakeBackend('agy');
+    const sent = [];
+    const hub = new AgentHub(new AgentRegistry({ agy }, { sendTmuxMessage: async input => { sent.push(input.text); return {}; } }));
+    const socket = new FakeSocket();
+    hub.handleConnection(socket);
+    const target = { provider: 'agy', threadId: 'conversation', tmuxSession: 'label' };
+    const request = async (id, type, payload = {}) => {
+      send(socket, { id, type, ...target, ...payload });
+      await waitFor(() => socket.sent.some(message => message.id === id));
+      const reply = socket.sent.find(message => message.id === id);
+      assert.equal(reply.ok, true, reply.error);
+      return reply.result.thread;
+    };
+    const user = (id, content) => ({ id, items: [{ id: 'u-' + id, type: 'userMessage', content }] });
+    const pending = thread => thread.turns.flatMap(turn => turn.items).filter(item => item.delivery).map(item => item.delivery.commandId);
+    agy.turns = [user('725', '最初的消息')];
+    for (const n of [0, 1]) {
+      await request(n + 1, 'sendSessionMessage', { commandId: 'command-' + n, text, baselineVersion: 2,
+        baselineTurnId: '725', baselineUserMessageId: 'u-725', baselineMatchingTextCount: n });
+    }
+    agy.turns.push(user('800', text));
+    agy.turns.push(user('858', '新的事情'));
+    assert.deepEqual(pending(await request(3, 'openThread')), ['command-1'], 'a later user alone is insufficient');
+    agy.turns.pop();
+    agy.turns[1].items.push({ id: 'answer', type: 'agentMessage', text: '已核验进展' });
+    assert.deepEqual(pending(await request(4, 'openThread')), ['command-1'], 'the second check may still receive a reply');
+    agy.turns.push(user('858', '新的事情'));
+    const latest = await request(5, 'openThread');
+    if (text === AUTONOMY_PROGRESS_PROMPT) {
+      assert.deepEqual(latest.dismissedDeliveryIds, ['command-1']);
+      assert.deepEqual(latest.turns, agy.turns);
+    } else {
+      assert.deepEqual(pending(latest), ['command-1']);
+      agy.turns.push(user('910', text));
+      assert.deepEqual((await request(6, 'openThread')).turns, agy.turns);
+    }
+    assert.deepEqual(sent, [text, text]);
+    socket.close();
+  }
+});
+
+test('AGY reconnect can retire a client-held progress receipt after a service restart without sending', async () => {
+  const agy = new FakeBackend('agy');
+  agy.turns = [
+    { id: 'before', items: [{ type: 'userMessage', id: 'u1', content: 'start' }] },
+    { id: 'answered', items: [{ type: 'userMessage', id: 'u2', content: AUTONOMY_PROGRESS_PROMPT },
+      { type: 'agentMessage', id: 'a2', text: 'progress' }] },
+    { id: 'later', items: [{ type: 'userMessage', id: 'u3', content: 'next' }] },
+  ];
+  const hub = new AgentHub(new AgentRegistry({ agy }, { sendTmuxMessage: () => assert.fail('must not inject') }));
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  send(socket, { id: 1, type: 'openThread', provider: 'agy', threadId: 'conversation', tmuxSession: 'label', readOnly: true,
+    deliveryReceipts: [{ commandId: 'command-old', text: AUTONOMY_PROGRESS_PROMPT, baselineVersion: 2,
+      baselineUserMessageId: 'u1', baselineTurnId: 'before', baselineMatchingTextCount: 1 }] });
+  await waitFor(() => socket.sent.some(message => message.id === 1));
+  const thread = socket.sent.find(m => m.id === 1).result.thread;
+  assert.deepEqual(thread.dismissedDeliveryIds, ['command-old']);
+  assert.deepEqual(thread.turns, agy.turns);
+  socket.close();
+});
+
+test('a late tmux send result cannot recreate a dismissed receipt', async () => {
+  let release;
+  const { hub } = setup({ sendTmuxMessage: () => new Promise(resolve => { release = resolve; }) });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket);
+  const target = { provider: 'codex', threadId: 'conversation', tmuxSession: 'work' };
+  send(socket, { id: 1, type: 'sendSessionMessage', ...target, commandId: 'command-late', text: 'work',
+    baselineVersion: 2, baselineMatchingTextCount: 0 });
+  await waitFor(() => release);
+  send(socket, { id: 2, type: 'dismissSessionDelivery', ...target, deliveryId: 'command-late' });
+  await waitFor(() => socket.sent.some(m => m.id === 2 && m.ok));
+  release({});
+  await waitFor(() => socket.sent.some(m => m.id === 1 && m.ok));
+  send(socket, { id: 3, type: 'openThread', ...target });
+  await waitFor(() => socket.sent.some(m => m.id === 3));
+  const thread = socket.sent.find(m => m.id === 3).result.thread;
+  assert.deepEqual(thread.dismissedDeliveryIds, ['command-late']);
+  assert.deepEqual(thread.turns, []);
+  socket.close();
+});
+
+test('AGY with no transcript confirmation stops waiting, refreshes subscribers and still accepts late evidence', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const feed = new FakeSnapshotFeed(), agy = new FakeBackend('agy');
+  const hub = new AgentHub(new AgentRegistry({ agy }, { sendTmuxMessage: async () => ({}) }), { threadFeed: feed });
+  const socket = new FakeSocket();
+  hub.handleConnection(socket, { streamVersion: 2 });
+  const target = { provider: 'agy', threadId: 'conversation', tmuxSession: 'label' };
+  agy.turns = [{ id: 'turn', items: [{ id: 'anchor', type: 'userMessage', content: 'start' }] }];
+  send(socket, { id: 1, type: 'sendSessionMessage', ...target, commandId: 'command-late', text: 'work', baselineVersion: 2,
+    baselineUserMessageId: 'anchor', baselineTurnId: 'turn', baselineMatchingTextCount: 0 });
+  await new Promise(setImmediate);
+  assert.equal(socket.sent.find(m => m.id === 1)?.ok, true);
+  const publish = sequence => feed.publish(target, { kind: 'snapshot', sequence, epoch: 'test',
+    snapshot: { thread: { id: target.threadId, turns: agy.turns } } });
+  const latest = () => socket.sent.findLast(m => m.type === 'threadSnapshot').thread;
+  publish(1);
+  assert.equal(latest().turns.at(-1).items[0].delivery.status, 'accepted');
+  const invalidations = feed.invalidations.length;
+  t.mock.timers.tick(60_001);
+  assert.deepEqual(feed.invalidations.slice(invalidations), [target]);
+  publish(2);
+  assert.equal(latest().turns.at(-1).items[0].delivery.status, 'unknown');
+  agy.turns.push({ id: 'next', items: [{ id: 'actual', type: 'userMessage', content: 'work' }] });
+  publish(3);
+  assert.deepEqual(latest().turns, agy.turns);
+  socket.close();
+});
+
 test('edited-message receipts restore at their anchor and can be dismissed without confirming or resending', async () => {
   const app = new EventEmitter(); app.close = () => {};
   const short = '？按钮不希望干扰agent当前节奏';
@@ -1701,6 +1815,7 @@ test('a delivery receipt whose anchor scrolled out of the window is treated as d
     { id: 't9', items: [{ id: 'x', type: 'agentMessage', text: '最近' }] },
   ] };
 
+  assert.equal(resolvedForTest(windowed, { ...receipt, provider: 'agy' }), false);
   assert.equal(resolvedForTest(windowed, receipt), true, '窗口外的锚点视为已送达');
   assert.equal(resolvedForTest(full, receipt), false, '锚点在窗口内且没有匹配消息 → 仍未送达');
 });

@@ -155,22 +155,6 @@ export function createRemoteImages({ root, getToken }) {
     return node;
   };
 
-  const renderMessage = (node, item, { inline = true } = {}) => {
-    const refs = item.codeckImages || [];
-    if (!refs.length) return;
-    const text = node.textContent;
-    const children = [];
-    let offset = 0;
-    for (const ref of refs) {
-      if (!inline || !Number.isInteger(ref.start) || ref.start < offset || ref.end > text.length) continue;
-      children.push(document.createTextNode(text.slice(offset, ref.start)), figure(ref));
-      offset = ref.end;
-    }
-    children.push(document.createTextNode(text.slice(offset)));
-    for (const ref of refs) if (!inline || !Number.isInteger(ref.start)) children.push(figure(ref));
-    node.replaceChildren(...children);
-  };
-
   const observeTurn = (node, { provider, threadId, turn }) => {
     if (provider !== 'codex' || !threadId || !turn.id || !['completed', 'interrupted', 'failed'].includes(turn.status) || turn.deliveryOnly) return;
     const key = JSON.stringify([provider, threadId, turn.id, turn.status, turn.completedAt || null, (turn.items || []).map(item => item.id)]);
@@ -214,5 +198,5 @@ export function createRemoteImages({ root, getToken }) {
       job.controller?.abort(); job.release?.(); observer.unobserve(node); tracked.delete(node);
     }
   };
-  return { renderMessage, observeTurn, prune };
+  return { figure, observeTurn, prune };
 }

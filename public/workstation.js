@@ -1,5 +1,5 @@
 import { reconcileChildOrder } from './keyed-children.js?v=1';
-import { renderAutomations, workstationRunLabel } from './workstation-automations.js?v=3';
+import { renderAutomations, workstationRunLabel } from './workstation-automations.js?v=4';
 
 const base = '/api/workstation';
 const statuses = { planned: '待开始', active: '进行中', delivered: '已交付', stopped: '已停止' };
@@ -42,15 +42,14 @@ export function sameWorkstationTarget(a, b) {
 
 export function bindWorkstation({ host, token, enabled, active, sessions, openSession, openDrawer, closeDrawer, newSession, openLegacy }) {
   const nav = document.getElementById('workstationNav');
-  const tasksButton = document.getElementById('tasksButton'), badge = document.getElementById('alwaysOnBadge');
   const botsToggle = document.getElementById('botsToggle'), botsList = document.getElementById('stationBots');
   const panel = el('section', null, 'station-panel'); panel.hidden = true;
   panel.setAttribute('aria-labelledby', 'stationTitle');
   panel.innerHTML = '<div class="station-inner"><header class="station-heading"><h2 id="stationTitle" tabindex="-1"></h2><div class="station-actions" data-tools></div></header><p class="station-error" role="status" hidden></p><div data-body></div></div>';
   host.append(panel);
   const heading = panel.querySelector('h2'), tools = panel.querySelector('[data-tools]'), body = panel.querySelector('[data-body]'), error = panel.querySelector('[role=status]');
-  let tasks = [], bots = [], pending = [], overview = {}, pendingError = '', authenticated = '', timer, generation = 0;
-  let route = null, opener = null, revision = 0, inflight, loaded = false, listScroll = 0;
+  let tasks = [], bots = [], authenticated = '', timer, generation = 0;
+  let route = null, opener = null, revision = 0, inflight, loaded = false, pendingRead = 0;
   const expanded = new Set(), inerted = new Set();
   const legacy = new URLSearchParams(location.search).get('workstation') === 'legacy';
   const automationButton = document.getElementById('alwaysOnButton');
@@ -88,27 +87,11 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
   function refresh() {
     if (inflight) return inflight;
     const owner = generation;
-    const job = Promise.all([
-      request(base),
-      Promise.allSettled([request(base + '/pending'), request('/api/always-on/overview')]),
-    ]).then(([snapshot, [questions, summary]]) => {
+    const job = request(base).then(snapshot => {
       if (owner !== generation) return;
       tasks = snapshot.tasks; bots = snapshot.bots;
-      pending = questions.status === 'fulfilled' ? [...questions.value.items] : [];
-      overview = summary.status === 'fulfilled' ? summary.value : {};
-      pendingError = [questions, summary].filter(result => result.status === 'rejected').map(result => result.reason.message).join(' · ');
-      for (const session of sessions()) {
-        const note = session.checkpoint, target = workstationTarget(session);
-        if (target && !note?.stale && note?.progress?.needsUser && !pending.some(item => sameWorkstationTarget(item.target, target))) {
-          pending.push({ kind: 'note', target, text: note.progress.needsUser, actionable: false });
-        }
-      }
       loaded = true;
-      const count = pending.length + (overview.stats?.approvals?.pending || 0) + (overview.stats?.proposals?.pending || 0);
-      badge.hidden = Boolean(pendingError) || !count; badge.textContent = count ? String(count) : '';
-      badge.setAttribute('aria-label', `${count} 项待你处理`);
       renderBots();
-      syncPendingSection();
     }).finally(() => { if (inflight === job) inflight = null; });
     inflight = job;
     return job;
@@ -154,7 +137,6 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
       }
     }
     closeDrawer();
-    if (route?.view === 'tasks') listScroll = panel.scrollTop;
     route = next; revision++; panel.hidden = false;
     syncNavigation();
     paint();
@@ -188,20 +170,25 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     const found = (await freshSessions()).find(session => sameWorkstationTarget(workstationTarget(session), target));
     if (current !== revision) return;
     if (!found) throw new Error('来源会话已结束或已更换。历史任务和已关联成果仍可查看。');
+    const previous = route, trigger = opener;
     await close();
     try { await openSession(target, anchor); }
-    catch (e) { navigate({ view: 'tasks' }); showError(e.message); }
+    catch (e) {
+      if (!previous) throw e;
+      navigate(previous, trigger); showError(e.message);
+    }
   }
 
   function syncNavigation() {
     for (const entry of nav.querySelectorAll('[aria-current]')) entry.removeAttribute('aria-current');
     if (!route) return;
-    if (route.view === 'bot' || route.view === 'bind') {
+    if (route.view === 'automations') automationButton.setAttribute('aria-current', 'page');
+    else {
       botsToggle.setAttribute('aria-current', 'location');
       const control = route.view === 'bind' ? document.getElementById('bindBotButton')
-        : botsList.querySelector(`[data-focus-key="manage:${CSS.escape(route.id)}"]`);
+        : botsList.querySelector(`[data-focus-key="${route.view === 'detail' ? 'task' : 'manage'}:${CSS.escape(route.id)}"]`);
       control?.setAttribute('aria-current', 'page');
-    } else (route.view === 'automations' ? automationButton : tasksButton).setAttribute('aria-current', 'page');
+    }
   }
 
   function renderBots() {
@@ -250,7 +237,10 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     const card = el('article', null, 'station-card');
     card.append(el('small', `${item.target.session} · ${item.kind === 'approval' ? '待审批' : '待回答'}`, 'station-meta'), el('p', item.text));
     const actions = el('div', null, 'station-actions');
-    const send = value => mutation('/pending/answer', 'POST', { key: item.key, target: item.target, ...value });
+    const send = async value => {
+      await request(base + '/pending/answer', 'POST', { key: item.key, target: item.target, ...value });
+      await refreshPending();
+    };
     if (!item.actionable) actions.append(action('回到来源会话', () => jump(item.target)));
     else if (item.kind === 'approval') {
       actions.append(action('允许', () => send({ decision: 'accept' })), action('拒绝', () => send({ decision: 'decline' })));
@@ -265,11 +255,29 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     return card;
   }
 
-  function syncPendingSection() {
+  async function refreshPending() {
+    if (route?.view !== 'detail') return;
     const group = body.querySelector('[data-pending]');
-    if (!group || !route) return;
-    const target = route.view === 'detail' ? tasks.find(task => task.id === route.id)?.target : null;
-    const items = route.view === 'detail' ? pending.filter(item => sameWorkstationTarget(item.target, target)) : pending;
+    const target = tasks.find(task => task.id === route.id)?.target;
+    if (!group || !target) return;
+    const ticket = ++pendingRead, current = revision;
+    const status = group.querySelector('[role=status]');
+    let items;
+    try {
+      const result = await request(base + '/pending');
+      if (current !== revision || ticket !== pendingRead) return;
+      items = result.items.filter(item => sameWorkstationTarget(item.target, target));
+      const note = sessions().find(session => sameWorkstationTarget(workstationTarget(session), target))?.checkpoint;
+      if (!items.length && !note?.stale && note?.progress?.needsUser) {
+        items.push({ kind: 'note', target, text: note.progress.needsUser, actionable: false });
+      }
+      status.hidden = true;
+    } catch (e) {
+      if (current !== revision || ticket !== pendingRead) return;
+      status.textContent = e.message; status.hidden = false;
+      group.hidden = false; group.lastElementChild.replaceChildren();
+      return;
+    }
     const entries = group.lastElementChild;
     const existing = new Map([...entries.children].map(node => [node.pendingFingerprint, node]));
     const nodes = items.map(item => {
@@ -282,89 +290,36 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     group.hidden = !items.length;
   }
 
-  function pendingSection(title) {
-    const group = el('section'); group.dataset.pending = '';
-    group.append(el('h3', title), el('div')); body.append(group);
-    syncPendingSection();
-  }
-
-  function list() {
-    const top = el('div', null, 'station-actions');
-    top.append(button('从会话加入任务', control => navigate({ view: 'add', anchor: 'manual:' + [...crypto.getRandomValues(new Uint32Array(4))].map(n => n.toString(16).padStart(8, '0')).join('') }, control), 'station-primary'), button('审批与设置', control => openLegacy('overview', control)));
-    body.append(top);
-    if (pendingError) body.append(el('p', '部分待办读取失败：' + pendingError, 'station-error'), action('重新读取待办', async () => { const current = revision; await refresh(); if (current === revision) paint(); }));
-    const approvals = overview.stats?.approvals?.pending || 0, proposals = overview.stats?.proposals?.pending || 0;
-    pendingSection('待你处理');
-    if (approvals || proposals) body.append(button(`审批 ${approvals} · 待决建议 ${proposals}`, control => openLegacy('overview', control), 'station-item'));
-    body.append(el('h3', '进行中的任务'));
-    const activeTasks = tasks.filter(task => !['delivered', 'stopped'].includes(task.status));
-    if (!activeTasks.length) body.append(el('p', '暂无进行中的任务。', 'station-empty'));
-    for (const task of activeTasks) body.append(taskRow(task));
-    const finished = tasks.filter(task => ['delivered', 'stopped'].includes(task.status));
-    if (finished.length) {
-      const group = el('details'); group.append(el('summary', `最近交付与停止 · ${finished.length}`));
-      for (const task of finished) group.append(taskRow(task)); body.append(group);
-    }
-  }
-
   function submit(form, label, fn) {
     const save = el('button', label, 'station-primary'); save.type = 'submit'; form.append(save);
     form.addEventListener('submit', event => { event.preventDefault(); if (!save.disabled) void withAction(save, fn); });
   }
 
-  async function formFor(isBot) {
-    const here = revision, source = route.source;
-    const sessions = (await freshSessions()).filter(session => workstationTarget(session));
-    if (here !== revision) return;
-    const form = el('form'), title = el('input'); title.required = true; title.maxLength = 256;
-    title.value = source?.title || '';
-    form.append(field(isBot ? 'Bot 名称' : '任务标题', title));
-    const picker = el('select'); picker.required = true;
-    const selected = source?.target || active()?.target;
-    if (!source) picker.append(option('选择已就绪的 Agent 会话', ''));
-    for (const session of sessions) {
-      const target = workstationTarget(session);
-      if (source && !sameWorkstationTarget(target, source.target)) continue;
-      const entry = option(session.name, JSON.stringify(target)); picker.append(entry);
-      if (!isBot && (sameWorkstationTarget(target, selected) || sessions.length === 1)) entry.selected = true;
-    }
-    if (!picker.options.length) picker.append(option('暂无可绑定的会话', ''));
-    if (source) picker.disabled = true;
-    form.append(field(isBot ? '主会话' : '来源会话', picker));
-    const purpose = el('textarea'), assignee = el('select');
-    if (isBot) {
-      form.append(button('新建会话…', () => {
-        newSessionDialog.addEventListener('close', () => { if (here === revision) void withAction(picker, refreshChoices); }, { once: true });
-        newSession();
-      }), action('刷新会话', refreshChoices));
-      async function refreshChoices() {
-        const result = await freshSessions();
-        if (here !== revision) return;
-        const before = picker.value, choices = [];
-        for (const session of result) {
-          const target = workstationTarget(session);
-          if (target) choices.push(option(session.name, JSON.stringify(target)));
-        }
-        picker.replaceChildren(option('选择已就绪的 Agent 会话', ''), ...choices);
-        if (before && choices.some(choice => choice.value === before)) picker.value = before;
+  async function bindBotForm() {
+    const here = revision;
+    const form = el('form'), title = el('input'), picker = el('select'), purpose = el('textarea');
+    title.required = true; title.maxLength = 256; picker.required = true; purpose.maxLength = 2048;
+    async function refreshChoices() {
+      const result = await freshSessions();
+      if (here !== revision) return;
+      const before = picker.value, choices = [];
+      for (const session of result) {
+        const target = workstationTarget(session);
+        if (target) choices.push(option(session.name, JSON.stringify(target)));
       }
-      purpose.maxLength = 2048;
-      form.append(field('职责', purpose));
-    } else {
-      assignee.append(option('未分配', ''));
-      for (const bot of bots) assignee.append(option(bot.name, bot.id));
-      const assignDefault = () => { assignee.value = bots.find(b => picker.value && sameWorkstationTarget(b.target, JSON.parse(picker.value)))?.id || ''; };
-      assignDefault(); picker.onchange = assignDefault;
-      form.append(field('归属 Bot', assignee));
+      picker.replaceChildren(option('选择已就绪的 Agent 会话', ''), ...choices);
+      if (before && choices.some(choice => choice.value === before)) picker.value = before;
     }
-    submit(form, isBot ? '绑定 Bot' : '加入 Tasks', async () => {
+    await refreshChoices();
+    if (here !== revision) return;
+    form.append(field('Bot 名称', title), field('主会话', picker), button('新建会话…', () => {
+      newSessionDialog.addEventListener('close', () => { if (here === revision) void withAction(picker, refreshChoices); }, { once: true });
+      newSession();
+    }), action('刷新会话', refreshChoices), field('职责', purpose));
+    submit(form, '绑定 Bot', async () => {
       if (!picker.value || !title.value.trim()) throw new Error('请填写名称并选择现有会话。');
-      const target = JSON.parse(picker.value);
-      const value = isBot
-        ? { name: title.value.trim(), purpose: purpose.value.trim(), target }
-        : { title: title.value.trim(), target, anchor: source?.anchor || route.anchor, botId: assignee.value || null };
-      const saved = await mutation(isBot ? '/bots' : '/tasks', 'POST', value);
-      if (here === revision) navigate({ view: isBot ? 'bot' : 'detail', id: saved.id }, null, true);
+      const saved = await mutation('/bots', 'POST', { name: title.value.trim(), purpose: purpose.value.trim(), target: JSON.parse(picker.value) });
+      if (here === revision) navigate({ view: 'bot', id: saved.id }, null, true);
     });
     body.append(form);
   }
@@ -430,7 +385,11 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     const actions = el('div', null, 'station-actions');
     actions.append(action('打开来源会话', () => jump(task.target, task.anchor)));
     body.append(actions);
-    pendingSection('来源会话待你处理');
+    const pending = el('section'), statusMessage = el('p', null, 'station-error');
+    pending.dataset.pending = ''; pending.hidden = true;
+    statusMessage.setAttribute('role', 'status'); statusMessage.hidden = true;
+    pending.append(el('h3', '来源会话待你处理'), statusMessage, el('div')); body.append(pending);
+    void refreshPending();
     if (task.progress) body.append(el('h3', '进展'), el('p', task.progress));
     body.append(el('h3', '当次成果'));
     for (const out of task.outputs) body.append(outputCard(task, out));
@@ -486,7 +445,7 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     const edit = el('div', null, 'station-setting-body');
     edit.append(form, action('解除主会话绑定', async () => {
       await mutation('/bots/' + bot.id, 'DELETE');
-      if (current === revision) navigate({ view: 'tasks' }, null, true);
+      if (current === revision) await close();
     }, 'station-secondary'));
     settings.append(edit);
     const owned = tasks.filter(t => t.botId === bot.id);
@@ -538,7 +497,7 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
     if (!route) return;
     const current = revision, view = route.view;
     const task = tasks.find(t => t.id === route.id), bot = bots.find(b => b.id === route.id);
-    heading.textContent = ({ tasks: 'Tasks', automations: 'Automations', bind: '绑定 Bot', add: '加入 Tasks', detail: task?.title || '任务详情', bot: bot?.name || 'Bot' })[view];
+    heading.textContent = ({ automations: 'Automations', bind: '绑定 Bot', detail: task?.title || '任务详情', bot: bot?.name || 'Bot' })[view];
     tools.replaceChildren(button(depth < 2 ? '返回会话' : '返回', back));
     if (openDrawer) {
       const menu = button('☰', openDrawer);
@@ -556,21 +515,14 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
       refresh().then(() => { if (current === revision) paint(); }).catch(e => {
         if (current === revision) { showError(e.message); body.replaceChildren(button('重试', () => paint())); }
       });
-    } else if (view === 'tasks') list();
-    else if (view === 'add' || view === 'bind') formFor(view === 'bind').catch(e => { if (current === revision) { showError(e.message); body.append(button('重试', () => paint())); } });
+    } else if (view === 'bind') bindBotForm().catch(e => { if (current === revision) { showError(e.message); body.append(button('重试', () => paint())); } });
     else if (view === 'detail' && task) detail(task);
     else if (view === 'bot' && bot) botDetails(bot);
     else body.append(el('p', '记录已移除。', 'station-empty'));
-    panel.scrollTop = view === 'tasks' ? listScroll : 0;
+    panel.scrollTop = 0;
   }
 
   automationButton.onclick = () => { if (route?.view !== 'automations') navigate({ view: 'automations' }, automationButton); else closeDrawer(); };
-  tasksButton.onclick = () => {
-    if (route?.view !== 'tasks') navigate({ view: 'tasks' }, tasksButton);
-    else closeDrawer();
-    const current = revision;
-    refresh().then(() => { if (current === revision && route?.view === 'tasks') paint(); }).catch(e => { if (current === revision) showError(e.message); });
-  };
   const pagesToggle = document.getElementById('pagesToggle');
   const pagesList = document.getElementById('stationPages');
   let pagesRequest = 0;
@@ -619,28 +571,24 @@ export function bindWorkstation({ host, token, enabled, active, sessions, openSe
   function sync() {
     const owner = available() ? token() : '';
     if (owner === authenticated) return;
-    pagesRequest++;
+    nav.querySelector('.station-group').open = false;
+    expanded.clear();
+    botsList.hidden = true;
+    botsToggle.setAttribute('aria-expanded', 'false');
+    void setPagesOpen(false);
     pagesList.replaceChildren();
-    pagesList.hidden = true;
-    pagesToggle.setAttribute('aria-expanded', 'false');
-    generation++; authenticated = owner; loaded = false; inflight = null; tasks = []; bots = []; pending = []; overview = {};
-    badge.hidden = true; badge.textContent = ''; renderBots(); clearInterval(timer);
+    generation++; authenticated = owner; loaded = false; inflight = null; tasks = []; bots = []; pendingRead++;
+    renderBots(); clearInterval(timer);
     nav.hidden = !owner || legacy; automationButton.hidden = !owner;
     document.getElementById('legacyStationEntry').hidden = !owner || !legacy;
     if (!owner || legacy) { if (route) close(); return; }
-    void setPagesOpen(true);
     const poll = () => {
       if (document.hidden) return;
-      // Keep keyboard focus, in-progress answers and editing drafts intact while the panel is open.
-      const current = revision, before = JSON.stringify([tasks, pending, pendingError, overview.stats?.approvals, overview.stats?.proposals]);
-      void refresh().then(() => {
-        if (current === revision && route?.view === 'tasks' && !body.contains(document.activeElement)
-            && !body.querySelector('input:not(:placeholder-shown), details[open]') &&
-            before !== JSON.stringify([tasks, pending, pendingError, overview.stats?.approvals, overview.stats?.proposals])) paint();
-      }).catch(() => {});
+      void refresh().catch(() => {});
+      void refreshPending();
     };
     poll(); timer = setInterval(poll, 30_000);
   }
 
-  return { sync, close, canTrack: () => available() && !legacy, visible: () => Boolean(route), track(source, trigger) { if (legacy) return; navigate({ view: 'add', source }, trigger); } };
+  return { sync, close, visible: () => Boolean(route) };
 }

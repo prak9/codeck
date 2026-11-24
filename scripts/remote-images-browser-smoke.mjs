@@ -55,7 +55,7 @@ try {
     turns = [
       { id: 'old-image', status: 'completed', items: [{ type: 'agentMessage', id: 'old', text: `![历史图表](${oldImagePath})` }] },
       { id: 'spacer', status: 'completed', items: [{ type: 'agentMessage', id: 'text', text: '历史文字内容\n'.repeat(100) }] },
-      { id: 'markdown', status: 'completed', items: [{ type: 'agentMessage', id: 'markdown-image', text: `蓝线：固定前N次模拟的盈利估计误差。\n![MC次数与盈利估计误差](${imagePath})\n橙线：各组误差的平均值。` }] },
+      { id: 'markdown', status: 'completed', items: [{ type: 'agentMessage', id: 'markdown-image', text: `蓝线：固定前N次模拟的盈利估计误差。\n\n| 图表 | 说明 |\n| --- | --- |\n| ![MC次数与盈利估计误差](${imagePath}) | 橙线：各组误差的平均值。 |` }] },
       { id: 'view-only', status: 'completed', items: [{ type: 'userMessage', id: 'user', content: [{ type: 'text', text: '直接渲染出来' }] }, { type: 'agentMessage', id: 'empty', text: '' }] },
     ];
     const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 500, hasTouch: width < 500 });
@@ -75,6 +75,7 @@ try {
       return image?.naturalWidth > 0 && !image.hidden;
     });
     assert.equal(await page.inputValue('#composerInput'), '图片加载时仍可输入');
+    assert.equal(await page.locator('[data-turn-id="markdown"] td .remote-image').count(), 1, 'registered preview stays in its table cell');
     assert.equal(oldImageRequests, 0, 'offscreen history images remain unloaded');
     const bounds = await page.locator('[data-turn-id="view-only"] .remote-image-stage').boundingBox();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

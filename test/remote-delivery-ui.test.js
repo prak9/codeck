@@ -4,10 +4,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { autonomyDisplayText } from '../public/remote-autonomy.js';
 import {
+  applyAcceptedUserMessage,
   findTmuxThreadTarget,
   normalizeAgentThread,
   reconcileAgentThreadRefresh,
 } from '../public/agent-model.js';
+
+import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const source = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
 function load(context, name) {
@@ -31,6 +34,21 @@ test('a completed history snapshot clears the loading notice without needing new
     assert.equal(state.thread.historyError, undefined);
     assert.equal(state.liveMessage, '');
   }
+});
+
+test('an unchanged transcript applies a receipt dismissal and a late send acknowledgement cannot undo it', () => {
+  const actual = { id: 't', items: [{ id: 'anchor', type: 'userMessage', content: 'start' }] };
+  const baseline = { commandId: 'command-old', text: 'progress', baselineVersion: 2,
+    baselineUserMessageId: 'anchor', baselineTurnId: 't', baselineMatchingTextCount: 1 };
+  const clean = normalizeAgentThread('agy', { id: 'label-thread', turns: [actual] });
+  const state = { provider: 'agy', thread: applyAcceptedUserMessage(clean, baseline), pendingDeliveries: new Map() };
+  const context = vm.createContext({ state, normalizeAgentThread, reconcileAgentThreadRefresh, withoutDismissedDeliveries,
+    localStorage: {}, rememberDismissedDeliveries() {}, scheduleThreadRender() {} });
+  load(context, 'applyRefreshedThread');
+  load(context, 'settleConfirmedDeliveries');
+  assert.equal(context.applyRefreshedThread('agy', { ...clean, dismissedDeliveryIds: ['command-old'] }), true);
+  assert.deepEqual(state.thread.turns, clean.turns);
+  assert.equal(applyAcceptedUserMessage(state.thread, baseline), state.thread);
 });
 
 test('unknown delivery has an explicit terminal-check warning instead of a waiting label', () => {

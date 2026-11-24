@@ -3,16 +3,16 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { COMMAND_RECEIPT_TTL_MS, cleanCommandId, createCommandReceiptCache } from './command-receipts.js';
 import { resolveSessionStatus } from './session-status.js';
-import { stripTerminalInputResidue } from '../public/terminal-input.js';
 import { latestAgentOutputText } from '../public/remote-copy.js';
 import { encodeHistoryCursor, decodeHistoryCursor } from './thread-history-cursor.js';
-import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed } from '../public/agent-model.js';
+import { deliveryInsertionIndex, isUserMessageDeliveryConfirmed, userMessageText, usersAfterDeliveryBaseline } from '../public/agent-model.js';
 import { clearSessionCommandConfirmation, normalizeSessionCommandOutput, sessionCommandCapabilities } from '../public/remote-command-output.js';
-import { isAutonomyObservation, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
+import { isAutonomyObservation, isProgressPrompt, AUTONOMY_PLANNING_PROMPT } from '../public/remote-autonomy.js';
 import { withoutDismissedDeliveries } from '../public/remote-delivery.js';
 
 const SESSION_START_MATCH_MS = 120_000;
 const SESSION_MESSAGE_RECEIPT_TTL_MS = 24 * 60 * 60_000;
+const AGY_CONFIRMATION_WAIT_MS = 60_000;
 const SESSION_MESSAGE_RECEIPT_LIMIT = 1_024;
 
 function approvalKey(provider, id) {
@@ -112,52 +112,28 @@ function cleanDeliveryBaseline(message) {
   };
 }
 
-function sessionUserMessageText(item) {
-  const text = typeof item?.content === 'string'
-    ? item.content
-    : (Array.isArray(item?.content) ? item.content : [])
-      .filter((part) => typeof part?.text === 'string')
-      .map((part) => part.text)
-      .join('\n');
-  return stripTerminalInputResidue(text);
-}
-
-function sessionUserMessageEntries(thread) {
-  return (Array.isArray(thread?.turns) ? thread.turns : []).flatMap((turn, turnIndex) => (
-    (Array.isArray(turn?.items) ? turn.items : [])
-      .filter((item) => item?.type === 'userMessage' && !item.delivery)
-      .map((item) => ({ item, turnIndex }))
-  ));
-}
-
 function sessionMessageReceiptResolved(thread, receipt) {
   if (isUserMessageDeliveryConfirmed(thread, receipt)) return true;
-  if (thread?.deliveryConfirmationMode === 'server') return false;
-  if (receipt.baselineVersion !== 2) return false;
-  const users = sessionUserMessageEntries(thread);
-  let candidates;
-  // thread 流只推尾部窗口时, 锚点可能已经滚出窗口。那意味着此后又发生了整整一个
-  // 窗口的对话 —— 这条消息要么早就送达, 要么早已无从补救; 继续判为"未送达"只会
-  // 让那条乐观回显永远挂着, 表现为一条重复的待发消息。
-  // A missing anchor cannot prove that an input whose submission was unconfirmed
-  // ever left the CLI draft. Keep its receipt until the transcript can confirm it.
-  const outOfWindow = receipt.provider !== 'qodercli' && receipt.provider !== 'codex'
-    && Boolean(thread?.truncated) && receipt.submissionStatus !== 'unconfirmed';
-  if (receipt.baselineUserMessageId) {
-    const anchorIndex = users.findIndex(({ item }) => item.id === receipt.baselineUserMessageId);
-    if (anchorIndex < 0) return outOfWindow;
-    candidates = users.slice(anchorIndex + 1);
-  } else if (receipt.baselineTurnId) {
-    const turnIndex = (Array.isArray(thread?.turns) ? thread.turns : [])
-      .findIndex((turn) => turn.id === receipt.baselineTurnId);
-    if (turnIndex < 0) return outOfWindow;
-    candidates = users.filter((entry) => entry.turnIndex > turnIndex);
-  } else {
-    candidates = users;
+  // Only legacy providers treat a missing anchor in a truncated window as settled.
+  return receipt.baselineVersion === 2 && Boolean(thread?.truncated)
+    && thread.deliveryConfirmationMode !== 'server' && receipt.submissionStatus !== 'unconfirmed'
+    && !['codex', 'qodercli', 'agy'].includes(receipt.provider)
+    && usersAfterDeliveryBaseline(thread, receipt) === null;
+}
+
+function supersededAgyProgressCheck(thread, receipt) {
+  if (receipt.provider !== 'agy' || !isProgressPrompt(receipt.text) || !(receipt.baselineMatchingTextCount > 0)
+    || !(receipt.baselineUserMessageId || receipt.baselineTurnId)
+    || thread.historyLoading || thread.historyError || thread.historyStale) return false;
+  let answered = false;
+  for (const { item, turn } of usersAfterDeliveryBaseline(thread, receipt) || []) {
+    if (userMessageText(item) === receipt.text) {
+      answered ||= turn.items.some(reply => reply.type === 'agentMessage' && reply.text?.trim());
+    } else if (answered) {
+      return true;
+    }
   }
-  return Boolean(candidates
-    .filter(({ item }) => sessionUserMessageText(item) === receipt.text)
-    [receipt.baselineMatchingTextCount]);
+  return false;
 }
 
 function sessionMessageReceiptItem(receipt) {
@@ -653,7 +629,7 @@ export class AgentHub {
       this.registry.backend(provider);
       // Hints rebuild read-only confirmation state after a service restart. Never
       // trust a client's submitted/confirmed status and never invoke the sender.
-      const hints = provider === 'codex' ? message.deliveryReceipts : undefined;
+      const hints = ['codex', 'agy'].includes(provider) ? message.deliveryReceipts : undefined;
       const dismissed = message.dismissedDeliveryIds ?? [];
       if (!Array.isArray(dismissed) || dismissed.length > 512) throw new Error('Invalid dismissed deliveries');
       const dismissedIds = dismissed.map(cleanCommandId);
@@ -746,6 +722,11 @@ export class AgentHub {
           ...(planning ? { isCurrent } : {}),
         });
         if (result?.submissionStatus === 'not-sent') throw new Error('输入框未就绪，消息未注入；请先处理草稿或弹窗');
+        if (this.dismissedDeliveries.has(JSON.stringify([provider, threadId, commandId]))) {
+          this.#invalidateSessionFeed();
+          this.#refreshThreadSubscription(target);
+          return result;
+        }
         const submission = provider === 'codex' || result?.submissionStatus != null
           ? { submissionStatus: result?.submissionStatus === 'submitted' ? 'submitted' : 'unconfirmed' }
           : {};
@@ -759,7 +740,7 @@ export class AgentHub {
         const receiptRecorded = !turnId && provider !== 'shell' && commandId
           && !text.startsWith('/') && (!result?.terminalOutput || result.terminalWorking)
           && this.#recordSessionMessageReceipt(provider, {
-            threadId, text, commandId,
+            threadId, text, commandId, tmuxSession: sessionName,
             ...submission,
             inputWasQueued: result?.inputWasQueued === true,
             ...baseline,
@@ -960,19 +941,20 @@ export class AgentHub {
     while (this.sessionMessageReceipts.size >= SESSION_MESSAGE_RECEIPT_LIMIT) {
       this.sessionMessageReceipts.delete(this.sessionMessageReceipts.keys().next().value);
     }
-    this.sessionMessageReceipts.set(receipt.commandId, {
-      provider,
-      ...receipt,
-      expiresAt: Date.now() + SESSION_MESSAGE_RECEIPT_TTL_MS,
-    });
+    const stored = { provider, ...receipt, expiresAt: Date.now() + SESSION_MESSAGE_RECEIPT_TTL_MS };
+    this.sessionMessageReceipts.set(receipt.commandId, stored);
+    if (provider === 'agy' && !stored.confirmationTimedOut) {
+      setTimeout(() => {
+        if (this.sessionMessageReceipts.get(stored.commandId) !== stored) return;
+        stored.confirmationTimedOut = true;
+        this.#invalidateThreadSubscription({ provider, threadId: stored.threadId, tmuxSession: stored.tmuxSession });
+      }, AGY_CONFIRMATION_WAIT_MS).unref();
+    }
     return true;
   }
 
   #restoreSessionMessageReceipts(provider, threadId, result) {
-    const dismissedIds = [...this.dismissedDeliveries.values()]
-      .filter(entry => entry.provider === provider && entry.threadId === threadId).map(entry => entry.commandId);
-    if (dismissedIds.length && result?.thread) result = { ...result, thread: withoutDismissedDeliveries(result.thread, dismissedIds) };
-    const thread = result?.thread;
+    let thread = result?.thread;
     if (!thread) return result;
     this.#pruneSessionMessageReceipts();
     const pending = [];
@@ -980,11 +962,19 @@ export class AgentHub {
       if (receipt.provider !== provider || receipt.threadId !== threadId) continue;
       if (sessionMessageReceiptResolved(thread, receipt)) {
         this.sessionMessageReceipts.delete(commandId);
+      } else if (supersededAgyProgressCheck(thread, receipt)) {
+        this.#dismissDelivery(provider, threadId, commandId);
       } else {
         if (provider === 'qodercli' && thread.receivedDeliveryIds?.includes(commandId)) receipt.inputReceived = true;
         pending.push(thread.unconfirmedDeliveryIds?.includes(receipt.commandId)
           ? { ...receipt, confirmationTimedOut: true } : receipt);
       }
+    }
+    const dismissedIds = [...this.dismissedDeliveries.values()]
+      .filter(entry => entry.provider === provider && entry.threadId === threadId).map(entry => entry.commandId);
+    if (dismissedIds.length) {
+      thread = withoutDismissedDeliveries(thread, dismissedIds);
+      result = { ...result, thread };
     }
     if (!pending.length) return result;
     const turns = Array.isArray(thread.turns) ? thread.turns : [];

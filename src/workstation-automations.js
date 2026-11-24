@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { access, constants, lstat, readdir } from 'node:fs/promises';
+import { resolveSessionDirectory } from './tmux.js';
 import { createTelegramTask } from './telegram-task.js';
 import { sessionTarget } from './telegram-sessions.js';
 import { runPrecheck } from './conditional-tasks.js';
@@ -12,8 +13,10 @@ import { checkAutomationTimer, nextCalendarDue } from './workstation-automation-
 
 function problem(message, status = 400) { return workstationError(status, message); }
 
+const providers = ['codex', 'claude', 'qodercli'];
+
 function targetOf(session) {
-  if (!session.agent?.id || !['codex', 'claude', 'qodercli'].includes(session.agent.kind)) throw problem('请选择支持调度且具有对话身份的会话', 409);
+  if (!session.agent?.id || !providers.includes(session.agent.kind)) throw problem('请选择支持调度且具有对话身份的会话', 409);
   const { provider, threadId } = sessionTarget([session], session.name);
   if (!Number.isSafeInteger(session.createdAt)) throw problem('会话创建身份不可用', 409);
   return { session: session.name, createdAt: session.createdAt, provider, threadId };
@@ -93,10 +96,22 @@ export function createWorkstationAutomations({ store, tracking, listSessions, se
     if (input.target && !matches(expected, input.target)) throw problem('选择的目标与当前执行身份不一致', 409);
     const legacy = prior && !prior.payload?.workstation;
     if (legacy && (bot || task || script)) throw problem('原有提醒请选择会话或原有提醒入口');
-    let sessionName = expected?.session || input.sessionName, target, cwd, scopeKey;
-    if (legacy && !sessionName) {
+    const project = input.project;
+    let sessionName = expected?.session || input.sessionName, target = null, cwd, scopeKey;
+    if (project != null) {
+      if (legacy || expected || sessionName) throw problem('请选择一种执行来源');
+      if (!providers.includes(project.provider)) throw problem('请选择支持调度的 Agent');
+      cwd = project.cwd;
+      if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')) throw problem('项目目录须为本机绝对路径');
+      try {
+        cwd = await resolveSessionDirectory(cwd);
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP', 'ENAMETOOLONG'].includes(error.code)) throw problem('项目目录不存在或不可访问');
+        throw error;
+      }
+    } else if (legacy && !sessionName) {
       ({ sessionName, cwd, scopeKey } = prior);
-    } else if (script && matches(expected, prior?.payload?.workstation?.target) && prior.payload.workstation.botId === bot.id) {
+    } else if (!task && matches(expected, prior?.payload?.workstation?.target) && prior.payload.workstation.botId === (bot?.id ?? null)) {
       target = expected;
       cwd = prior.cwd;
     } else {
@@ -133,7 +148,7 @@ export function createWorkstationAutomations({ store, tracking, listSessions, se
     if (calendar) payload.calendar = calendar; else delete payload.calendar;
     if (!legacy) payload.workstation = { target, cwd, botId: bot?.id || null, taskId: task?.id || null, ...script };
     return { kind: recurrenceMs !== null ? 'schedule' : 'follow_up', reason: input.reason.trim(), sessionName,
-      provider: target?.provider ?? prior?.provider, threadId: target?.threadId ?? prior?.threadId,
+      provider: project?.provider ?? target?.provider ?? prior?.provider, threadId: target?.threadId ?? (legacy ? prior.threadId : null),
       cwd, check, recurrenceMs, dueAt, status: 'active', payload, ...(legacy && { scopeKey }), keepDue };
 
   }
@@ -239,12 +254,12 @@ export function createWorkstationAutomations({ store, tracking, listSessions, se
     const sessions = await listSessions();
     const task = plan.taskId ? tracking.task(plan.taskId) : null;
     if (plan.taskId && (!task || !['active', 'planned'].includes(task.status) || !matches(task.runs?.at(-1)?.target || task.target, plan.target))) throw new Error('任务执行目标已变化，未发送');
-    const main = sessions.find(s => s.name === plan.target.session);
-    if (!workstationTargetMatches(main, plan.target)) throw new Error('原会话身份已变化，任务未派发');
     const commandId = 'automation-' + event.id;
     const assignment = bot && !task ? [bot.purpose && 'Bot 职责：' + bot.purpose, bot.instructions && 'Bot 偏好：' + bot.instructions].filter(Boolean) : [];
     const text = [p.reason, ...assignment].join('\n') + (p.eventKey ? '\n检查事件：' + p.eventKey : '') + '\n调度请求标识：' + commandId;
     if (task) {
+      const main = sessions.find(s => s.name === plan.target.session);
+      if (!workstationTargetMatches(main, plan.target)) throw new Error('原会话身份已变化，任务未派发');
       store.db.prepare("UPDATE timer_checks SET task_id=?,session_name=? WHERE event_id=? AND status='enqueued'").run(task.id, main.name, event.id);
       if (sessionExecutionState(main) !== 'idle') return { status: 'requeue' };
       const target = sessionTarget([main], main.name);
@@ -262,7 +277,15 @@ export function createWorkstationAutomations({ store, tracking, listSessions, se
     const at = now();
     store.db.prepare("UPDATE timer_checks SET session_name=?,launched_after=? WHERE event_id=? AND status='enqueued'").run(name, at, event.id);
     helpers.markSubmitting(commandId);
-    const launched = await create({ name, provider: p.provider, cwd: plan.cwd, text });
+    let launched;
+    try {
+      launched = await create({ name, provider: p.provider, cwd: plan.cwd, text });
+    } catch (error) {
+      if (!error.notStarted) throw error;
+      store.db.prepare("UPDATE timer_checks SET session_name=NULL,dispatch_status='failed',error=? WHERE event_id=? AND status='enqueued'")
+        .run(error.message, event.id);
+      return { status: 'failed', error: error.message };
+    }
     if (launched.tmuxSession !== name || !/^%\d+$/.test(launched.paneId || '') || launched.provider !== p.provider) {
       throw new Error('独立会话创建结果待核实');
     }
@@ -318,7 +341,8 @@ export function createWorkstationAutomations({ store, tracking, listSessions, se
       const target = input?.target, calendar = input?.calendar;
       const fingerprint = requestId && digest(JSON.stringify([input.reason, input.sessionName, input.botId, input.taskId, input.dueAt, input.recurrenceMs,
         target?.session, target?.provider, target?.threadId, target?.createdAt, calendar?.time, calendar?.timeZone, calendar?.weekdays === true, input.check,
-        ...(input.script != null ? [input.script, input.channelId] : [])]));
+        ...(input.script != null ? [input.script, input.channelId] : []),
+        ...(input.project != null ? ['project', input.project.provider, input.project.cwd] : [])]));
       function saved() {
         const rule = requestId && store.getTimer(id);
         if (rule && rule.payload.workstation?.fingerprint !== fingerprint) throw problem('同一保存请求标识已用于另一份规则', 409);

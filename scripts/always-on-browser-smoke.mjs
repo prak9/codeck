@@ -42,7 +42,7 @@ const approvalGate = createApprovalGate({ store, runtime });
 const credentialProxy = createCredentialProxy({ secretsDir: path.join(dir, 'secrets') });
 
 // Seed one pending deferred approval and one digest item
-approvalGate.requestApproval({
+const { approval } = approvalGate.requestApproval({
   scopeKey: 'session:demo',
   sessionName: 'demo',
   summary: '分享演示报告页面',
@@ -63,7 +63,11 @@ const session = { name: 'demo', cwd: dir, windows: 1, attached: 0, createdAt: Da
 const sessions = async () => [session];
 app.get('/api/sessions', (req, res) => res.json({ sessions: [session], capabilities: { flexibleSize: true, canManage: req.auth.owner,
   canWrite: req.auth.canWrite, canSwitchSession: req.auth.owner, terminalSubmit: true } }));
+app.get('/api/pages', ownerOnly, (_req, res) => res.json({ pages: [{ id: 'weekly', title: '周报' }] }));
 const tracking = new WorkstationStore(store.db);
+const taskTarget = { session: session.name, createdAt: session.createdAt, provider: session.agent.kind, threadId: session.agent.id };
+const analyst = tracking.createBot({ name: '投研助手', purpose: '季报核验', target: taskTarget });
+const original = tracking.trackTask({ title: '核对原消息', botId: analyst.id, target: taskTarget, anchor: 'turn:turn-1' });
 const workfiles = createWorkfiles(path.join(dir, 'files'));
 await fs.writeFile(path.join(dir, 'filing.txt'), 'Q3-v1');
 await workfiles.put(session, { key: 'filing', title: '季报对照', kind: 'result', revision: 'v1', path: path.join(dir, 'filing.txt') });
@@ -137,6 +141,12 @@ try {
       });
       const page = await context.newPage();
       const pageErrors = [];
+      let pageListReads = 0, pendingReads = 0;
+      page.on('request', request => {
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/pages') pageListReads++;
+        if (path === '/api/workstation/pending') pendingReads++;
+      });
       page.on('pageerror', err => pageErrors.push(err.message));
 
       page.setDefaultTimeout(6500);
@@ -147,6 +157,7 @@ try {
         await page.screenshot({ path: path.join(process.env.CODECK_SCREENSHOT_DIR, [mode.name, vp.width, stage].join('-') + '.png') });
       }
       const title = titles[mode.name][vp.width === 390 ? 0 : 1];
+      const task = tracking.trackTask({ title, botId: analyst.id, target: taskTarget, anchor: 'manual:' + title });
       question = { provider: 'codex', request: { id: title, method: 'item/tool/requestUserInput', params: {
         threadId: 'thr-demo', questions: [{ id: 'basis', question: '按哪个口径比较？', options: [{ label: '单季度' }] }] } } };
       await page.goto(`${baseUrl}${mode.path}?session=demo`, { waitUntil: 'domcontentloaded' });
@@ -170,26 +181,44 @@ try {
         }
         await panel.waitFor({ state: 'hidden' });
       };
-      const nav = async id => {
+      const openDrawer = async () => {
         if (vp.width === 390) {
           const menu = page.locator(mode.name === 'normal' ? '#menuButton' : '#drawerButton');
           const stationMenu = panel.locator('#stationMenu');
           if (await panel.isVisible() && await stationMenu.isVisible()) await stationMenu.click();
           else if (await menu.getAttribute('aria-expanded') !== 'true') await menu.click();
         }
+      };
+      const nav = async id => {
+        await openDrawer();
         await page.locator(id).click();
       };
-      await nav('#tasksButton');
-      await panel.getByRole('button', { name: '单季度', exact: true }).waitFor();
-      await capture('tasks');
+      const station = page.locator('#workstationNav');
+      await station.waitFor();
+      const entries = station.locator('#alwaysOnButton, #botsToggle, #pagesToggle');
+      assert.equal(await entries.filter({ visible: true }).count(), 0, '工作台三个入口默认收起');
+      assert.equal(await station.locator('#tasksButton, #alwaysOnBadge').count(), 0);
+      const summary = station.locator('summary').first();
+      await summary.focus();
+      await page.keyboard.press('Enter');
+      assert.equal(await entries.filter({ visible: true }).count(), 3);
+      for (const toggle of ['#botsToggle', '#pagesToggle']) assert.equal(await station.locator(toggle).getAttribute('aria-expanded'), 'false');
+      assert.equal(pageListReads, 0);
+      await station.locator('#pagesToggle').click();
+      await station.getByRole('link', { name: '周报' }).waitFor();
+      await station.locator('#pagesToggle').click();
+      await summary.click();
+      assert.equal(await entries.filter({ visible: true }).count(), 0);
+      await summary.click();
+      assert.equal(pendingReads, 0, '浏览侧栏不会读取跨会话待办');
+      await station.locator('#botsToggle').click();
+      await station.locator('.station-twist').click();
+      await station.locator(`[data-focus-key="task:${task.id}"]`).click();
+      await panel.getByRole('heading', { name: title, exact: true }).waitFor();
       const before = answers;
       await panel.getByRole('button', { name: '单季度', exact: true }).click();
-      await page.waitForFunction(() => ![...document.querySelectorAll('.station-panel button')].some(b => b.textContent === '单季度'));
+      await panel.locator('[data-pending]').waitFor({ state: 'hidden' });
       assert.equal(answers, before + 1);
-      await panel.getByRole('button', { name: '从会话加入任务' }).click();
-      await panel.getByLabel('任务标题').fill(title);
-      await panel.getByRole('button', { name: '加入 Tasks', exact: true }).click();
-      await panel.getByRole('heading', { name: title, exact: true }).waitFor();
       await panel.getByRole('button', { name: '关联成果版本' }).click();
       await panel.getByRole('button', { name: '关联此版本' }).click();
       const [download] = await Promise.all([page.waitForEvent('download'), panel.getByRole('button', { name: '下载此版本' }).click()]);
@@ -210,7 +239,7 @@ try {
       await panel.getByRole('button', { name: '绑定 Telegram', exact: true }).click();
       await panel.getByText('@demo_research_bot · 已连接', { exact: true }).waitFor();
       await panel.locator('summary').filter({ hasText: /^Telegram/ }).click();
-      await nav('#stationBots .station-twist');
+      await openDrawer();
       const manage = page.locator('#stationBots').getByRole('button', { name: '管理 Bot' });
       await manage.waitFor();
       const hierarchy = await page.evaluate(() => {
@@ -226,7 +255,7 @@ try {
       await capture('sidebar');
       await manage.focus();
       await page.keyboard.press('Enter');
-      assert.equal(await page.locator('#tasksButton').getAttribute('aria-current'), null);
+      assert.equal(await station.locator('[aria-current="page"]').count(), 1);
       assert.equal(await manage.getAttribute('aria-current'), 'page');
       await panel.locator('summary').getByText('@demo_research_bot · 已连接', { exact: true }).waitFor();
       await capture('bot');
@@ -235,6 +264,9 @@ try {
       await panel.getByLabel('Telegram 机器人').waitFor();
       await nav('#alwaysOnButton');
       await panel.getByRole('button', { name: '新建规则' }).click();
+      assert.equal(await panel.getByLabel('执行来源').locator('option:checked').textContent(), '指定项目 · 按需新建会话');
+      await panel.getByLabel('项目目录').fill(dir);
+      await panel.getByLabel('执行 Agent').selectOption('qodercli');
       await panel.getByLabel('执行事项').fill(title);
       await panel.getByLabel('触发时间').selectOption('weekdays');
       await panel.getByLabel('时区').fill('Asia/Shanghai');
@@ -274,6 +306,8 @@ try {
       await rule.getByText('已暂停', { exact: true }).waitFor();
       await rule.getByRole('button', { name: '编辑', exact: true }).click();
       assert.equal(await panel.getByLabel('执行事项').inputValue(), title);
+      assert.equal(await panel.getByLabel('项目目录').inputValue(), dir);
+      assert.equal(await panel.getByLabel('执行 Agent').inputValue(), 'qodercli');
       assert.equal(await panel.getByLabel('触发时间').inputValue(), 'weekdays');
       await panel.getByLabel('执行事项').fill(title + '（修订）');
       await panel.getByLabel('触发时间').selectOption('daily');
@@ -314,10 +348,8 @@ try {
       }
 
       assert.equal(inputs, 0);
-      await nav('#tasksButton');
-      const btn = panel.getByRole('button', { name: '审批与设置' });
-      await btn.waitFor({ state: 'visible', timeout: 5000 });
-      await btn.click();
+      await panel.getByText('更多', { exact: true }).click();
+      await panel.getByRole('button', { name: '原有提醒与设置' }).click();
 
       const dialog = page.locator('dialog.always-on-dialog[open]');
       await dialog.waitFor({ state: 'visible', timeout: 5000 });
@@ -334,6 +366,9 @@ try {
       await dialog.locator('[data-tab="overview"]').click();
       await dialog.locator('text=运行记录与实体时间线').waitFor({ state: 'visible', timeout: 3000 });
 
+      if (mode.name === 'normal' && vp.width === 390) await dialog.getByText('分享演示报告页面', { exact: true }).waitFor();
+      if (mode.name === 'normal' && vp.width === 1365) await approvalGate.resolveApproval(approval.id, { decision: 'rejected' });
+
       // Close cleanly
       await dialog.locator('[data-close]').click();
       await dialog.waitFor({ state: 'hidden', timeout: 3000 });
@@ -342,9 +377,10 @@ try {
       assert.equal(await draft.inputValue(), '尚未发送的研究草稿');
       assert.equal(inputs, 0);
       if (mode.name === 'remote') {
-        await page.locator('[data-turn-id="turn-1"]').getByRole('button', { name: '加入 Tasks' }).click();
-        await panel.getByLabel('任务标题').fill('核对原消息');
-        await panel.getByRole('button', { name: '加入 Tasks', exact: true }).click();
+        const turn = page.locator('[data-turn-id="turn-1"]');
+        await turn.waitFor();
+        assert.equal(await turn.getByRole('button', { name: '加入 Tasks' }).count(), 0);
+        await nav(`[data-focus-key="task:${original.id}"]`);
         await panel.getByRole('button', { name: '打开来源会话' }).click();
         await panel.waitFor({ state: 'hidden' });
         assert.equal(tracking.overview().tasks.filter(t => t.anchor === 'turn:turn-1').length, 1);

@@ -8,8 +8,9 @@ import { createAlwaysOnRuntime } from '../src/always-on-runtime.js';
 import { createWorkstationAutomations } from '../src/workstation-automations.js';
 import { nextCalendarDue } from '../src/workstation-automation-schedule.js';
 import { WorkstationStore } from '../src/workstation-store.js';
+import { createTelegramTask } from '../src/telegram-task.js';
 
-function fixture(t, scriptDirectory) {
+function fixture(t, scriptDirectory, launch) {
   const store = new AlwaysOnStore(':memory:');
   const tracking = new WorkstationStore(store.db);
   let time = Date.parse('2026-11-20T00:00:00Z'), check = async () => 'first';
@@ -18,12 +19,12 @@ function fixture(t, scriptDirectory) {
   const sessions = [main], launched = [], sent = [];
   const parameters = { reason: 'Verify filings', target, dueAt: time + 1000, recurrenceMs: 10000, check: ['/bin/true'] };
   const service = createWorkstationAutomations({ store, tracking, scriptDirectory, now: () => time, listSessions: async () => sessions,
-    precheck: () => check(), wake: () => {}, create: async task => {
+    precheck: () => check(), wake: () => {}, create: launch || (async task => {
       launched.push(task);
       const paneId = '%' + launched.length;
       sessions.push({ name: task.name, paneId, createdAt: time, agent: { kind: task.provider, id: 'thread-' + paneId, cwd: task.cwd } });
       return { tmuxSession: task.name, paneId, provider: task.provider };
-    }, send: async value => { sent.push(value); return { submissionStatus: 'unconfirmed' }; } });
+    }), send: async value => { sent.push(value); return { submissionStatus: 'unconfirmed' }; } });
   const runtime = createAlwaysOnRuntime({ store, now: () => time, precheck: () => check(), handleScope: service.dispatch });
   t.after(() => { runtime.close(); store.close(); });
   return { service, runtime, store, tracking, sessions, launched, sent, target, parameters, main,
@@ -81,6 +82,63 @@ test('pausing during an awaited check never re-enables a timer or launches its e
   assert.equal(f.launched.length, 0);
 });
 
+test('a project schedule needs no source session and launches once when its timer is due', async t => {
+  const f = fixture(t);
+  f.sessions.length = 0;
+  const project = { provider: 'qodercli', cwd: os.tmpdir() };
+  const input = { reason: 'Compile report', project, dueAt: f.parameters.dueAt, requestId: 'new-project' };
+  assert.equal((await f.service.preview(input)).mode, 'independent');
+  const rule = await f.service.create(input);
+  assert.equal(rule.sessionName, null);
+  assert.equal(rule.threadId, null);
+  await assert.rejects(f.service.create({ ...input, project: { ...project, provider: 'claude' } }), /标识/);
+  await assert.rejects(f.service.preview({ ...input, project: { ...project, cwd: 'relative' } }), /目录/);
+  await assert.rejects(f.service.preview({ ...input, project: { ...project, provider: 'other' } }), /Agent/);
+  await assert.rejects(f.service.preview({ ...input, target: f.target }), /来源/);
+  await f.runtime.tickTimers();
+  assert.equal(f.launched.length, 0);
+  f.advance();
+  await f.runtime.tickTimers();
+  await new Promise(r => setImmediate(r));
+  await f.runtime.tickTimers();
+  await f.service.reconcile();
+  assert.equal(f.launched.length, 1);
+  const [worker] = f.launched;
+  assert.equal(worker.provider, project.provider);
+  assert.equal(worker.cwd, project.cwd);
+  assert.match(worker.text, /Compile report/);
+  assert.equal(f.service.runs(rule.id)[0].sessionName, worker.name);
+  assert.deepEqual(f.sent, []);
+});
+
+test('an independent rule can be edited and dispatched after its template session was replaced', async t => {
+  const f = fixture(t);
+  const rule = await f.service.create(f.parameters);
+  f.main.createdAt++;
+  f.main.agent = { kind: 'claude', id: 'replacement', cwd: '/another-project' };
+  await f.service.update(rule.id, { ...f.parameters, reason: 'Updated assignment', version: 0 });
+  await f.service.runNow(rule.id, 'run');
+  await f.runtime.drainScope(rule.scopeKey);
+  assert.equal(f.launched.length, 1);
+  assert.equal(f.launched[0].provider, 'codex');
+  assert.equal(f.launched[0].cwd, '/project');
+  assert.match(f.launched[0].text, /Updated assignment/);
+  assert.deepEqual(f.sent, []);
+});
+
+test('a removed project is a definite launch failure, with no session to inspect', async t => {
+  const f = fixture(t, undefined, createTelegramTask);
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-removed-project-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const rule = await f.service.create({ reason: 'Rebuild', project: { cwd, provider: 'codex' }, dueAt: f.parameters.dueAt });
+  await fs.rmdir(cwd);
+  await f.service.runNow(rule.id, 'deleted-project');
+  await f.runtime.drainScope(rule.scopeKey);
+  const [run] = f.service.runs(rule.id);
+  assert.equal(run.dispatchStatus, 'failed');
+  assert.equal(run.sessionName, null);
+});
+
 test('one-time follow-up retains source identity, waits for idle, and never retries an uncertain receipt', async t => {
   const f = fixture(t);
   const task = f.tracking.trackTask({ title: 'Reconcile', target: f.target, anchor: 'turn:9' });
@@ -101,7 +159,12 @@ test('one-time follow-up retains source identity, waits for idle, and never retr
   assert.equal(f.service.runs(rule.id)[0].dispatchStatus, 'unknown');
   f.service.observeThread(f.main, original);
   assert.equal(f.service.runs(rule.id)[0].dispatchStatus, 'confirmed');
+  const second = await f.service.create({ ...single, taskId: task.id });
   f.main.createdAt++;
+  await f.service.runNow(second.id, 'follow-replaced');
+  await f.runtime.drainScope(second.scopeKey);
+  assert.equal(f.service.runs(second.id)[0].dispatchStatus, 'failed');
+  assert.equal(f.sent.length, 1);
   await assert.rejects(f.service.create({ ...single, taskId: task.id }), /身份/);
 });
 

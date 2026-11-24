@@ -2,13 +2,14 @@ import { bindWorkfiles, uploadWorkContext } from './workfiles.js?v=3';
 import { renderSessionProgress } from './session-progress.js?v=1';
 import { bindHistorySearch } from './history-search.js?v=1';
 import { bindAlwaysOnPanel } from './always-on-panel.js?v=4';
-import { bindWorkstation, sameWorkstationTarget, workstationTarget } from './workstation.js?v=9';
+import { bindWorkstation, sameWorkstationTarget, workstationTarget } from './workstation.js?v=13';
 import { turnStatusLabel, executionLabel, checkpointLabel } from './execution-status.js?v=3';
 import { filterSessionNames } from './session-search.js?v=1';
 import { CONTINUE_PROMPT } from './continue-prompt.js?v=3';
 import { bindTerminalHeartbeat } from './terminal-heartbeat.js?v=2';
 import { clipboardFiles } from './clipboard-files.js?v=1';
-import { createRemoteImages } from './remote-images.js?v=1';
+import { createRemoteImages } from './remote-images.js?v=2';
+import { renderReplyMarkdown } from './remote-markdown.js?v=1';
 import {
   agentActivityText,
   applyAcceptedUserMessage,
@@ -30,7 +31,7 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=51';
+} from './agent-model.js?v=52';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
@@ -101,6 +102,7 @@ const state = {
   loadingEarlier: false,
   historyGeneration: 0,
   token: localStorage.getItem('codeck-token') || '',
+  replyFormat: localStorage.getItem('codeck-remote-reply-format') === 'source' ? 'source' : 'formatted',
   theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
   provider: localStorage.getItem('codeck-remote-provider') || 'codex',
   providers: Object.keys(PROVIDERS),
@@ -318,6 +320,7 @@ function applyRefreshedThread(provider, thread) {
   if (reconciled === current) return false;
   const paneOnly = current
     && reconciled.turns === current.turns
+    && !reconciled.dismissedDeliveryIds?.some(id => !current.dismissedDeliveryIds?.includes(id))
     && reconciled.liveOutput !== current.liveOutput
     && ['id', 'provider', 'name', 'preview', 'cwd', 'readOnly', 'status', 'truncated', 'oldestTurnId']
       .every((key) => reconciled[key] === current[key]);
@@ -923,7 +926,7 @@ function agentRequest(type, payload = {}) {
     const dismissed = dismissedDeliveryIds(localStorage, payload);
     if (dismissed.length) payload = { ...payload, dismissedDeliveryIds: dismissed };
   }
-  if (type === 'openThread' && payload.provider === 'codex') {
+  if (type === 'openThread' && ['codex', 'agy'].includes(payload.provider)) {
     const receipts = sessionDeliveryReceipts(state.thread, [...state.pendingDeliveries.values()], payload);
     if (receipts.length) payload = { ...payload, deliveryReceipts: receipts };
   }
@@ -1850,10 +1853,38 @@ function imageRenderer() {
   return remoteImages ||= createRemoteImages({ root: $('#transcript'), getToken: () => state.token });
 }
 
+function displayReply(node, item) {
+  const text = item.text?.includes('codeck-autonomy') ? autonomyDisplayText(item.text) : item.text || '';
+  node.classList.toggle('formatted-reply', state.replyFormat === 'formatted');
+  if (state.replyFormat === 'formatted') {
+    renderReplyMarkdown(node, text, item.codeckImages, ref => imageRenderer().figure(ref));
+  } else {
+    node.textContent = text;
+    for (const ref of item.codeckImages || []) node.append(imageRenderer().figure(ref));
+  }
+}
+
+function changeReplyFormat(format) {
+  if (format === state.replyFormat) return;
+  state.replyFormat = format;
+  localStorage.setItem('codeck-remote-reply-format', format);
+  const transcript = $('#transcript'), bottom = transcriptNearLatest(transcript);
+  const edge = transcript.getBoundingClientRect().top;
+  const anchor = !bottom && [...$('#turns').children].find(turn => turn.getBoundingClientRect().bottom > edge);
+  const top = anchor && anchor.getBoundingClientRect().top;
+  for (const node of transcript.querySelectorAll('.assistant-message')) {
+    if (node._replyItem) displayReply(node, node._replyItem);
+  }
+  remoteImages?.prune();
+  if (bottom) transcript.scrollTop = transcript.scrollHeight;
+  else if (anchor) transcript.scrollTop += anchor.getBoundingClientRect().top - top;
+  syncTranscriptLatestButton();
+}
+
 function itemNode(item, turn) {
   if (item.type === 'userMessage') {
     const node = element('div', 'message user-message', autonomyDisplayText(userMessageText(item)));
-    if (item.codeckImages?.length) imageRenderer().renderMessage(node, item, { inline: false });
+    for (const ref of item.codeckImages || []) node.append(imageRenderer().figure(ref));
     if (['accepted', 'received', 'unknown'].includes(item.delivery?.status)) {
       node.append(element('small', 'message-delivery-status', item.delivery.status === 'received'
         ? 'Agent 已接收'
@@ -1873,14 +1904,15 @@ function itemNode(item, turn) {
     return node;
   }
   if (item.type === 'agentMessage') {
-    const node = element('div', 'message assistant-message', autonomyDisplayText(item.text));
-    if (item.codeckImages?.length) imageRenderer().renderMessage(node, item);
+    const node = element('div', 'message assistant-message');
+    node._replyItem = item;
+    displayReply(node, item);
     if (turn.status === 'inProgress' && item === turn.items.at(-1)) node.classList.add('streaming');
     return node;
   }
   if (item.codeckImages?.length) {
     const node = element('div', 'message image-message');
-    imageRenderer().renderMessage(node, item, { inline: false });
+    for (const ref of item.codeckImages) node.append(imageRenderer().figure(ref));
     return node;
   }
   if (item.type === 'reasoning') {
@@ -1980,13 +2012,6 @@ function renderTurn(turn) {
     else {
       const duration = Number.isFinite(turn.durationMs) ? ` · ${Math.max(.1, turn.durationMs / 1000).toFixed(1)} 秒` : '';
       foot.textContent = `${turnStatusLabel(turn.status)}${duration}`;
-    }
-    const target = workstationTarget(currentWorkfilesTarget());
-    if (target && workstation?.canTrack() && turn.id) {
-      const title = userMessageText((turn.items || []).find(item => item.type === 'userMessage') || {}).trim().slice(0, 256);
-      const track = element('button', 'message-copy-button', '加入 Tasks'); track.type = 'button';
-      track.addEventListener('click', () => workstation.track({ target, anchor: 'turn:' + turn.id, title }, track));
-      foot.append(track);
     }
     section.append(foot);
   }
@@ -3011,6 +3036,7 @@ function openNewSession() {
 
 function openSettings() {
   $('#settingsTheme').value = state.theme;
+  $('#settingsReplyFormat').value = state.replyFormat;
   $('#settingsProvider').value = preferredNewSessionProvider();
   $('#cwdInput').value = state.cwd || state.defaultCwd;
   $('#settingsError').textContent = '';
@@ -3247,6 +3273,7 @@ $('#closeSessionForm').addEventListener('submit', (event) => {
 $('#newSessionDialog').addEventListener('cancel', (event) => {
   if (state.sessionCreationPending) event.preventDefault();
 });
+$('#settingsReplyFormat').addEventListener('change', event => changeReplyFormat(event.target.value));
 $('#settingsTheme').addEventListener('change', (event) => applyTheme(event.target.value, { persist: true }));
 $('#sessionProvider').addEventListener('change', (event) => {
   updateSuggestedSessionName(event.target.value);

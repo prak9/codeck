@@ -62,7 +62,7 @@ export async function renderAutomations(host, { token, activeSession, openLegacy
       const schedule = rule.payload?.calendar;
       const every = condition ? rule.everyMinutes : rule.recurrenceMs / 60000;
       const when = schedule ? (schedule.weekdays ? '工作日 ' : '每天 ') + schedule.time + ' · ' + schedule.timeZone : every ? '每 ' + every + ' 分钟' : '一次';
-      const meta = [rule.session || rule.sessionName || rule.scopeKey, when, status === 'active' && '下次 ' + date(rule.nextAt ?? rule.dueAt),
+      const meta = [rule.session || rule.sessionName || rule.cwd || rule.scopeKey, when, status === 'active' && '下次 ' + date(rule.nextAt ?? rule.dueAt),
         label(rule.last?.status || rule.lastStatus)].filter(Boolean);
       card.append(head, element('p', meta.join(' · '), 'always-on-meta'));
       const detail = element('div', '', 'always-on-meta');
@@ -131,10 +131,11 @@ export async function renderAutomations(host, { token, activeSession, openLegacy
       origin.append(option); options.push({ target, ...extra });
     }
     if (legacy) add('原有提醒 · ' + (rule.sessionName || rule.scopeKey), null);
-    for (const s of sessions.filter(s => s.agent?.id && ['codex','claude','qodercli'].includes(s.agent.kind))) {
+    else add('指定项目 · 按需新建会话', null, { project: true });
+    const templates = sessions.filter(s => s.agent?.id && ['codex','claude','qodercli'].includes(s.agent.kind));
+    for (const s of templates) {
       const target = { session: s.name, provider: s.agent.kind, threadId: s.agent.id, createdAt: s.createdAt };
       add(s.name + ' · 独立会话', target);
-      if (activeSession() === s.name) origin.value = String(options.length - 1);
     }
     if (!legacy) for (const bot of bots) add(bot.name + ' · Bot 独立会话', bot.target, { botId: bot.id });
     if (!legacy) for (const script of scripts) {
@@ -143,17 +144,26 @@ export async function renderAutomations(host, { token, activeSession, openLegacy
         { botId: bot.id, channelId: script.channelId, script: script.script });
     }
     if (!legacy) for (const task of tasks.filter(t => ['planned', 'active'].includes(t.status))) add(task.title + ' · 跟进任务', task.runs.at(-1)?.target || task.target, { taskId: task.id });
-    if (legacy) origin.selectedIndex = 0;
-    if (plan) {
-      const index = options.findIndex(o => o.target.session === plan.target.session && o.target.threadId === plan.target.threadId
+    if (plan?.target) {
+      const index = options.findIndex(o => o.target && o.target.session === plan.target.session && o.target.threadId === plan.target.threadId
         && o.target.createdAt === plan.target.createdAt && (o.botId ?? null) === (plan.botId ?? null)
         && (o.taskId ?? null) === (plan.taskId ?? null) && o.script === plan.script && o.channelId === plan.channelId);
-      if (index < 0) {
+      if (index >= 0) origin.selectedIndex = index;
+      else if (!copy || plan.botId || plan.taskId) {
         add('原绑定 · ' + plan.target.session + (plan.script ? ' · ' + plan.script : ''), plan.target,
           { botId: plan.botId, taskId: plan.taskId, script: plan.script, channelId: plan.channelId });
         origin.selectedIndex = options.length - 1;
-      } else origin.selectedIndex = index;
+      }
     }
+    const active = templates.find(s => s.name === activeSession());
+    const cwd = field(form, '项目目录', 'input', 'cwd', 'text');
+    cwd.placeholder = '/data/code/my-project';
+    cwd.value = rule?.cwd || active?.agent.cwd || active?.cwd || '';
+    const provider = field(form, '执行 Agent', 'select', 'provider');
+    for (const [value, name] of [['codex', 'Codex'], ['claude', 'Claude Code'], ['qodercli', 'Qoder CLI']]) {
+      const option = element('option', name); option.value = value; provider.append(option);
+    }
+    provider.value = rule?.provider || active?.agent.kind || 'codex';
     const repeat = field(form, '触发时间', 'select', 'schedule');
     for (const [value, name] of [['once','一次'],['interval','每隔一段时间'],['daily','每天'],['weekdays','工作日']]) {
       const option = element('option', name); option.value = value; repeat.append(option);
@@ -176,7 +186,10 @@ export async function renderAutomations(host, { token, activeSession, openLegacy
       clock.disabled = tz.disabled = clock.parentElement.hidden = tz.parentElement.hidden = !calendar; clock.required = tz.required = calendar;
     };
     origin.onchange = () => {
-      const follow = Boolean(options[origin.selectedIndex]?.taskId);
+      const source = options[origin.selectedIndex];
+      cwd.disabled = cwd.parentElement.hidden = provider.disabled = provider.parentElement.hidden = !source.project;
+      cwd.required = Boolean(source.project);
+      const follow = Boolean(source.taskId);
       for (const entry of repeat.options) entry.disabled = follow && entry.value !== 'once';
       if (follow) repeat.value = 'once';
       repeat.onchange();
@@ -191,7 +204,8 @@ export async function renderAutomations(host, { token, activeSession, openLegacy
       if (!form.reportValidity()) return null;
       const selected = options[origin.selectedIndex];
       if (!selected) throw Error('请先打开一个支持派工的 Agent 会话');
-      const body = { ...selected, sessionName: selected.target?.session, reason: reason.value.trim() };
+      const source = selected.project ? { project: { cwd: cwd.value.trim(), provider: provider.value } } : { ...selected, sessionName: selected.target?.session };
+      const body = { ...source, reason: reason.value.trim() };
       if (editing) body.version = rule.payload.version ?? 0;
       if (['daily','weekdays'].includes(repeat.value)) body.calendar = { time: clock.value, timeZone: tz.value.trim(), weekdays: repeat.value === 'weekdays' };
       else if (!editing || repeat.value !== initialRepeat || start.value !== initialStart) body.dueAt = new Date(start.value).getTime();

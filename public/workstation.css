@@ -23,7 +23,10 @@
 }
 .station-entry[hidden] { display: none; }
 .station-entry svg { color: var(--muted); }
-.station-entry .always-on-badge { margin-inline-start: auto; }
+.station-group > summary { cursor: pointer; list-style: none; border-radius: 6px; }
+.station-group > summary::-webkit-details-marker { display: none; }
+.station-group > summary:hover { background: var(--selected); }
+.station-entries { padding-inline-start: 12px; }
 .station-nav button:hover, .station-nav button[aria-current="page"] { background: var(--selected); }
 .station-nav [aria-current="page"] svg { color: var(--accent); }
 .station-bots-head, .station-bot-row { display: flex; align-items: center; }
@@ -35,7 +38,7 @@
   content: ""; display: block; width: 6px; height: 6px; border: solid currentColor; border-width: 1.5px 1.5px 0 0;
   transform: rotate(45deg); flex: none;
 }
-[aria-expanded="true"] > .station-chevron::after, details[open] > .station-setting::after { transform: rotate(135deg); }
+[aria-expanded="true"] > .station-chevron::after, .station-group[open] > summary > .station-chevron::after, details[open] > .station-setting::after { transform: rotate(135deg); }
 .station-bots { max-height: min(24vh, 240px); overflow-y: auto; }
 .station-bot-row { margin-inline-start: 20px; }
 .station-page-folder { margin-inline-start: 16px; }

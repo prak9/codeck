@@ -22,12 +22,12 @@
   </script>
   <link rel="stylesheet" href="/fonts/inter/wght.css">
   <link rel="stylesheet" href="/fonts/noto-sans-sc/wght.css">
-  <link rel="stylesheet" href="/remote.css?v=57">
+  <link rel="stylesheet" href="/remote.css?v=58">
   <link rel="stylesheet" href="/history-search.css?v=1">
   <link rel="stylesheet" href="/session-progress.css?v=1">
   <link rel="stylesheet" href="/workfiles.css?v=2">
   <link rel="stylesheet" href="/always-on-panel.css?v=2">
-  <link rel="stylesheet" href="/workstation.css?v=5">
+  <link rel="stylesheet" href="/workstation.css?v=7">
 </head>
 <body>
   <a class="skip-link" href="#transcript">跳到对话</a>
@@ -52,12 +52,16 @@
       </div>
       <div id="legacyStationEntry" hidden><button id="legacyStationButton" class="always-on-entry" type="button">个人行动台</button></div>
       <nav id="workstationNav" class="station-nav" aria-label="工作台" hidden>
-        <button id="tasksButton" class="station-entry" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/></svg>Tasks<span id="alwaysOnBadge" class="always-on-badge" aria-label="待你处理" hidden></span></button>
-        <button id="alwaysOnButton" class="station-entry" data-tab="timers" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10V5H4v15h8M8 3v4m8-4v4M4 9h16"/><circle cx="17.5" cy="16.5" r="4.5"/><path d="M17.5 14v2.5l1.5 1"/></svg>Automations</button>
-        <div class="station-bots-head"><button id="botsToggle" class="station-entry" type="button" aria-controls="stationBots" aria-expanded="true"><span class="station-chevron" aria-hidden="true"></span>Bots</button><button id="bindBotButton" class="station-plus" type="button" aria-label="绑定 Bot" title="绑定 Bot">＋</button></div>
-        <div id="stationBots" class="station-bots"></div>
-        <button id="pagesToggle" class="station-entry" type="button" aria-controls="stationPages" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Pages</button>
-        <div id="stationPages" class="station-bots" hidden></div>
+        <details class="station-group">
+          <summary class="station-entry"><span class="station-chevron" aria-hidden="true"></span>工作台</summary>
+          <div class="station-entries">
+            <button id="alwaysOnButton" class="station-entry" data-tab="timers" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10V5H4v15h8M8 3v4m8-4v4M4 9h16"/><circle cx="17.5" cy="16.5" r="4.5"/><path d="M17.5 14v2.5l1.5 1"/></svg>Automations</button>
+            <div class="station-bots-head"><button id="botsToggle" class="station-entry" type="button" aria-controls="stationBots" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Bots</button><button id="bindBotButton" class="station-plus" type="button" aria-label="绑定 Bot" title="绑定 Bot">＋</button></div>
+            <div id="stationBots" class="station-bots" hidden></div>
+            <button id="pagesToggle" class="station-entry" type="button" aria-controls="stationPages" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Pages</button>
+            <div id="stationPages" class="station-bots" hidden></div>
+          </div>
+        </details>
       </nav>
       <div class="thread-list" id="threadList" aria-live="polite"></div>
       <div class="drawer-footer">
@@ -228,6 +232,8 @@
       <label for="settingsTheme">界面主题</label>
       <select id="settingsTheme" name="theme"><option value="dark">深色</option><option value="light">浅色（白底黑字）</option></select>
       <p class="field-help">自动保存，只影响 Remote 界面。</p>
+      <label for="settingsReplyFormat">回复显示</label>
+      <select id="settingsReplyFormat"><option value="formatted">排版</option><option value="source">原文</option></select>
       <label for="settingsProvider">默认 Agent</label>
       <select id="settingsProvider"></select>
       <label for="cwdInput">默认工作目录</label>
@@ -251,6 +257,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="/remote.js?v=171"></script>
+  <script type="module" src="/remote.js?v=177"></script>
 </body>
 </html>

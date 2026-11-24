@@ -27,7 +27,7 @@ test('Both 普通模式 (index.html/app.js) and Remote 模式 (remote.html/remot
   for (const [name, html] of [['index.html', indexHtml], ['remote.html', remoteHtml]]) {
     assert.match(html, /always-on-panel\.css/, `${name} loads always-on-panel.css`);
     assert.match(html, /id="alwaysOnButton"[^>]*hidden/, `${name} hides alwaysOnButton by default for non-owner isolation`);
-    assert.match(html, /id="alwaysOnBadge"/, `${name} includes alwaysOnBadge`);
+    assert.doesNotMatch(html, /id="(?:tasksButton|alwaysOnBadge)"/, `${name} omits the pending entry and count`);
   }
   assert.match(appJs, /bindAlwaysOnPanel/, 'app.js binds alwaysOnPanel');
   assert.match(appJs, /enabled:\s*\(\)\s*=>\s*state\.canManage/, 'app.js gates panel behind owner canManage');

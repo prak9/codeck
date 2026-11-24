@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="/session-progress.css?v=1">
   <link rel="stylesheet" href="/workfiles.css?v=2">
   <link rel="stylesheet" href="/always-on-panel.css?v=2">
-  <link rel="stylesheet" href="/workstation.css?v=5">
+  <link rel="stylesheet" href="/workstation.css?v=7">
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -52,12 +52,16 @@
       </div>
       <div id="legacyStationEntry" hidden><button id="legacyStationButton" class="always-on-entry" type="button">个人行动台</button></div>
       <nav id="workstationNav" class="station-nav" aria-label="工作台" hidden>
-        <button id="tasksButton" class="station-entry" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/></svg>Tasks<span id="alwaysOnBadge" class="always-on-badge" aria-label="待你处理" hidden></span></button>
-        <button id="alwaysOnButton" class="station-entry" data-tab="timers" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10V5H4v15h8M8 3v4m8-4v4M4 9h16"/><circle cx="17.5" cy="16.5" r="4.5"/><path d="M17.5 14v2.5l1.5 1"/></svg>Automations</button>
-        <div class="station-bots-head"><button id="botsToggle" class="station-entry" type="button" aria-controls="stationBots" aria-expanded="true"><span class="station-chevron" aria-hidden="true"></span>Bots</button><button id="bindBotButton" class="station-plus" type="button" aria-label="绑定 Bot" title="绑定 Bot">＋</button></div>
-        <div id="stationBots" class="station-bots"></div>
-        <button id="pagesToggle" class="station-entry" type="button" aria-controls="stationPages" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Pages</button>
-        <div id="stationPages" class="station-bots" hidden></div>
+        <details class="station-group">
+          <summary class="station-entry"><span class="station-chevron" aria-hidden="true"></span>工作台</summary>
+          <div class="station-entries">
+            <button id="alwaysOnButton" class="station-entry" data-tab="timers" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10V5H4v15h8M8 3v4m8-4v4M4 9h16"/><circle cx="17.5" cy="16.5" r="4.5"/><path d="M17.5 14v2.5l1.5 1"/></svg>Automations</button>
+            <div class="station-bots-head"><button id="botsToggle" class="station-entry" type="button" aria-controls="stationBots" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Bots</button><button id="bindBotButton" class="station-plus" type="button" aria-label="绑定 Bot" title="绑定 Bot">＋</button></div>
+            <div id="stationBots" class="station-bots" hidden></div>
+            <button id="pagesToggle" class="station-entry" type="button" aria-controls="stationPages" aria-expanded="false"><span class="station-chevron" aria-hidden="true"></span>Pages</button>
+            <div id="stationPages" class="station-bots" hidden></div>
+          </div>
+        </details>
       </nav>
       <div class="session-list" id="sessionList" aria-live="polite" aria-label="会话快速切换"></div>
       <button class="new-session-button" id="newButtonBottom"><span>＋</span> 新建会话</button>
@@ -195,6 +199,6 @@
   <script src="/vendor/fit/addon-fit.js"></script>
   <script src="/vendor/webgl/addon-webgl.js"></script>
   <script src="/vendor/web-links/addon-web-links.js"></script>
-    <script type="module" src="/app.js?v=182"></script>
+    <script type="module" src="/app.js?v=186"></script>
 </body>
 </html>

@@ -343,6 +343,12 @@ try {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1365, height: 900 }]) {
     for (const provider of switchMode ? [...providers, 'agy'] : providers) {
       reset(provider);
+      const markdownReply = [
+        '### 实验对照', '', '| 实验臂 | 选中参数 | 五日累计毛利 | 五日累计费用 | 五日累计净利 | 样本外胜率 |',
+        '| --- | ---: | ---: | ---: | ---: | ---: |', '| 基线实验 | 800 | 1234 | 234 | **1000** | 60% |',
+        '', '1. 观察', '   - 保留 `alpha`', '', '```text', '  x  y', '```', '', '<em>原样显示</em>',
+      ].join('\n');
+      if (provider === 'agy') fixture.turns.at(-1).items.at(-1).text = markdownReply;
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 500,
         hasTouch: viewport.width < 500, reducedMotion: 'reduce', permissions: ['clipboard-read', 'clipboard-write'] });
       await context.addInitScript(theme => {
@@ -365,6 +371,39 @@ try {
       await page.goto(`http://127.0.0.1:${server.address().port}/remote?session=fixture`);
       await page.waitForSelector('[data-turn-id="turn-80"]');
       if (switchMode) {
+        if (provider === 'agy') {
+          const section = page.locator('[data-turn-id="turn-80"]');
+          const message = section.locator('.assistant-message');
+          const setFormat = async value => {
+            await page.getByRole('button', { name: '对话设置' }).click();
+            await page.getByLabel('回复显示').selectOption(value);
+            await page.locator('#settingsDialog .close-button').click();
+          };
+          await message.getByRole('heading', { name: '实验对照' }).waitFor();
+          assert.equal(await message.locator('th').count(), 6);
+          assert.equal(await message.locator('ol ul code').textContent(), 'alpha');
+          assert.equal(await message.locator('td strong').textContent(), '1000');
+          assert.equal(await message.locator('pre code').textContent(), '  x  y\n');
+          assert.equal(await message.locator('em').count(), 0);
+          const scroll = await message.getByRole('region', { name: '表格' }).evaluate(el => {
+            el.scrollLeft = el.scrollWidth;
+            return { scrolls: el.scrollLeft > 0, fits: document.documentElement.scrollWidth <= innerWidth };
+          });
+          assert.equal(scroll.fits, true);
+          if (viewport.width === 390) assert.equal(scroll.scrolls, true);
+          await section.getByRole('button', { name: '复制本轮模型输出' }).click();
+          assert.equal(await page.evaluate(() => navigator.clipboard.readText()), markdownReply);
+          await page.locator('#composerInput').fill('未发送草稿');
+          await setFormat('source');
+          assert.equal(await message.textContent(), markdownReply);
+          assert.equal(await page.locator('#composerInput').inputValue(), '未发送草稿');
+          await page.reload();
+          await message.waitFor();
+          assert.equal(await message.textContent(), markdownReply);
+          await setFormat('formatted');
+          await message.getByRole('table').waitFor();
+          assert.equal(fixture.sent.length, 0);
+        }
         const marker = '切回验证-' + crypto.randomUUID();
         const select = async name => {
           if (viewport.width < 720) await page.locator('#drawerButton').click();

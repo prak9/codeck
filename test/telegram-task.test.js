@@ -40,16 +40,19 @@ test('isolated tmux pane receives one initial prompt and remains available after
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codeck-tmux-task-'));
   const socket = `codeck-task-test-${process.pid}`;
   t.after(async () => { await exec('tmux', ['-L', socket, 'kill-server']).catch(() => {}); await fs.rm(directory, { recursive: true, force: true }); });
+  const project = path.join(directory, 'project-#{session_name}');
+  await fs.mkdir(project);
   const script = path.join(directory, 'agent'); const output = path.join(directory, 'prompt');
-  await fs.writeFile(script, `#!/bin/bash\nprintf '%s\\0' "$@" > '${output}'\n`, { mode: 0o700 });
+  await fs.writeFile(script, `#!/bin/bash\nprintf '%s\\0' "$PWD" "$@" > '${output}'\n`, { mode: 0o700 });
   const prompt = "只读研究\n保留 'quoted' 和 $HOME，不修改项目";
-  const target = await createTelegramTask({ name: 'isolated', provider: 'codex', cwd: directory, text: prompt }, async (_cmd, args) => {
+  const target = await createTelegramTask({ name: 'isolated', provider: 'codex', cwd: project, text: prompt }, async (_cmd, args) => {
     args[args.length - 1] = args.at(-1).replace(/^codex/, `'${script}'`);
     return exec('tmux', ['-L', socket, '-f', '/dev/null', ...args]);
   });
   let data;
   for (let i = 0; i < 50; i++) { try { data = await fs.readFile(output, 'utf8'); break; } catch { await new Promise(r => setTimeout(r, 50)); } }
   assert.equal(data?.split('\0').at(-2), prompt);
+  assert.equal(data.split('\0')[0], project);
   assert.match(target.paneId, /^%\d+$/);
   await exec('tmux', ['-L', socket, 'has-session', '-t', 'isolated']);
 });
