@@ -31,13 +31,13 @@ import {
   turnErrorText,
   userMessageDeliveryBaseline,
   userMessageText,
-} from './agent-model.js?v=52';
+} from './agent-model.js?v=53';
 import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=6';
 import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
-import { normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=6';
+import { currentCommandOutput, setCommandOutput, normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=7';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=7';
@@ -50,7 +50,7 @@ import {
   slashCommandKeyAction,
   slashCommandMenuAvailable,
   slashCommandSuggestions,
-} from './slash-commands.js?v=1';
+} from './slash-commands.js?v=2';
 import {
   createRemoteSessionPayload,
   findCreatedRemoteSession,
@@ -1735,37 +1735,59 @@ function selectionCommandDialog(commandOutput) {
   const panel = element('div', 'model-panel');
   const { parsed } = commandOutput;
   const list = element('div', parsed.dashboard ? 'command-tabs' : 'model-list');
+  const thread = state.thread;
+  const target = { provider: state.provider, threadId: thread.id, tmuxSession: thread.tmux.name };
+  const current = () => state.provider === target.provider && state.thread?.id === target.threadId
+    && state.thread?.tmux?.name === target.tmuxSession && currentCommandOutput(state.thread)?.text === commandOutput.text;
+  const choose = async (option, input) => {
+    if (composerRequestGate.pending || state.threadOpening || !current()) return;
+    await composerRequestGate.run(async () => {
+      try {
+        const result = await agentRequest('selectSessionCommand', { ...target, command: commandOutput.command,
+          option, menuText: commandOutput.text, ...(input !== undefined ? { input } : {}) });
+        if (!current()) return;
+        if (result.unconfirmed) {
+          dismissCommandDialog();
+          setLiveMessage('选择已发送但结果尚未确认，请检查终端，勿重复提交。');
+        } else if (result.terminalOutput) {
+          setCommandOutput(state.thread, normalizeSessionCommandOutput(target.provider, commandOutput.command, result));
+          scheduleThreadRender(true);
+        } else if (result.completed) dismissCommandDialog();
+      } catch (error) {
+        if (current()) {
+          $('#commandDialogSummary').textContent = error.message;
+          setLiveMessage(error.message);
+        }
+      }
+    });
+  };
+  if (parsed.models?.length) {
+    const models = element('select', 'action-button');
+    models.setAttribute('aria-label', '预选模型');
+    for (const name of parsed.models) models.add(new Option(name, name, false, name === parsed.highlighted));
+    models.addEventListener('change', () => choose(models.value));
+    panel.append(models);
+  }
   if (parsed.dashboard) panel.append(element('pre', 'terminal-live-output command-output-body', commandOutput.text));
+  if (parsed.textEntry) {
+    const form = element('form', 'command-tabs');
+    const input = element('input', 'action-button');
+    input.placeholder = '输入菜单文本';
+    input.setAttribute('aria-label', input.placeholder);
+    input.maxLength = 512;
+    const send = element('button', 'action-button', '输入');
+    form.append(input, send);
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (input.value) choose('输入', input.value);
+    });
+    panel.append(form);
+  }
   parsed.items.forEach((item, index) => {
     const button = element('button', parsed.dashboard ? 'action-button' : `model-row${index === parsed.cursor ? ' primary' : ''}`);
     button.type = 'button';
     button.append(element('span', 'model-name', item.label), element('span', 'model-description', item.description));
-    button.addEventListener('click', async () => {
-      const thread = state.thread;
-      if (composerRequestGate.pending || state.threadOpening || thread?.tmux?.commandOutput !== commandOutput) return;
-      const target = { provider: state.provider, threadId: thread.id, tmuxSession: thread.tmux.name };
-      const current = () => state.provider === target.provider && state.thread?.id === target.threadId
-        && state.thread?.tmux?.name === target.tmuxSession && state.thread.tmux.commandOutput === commandOutput;
-      await composerRequestGate.run(async () => {
-        list.querySelectorAll('button').forEach(node => { node.disabled = true; });
-        try {
-          const result = await agentRequest('selectSessionCommand', { ...target, command: commandOutput.command,
-            option: item.label, menuText: commandOutput.text });
-          if (!current()) return;
-          if (result.unconfirmed) {
-            dismissCommandDialog();
-            setLiveMessage('选择已发送但结果尚未确认，请检查终端，勿重复提交。');
-          } else if (result.terminalOutput) {
-            state.thread.tmux.commandOutput = normalizeSessionCommandOutput(target.provider, commandOutput.command, result);
-            scheduleThreadRender(true);
-          } else if (result.completed) dismissCommandDialog();
-        } catch (error) {
-          if (current()) setLiveMessage(error.message);
-        } finally {
-          list.querySelectorAll('button').forEach(node => { node.disabled = false; });
-        }
-      });
-    });
+    button.addEventListener('click', () => choose(item.label));
     list.append(button);
   });
   panel.append(list);
@@ -1776,7 +1798,7 @@ function selectionCommandDialog(commandOutput) {
 
 function openCommandDialog(commandOutput) {
   const dialog = $('#commandDialog');
-  const commandKey = `${state.provider}:${state.thread?.id || ''}:${commandOutput.command}:${commandOutput.text}`;
+  const commandKey = `${state.provider}:${state.thread?.id || ''}:${state.thread?.tmux?.name || ''}:${commandOutput.command}:${commandOutput.text}`;
   if (dialog.open && dialog.dataset.commandKey === commandKey) return;
   const presentation = commandDialogPresentation(commandOutput);
   $('#commandDialogKicker').textContent = presentation.kicker;
@@ -1797,7 +1819,7 @@ function openCommandDialog(commandOutput) {
 
 async function closeCommandDialog() {
   const thread = state.thread;
-  const commandOutput = thread?.tmux?.commandOutput;
+  const commandOutput = currentCommandOutput(thread);
   const normalized = commandOutput?.kind ? commandOutput : normalizeSessionCommandOutput(
     state.provider, commandOutput?.command, { terminalOutput: commandOutput?.text },
   );
@@ -1806,17 +1828,23 @@ async function closeCommandDialog() {
     return;
   }
   if (composerRequestGate.pending) return;
+  const current = () => state.thread?.id === thread.id && state.thread?.provider === thread.provider
+    && state.thread?.tmux?.name === thread.tmux.name && currentCommandOutput(state.thread)?.text === commandOutput.text;
   await composerRequestGate.run(async () => {
     try {
       // Explicit close is the only ordinary-input path that may dismiss a native
       // menu. The server rechecks its kind; Escape must never interrupt a turn.
-      await agentRequest('dismissSessionCommand', {
+      const result = await agentRequest('dismissSessionCommand', {
         provider: thread.provider, threadId: thread.id, tmuxSession: thread.tmux.name,
-        command: commandOutput.command,
+        command: commandOutput.command, ...(thread.provider === 'agy' ? { menuText: commandOutput.text } : {}),
       });
-      if (state.thread?.tmux?.commandOutput === commandOutput) dismissCommandDialog();
+      if (!current()) return;
+      if (result?.commandOutput) {
+        setCommandOutput(state.thread, result.commandOutput);
+        scheduleThreadRender(true);
+      } else dismissCommandDialog();
     } catch (error) {
-      if (state.thread?.tmux?.commandOutput === commandOutput) {
+      if (current()) {
         $('#commandDialogSummary').textContent = error.message;
         setLiveMessage(error.message);
       }
@@ -1826,8 +1854,9 @@ async function closeCommandDialog() {
 
 function dismissCommandDialog({ restoreFocus = true } = {}) {
   const dialog = $('#commandDialog');
-  const commandOutput = state.thread?.tmux?.commandOutput;
+  const commandOutput = currentCommandOutput(state.thread);
   if (commandOutput?.command?.startsWith('/')) {
+    if (state.thread.provider === 'agy') setCommandOutput(state.thread, null);
     delete state.thread.tmux.commandOutput;
   }
   if (dialog.open) dialog.close();
@@ -2062,7 +2091,7 @@ function terminalActivityNode(content = terminalActivityContent()) {
 }
 
 function terminalActivityContent() {
-  const commandOutput = state.thread?.tmux?.commandOutput;
+  const commandOutput = currentCommandOutput(state.thread);
   if (commandOutput?.command?.startsWith('/') && commandOutput.text) return {
     kind: 'command',
     presentation: 'terminal',
@@ -2836,9 +2865,9 @@ async function submitComposer({ explicitInterrupt = false, presetText = null } =
           }
           delete state.thread.tmux.commandOutput;
           if (result?.terminalOutput) {
-            state.thread.tmux.commandOutput = normalizeSessionCommandOutput(
+            setCommandOutput(state.thread, normalizeSessionCommandOutput(
               targetProvider, message.match(/^\/\S*/)?.[0] || '终端命令', result,
-            );
+            ));
           }
           state.thread.tmux.status = nextStatus;
           state.thread.tmux.activityAt = Date.now();

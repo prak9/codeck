@@ -343,6 +343,7 @@ async function sessionSnapshotForAuth(auth) {
         activity: session.agent.activity,
         ...(auth.owner && session.agent.cwd ? { cwd: session.agent.cwd } : {}),
         ...(auth.owner && session.agent.question ? { question: session.agent.question } : {}),
+        ...(auth.owner && threadless && session.agent.commandMenu ? { commandMenu: session.agent.commandMenu } : {}),
         ...(auth.owner && threadless && session.agent.liveOutput
           ? { liveOutput: session.agent.liveOutput } : {}),
       } : null,
@@ -586,7 +587,11 @@ const threadFeed = createSnapshotFeed(
       try { workstationAutomations.observeThread(session, result.thread); }
       catch (error) { console.error('Workstation receipt:', error.message); }
     }
-    return windowedThread(withPaneExcerpt(result, tmuxSession));
+    const snapshot = windowedThread(withPaneExcerpt(result, tmuxSession));
+    if (provider === 'agy' && snapshot?.thread) {
+      return { ...snapshot, thread: { ...snapshot.thread, nativeCommand: session?.agent?.commandMenu || null } };
+    }
+    return snapshot;
   },
   {
     epoch: protocolEpoch,

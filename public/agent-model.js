@@ -227,6 +227,7 @@ export function tmuxSessionsToThreads(sessions) {
           : 'done',
         available,
         ...(session.agent?.hasBackgroundProcess ? { hasBackgroundProcess: true } : {}),
+        ...(provider === 'agy' && !available && session.agent?.commandMenu ? { nativeCommand: session.agent.commandMenu } : {}),
         ...(['qodercli', 'codex'].includes(provider) && session.agent?.question ? { question: session.agent.question } : {}),
         ...(session.agent?.activity ? { activity: session.agent.activity } : {}),
         ...(liveOutput ? { liveOutput } : {}),
@@ -349,6 +350,7 @@ function renderedThreadMetadata(thread) {
     thread?.readOnly,
     thread?.status,
     thread?.liveOutput,
+    thread?.nativeCommand?.text,
     thread?.deliveryConfirmations,
     thread?.deliveryConfirmationMode,
     thread?.receivedDeliveryIds,
@@ -689,7 +691,7 @@ export function shouldRefreshTmuxThread(thread, {
 export function shouldShowTerminalActivity(thread) {
   const tmux = thread?.tmux;
   if (!tmux) return false;
-  if (tmux.commandOutput?.text) return true;
+  if (thread.nativeCommand?.text || tmux.commandOutput?.text) return true;
   if (thread.provider === 'shell' || tmux.available === false) return true;
   if (latestRunningTurn(thread)) return false;
   if (tmux.status === 'working') return true;

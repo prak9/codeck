@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeSessionCommandOutput, parseSkillsCommandOutput } from '../public/remote-command-output.js';
+import { currentCommandOutput, setCommandOutput, normalizeSessionCommandOutput, parseSkillsCommandOutput } from '../public/remote-command-output.js';
 
 const source = fs.readFileSync(new URL('../public/remote.js', import.meta.url), 'utf8');
 function load(context, name) {
+  Object.assign(context, { currentCommandOutput, setCommandOutput });
   const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'));
   vm.runInContext(source.slice(start, start + source.slice(start).search(/^}$/m) + 1), context);
 }

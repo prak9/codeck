@@ -39,7 +39,7 @@ function stepField(bytes, wanted, wireType = 2) {
 export class AgyAgentBackend extends EventEmitter {
   label = 'Antigravity';
   capabilities = { structuredTranscript: true, directTmuxInput: true, liveEvents: false,
-    turnImages: false, slashCommands: false, attachments: false };
+    turnImages: false, slashCommands: true, attachments: false };
 
   constructor(directory = path.join(homedir(), '.gemini/antigravity-cli/conversations')) {
     super();

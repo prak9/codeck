@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { currentCommandOutput } from '../public/remote-command-output.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -22,7 +23,7 @@ function node(tag, className = '', text = '') {
 function fixture(thread) {
   const context = vm.createContext({
     state: { thread },
-    element: node,
+    element: node, currentCommandOutput,
     agentActivityText: () => '正在生成 · 20分08秒',
     requestAnimationFrame() {},
   });

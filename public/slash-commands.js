@@ -33,6 +33,18 @@ const COMMANDS = Object.freeze({
     ['/feedback', '向维护者发送反馈'],
     ['/quit', '退出 Codex'],
   ]),
+  agy: Object.freeze([
+    ['/model', '选择模型和推理强度'], ['/effort', '调整推理强度'],
+    ['/help', '查看命令和快捷键'], ['/skills', '浏览 Skills'],
+    ['/tasks', '查看后台任务'], ['/context', '查看上下文占用'],
+    ['/permissions', '管理工具权限'], ['/mcp', '管理 MCP 服务'],
+    ['/plugin', '浏览和管理插件'], ['/diff', '查看改动'],
+    ['/credits', '查看账户额度'], ['/hooks', '管理 Hooks'],
+    ['/agents', '查看可用 Agent'], ['/artifact', '查看成果'],
+    ['/usage', '查看模型和配额'], ['/config', '修改 AGY 设置'],
+    ['/resume', '选择已有对话'], ['/rewind', '选择回退位置'], ['/codesearch', '查看代码搜索结果'],
+    ['/projects', '管理项目'], ['/changelog', '查看更新记录'], ['/feedback', '反馈问题'],
+  ]),
   claude: Object.freeze([
     ['/status', '查看版本、模型和账户状态'],
     ['/statusline', '配置终端状态栏'],

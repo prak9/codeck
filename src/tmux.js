@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { detectPaneAgents } from './agents.js';
 import { clampTerminalGrid } from '../public/terminal-utils.js';
 import { parseQoderQuestion, QoderQuestionTracker } from './qoder-question.js';
+import { agyCommandMenu } from './agy-command-menu.js';
 import { parseCodexQuestion } from './codex-question.js';
 import { qoderTaskPanel, stopQoderTasks } from './qoder-stop.js';
 import { redrawTerminalPane } from './terminal-redraw.js';
@@ -837,7 +838,9 @@ export async function listSessions({ refreshAgentIdentities = false, refreshPane
           detectedAgent, hasRunningProcess, screenSignals, screenBySession.get(session.name),
         );
         const question = qoderQuestions.observe(session.name, detectedAgent, screenBySession.get(session.name));
+        const commandMenu = agentKind === 'agy' && agyCommandMenu(screenBySession.get(session.name));
         const agent = detectedAgent ? {
+          ...(commandMenu ? { commandMenu } : {}),
           ...detectedAgent,
           ...(question ? { question } : {}),
           ...(hasBackgroundProcess ? { hasBackgroundProcess: true } : {}),
@@ -846,7 +849,7 @@ export async function listSessions({ refreshAgentIdentities = false, refreshPane
         } : null;
         const shellLiveOutput = !agent ? resolveShellLiveOutput(screenBySession.get(session.name)) : '';
         const paneScreen = paneScreenCache.get(session.name);
-        if (paneScreen) paneScreen.working = Boolean(detectedAgent && (hasRunningProcess || question
+        if (paneScreen) paneScreen.working = Boolean(detectedAgent && (hasRunningProcess || question || commandMenu
           || (agentKind === 'agy' && hasBackgroundProcess)));
         return {
           ...session,
@@ -1439,6 +1442,10 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
       } catch { return false; }
     };
     if (provider === 'agy') {
+      const capture = overrides.capturePane || capturePane;
+      const menu = session.agent?.commandMenu || (command && agyCommandMenu(await capture(paneId)));
+      if (menu && !command) throw new Error('请先完成或关闭当前 AGY 菜单，再发送消息');
+      if (menu) return { terminalOutput: menu.text, commandOutput: menu };
       const buffer = `codeck_agy_${process.pid}_${++inputBufferSequence}`;
       await (overrides.loadBuffer || loadTmuxBuffer)(buffer, text);
       let attempted = false;
@@ -1449,6 +1456,14 @@ export async function sendSessionMessage({ provider, sessionName, threadId, text
         await waitForPaste(PASTE_SUBMIT_DELAY_MS);
         if (!await verifyPane()) return { submissionStatus: 'unconfirmed' };
         await execTmux(exitPaneModeThen(paneId, ['send-keys', '-t', paneId, 'Enter']));
+        if (command) {
+          const wait = overrides.waitForSlashOutput || (() => waitForPaste(SLASH_OUTPUT_DELAY_MS));
+          for (let attempt = 0; attempt < MODEL_PICKER_CAPTURE_ATTEMPTS; attempt++) {
+            await wait();
+            const next = agyCommandMenu(await capture(paneId));
+            if (next && await verifyPane()) return { terminalOutput: next.text, commandOutput: next };
+          }
+        }
         return {};
       } catch (error) {
         await execTmux(['delete-buffer', '-b', buffer]).catch(() => {});
@@ -1859,7 +1874,78 @@ export async function answerSessionQuestion({ provider, sessionName, threadId, q
   });
 }
 
-export async function dismissSessionCommand({ provider, sessionName, threadId, command }, overrides = {}) {
+// All AGY command dialogs use the same native menu. Select only keys advertised
+// in its current footer, or move the highlight to a visible model before applying.
+function interactWithAgyMenu(target, { command, menuText, option, input, dismiss }, overrides) {
+  return queueSessionInput(target.sessionName, async () => {
+    const list = overrides.listTmuxSessions || listSessions;
+    const { paneId } = await verifiedSessionTarget(target, list);
+    const capture = overrides.capturePane || capturePane;
+    const run = overrides.execTmux || (args => exec('tmux', args));
+    const wait = overrides.waitForSlashOutput || (() => new Promise(resolve => setTimeout(resolve, 75)));
+    const read = async () => agyCommandMenu(await capture(paneId));
+    let menu = await read();
+    if (dismiss && !menu) return { dismissed: false };
+    if (!menu || menu.command !== command || (menuText !== undefined && menu.text !== menuText)) {
+      throw new Error('终端菜单已变化，请查看当前菜单后重试');
+    }
+    const press = async (args) => {
+      const latest = await verifiedSessionTarget(target, list);
+      if (latest.paneId !== paneId || (await read())?.text !== menu.text) throw new Error('终端菜单已变化，操作未发送');
+      await run(exitPaneModeThen(paneId, args));
+      paneScreenCache.delete(target.sessionName);
+      for (let i = 0; i < 10; i++) {
+        await wait();
+        const screen = await capture(paneId);
+        if (!screen.trim()) continue;
+        const next = agyCommandMenu(screen);
+        if (next && next.text !== menu.text) return next;
+        if (!next && /^>[^\n]*\n─{4,}\n(?:\s*\n)*[^\n]*(?:for shortcuts|esc to interrupt)/mu.test(screen)) return null;
+      }
+      const remaining = await read();
+      if (!remaining) throw new Error('菜单操作已发送，终端尚未显示结果，请检查后再操作');
+      return remaining;
+    };
+    if (menu.parsed.models?.includes(option) && !dismiss && input === undefined) {
+      const models = menu.parsed.models;
+      let index = models.indexOf(menu.parsed.highlighted);
+      const end = models.indexOf(option);
+      const step = end > index ? 1 : -1;
+      while (index !== end) {
+        menu = await press(['send-keys', '-t', paneId, step > 0 ? 'Down' : 'Up']);
+        index += step;
+        if (menu?.parsed.highlighted !== models[index]) throw new Error('终端模型列表已变化，请重新选择');
+      }
+    } else {
+      if (input !== undefined && !dismiss) {
+        if (!menu.parsed.textEntry || typeof input !== 'string' || !input || input.length > 512 || /[\x00-\x1f\x7f]/u.test(input)) {
+          throw new Error('当前菜单不接受此文本');
+        }
+        const buffer = `codeck_agy_${process.pid}_${++inputBufferSequence}`;
+        await (overrides.loadBuffer || loadTmuxBuffer)(buffer, input);
+        try {
+          menu = await press(['paste-buffer', '-p', '-r', '-d', '-b', buffer, '-t', paneId]);
+        } catch (error) {
+          await run(['delete-buffer', '-b', buffer]).catch(() => {});
+          throw error;
+        }
+      } else {
+        const item = menu.parsed.items.find(item => item.label === option);
+        if (!dismiss && !item) throw new Error('当前菜单没有此操作');
+        menu = await press(['send-keys', '-t', paneId, dismiss ? 'Escape' : item.key]);
+      }
+    }
+    if (menu) {
+      const latest = await verifiedSessionTarget(target, list);
+      if (latest.paneId !== paneId) throw new Error('终端 pane 已变化，请重新打开');
+      return { terminalOutput: menu.text, commandOutput: menu };
+    }
+    return dismiss ? { dismissed: true } : { completed: true };
+  });
+}
+
+export async function dismissSessionCommand({ provider, sessionName, threadId, command, menuText }, overrides = {}) {
+  if (provider === 'agy') return interactWithAgyMenu({ provider, sessionName, threadId }, { command, menuText, dismiss: true }, overrides);
   if (provider !== 'codex' || !['/model', '/skills', '/usage', '/status', '/clear'].includes(command)
     || !validateSessionName(sessionName)) throw new Error('无效的命令弹窗');
   return queueSessionInput(sessionName, async () => {
@@ -1893,7 +1979,11 @@ export async function dismissSessionCommand({ provider, sessionName, threadId, c
   });
 }
 
-export async function selectSessionCommand({ provider, sessionName, threadId, command, option, menuText }, overrides = {}) {
+export async function selectSessionCommand({ provider, sessionName, threadId, command, option, menuText, input }, overrides = {}) {
+  if (provider === 'agy') {
+    if (typeof menuText !== 'string' || menuText.length > 64_000) throw new Error('无效的命令菜单');
+    return interactWithAgyMenu({ provider, sessionName, threadId }, { command, menuText, option, input }, overrides);
+  }
   if (provider !== 'codex' || !validateSessionName(sessionName) || typeof option !== 'string'
     || !option || option.length > 256 || /[\u0000-\u001f\u007f]/u.test(option)
     || typeof menuText !== 'string' || menuText.length > 64_000) throw new Error('无效的命令选项');

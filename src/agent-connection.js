@@ -770,6 +770,7 @@ export class AgentHub {
       return this.registry.selectSessionCommand(provider, {
         threadId, sessionName, command: cleanId(message.command, 'Command'),
         option: cleanId(message.option, 'Command option'), menuText: message.menuText,
+        ...(provider === 'agy' && message.input !== undefined ? { input: message.input } : {}),
       });
     }
     if (message.type === 'dismissSessionCommand') {
@@ -777,6 +778,7 @@ export class AgentHub {
         threadId: cleanId(message.threadId, 'Thread'),
         sessionName: cleanId(message.tmuxSession, 'tmux session'),
         command: cleanId(message.command, 'Command'),
+        ...(provider === 'agy' ? { menuText: message.menuText } : {}),
       });
     }
     if (message.type === 'interruptSession') {

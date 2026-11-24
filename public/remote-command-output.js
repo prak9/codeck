@@ -1,3 +1,13 @@
+export function currentCommandOutput(thread) {
+  return thread?.nativeCommand || thread?.tmux?.nativeCommand || thread?.tmux?.commandOutput;
+}
+
+export function setCommandOutput(thread, commandOutput) {
+  if (thread.provider === 'agy' && thread.tmux?.available === false) thread.tmux.nativeCommand = commandOutput;
+  else if (thread.provider === 'agy') thread.nativeCommand = commandOutput;
+  else thread.tmux.commandOutput = commandOutput;
+}
+
 export function sessionCommandCapabilities(provider) {
   return {
     modelSelection: provider === 'codex',
