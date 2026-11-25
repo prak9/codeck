@@ -110,7 +110,7 @@ test('remote light theme uses the neutral floating surfaces from the supplied re
   assert.match(css, /:root\[data-theme="light"\] \.composer\s*\{[^}]*border-radius:\s*29px;[^}]*background:\s*#fff;[^}]*box-shadow:\s*0 12px 36px #00000012/s);
   assert.match(css, /:root\[data-theme="light"\] \.sheet\s*\{[^}]*background:\s*#fff;/s);
   assert.match(html, /\/remote\.css\?v=59/);
-  assert.match(html, /\/remote\.js\?v=181/);
+  assert.match(html, /\/remote\.js\?v=182/);
 });
 
 test('a closed mobile drawer cannot cast a shadow over the conversation', () => {
@@ -134,7 +134,7 @@ test('remote desktop uses the normal workspace width and sidebar breakpoints', (
 
 test('completed model turns expose a touch-accessible copy action', () => {
   assert.match(remoteJs, /agentOutputText\(turn\)/);
-  assert.match(remoteJs, /setAttribute\('aria-label', '复制本轮模型输出'\)/);
+  assert.match(remoteJs, /agentOutputActions\(output, '复制本轮模型输出'/);
   assert.match(css, /\.message-copy-button\s*\{[^}]*min-height:\s*34px/s);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.message-copy-button\s*\{[^}]*min-height:\s*44px/s);
 });
@@ -321,7 +321,7 @@ test('an open Agent session has a labelled touch-sized progress shortcut above t
   assert.match(remoteJs, /const PROGRESS_PROMPT = AUTONOMY_PROGRESS_PROMPT/);
   assert.match(remoteJs, /progressButton'\)\.addEventListener\('click', askProgress\)/);
   assert.match(html, /remote\.css\?v=59/);
-  assert.match(html, /remote\.js\?v=181/);
+  assert.match(html, /remote\.js\?v=182/);
 });
 
 test('the load-earlier control is styled', () => {

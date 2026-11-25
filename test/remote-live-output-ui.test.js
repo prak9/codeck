@@ -24,6 +24,7 @@ function fixture(thread) {
   const context = vm.createContext({
     state: { thread },
     element: node, currentCommandOutput,
+    agentOutputActions: read => ({ copiedText: read }),
     agentActivityText: () => '正在生成 · 20分08秒',
     requestAnimationFrame() {},
   });
@@ -38,7 +39,7 @@ test('Agent pane fallback uses the same message surface and order as final outpu
   });
   const content = context.terminalActivityContent();
   const activity = context.terminalActivityNode(content);
-  const [output, foot] = activity.children;
+  const [output, copy, foot] = activity.children;
 
   assert.equal(content.presentation, 'assistant');
   assert.match(activity.className, /agent-live-activity/);
@@ -48,6 +49,8 @@ test('Agent pane fallback uses the same message surface and order as final outpu
   assert.doesNotMatch(output.className, /terminal-live-output/);
   assert.equal(output.textContent, '当前回复\n- 第一项');
   assert.match(foot.className, /turn-foot/);
+  output.textContent = 'updated pane output';
+  assert.equal(copy.copiedText(), 'updated pane output');
 });
 
 test('Shell pane fallback remains a bounded terminal surface', () => {

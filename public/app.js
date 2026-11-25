@@ -29,7 +29,8 @@ import {
   resetTerminalInput,
 } from './terminal-utils.js?v=19';
 import { createSpeechInput, mergeSpeechDraft } from './remote-speech.js?v=7';
-import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
+import { latestAgentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=5';
+import { bindOutputHistory } from './terminal-output-history.js?v=1';
 import { acceptStreamCursor, acceptStreamFrame } from './stream-state.js?v=3';
 import { applySnapshotPatch } from './snapshot-patch.js?v=2';
 import { sessionsRenderSignature } from './session-render.js?v=1';
@@ -51,6 +52,7 @@ import {
   setSessionFolderExpanded,
 } from './session-visibility.js?v=2';
 
+let outputHistory;
 let workfilesPanel;
 let alwaysOnPanel;
 let workstation;
@@ -104,8 +106,7 @@ const state = {
   sessionStreamCursor: null,
   sessionStreamSnapshot: null,
   sessionStreamHealthy: false,
-  agentOutputCache: new Map(),
-  agentOutputRequestSeq: 0,
+  agentOutputCopyPending: null,
   agentOutputFeedbackTimer: null,
   terminal: null,
   fit: null,
@@ -825,14 +826,7 @@ function activeAgentSessionTarget({ nativeTerminal = false } = {}) {
 function activeAgentOutputTarget() {
   const target = activeAgentSessionTarget();
   if (!target) return null;
-  const status = resolveSessionStatus(target.session);
-  return {
-    provider: target.provider,
-    threadId: target.threadId,
-    status,
-    key: target.key,
-    refreshKey: status === 'done' ? `${status}:${target.session.activityAt || 0}` : status,
-  };
+  return { provider: target.provider, threadId: target.threadId, key: target.progressKey };
 }
 
 function syncTerminalProgressButton() {
@@ -895,27 +889,20 @@ async function askTerminalProgress({ confirm = false, planning = false } = {}) {
 
 function syncAgentOutputCopyButtons() {
   const target = activeAgentOutputTarget();
-  const entry = target ? state.agentOutputCache.get(target.key) : null;
-  for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
+  outputHistory?.syncTarget();
+  for (const button of document.querySelectorAll('[data-agent-output-copy], [data-output-history]')) {
     button.hidden = !target;
     if (!target) continue;
+    const history = button.hasAttribute('data-output-history');
+    button.disabled = !state.sessionFeedReady || (!history && state.agentOutputCopyPending?.key === target.key);
+    if (history) continue;
     if (button.dataset.copyTarget !== target.key) {
       delete button.dataset.copyState;
       button.dataset.copyTarget = target.key;
     }
     if (button.dataset.copyState) continue;
-    const hasText = Boolean(entry?.text);
-    const retry = !hasText && entry?.state === 'error';
-    button.dataset.outputState = entry?.state || 'waiting';
-    button.disabled = !hasText && !retry;
-    button.textContent = hasText ? '复制回复'
-      : retry ? '重试读取'
-        : entry?.state === 'empty' ? '暂无回复'
-          : entry?.state === 'loading' ? '读取中…' : '等待连接';
-    button.setAttribute('aria-label', hasText ? '复制最新模型输出'
-      : retry ? '重新读取最新模型输出'
-        : entry?.state === 'empty' ? '暂无可复制的模型输出' : '正在读取最新模型输出');
-    button.title = hasText ? '复制最新一条已完成的模型回复' : '';
+    button.textContent = state.agentOutputCopyPending?.key === target.key ? '读取中…' : '复制回复';
+    button.setAttribute('aria-label', '复制最新模型输出');
   }
 }
 
@@ -949,46 +936,14 @@ function sessionFeedRequest(type, payload = {}) {
   });
 }
 
-// Keep structured output warm so the click can start its clipboard write synchronously;
-// waiting for this request inside the handler loses the user gesture in Safari/iOS.
-async function refreshActiveAgentOutput({ force = false } = {}) {
-  const target = activeAgentOutputTarget();
-  syncAgentOutputCopyButtons();
-  if (!target || !state.sessionFeedReady) return;
-  const current = state.agentOutputCache.get(target.key);
-  if (!force && current?.refreshKey === target.refreshKey) return;
-  const requestSeq = ++state.agentOutputRequestSeq;
-  const text = target.status === 'working' || current?.refreshKey === target.refreshKey
-    ? current?.text || ''
-    : '';
-  state.agentOutputCache.set(target.key, {
-    ...current, text, state: 'loading', refreshKey: target.refreshKey, requestSeq,
-  });
-  syncAgentOutputCopyButtons();
+async function readLatestAgentOutput({ provider, threadId }) {
   try {
-    const payload = { provider: target.provider, threadId: target.threadId };
-    let text;
-    try {
-      const result = await sessionFeedRequest('readLatestAgentOutput', payload);
-      text = typeof result?.text === 'string' ? result.text : '';
-    } catch (error) {
-      // Static assets may be refreshed before the running server is restarted.
-      if (error.message !== 'Unknown agent message type: readLatestAgentOutput') throw error;
-      const result = await sessionFeedRequest('loadThreadHistory', { ...payload, limit: 20 });
-      text = latestAgentOutputText(result?.turns);
-    }
-    if (state.agentOutputCache.get(target.key)?.requestSeq !== requestSeq) return;
-    state.agentOutputCache.set(target.key, {
-      text, state: text ? 'ready' : 'empty', refreshKey: target.refreshKey, requestSeq,
-    });
+    const result = await sessionFeedRequest('readLatestAgentOutput', { provider, threadId });
+    return result.text;
   } catch (error) {
-    const latest = state.agentOutputCache.get(target.key);
-    if (latest?.requestSeq !== requestSeq) return;
-    state.agentOutputCache.set(target.key, {
-      ...latest, state: 'error', error: error.message,
-    });
-  } finally {
-    syncAgentOutputCopyButtons();
+    if (error.message !== 'Unknown agent message type: readLatestAgentOutput') throw error;
+    const result = await sessionFeedRequest('loadThreadHistory', { provider, threadId, limit: 20 });
+    return latestAgentOutputText(result.turns);
   }
 }
 
@@ -1009,22 +964,27 @@ function setAgentOutputCopyFeedback(targetKey, stateName, label) {
 
 async function copyLatestAgentOutput() {
   const target = activeAgentOutputTarget();
-  if (!target) return;
-  const entry = state.agentOutputCache.get(target.key);
-  if (!entry?.text) {
-    if (entry?.state === 'error') {
-      setConnectionMessage('正在重新读取最新模型输出…');
-      void refreshActiveAgentOutput({ force: true });
-    }
-    return;
-  }
+  if (!target || !state.sessionFeedReady || state.agentOutputCopyPending?.key === target.key) return;
+  const connection = state.connectionId;
+  const current = () => activeAgentOutputTarget()?.key === target.key && state.connectionId === connection;
+  state.agentOutputCopyPending = target;
+  syncAgentOutputCopyButtons();
   try {
-    await writeAgentOutputToClipboard(entry.text);
+    await writeAgentOutputToClipboard(async () => {
+      const text = await readLatestAgentOutput(target);
+      if (!current()) throw new Error('会话已切换');
+      return text;
+    });
+    if (!current()) return;
     setAgentOutputCopyFeedback(target.key, 'success', '已复制');
     setConnectionMessage('已复制最新模型输出');
   } catch (error) {
+    if (!current()) return;
     setAgentOutputCopyFeedback(target.key, 'error', '复制失败');
     setConnectionMessage(error.message);
+  } finally {
+    if (state.agentOutputCopyPending === target) state.agentOutputCopyPending = null;
+    syncAgentOutputCopyButtons();
   }
 }
 
@@ -1048,7 +1008,7 @@ function applySessionSnapshot(data, previousActiveSession = state.sessions.find(
   $('#viewModeButton').textContent = state.overview ? '全览' : '可读';
   $('#viewModeButton').setAttribute('aria-pressed', String(state.overview));
   renderSessions();
-  void refreshActiveAgentOutput();
+  syncAgentOutputCopyButtons();
   return activeGridChanged;
 }
 
@@ -1110,7 +1070,7 @@ function connectSessionFeed() {
           cursor: state.sessionStreamSnapshot ? state.sessionStreamCursor : null,
         }));
       }
-      void refreshActiveAgentOutput({ force: true });
+      syncAgentOutputCopyButtons();
       return;
     }
     const applyFeedSnapshot = (snapshot, cursor) => {
@@ -1540,7 +1500,7 @@ async function connect(session, { recovery = false } = {}) {
   state.active = session;
   syncTerminalSessionLocation(session);
   markActiveSession(session);
-  void refreshActiveAgentOutput();
+  syncAgentOutputCopyButtons();
   $('#emptyState').hidden = true;
   $('#terminalView').hidden = false;
   $('#terminalTitle').textContent = sessionDetails?.agent?.name || session;
@@ -1854,6 +1814,11 @@ $('#terminalProgressButton').addEventListener('click', askTerminalProgress);
 $('#terminalAutonomyButton')?.addEventListener('click', () => askTerminalProgress({ planning: true }));
 $('#terminalContinueButton').addEventListener('click', () => askTerminalProgress({ confirm: true }));
 
+outputHistory = bindOutputHistory({
+  getTarget: activeAgentOutputTarget,
+  loadPage: params => sessionFeedRequest('loadThreadHistory', params),
+  notify: setConnectionMessage,
+});
 for (const button of document.querySelectorAll('[data-agent-output-copy]')) {
   button.addEventListener('click', copyLatestAgentOutput);
 }

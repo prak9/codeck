@@ -53,7 +53,7 @@ test('Claude transcript lookup honors CLAUDE_CONFIG_DIR instead of falling back 
   assert.equal(backends.claude.transcriptFile(threadId, { cwd, fileSize: 3 }), file);
 });
 
-test('reads only Codex summaries to select the latest non-streaming output', async () => {
+test('reads only Codex summaries for the latest closed turn with visible output', async () => {
   for (const status of ['completed', 'failed']) {
     const turns = [
       { id: 'old', status: 'completed', items: [{ type: 'agentMessage', text: 'Old reply' }] },
@@ -63,8 +63,6 @@ test('reads only Codex summaries to select the latest non-streaming output', asy
         { type: 'agentMessage', text: 'Second paragraph' },
       ] },
       { id: 'empty', status: 'completed', items: [{ type: 'userMessage', content: [] }] },
-      { id: 'running', status: 'running', items: [{ type: 'agentMessage', text: 'Partial' }] },
-      { id: 'active', status: 'inProgress', items: [{ type: 'agentMessage', text: 'Partial' }] },
     ];
     const calls = [];
     const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
@@ -75,12 +73,26 @@ test('reads only Codex summaries to select the latest non-streaming output', asy
     }));
 
     assert.deepEqual(await backend.readLatestAgentOutput('thread-1'), {
-      text: latestAgentOutputText(turns),
+      text: 'First paragraph\n  indentation\n\nSecond paragraph',
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].params.threadId, 'thread-1');
     assert.equal(calls[0].params.sortDirection, 'desc');
   }
+});
+
+test('copy and the first history page include an active Codex reply omitted from the summary', async () => {
+  const active = { id: 'active', status: 'inProgress', items: [] };
+  const previous = { id: 'old', status: 'completed', items: [{ type: 'agentMessage', text: 'Previous' }] };
+  const message = { id: 'msg', type: 'agentMessage', text: 'Visible now' };
+  const backend = new CodexAgentBackend(new FakeAppServer(async (method, params) => {
+    if (method === 'thread/items/list') return { data: [{ turnId: 'active', item: message }] };
+    return { data: params.itemsView === 'full' ? [{ ...active, items: [message] }] : [active, previous] };
+  }));
+  assert.deepEqual(await backend.readLatestAgentOutput('thread'), { text: 'Visible now' });
+  const page = await backend.loadThreadHistory('thread', { limit: 2 });
+  assert.equal(page.turns.at(-1).items.at(-1)?.text, 'Visible now');
+  backend.close();
 });
 
 test('latest interrupted Codex output retains the exact full-turn fallback', async () => {

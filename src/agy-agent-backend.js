@@ -52,7 +52,7 @@ export class AgyAgentBackend extends EventEmitter {
 
   loadThreadHistory(id, { beforeTurnId, limit = 80 } = {}) {
     if (!conversationId.test(id)) throw new Error('AGY 对话 ID 无效');
-    const before = beforeTurnId == null ? Number.MAX_SAFE_INTEGER : Number(beforeTurnId);
+    const before = beforeTurnId == null || beforeTurnId === '' ? Number.MAX_SAFE_INTEGER : Number(beforeTurnId);
     if (!Number.isSafeInteger(before) || before < 0) throw new Error('AGY 历史位置无效');
     const db = new DatabaseSync(path.join(this.directory, id + '.db'), { readOnly: true });
     try {

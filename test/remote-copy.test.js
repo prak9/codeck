@@ -12,17 +12,19 @@ test('collects only the visible model text from one turn', () => {
   assert.equal(agentOutputText({ items: [] }), '');
 });
 
-test('finds the latest complete model reply without copying a streaming turn', () => {
+test('finds the latest visible model reply even while the turn is running', () => {
   assert.equal(latestAgentOutputText([
     { status: 'completed', items: [{ type: 'agentMessage', text: 'Earlier answer' }] },
     { status: 'completed', items: [{ type: 'reasoning', text: 'No visible answer' }] },
     { status: 'completed', items: [{ type: 'agentMessage', text: 'Latest complete answer' }] },
     { status: 'inProgress', items: [{ type: 'agentMessage', text: 'Still streaming' }] },
-  ]), 'Latest complete answer');
+  ]), 'Still streaming');
 
   assert.equal(latestAgentOutputText([
     { status: 'running', items: [{ type: 'agentMessage', text: 'Partial' }] },
-  ]), '');
+  ]), 'Partial');
+  assert.equal(latestAgentOutputText([{status: 'completed', items: [{type:'agentMessage', text:'Visible'}]},
+    { status: 'running', items: [{type: 'reasoning', text:'hidden'}] }]), 'Visible');
   assert.equal(latestAgentOutputText([]), '');
 });
 
@@ -51,4 +53,16 @@ test('reports unsupported and denied clipboard writes clearly', async () => {
     writeAgentOutputToClipboard('answer', { writeText: async () => { throw new Error('denied'); } }),
     /复制失败：浏览器拒绝了剪贴板访问/,
   );
+});
+
+test('a latest-reply read can finish after the clipboard gesture, while a failed read never copies a fallback', async () => {
+  let finish, item;
+  class Item { constructor(types) { this.data = types['text/plain']; } }
+  const clipboard = { async write(items) { [item] = items; await item.data; } };
+  const copied = writeAgentOutputToClipboard(() => new Promise(resolve => { finish = resolve; }), clipboard, Item);
+  assert.ok(item instanceof Item, 'the write starts synchronously on the click');
+  finish('最新回复');
+  await copied;
+  assert.equal(await (await item.data).text(), '最新回复');
+  await assert.rejects(writeAgentOutputToClipboard(async () => { throw new Error('读取失败'); }, clipboard, Item), /读取失败/);
 });

@@ -141,7 +141,7 @@ test('normal terminal output does not wait for input focus to repaint', () => {
   assert.match(appJs, /bindTerminalRenderWatchdog\(terminal, \{ isVisible: \(\) => !document\.hidden && \$\('#terminal'\)\.getClientRects\(\)\.length > 0 \}\)/);
 });
 
-test('normal mode exposes one-click copy for the latest completed model reply', () => {
+test('normal mode exposes one-click latest reply and a history picker on desktop and mobile', () => {
   assert.equal([...indexHtml.matchAll(/data-agent-output-copy/g)].length, 2,
     'desktop and mobile controls both expose the action');
   assert.match(indexHtml, /data-agent-output-copy[^>]+aria-label="复制最新模型输出"/);
@@ -150,9 +150,8 @@ test('normal mode exposes one-click copy for the latest completed model reply', 
   assert.match(appJs, /sessionFeedRequest\('loadThreadHistory'/);
   assert.match(appJs, /message\.id/,
     'the existing owner Agent socket must route request responses as well as session events');
-  assert.match(appJs, /writeAgentOutputToClipboard\([^)]*\.text/,
-    'the click copies prefetched structured output rather than scraping terminal rows');
-  assert.match(appJs, /entry\?\.state === 'empty' \? '暂无回复'/);
+  assert.equal([...indexHtml.matchAll(/data-output-history/g)].length, 2);
+  assert.match(indexHtml, /id="outputHistoryDialog"/);
   assert.match(stylesCss, /\.mobile-agent-copy[^}]*min-height:\s*44px/s,
     'the mobile copy action keeps a full touch target');
 });

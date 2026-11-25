@@ -36,7 +36,7 @@ import { reconcileChildOrder } from './keyed-children.js?v=1';
 import { composerControlState, composerSubmitAction, createComposerRequestGate, draftAfterSuccessfulSend, sessionStatusAfterSend } from './remote-composer.js?v=7';
 import { attachmentMessage, validateAttachmentSelection } from './remote-attachments.js?v=2';
 import { deliveryAttemptKey, prepareDeliveryAttempt, shouldKeepDeliveryAttempt, dismissedDeliveryIds, rememberDismissedDeliveries, withoutDismissedDeliveries } from './remote-delivery.js?v=6';
-import { agentOutputText, writeAgentOutputToClipboard } from './remote-copy.js?v=4';
+import { agentOutputText, visibleOutput, writeAgentOutputToClipboard } from './remote-copy.js?v=5';
 import { currentCommandOutput, setCommandOutput, normalizeSessionCommandOutput, parseModelCommandOutput, parseSkillsCommandOutput } from './remote-command-output.js?v=7';
 import { transcriptNearLatest, transcriptNeedsLatestButton } from './remote-scroll.js?v=1';
 import { resolveViewportGeometry } from './remote-viewport.js?v=1';
@@ -2089,15 +2089,15 @@ async function dismissDelivery(target, deliveryId, button) {
   } catch (error) { button.disabled = false; setLiveMessage(error.message); }
 }
 
-function agentOutputActions(text) {
+function agentOutputActions(text, label = '复制本轮模型输出', caption = '复制输出') {
   const actions = element('div', 'agent-message-actions');
-  const button = element('button', 'message-copy-button', '复制输出');
+  const button = element('button', 'message-copy-button', caption);
   button.type = 'button';
-  button.setAttribute('aria-label', '复制本轮模型输出');
+  button.setAttribute('aria-label', label);
   button.addEventListener('click', async () => {
     button.disabled = true;
     try {
-      await writeAgentOutputToClipboard(text);
+      await writeAgentOutputToClipboard(typeof text === 'function' ? text() : text);
       button.dataset.copyState = 'success';
       button.textContent = '已复制';
       setLiveMessage('已复制模型输出');
@@ -2110,7 +2110,7 @@ function agentOutputActions(text) {
       if (!button.isConnected) return;
       button.disabled = false;
       delete button.dataset.copyState;
-      button.textContent = '复制输出';
+      button.textContent = caption;
     }, 1_600);
   });
   actions.append(button);
@@ -2121,13 +2121,18 @@ function renderTurn(turn) {
   const section = element('section', 'turn');
   section.dataset.turnId = turn.id;
   section._codeckTurn = turn;
-  for (const item of turn.items || []) section.append(itemNode(item, turn));
+  const items = turn.items || [];
+  const multiple = items.filter(item => item.type === 'agentMessage' && visibleOutput(item.text)).length > 1;
+  for (const item of items) {
+    section.append(itemNode(item, turn));
+    if (multiple && item.type === 'agentMessage' && visibleOutput(item.text)) {
+      section.append(agentOutputActions(item.text, '复制这条模型输出'));
+    }
+  }
   const errorText = turnErrorText(turn.error);
   if (errorText) section.append(element('div', 'turn-error', errorText));
   const output = agentOutputText(turn);
-  if (output && turn.status !== 'inProgress' && turn.status !== 'running') {
-    section.append(agentOutputActions(output));
-  }
+  if (output) section.append(agentOutputActions(output, '复制本轮模型输出', multiple ? '复制整轮' : '复制输出'));
   if (!turn.deliveryOnly) {
     const foot = element('div', 'turn-foot');
     if (turn.status === 'inProgress') foot.append(element('span', 'spinner'), element('span', 'working', '正在处理'));
@@ -2171,7 +2176,11 @@ function terminalActivityNode(content = terminalActivityContent()) {
   );
   output.hidden = !content.output;
   output.setAttribute('aria-label', content.ariaLabel);
-  if (assistant) section.append(output, foot);
+  if (assistant) {
+    const copy = agentOutputActions(() => output.textContent, '复制当前终端输出', '复制当前输出');
+    copy.hidden = !content.output;
+    section.append(output, copy, foot);
+  }
   else {
     output.tabIndex = 0;
     section.append(foot, output);
@@ -2258,6 +2267,8 @@ function updateTerminalActivity() {
   if (current.textContent !== content.label) current.textContent = content.label;
   if (output.textContent !== content.output) output.textContent = content.output;
   output.hidden = !content.output;
+  const copy = section.querySelector('.agent-message-actions');
+  if (copy) copy.hidden = !content.output;
   output.setAttribute('aria-label', content.ariaLabel);
   section._codeckActivityKey = terminalActivityKey(content);
   if (changed) requestAnimationFrame(() => {

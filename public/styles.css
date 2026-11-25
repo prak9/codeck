@@ -253,6 +253,8 @@ fieldset { margin: 0; padding: 0; border: 0; }
 .switch-head h2 { margin: 0; font-size: 19px; }
 .switch-head form { padding: 0; }
 .switch-list { max-height: min(440px, 60vh); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.output-history-row { flex: none; min-height: 44px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.output-history-row:hover, .output-history-row:focus-visible { background: #ffffff0d; }
 .switch-row { width: 100%; padding: 11px 13px; border: 1px solid transparent; border-radius: 9px; background: #ffffff06; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 12px; text-align: left; cursor: pointer; }
 .switch-row:hover, .switch-row:focus-visible { border-color: var(--line-strong); background: #ffffff0d; }
 .switch-row.active { border-color: #ff6b3555; background: #ff6b3510; }

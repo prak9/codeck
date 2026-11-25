@@ -233,9 +233,9 @@ export class CodexAgentBackend extends EventEmitter {
         ...(cursor ? { cursor } : {}),
       });
       const turns = Array.isArray(page?.data) ? [...page.data] : [];
-      // The latest interrupted turn may still be receiving appended output.
+      // Active and interrupted turn summaries can omit the newest visible text.
       let fullTurnId;
-      if (!cursor && turns[0]?.status === 'interrupted') {
+      if (!cursor && codexTurnNeedsFullItems(turns[0])) {
         const full = await this.#readLatestFullTurn(threadId, turns[0].id);
         if (full) {
           turns[0] = full;
@@ -243,7 +243,8 @@ export class CodexAgentBackend extends EventEmitter {
         }
       }
       for (const turn of turns) {
-        const complete = await this.#hydrateInterruptedTurns(threadId, [turn], fullTurnId);
+        const complete = await this.#hydrateTurnMessages(threadId, [turn], { fullTurnId,
+          activeId: turn.status === 'inProgress' ? turn.id : null });
         const text = latestAgentOutputText(complete);
         if (text) return { text };
       }
@@ -309,7 +310,8 @@ export class CodexAgentBackend extends EventEmitter {
     if (anchor) throw new Error('Thread history anchor is no longer present');
     await this.#hydrateUserMessages(threadId);
     const cachedUsers = this.userMessages.get(threadId);
-    const complete = await this.#hydrateInterruptedTurns(threadId, collected.reverse());
+    const activeId = !beforeTurnId && collected[0]?.status === 'inProgress' ? collected[0].id : null;
+    const complete = await this.#hydrateTurnMessages(threadId, collected.reverse(), { activeId });
     const turns = this.#reconcileUserDeliveries(threadId, complete
       .map((turn) => mergeCodexSummaryUsers(turn, cachedUsers?.get(turn.id))));
     return { turns, truncated, oldestTurnId: turns[0]?.id || null };
@@ -351,7 +353,7 @@ export class CodexAgentBackend extends EventEmitter {
     const fullTurn = await latestFull;
     const cachedUsers = this.userMessages.get(threadId);
     const exactTurns = !progressive
-      ? await this.#hydrateInterruptedTurns(threadId, summaryTurns, fullTurn?.id)
+      ? await this.#hydrateTurnMessages(threadId, summaryTurns, { fullTurnId: fullTurn?.id })
       : summaryTurns;
     const merged = exactTurns.map((turn) => (
       turn.id === fullTurn?.id
@@ -586,10 +588,10 @@ export class CodexAgentBackend extends EventEmitter {
     }
   }
 
-  async #hydrateInterruptedTurns(threadId, turns, fullTurnId) {
+  async #hydrateTurnMessages(threadId, turns, { fullTurnId, activeId }) {
     const result = [];
     for (const turn of turns) {
-      if (turn.status !== 'interrupted' || turn.id === fullTurnId) {
+      if ((turn.status !== 'interrupted' && turn.id !== activeId) || turn.id === fullTurnId) {
         result.push(turn);
         continue;
       }
@@ -619,7 +621,7 @@ export class CodexAgentBackend extends EventEmitter {
           }
           cursor = page.nextCursor;
         } while (cursor);
-        if (turn.completedAt != null) {
+        if (turn.status === 'interrupted' && turn.completedAt != null) {
           this.interruptedMessages.delete(key);
           this.interruptedMessages.set(key, { fingerprint, items, order });
           if (this.interruptedMessages.size > CODEX_INTERRUPTED_MESSAGE_CACHE_LIMIT) {

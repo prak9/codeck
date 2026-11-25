@@ -78,6 +78,7 @@ test('AGY history pages preserve public errors in order and keep internal retrie
     } finally { db.close(); }
     const backend = new AgyAgentBackend(root);
     const latest = backend.openThread(id, { turnLimit: 1 }).thread;
+    assert.deepEqual(backend.loadThreadHistory(id, { beforeTurnId: '', limit: 1 }).turns, latest.turns);
     assert.equal(latest.truncated, true);
     assert.equal(latest.turns[0].items[0].content[0].text, 'C');
     assert.deepEqual(latest.turns[0].items.slice(1), [{ id: 'agy-step-6', type: 'agentError', text: 'Q' }]);

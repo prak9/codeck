@@ -60,7 +60,7 @@ function fixture() {
     bindTerminalRecovery: () => ({ recover() {}, stop() {} }),
     ensureTerminal: () => state.terminal,
     resetTerminalInput: async () => {},
-    closeTerminalVoiceComposer() {}, markActiveSession() {}, refreshActiveAgentOutput() {},
+    closeTerminalVoiceComposer() {}, markActiveSession() {}, syncAgentOutputCopyButtons() {},
     stopKeyRepeat() {}, fitTerminalView() {}, focusTerminalInput() {}, syncTerminalAccess() {}, syncTerminalVoiceControls() {},
     connectedStateLabel: () => '已连接', terminalOutputForSession: (output) => output,
     setConnectionMessage: (message) => messages.push(message),
@@ -422,14 +422,27 @@ test('stale close and parse callbacks cannot modify a replacement session', asyn
   assert.equal(f.$('#terminal').style.visibility, 'hidden');
 });
 
+test('latest-copy reads at the click even when the same session status has not changed', async () => {
+  const writes = [];
+  const target = { key: 'codex:id', provider: 'codex', threadId: 'id' };
+  const state = { connectionId: 1, sessionFeedReady: true, agentOutputCache: new Map([[target.key, { text: 'older reply' }]]) };
+  const context = vm.createContext({
+    state, latestAgentOutputText, activeAgentOutputTarget: () => target,
+    sessionFeedRequest: async () => ({ text: 'current reply' }),
+    writeAgentOutputToClipboard: async value => { writes.push(typeof value === 'function' ? await value() : value); },
+    syncAgentOutputCopyButtons() {}, setAgentOutputCopyFeedback() {}, setConnectionMessage() {},
+  });
+  vm.runInContext(functionSource('readLatestAgentOutput') + '\n' + functionSource('copyLatestAgentOutput'), context);
+  await context.copyLatestAgentOutput();
+  assert.deepEqual(writes, ['current reply']);
+});
+
 for (const backend of ['current', 'legacy', 'error']) {
-  test(`latest-output prefetch uses the lightweight RPC with ${backend} backend`, async () => {
+  test(`latest-output read uses the lightweight RPC with ${backend} backend`, async () => {
     const calls = [];
-    const state = { sessionFeedReady: true, agentOutputCache: new Map(), agentOutputRequestSeq: 0 };
     const context = vm.createContext({
-      state, latestAgentOutputText, syncAgentOutputCopyButtons() {},
-      activeAgentOutputTarget: () => ({ key: 'codex:id', provider: 'codex', threadId: 'id', status: 'done', refreshKey: 'done:1' }),
-      sessionFeedRequest: async (type) => {
+      latestAgentOutputText,
+      sessionFeedRequest: async type => {
         calls.push(type);
         if (backend === 'error') throw new Error('read failed');
         if (type === 'readLatestAgentOutput') {
@@ -439,12 +452,11 @@ for (const backend of ['current', 'legacy', 'error']) {
         return { turns: [{ status: 'completed', items: [{ type: 'agentMessage', text: 'complete reply' }] }] };
       },
     });
-    vm.runInContext(functionSource('refreshActiveAgentOutput'), context);
-    await context.refreshActiveAgentOutput();
+    vm.runInContext(functionSource('readLatestAgentOutput'), context);
+    const read = context.readLatestAgentOutput({ provider: 'codex', threadId: 'id' });
+    if (backend === 'error') await assert.rejects(read, /read failed/);
+    else assert.equal(await read, 'complete reply');
     assert.deepEqual(calls, backend === 'legacy' ? ['readLatestAgentOutput', 'loadThreadHistory'] : ['readLatestAgentOutput']);
-    const entry = state.agentOutputCache.get('codex:id');
-    assert.equal(entry.state, backend === 'error' ? 'error' : 'ready');
-    if (backend !== 'error') assert.equal(entry.text, 'complete reply');
   });
 }
 
